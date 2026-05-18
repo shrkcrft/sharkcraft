@@ -158,6 +158,29 @@ function buildPackage(pkg: IPackageMeta): boolean {
   return true;
 }
 
+function buildDashboard(): boolean {
+  const dashboardDir = join(PACKAGES_DIR, 'dashboard');
+  if (!existsSync(join(dashboardDir, 'package.json'))) return true;
+  const distDir = join(dashboardDir, 'dist');
+  if (existsSync(distDir)) rmSync(distDir, { recursive: true, force: true });
+  process.stdout.write(`[build-dist] ${'dashboard'.padEnd(15)} (vite)\n`);
+  const res = spawnSync('bun', ['x', 'vite', 'build'], {
+    cwd: dashboardDir,
+    stdio: 'inherit',
+  });
+  if (res.status !== 0) {
+    process.stderr.write('[build-dist] FAILED dashboard\n');
+    return false;
+  }
+  if (!existsSync(join(distDir, 'index.html'))) {
+    process.stderr.write(
+      '[build-dist] dashboard: emit completed but dist/index.html missing\n',
+    );
+    return false;
+  }
+  return true;
+}
+
 const all = discoverPackages();
 const ordered = topoSort(all);
 
@@ -168,12 +191,21 @@ for (const pkg of ordered) {
   }
 }
 
+if (!buildDashboard()) {
+  failed += 1;
+}
+
 process.stdout.write('\n[build-dist] summary\n---\n');
 for (const pkg of ordered) {
   const dist = join(pkg.dir, 'dist');
   if (!existsSync(dist)) continue;
   const files = readdirSync(dist).filter((f) => !f.startsWith('.')).length;
   process.stdout.write(`  ${pkg.short.padEnd(15)} dist/ (${files} files)\n`);
+}
+const dashboardDist = join(PACKAGES_DIR, 'dashboard', 'dist');
+if (existsSync(dashboardDist)) {
+  const files = readdirSync(dashboardDist).filter((f) => !f.startsWith('.')).length;
+  process.stdout.write(`  ${'dashboard'.padEnd(15)} dist/ (${files} files)\n`);
 }
 
 if (failed > 0) {
