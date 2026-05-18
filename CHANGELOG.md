@@ -5,6 +5,133 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [0.1.0-alpha.5] — 2026-05-18 — Framework-correct paths for Nx, Angular, Nest, polyglot
+
+Follow-up to alpha.4 that fixes the second half of the benchmark finding:
+the Nx / Angular / Nest / polyglot presets now ship path conventions that
+actually match their target frameworks, so `shrk init --preset nx-monorepo`
+in a real Nx repo no longer emits a `paths.ts` advisory listing
+`src/services/` as missing.
+
+### Added
+
+- **Framework-specific path snippets** in `@shrkcrft/presets` —
+  `NX_PATH_LIBS` / `NX_PATH_APPS` (Nx); `ANGULAR_PATH_APP` /
+  `ANGULAR_PATH_COMPONENTS` / `ANGULAR_PATH_SERVICES` (single-app
+  Angular); `NEST_PATH_SRC` / `NEST_PATH_E2E` (NestJS, including the
+  `test/` directory used by Nest e2e suites); `WORKSPACE_PATH_PACKAGES`
+  / `WORKSPACE_PATH_APPS` (Turborepo, npm/pnpm/yarn workspaces);
+  `JAVA_MAVEN_PATH_MAIN` / `JAVA_MAVEN_PATH_TESTS`; `PYTHON_PATH_SRC` /
+  `PYTHON_PATH_TESTS`; `GO_PATH_CMD` / `GO_PATH_PKG` / `GO_PATH_INTERNAL`;
+  `RUST_PATH_SRC` / `RUST_PATH_TESTS`. Each snippet carries a structured
+  `metadata.path` field so the init paths-advisory annotator can verify it
+  against the live workspace.
+
+### Changed
+
+- **Presets now use framework-correct paths.** The presets that previously
+  emitted the generic `src/services/` / `src/utils/` / `tests/` triple
+  even when they targeted a specific framework have been switched to the
+  new snippets:
+  - `nx-monorepo` → `libs/`, `apps/`
+  - `angular-app` (built-in and R47 canonical), `modern-angular` →
+    `src/app/`, `src/app/components/`, `src/app/services/`
+  - `nest-service` (R47), `nestjs-service` (R26) → `src/`, `test/`
+  - `turborepo`, `package-workspace` → `packages/`, `apps/`
+  - `java-maven-service`, `java-gradle-service` → `src/main/java/`,
+    `src/test/java/`
+  - `python-service` → `src/`, `tests/`
+  - `go-module` → `cmd/`, `pkg/`, `internal/`
+  - `rust-crate` → `src/`, `tests/`
+
+### Migration notes
+
+Same as alpha.4 (below). No code-side migration required.
+
+## [0.1.0-alpha.4] — 2026-05-18 — Self-contained init scaffolding
+
+Fixes the root cause behind the alpha.1–alpha.3 benchmark finding that
+`shrk` was net-negative in a freshly-init'd downstream repo: every
+generated `sharkcraft/*.ts` file used to import from `@shrkcrft/*`
+packages, but those packages weren't published yet, so every loader
+failed and the project-intelligence layer was offline.
+
+### Fixed
+
+- **No `@shrkcrft/*` imports in any generated scaffolding.** Every
+  emitter — `INIT_FILES` (legacy seed), `synthesizePresetFiles()`
+  (modern preset path), `emitKnowledgeTs()` (importer),
+  `renderConstructDraftsModule()` / `renderRulesDraft()` /
+  `renderPathsDraft()` / `renderBoundariesDraft()` /
+  `renderConstructsDraft()` (inspector), `rule-scaffold.ts`,
+  `construct-adoption-diff.ts` — now produces self-contained TypeScript
+  that declares its own minimal helpers (`function defineKnowledgeEntry<T>(e: T): T { return e; }`)
+  and enum-like constants inline. The knowledge / templates / pipelines
+  loaders are shape-agnostic, so the structured fields still work
+  exactly the same way without the import.
+- **Surface-config writer no longer falls back to a broken
+  `defineSharkCraftConfig` block.** `applySurfaceTextEdit` now handles
+  three config patterns — `defineSharkCraftConfig({...})`, `const config = {...}; export default config`,
+  and `export default {...}` — so injecting a `surface:` block into the
+  new plain config no longer appends a stray import.
+- **`sharkcraft.config.ts` is now a plain `export default {...}`.** The
+  config loader validates by shape via zod, so the helper call was never
+  required.
+
+### Added
+
+- **`packages/cli/src/init/paths-advisory.ts`** — after writing
+  `sharkcraft/paths.ts`, init scans every `path: '<x>'` and
+  `metadata.path: '<x>'` reference and classifies each `<x>` against the
+  live workspace. If any are missing on disk, a clearly-labeled
+  `⚠️ Workspace-shape advisory` comment block is prepended to the file
+  listing the absent paths, and a `Paths advisory` block is printed to
+  stdout. Idempotent and non-destructive — the original entries stay so
+  the user can edit them in place.
+- **Regression test:** `init-self-contained-emit.test.ts` asserts
+  no `@shrkcrft/*` / `@sharkcraft/*` `from '...'` lines in any output of
+  the legacy seed, every built-in preset, `emitKnowledgeTs`, and a real
+  `shrk init --write` against a tmp project root.
+
+### Build / CI
+
+- **`scripts/build-dist.ts` now also builds the dashboard via Vite** so
+  `publish:dry-run` finds `packages/dashboard/dist/index.html` on CI.
+- **`scripts/audit-doctor-json.ts` invokes the CLI via
+  `bun run packages/cli/src/main.ts`** instead of a globally-installed
+  `shrk` binary, so the audit runs on CI even before `build:dist`.
+- **`safe-import.test.ts` no longer depends on a Bun deadlock bug**
+  that was fixed in newer Bun. The hang scenario uses a top-level
+  `await new Promise(() => {})` to construct a deterministic
+  never-resolves dynamic import.
+
+### Migration notes — existing user repos
+
+Anyone whose `sharkcraft/` folder was generated by `shrk init` /
+`shrk presets apply` on alpha.1–alpha.3 still has `import { ... } from
+'@shrkcrft/*'` lines at the top of every `*.ts` file in that folder. The
+SharkCraft engine itself runs against shape, not imports, so older
+projects keep working — but only because the loader's `safeImport` step
+catches the failed resolution and skips silently. To restore full
+knowledge / rules / paths / templates loading:
+
+```bash
+# pick one:
+# (a) regenerate (overwrites local sharkcraft/*.ts — back up first):
+shrk init --legacy --write --force
+
+# (b) hand-edit each sharkcraft/*.ts:
+#     remove the `import { ... } from '@shrkcrft/...'` lines and replace
+#     `defineKnowledgeEntry(x)` / `defineRule(x)` etc. with the inline
+#     stub `function defineKnowledgeEntry<T>(e: T): T { return e; }`.
+#     The repository's own sharkcraft/*.ts files demonstrate the pattern.
+```
+
+The `shrk doctor` advisory output now flags surface-profile drift; if
+your project's `sharkcraft.config.ts` carries an outdated
+`surface.profile` value, doctor will print which profile it would pick
+today.
+
 ## [Unreleased] — Cleanup: remove project-specific references and cycle markers
 
 The engine and its assets were carrying project-specific knowledge and

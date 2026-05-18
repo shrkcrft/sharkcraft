@@ -2,6 +2,9 @@ import { WorkspaceProfile } from '@shrkcrft/workspace';
 import { definePreset } from '../define/define-preset.ts';
 import type { IPreset } from '../model/preset.ts';
 import {
+  ANGULAR_PATH_APP,
+  ANGULAR_PATH_COMPONENTS,
+  ANGULAR_PATH_SERVICES,
   COMMON_AGENT_BRIEFING,
   COMMON_PIPELINE_CONTEXT_ONLY,
   COMMON_PIPELINE_FEATURE_DEV,
@@ -10,6 +13,8 @@ import {
   COMMON_RULE_NO_LOGIC_CONSTRUCTORS,
   COMMON_RULE_ONE_EXPORT,
   COMMON_SAFETY_RULE,
+  NEST_PATH_E2E,
+  NEST_PATH_SRC,
   OVERVIEW_DOC,
 } from './shared-snippets.ts';
 import {
@@ -208,7 +213,7 @@ export const MODERN_ANGULAR: IPreset = definePreset({
       NG_ACCESSIBLE,
       NG_AVOID_BYPASS_SECURITY,
     ],
-    paths: [],
+    paths: [ANGULAR_PATH_APP, ANGULAR_PATH_COMPONENTS, ANGULAR_PATH_SERVICES],
     templates: [],
     pipelines: [COMMON_PIPELINE_FEATURE_DEV],
     docs: { 'overview.md': OVERVIEW_DOC('Modern Angular', 'Signals-first reactivity, RxJS used deliberately, standalone components, OnPush CD, lazy routes, typed forms, Nx-style boundaries.') },
@@ -478,7 +483,7 @@ export const NESTJS_SERVICE: IPreset = definePreset({
   appliesTo: [WorkspaceProfile.HasNestJS, WorkspaceProfile.IsBackend],
   weight: 7,
   composes: ['node-service'],
-  includes: { knowledge: [], rules: [TS_VALIDATE_BOUNDARY_INPUT], paths: [], templates: [], pipelines: [], docs: { 'overview.md': OVERVIEW_DOC('NestJS service', 'Validate DTOs at controllers. Keep services thin. Use modules to enforce layers.') } },
+  includes: { knowledge: [], rules: [TS_VALIDATE_BOUNDARY_INPUT], paths: [NEST_PATH_SRC, NEST_PATH_E2E], templates: [], pipelines: [], docs: { 'overview.md': OVERVIEW_DOC('NestJS service', 'Validate DTOs at controllers. Keep services thin. Use modules to enforce layers.') } },
 });
 
 export const EXPRESS_SERVICE: IPreset = definePreset({

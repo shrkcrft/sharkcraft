@@ -245,6 +245,239 @@ export const COMMON_PATH_TESTS = `defineKnowledgeEntry({
     metadata: { path: 'tests' },
   })`;
 
+// ─── Framework-specific path snippets ─────────────────────────────────────
+//
+// Each snippet uses the structured `metadata: { path: '<x>' }` field so
+// the init paths-advisory annotator can verify the path against the live
+// workspace. When an entry is emitted into a fresh repo whose layout
+// doesn't match, the user sees a `⚠️ Workspace-shape advisory` block
+// listing the absent paths.
+
+// Nx workspaces — `libs/<area>/src/lib/<feature>.service.ts`,
+// `apps/<app>/src/app/`. The exact lib/app folder names are
+// project-specific; we point at the roots.
+export const NX_PATH_LIBS = `defineKnowledgeEntry({
+    id: 'paths.nx.libs',
+    title: 'Nx libs root',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.High,
+    tags: ['paths', 'nx', 'libs'],
+    scope: ['nx', 'monorepo'],
+    appliesWhen: ['generate-service', 'generate-utility', 'create-feature'],
+    content: 'Shared library code lives under libs/<area>/src/lib/. Each lib has a public index.ts; cross-lib imports go through the package name, never relative paths into src/.',
+    metadata: { path: 'libs' },
+  })`;
+
+export const NX_PATH_APPS = `defineKnowledgeEntry({
+    id: 'paths.nx.apps',
+    title: 'Nx apps root',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.High,
+    tags: ['paths', 'nx', 'apps'],
+    scope: ['nx', 'monorepo'],
+    appliesWhen: ['create-feature', 'create-app'],
+    content: 'Applications live under apps/<app>/. Frontends use apps/<app>/src/app/; backends use apps/<app>/src/. Keep app-specific code here and shared code in libs/.',
+    metadata: { path: 'apps' },
+  })`;
+
+// Generic workspace monorepo (Turborepo, pnpm/yarn/npm workspaces): the
+// idiomatic layout is `apps/` + `packages/` rather than Nx's `libs/`.
+export const WORKSPACE_PATH_PACKAGES = `defineKnowledgeEntry({
+    id: 'paths.workspace.packages',
+    title: 'Workspace packages root',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.High,
+    tags: ['paths', 'workspaces', 'monorepo'],
+    scope: ['monorepo', 'turborepo', 'workspaces'],
+    appliesWhen: ['generate-code', 'create-feature'],
+    content: 'Shared packages live under packages/<name>/. Each package exposes a stable public entry (package.json main/exports); cross-package imports go through the package name, never relative paths into src/.',
+    metadata: { path: 'packages' },
+  })`;
+
+export const WORKSPACE_PATH_APPS = `defineKnowledgeEntry({
+    id: 'paths.workspace.apps',
+    title: 'Workspace apps root',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.High,
+    tags: ['paths', 'workspaces', 'monorepo'],
+    scope: ['monorepo', 'turborepo', 'workspaces'],
+    appliesWhen: ['create-feature', 'create-app'],
+    content: 'Applications live under apps/<app>/. Each app has its own src/ root and depends on shared packages by name.',
+    metadata: { path: 'apps' },
+  })`;
+
+// Single-app Angular workspaces — angular.json + src/app convention.
+export const ANGULAR_PATH_APP = `defineKnowledgeEntry({
+    id: 'paths.angular.app',
+    title: 'Angular app root',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.Critical,
+    tags: ['paths', 'angular', 'app'],
+    scope: ['angular'],
+    appliesWhen: ['create-feature', 'generate-code'],
+    content: 'Angular workspace source lives under src/app/. Components, services, pipes and modules sit under here. Tests are co-located as *.spec.ts beside the unit under test.',
+    metadata: { path: 'src/app' },
+  })`;
+
+export const ANGULAR_PATH_COMPONENTS = `defineKnowledgeEntry({
+    id: 'paths.angular.components',
+    title: 'Angular components',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.High,
+    tags: ['paths', 'angular', 'components'],
+    scope: ['angular'],
+    appliesWhen: ['generate-component'],
+    content: 'Components live under src/app/components/ or src/app/<feature>/. Use the .component.ts suffix. Pair each component with a co-located *.spec.ts test.',
+    metadata: { path: 'src/app/components' },
+  })`;
+
+export const ANGULAR_PATH_SERVICES = `defineKnowledgeEntry({
+    id: 'paths.angular.services',
+    title: 'Angular services',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.High,
+    tags: ['paths', 'angular', 'services'],
+    scope: ['angular'],
+    appliesWhen: ['generate-service'],
+    content: 'Injectable services live under src/app/services/ (or alongside their feature folder). Use the .service.ts suffix. Provide via providedIn root unless feature-scoped.',
+    metadata: { path: 'src/app/services' },
+  })`;
+
+// NestJS services — module-per-folder convention; e2e tests in `test/`.
+export const NEST_PATH_SRC = `defineKnowledgeEntry({
+    id: 'paths.nest.src',
+    title: 'Nest module roots',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.Critical,
+    tags: ['paths', 'nest', 'modules'],
+    scope: ['nestjs'],
+    appliesWhen: ['create-feature', 'generate-service', 'generate-code'],
+    content: 'Nest source lives under src/. Each feature gets a folder src/<feature>/ containing controller, service, module, and DTOs (one construct per file). Controllers stay thin; business logic lives in services.',
+    metadata: { path: 'src' },
+  })`;
+
+export const NEST_PATH_E2E = `defineKnowledgeEntry({
+    id: 'paths.nest.e2e',
+    title: 'Nest e2e tests',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.Medium,
+    tags: ['paths', 'nest', 'testing'],
+    scope: ['nestjs'],
+    appliesWhen: ['generate-test'],
+    content: 'End-to-end tests live under test/ (Nest convention, not tests/). Unit tests can be co-located as *.spec.ts next to the unit.',
+    metadata: { path: 'test' },
+  })`;
+
+// ─── Polyglot path snippets ──────────────────────────────────────────────
+
+export const JAVA_MAVEN_PATH_MAIN = `defineKnowledgeEntry({
+    id: 'paths.java.maven.main',
+    title: 'Java Maven main source',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.Critical,
+    tags: ['paths', 'java', 'maven'],
+    scope: ['java', 'maven'],
+    appliesWhen: ['generate-code'],
+    content: 'Main Java source lives under src/main/java/<package>/. Resources under src/main/resources/. Mirror tests under src/test/java/.',
+    metadata: { path: 'src/main/java' },
+  })`;
+
+export const JAVA_MAVEN_PATH_TESTS = `defineKnowledgeEntry({
+    id: 'paths.java.maven.tests',
+    title: 'Java Maven tests',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.High,
+    tags: ['paths', 'java', 'maven', 'tests'],
+    scope: ['java', 'maven'],
+    appliesWhen: ['generate-test'],
+    content: 'JUnit / Spring tests live under src/test/java/. Run via mvn test.',
+    metadata: { path: 'src/test/java' },
+  })`;
+
+export const PYTHON_PATH_SRC = `defineKnowledgeEntry({
+    id: 'paths.python.src',
+    title: 'Python source root',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.Critical,
+    tags: ['paths', 'python'],
+    scope: ['python'],
+    appliesWhen: ['generate-code'],
+    content: 'Source lives under src/<package>/ (PEP 517 src layout) or directly under <package>/ at the repo root. Pick one and stay consistent.',
+    metadata: { path: 'src' },
+  })`;
+
+export const PYTHON_PATH_TESTS = `defineKnowledgeEntry({
+    id: 'paths.python.tests',
+    title: 'Python tests',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.High,
+    tags: ['paths', 'python', 'tests'],
+    scope: ['python'],
+    appliesWhen: ['generate-test'],
+    content: 'Pytest tests live under tests/. Each test_*.py mirrors a module under src/.',
+    metadata: { path: 'tests' },
+  })`;
+
+export const GO_PATH_CMD = `defineKnowledgeEntry({
+    id: 'paths.go.cmd',
+    title: 'Go entry points',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.High,
+    tags: ['paths', 'go'],
+    scope: ['go'],
+    appliesWhen: ['create-app'],
+    content: 'Binary entry points live under cmd/<name>/main.go. Shared library code under pkg/ (public) or internal/ (module-private).',
+    metadata: { path: 'cmd' },
+  })`;
+
+export const GO_PATH_PKG = `defineKnowledgeEntry({
+    id: 'paths.go.pkg',
+    title: 'Go shared packages',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.Medium,
+    tags: ['paths', 'go'],
+    scope: ['go'],
+    appliesWhen: ['generate-code'],
+    content: 'Public packages live under pkg/<name>/. Tests are co-located as <name>_test.go. Run via go test ./...',
+    metadata: { path: 'pkg' },
+  })`;
+
+export const GO_PATH_INTERNAL = `defineKnowledgeEntry({
+    id: 'paths.go.internal',
+    title: 'Go internal packages',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.Medium,
+    tags: ['paths', 'go'],
+    scope: ['go'],
+    appliesWhen: ['generate-code'],
+    content: 'Module-private packages live under internal/<name>/. The Go compiler enforces that only the parent module can import these.',
+    metadata: { path: 'internal' },
+  })`;
+
+export const RUST_PATH_SRC = `defineKnowledgeEntry({
+    id: 'paths.rust.src',
+    title: 'Rust crate source',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.Critical,
+    tags: ['paths', 'rust'],
+    scope: ['rust'],
+    appliesWhen: ['generate-code'],
+    content: 'Crate source lives under src/. The entry point is src/lib.rs (library) or src/main.rs (binary). Modules nest as src/<mod>/mod.rs or src/<mod>.rs.',
+    metadata: { path: 'src' },
+  })`;
+
+export const RUST_PATH_TESTS = `defineKnowledgeEntry({
+    id: 'paths.rust.tests',
+    title: 'Rust integration tests',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.Medium,
+    tags: ['paths', 'rust', 'tests'],
+    scope: ['rust'],
+    appliesWhen: ['generate-test'],
+    content: 'Integration tests live under tests/<name>.rs. Unit tests live inline with #[cfg(test)] modules inside src/. Run via cargo test.',
+    metadata: { path: 'tests' },
+  })`;
+
 export const COMMON_RULE_INTERFACE_PREFIX = `defineKnowledgeEntry({
     id: 'typescript.interfaces.i-prefix',
     title: 'Prefix interfaces with I',

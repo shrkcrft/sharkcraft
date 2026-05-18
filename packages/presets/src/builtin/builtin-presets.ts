@@ -2,6 +2,9 @@ import { WorkspaceProfile } from '@shrkcrft/workspace';
 import { definePreset } from '../define/define-preset.ts';
 import type { IPreset } from '../model/preset.ts';
 import {
+  ANGULAR_PATH_APP,
+  ANGULAR_PATH_COMPONENTS,
+  ANGULAR_PATH_SERVICES,
   COMMON_AGENT_BRIEFING,
   COMMON_PATH_SERVICES,
   COMMON_PATH_TESTS,
@@ -16,7 +19,18 @@ import {
   COMMON_TEMPLATE_SERVICE,
   COMMON_TEMPLATE_TEST,
   COMMON_TEMPLATE_UTILITY,
+  GO_PATH_CMD,
+  GO_PATH_INTERNAL,
+  GO_PATH_PKG,
+  JAVA_MAVEN_PATH_MAIN,
+  JAVA_MAVEN_PATH_TESTS,
+  NX_PATH_APPS,
+  NX_PATH_LIBS,
   OVERVIEW_DOC,
+  PYTHON_PATH_SRC,
+  PYTHON_PATH_TESTS,
+  RUST_PATH_SRC,
+  RUST_PATH_TESTS,
 } from './shared-snippets.ts';
 import { R26_PRESETS } from './r26-presets.ts';
 import { R45_PRESETS } from './r45-presets.ts';
@@ -159,7 +173,7 @@ const ANGULAR_APP: IPreset = definePreset({
   includes: {
     knowledge: [COMMON_AGENT_BRIEFING],
     rules: [COMMON_SAFETY_RULE, COMMON_RULE_ONE_EXPORT],
-    paths: [COMMON_PATH_UTILS, COMMON_PATH_TESTS],
+    paths: [ANGULAR_PATH_APP, ANGULAR_PATH_COMPONENTS, ANGULAR_PATH_SERVICES],
     templates: [COMMON_TEMPLATE_UTILITY, COMMON_TEMPLATE_TEST],
     pipelines: [COMMON_PIPELINE_CONTEXT_ONLY, COMMON_PIPELINE_FEATURE_DEV],
     docs: {
@@ -204,11 +218,11 @@ const NX_MONOREPO: IPreset = definePreset({
   })`,
     ],
     rules: [COMMON_SAFETY_RULE, COMMON_RULE_INTERFACE_PREFIX, COMMON_RULE_ONE_EXPORT],
-    paths: [COMMON_PATH_SERVICES, COMMON_PATH_UTILS, COMMON_PATH_TESTS],
+    paths: [NX_PATH_LIBS, NX_PATH_APPS],
     templates: [COMMON_TEMPLATE_SERVICE, COMMON_TEMPLATE_UTILITY, COMMON_TEMPLATE_TEST],
     pipelines: [COMMON_PIPELINE_CONTEXT_ONLY, COMMON_PIPELINE_FEATURE_DEV, COMMON_PIPELINE_UNIT_TEST],
     docs: {
-      'overview.md': OVERVIEW_DOC('Nx monorepo', 'Many libraries. Layer order is enforced.'),
+      'overview.md': OVERVIEW_DOC('Nx monorepo', 'Many libraries. Layer order is enforced. Code lives under libs/<area>/src/lib/; apps under apps/<app>/.'),
     },
   },
   recommendedNextCommands: [
@@ -411,7 +425,7 @@ const JAVA_MAVEN_SERVICE: IPreset = definePreset({
   includes: {
     knowledge: [COMMON_AGENT_BRIEFING],
     rules: [COMMON_SAFETY_RULE],
-    paths: [],
+    paths: [JAVA_MAVEN_PATH_MAIN, JAVA_MAVEN_PATH_TESTS],
     templates: [],
     pipelines: [],
     docs: {
@@ -433,7 +447,7 @@ const JAVA_GRADLE_SERVICE: IPreset = definePreset({
   includes: {
     knowledge: [COMMON_AGENT_BRIEFING],
     rules: [COMMON_SAFETY_RULE],
-    paths: [],
+    paths: [JAVA_MAVEN_PATH_MAIN, JAVA_MAVEN_PATH_TESTS],
     templates: [],
     pipelines: [],
     docs: {
@@ -477,7 +491,7 @@ const PYTHON_SERVICE: IPreset = definePreset({
   includes: {
     knowledge: [COMMON_AGENT_BRIEFING],
     rules: [COMMON_SAFETY_RULE],
-    paths: [],
+    paths: [PYTHON_PATH_SRC, PYTHON_PATH_TESTS],
     templates: [],
     pipelines: [],
     docs: {
@@ -499,7 +513,7 @@ const GO_MODULE: IPreset = definePreset({
   includes: {
     knowledge: [COMMON_AGENT_BRIEFING],
     rules: [COMMON_SAFETY_RULE],
-    paths: [],
+    paths: [GO_PATH_CMD, GO_PATH_PKG, GO_PATH_INTERNAL],
     templates: [],
     pipelines: [],
     docs: {
@@ -521,7 +535,7 @@ const RUST_CRATE: IPreset = definePreset({
   includes: {
     knowledge: [COMMON_AGENT_BRIEFING],
     rules: [COMMON_SAFETY_RULE],
-    paths: [],
+    paths: [RUST_PATH_SRC, RUST_PATH_TESTS],
     templates: [],
     pipelines: [],
     docs: {

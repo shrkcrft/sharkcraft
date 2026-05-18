@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/templates",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "SharkCraft templates: typed template definitions, registry, variable validation, rendering.",
   "license": "MIT",
   "author": "SharkCraft contributors",

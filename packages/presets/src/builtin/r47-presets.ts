@@ -1,7 +1,16 @@
 import { WorkspaceProfile } from '@shrkcrft/workspace';
 import { definePreset } from '../define/define-preset.ts';
 import type { IPreset } from '../model/preset.ts';
-import { COMMON_AGENT_BRIEFING, COMMON_SAFETY_RULE, OVERVIEW_DOC } from './shared-snippets.ts';
+import {
+  ANGULAR_PATH_APP,
+  ANGULAR_PATH_COMPONENTS,
+  ANGULAR_PATH_SERVICES,
+  COMMON_AGENT_BRIEFING,
+  COMMON_SAFETY_RULE,
+  NEST_PATH_E2E,
+  NEST_PATH_SRC,
+  OVERVIEW_DOC,
+} from './shared-snippets.ts';
 
 // Universal adoption (top 5) — canonical-id aliases.
 //
@@ -26,7 +35,7 @@ export const NEST_SERVICE_PRESET: IPreset = definePreset({
   includes: {
     knowledge: [COMMON_AGENT_BRIEFING],
     rules: [COMMON_SAFETY_RULE],
-    paths: [],
+    paths: [NEST_PATH_SRC, NEST_PATH_E2E],
     templates: [],
     pipelines: [],
     docs: {
@@ -55,7 +64,7 @@ export const ANGULAR_APP_PRESET: IPreset = definePreset({
   includes: {
     knowledge: [COMMON_AGENT_BRIEFING],
     rules: [COMMON_SAFETY_RULE],
-    paths: [],
+    paths: [ANGULAR_PATH_APP, ANGULAR_PATH_COMPONENTS, ANGULAR_PATH_SERVICES],
     templates: [],
     pipelines: [],
     docs: {
