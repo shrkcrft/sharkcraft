@@ -88,19 +88,25 @@ describe('doctor-verb --json audit', () => {
     expect(captured.stdout).toBe('');
   });
 
-  test('audit module runs against the current catalog with 0 failures', () => {
-    const report = runDoctorJsonAudit();
-    expect(report.schema).toBe('sharkcraft.doctor-json-audit/v1');
-    expect(report.total).toBeGreaterThan(0);
-    if (report.failed > 0) {
-      const failedSummary = report.entries
-        .filter((e) => !e.ok)
-        .map((e) => `${e.verb}: ${e.reason}`)
-        .join('\n  ');
-      throw new Error(
-        `Doctor --json audit found ${report.failed} regression(s):\n  ${failedSummary}`,
-      );
-    }
-    expect(report.failed).toBe(0);
-  });
+  test(
+    'audit module runs against the current catalog with 0 failures',
+    () => {
+      const report = runDoctorJsonAudit();
+      expect(report.schema).toBe('sharkcraft.doctor-json-audit/v1');
+      expect(report.total).toBeGreaterThan(0);
+      if (report.failed > 0) {
+        const failedSummary = report.entries
+          .filter((e) => !e.ok)
+          .map((e) => `${e.verb}: ${e.reason}`)
+          .join('\n  ');
+        throw new Error(
+          `Doctor --json audit found ${report.failed} regression(s):\n  ${failedSummary}`,
+        );
+      }
+      expect(report.failed).toBe(0);
+    },
+    // Each verb spawns a fresh `bun run` cold start; 8 verbs × ~700ms
+    // can easily exceed the 5s default on CI runners.
+    30_000,
+  );
 });
