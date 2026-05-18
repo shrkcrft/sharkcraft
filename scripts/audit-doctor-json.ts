@@ -11,7 +11,18 @@
  * Schema: `sharkcraft.doctor-json-audit/v1`
  */
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import * as nodePath from 'node:path';
 import { COMMAND_CATALOG } from '../packages/cli/src/commands/command-catalog.ts';
+
+const CLI_MAIN = nodePath.resolve(
+  nodePath.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'packages',
+  'cli',
+  'src',
+  'main.ts',
+);
 
 interface IAuditEntry {
   verb: string;
@@ -42,7 +53,7 @@ function listDoctorVerbs(): string[] {
 
 function runVerb(verb: string): IAuditEntry {
   const parts = verb.split(/\s+/);
-  const result = spawnSync('shrk', [...parts, '--json'], {
+  const result = spawnSync('bun', ['run', CLI_MAIN, ...parts, '--json'], {
     encoding: 'utf8',
     timeout: 30_000,
   });

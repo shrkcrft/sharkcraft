@@ -37,18 +37,19 @@ describe('safeImport', () => {
     }
   });
 
-  test('returns ok=false with timedOut=true when the second import deadlocks', async () => {
-    const file = tmpFile('dup.ts', 'export const y = 1;\nexport const y = 2;\n');
-    const first = await safeImport(file);
-    expect(first.ok).toBe(false);
-    // Second import of a previously-failed TS file hangs forever in
-    // Bun. safeImport must bound it.
-    const second = await safeImport(file, { timeoutMs: 1500 });
-    expect(second.ok).toBe(false);
-    if (!second.ok) {
-      expect(second.timedOut).toBe(true);
-      expect(second.elapsedMs).toBeGreaterThanOrEqual(1500);
-      expect(second.error.message).toMatch(/timed out after \d+ms/);
+  test('returns ok=false with timedOut=true when the import hangs', async () => {
+    // Top-level await on a never-resolving promise — the dynamic
+    // import will never settle, so safeImport must bound it.
+    const file = tmpFile(
+      'hang.ts',
+      'await new Promise(() => {});\nexport const y = 1;\n',
+    );
+    const r = await safeImport(file, { timeoutMs: 1500 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.timedOut).toBe(true);
+      expect(r.elapsedMs).toBeGreaterThanOrEqual(1500);
+      expect(r.error.message).toMatch(/timed out after \d+ms/);
     }
   });
 
