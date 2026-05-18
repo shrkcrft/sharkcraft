@@ -18,6 +18,69 @@ export interface ISynthesizedFile {
     | 'literal';
 }
 
+// Self-contained preambles for each emitted file kind. Generated files
+// must work in a brand-new downstream repo where no `@shrkcrft/*`
+// packages are installed. The loaders (knowledge / templates / pipelines)
+// are shape-agnostic — they accept any object with the required string
+// fields — so we just need helpers + enum-like constants the snippets
+// reference. See `packages/knowledge/src/load/typescript-knowledge-loader.ts`
+// for the loader contract.
+
+const KNOWLEDGE_HELPERS = `// Local helpers — keep this file self-contained (no @shrkcrft/* imports).
+const KnowledgePriority = {
+  Critical: 'critical',
+  High: 'high',
+  Medium: 'medium',
+  Low: 'low',
+} as const;
+
+const KnowledgeType = {
+  Rule: 'rule',
+  Path: 'path',
+  Template: 'template',
+  Architecture: 'architecture',
+  Technical: 'technical',
+  Business: 'business',
+  Command: 'command',
+  Environment: 'environment',
+  Dependency: 'dependency',
+  Feature: 'feature',
+  Task: 'task',
+  Warning: 'warning',
+  Decision: 'decision',
+  Convention: 'convention',
+  Workflow: 'workflow',
+  Testing: 'testing',
+  Security: 'security',
+  Deployment: 'deployment',
+  Integration: 'integration',
+  Custom: 'custom',
+} as const;
+
+function defineKnowledgeEntry<T>(entry: T): T {
+  return entry;
+}
+`;
+
+const TEMPLATE_HELPERS = `// Local helpers — keep this file self-contained (no @shrkcrft/* imports).
+function defineTemplate<T>(template: T): T {
+  return template;
+}
+
+function kebab(s: string): string {
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .toLowerCase();
+}
+`;
+
+const PIPELINE_HELPERS = `// Local helpers — keep this file self-contained (no @shrkcrft/* imports).
+function definePipeline<T>(pipeline: T): T {
+  return pipeline;
+}
+`;
+
 function recordToMap(
   v: ReadonlyMap<string, string> | Readonly<Record<string, string>> | undefined,
 ): ReadonlyMap<string, string> {
@@ -33,8 +96,8 @@ function listBlock(items: readonly string[] | undefined, indent = '  '): string 
 
 function knowledgeFile(items: readonly string[] | undefined): string {
   return (
-    "import { defineKnowledgeEntry, KnowledgePriority, KnowledgeType } from '@shrkcrft/knowledge';\n\n" +
-    'const knowledge = [\n' +
+    KNOWLEDGE_HELPERS +
+    '\nconst knowledge = [\n' +
     listBlock(items) +
     '];\n\n' +
     'export default knowledge;\n'
@@ -43,8 +106,8 @@ function knowledgeFile(items: readonly string[] | undefined): string {
 
 function rulesFile(items: readonly string[] | undefined): string {
   return (
-    "import { defineKnowledgeEntry, KnowledgePriority, KnowledgeType } from '@shrkcrft/knowledge';\n\n" +
-    'const rules = [\n' +
+    KNOWLEDGE_HELPERS +
+    '\nconst rules = [\n' +
     listBlock(items) +
     '];\n\n' +
     'export default rules;\n'
@@ -53,8 +116,8 @@ function rulesFile(items: readonly string[] | undefined): string {
 
 function pathsFile(items: readonly string[] | undefined): string {
   return (
-    "import { defineKnowledgeEntry, KnowledgePriority, KnowledgeType } from '@shrkcrft/knowledge';\n\n" +
-    'const paths = [\n' +
+    KNOWLEDGE_HELPERS +
+    '\nconst paths = [\n' +
     listBlock(items) +
     '];\n\n' +
     'export default paths;\n'
@@ -62,14 +125,9 @@ function pathsFile(items: readonly string[] | undefined): string {
 }
 
 function templatesFile(items: readonly string[] | undefined): string {
-  // Inject a small kebab helper so template content() closures can use it.
-  // Generated code is self-contained — no extra runtime dependency required.
   return (
-    "import { defineTemplate } from '@shrkcrft/templates';\n\n" +
-    'function kebab(s: string): string {\n' +
-    "  return s.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/[^A-Za-z0-9]+/g, '-').toLowerCase();\n" +
-    '}\n\n' +
-    'const templates = [\n' +
+    TEMPLATE_HELPERS +
+    '\nconst templates = [\n' +
     listBlock(items) +
     '];\n\n' +
     'export default templates;\n'
@@ -78,8 +136,8 @@ function templatesFile(items: readonly string[] | undefined): string {
 
 function pipelinesFile(items: readonly string[] | undefined): string {
   return (
-    "import { definePipeline } from '@shrkcrft/pipelines';\n\n" +
-    'const pipelines = [\n' +
+    PIPELINE_HELPERS +
+    '\nconst pipelines = [\n' +
     listBlock(items) +
     '];\n\n' +
     'export default pipelines;\n'
@@ -88,7 +146,11 @@ function pipelinesFile(items: readonly string[] | undefined): string {
 
 function configFile(preset: IPreset): string {
   // Generic config that points at the standard knowledge/rules/paths/etc.
-  // files. Consumers can tailor it later.
+  // files. Consumers can tailor it later. Plain default-exported object —
+  // the config loader (packages/config/src/config-loader.ts) validates the
+  // shape via zod and accepts an object literal as well as a
+  // `defineSharkCraftConfig()`-wrapped value, so the generated file does
+  // not need to import anything from `@shrkcrft/*`.
   const filesByKind = inferFiles(preset);
   const knowledgeFiles = filesByKind.has('knowledge.ts') ? ['knowledge.ts'] : [];
   const ruleFiles = filesByKind.has('rules.ts') ? ['rules.ts'] : [];
@@ -104,7 +166,8 @@ function configFile(preset: IPreset): string {
     : '';
   return (
     `// Generated by \`shrk presets apply ${preset.id}\`.\n` +
-    '// Edit freely. SharkCraft does not regenerate this file.\n\n' +
+    '// Edit freely. SharkCraft does not regenerate this file.\n' +
+    '// Plain default export — no @shrkcrft/* import required.\n\n' +
     'const config = {\n' +
     `  projectName: 'shrk-project',\n` +
     `  description: ${JSON.stringify(preset.description)},\n` +

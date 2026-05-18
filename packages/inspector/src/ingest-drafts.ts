@@ -368,7 +368,8 @@ function renderRulesDraft(model: IRepositoryKnowledgeModel): string {
   })`);
   }
   return `${header('Rules inferred from repository ingestion.')}
-import { defineRule } from '@shrkcrft/rules';
+// Local helper — keep this file self-contained (no @shrkcrft/* imports).
+function defineRule<T>(rule: T): T { return rule; }
 
 export const ingestedRules = [
 ${entries.join(',\n')}
@@ -386,7 +387,8 @@ function renderPathsDraft(model: IRepositoryKnowledgeModel): string {
     patterns: ${JSON.stringify(p.patterns)},
   })`);
   return `${header('Path conventions inferred from repository ingestion.')}
-import { definePath } from '@shrkcrft/paths';
+// Local helper — keep this file self-contained (no @shrkcrft/* imports).
+function definePath<T>(path: T): T { return path; }
 
 export const ingestedPaths = [
 ${entries.join(',\n')}
@@ -407,7 +409,8 @@ function renderBoundariesDraft(model: IRepositoryKnowledgeModel): string {
     suggestedFix: ${JSON.stringify(b.suggestedFix)},
   })`);
   return `${header('Dependency-boundary rules inferred from repository ingestion.')}
-import { defineBoundary } from '@shrkcrft/boundaries';
+// Local helper — keep this file self-contained (no @shrkcrft/* imports).
+function defineBoundary<T>(rule: T): T { return rule; }
 
 export const ingestedBoundaries = [
 ${entries.join(',\n')}
@@ -425,7 +428,8 @@ function renderConstructsDraft(model: IRepositoryKnowledgeModel): string {
     files: ${JSON.stringify(c.paths)},
   })`);
   return `${header('Constructs inferred from repository ingestion.')}
-import { defineConstruct } from '@shrkcrft/plugin-api';
+// Local helper — keep this file self-contained (no @shrkcrft/* imports).
+function defineConstruct<T>(construct: T): T { return construct; }
 
 export const ingestedConstructs = [
 ${entries.join(',\n')}

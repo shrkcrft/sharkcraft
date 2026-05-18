@@ -59,12 +59,17 @@ describe('r12 construct inference', () => {
     expect(plugin).toBeDefined();
   });
 
-  test('drafts module is valid-looking module text', async () => {
+  test('drafts module is valid-looking self-contained module text', async () => {
     const root = makeFixture();
     const inspection = await inspectSharkcraft({ cwd: root });
     const result = await inferConstructs(inspection);
     const code = renderConstructDraftsModule(result);
-    expect(code).toContain("import { defineConstruct } from '@shrkcrft/plugin-api';");
+    // Generated drafts must be self-contained — no @shrkcrft/* imports
+    // (those packages aren't available in fresh downstream repos until
+    // they're published / installed).
+    expect(code).not.toMatch(/from ['"]@shrkcrft\//);
+    expect(code).not.toMatch(/from ['"]@sharkcraft\//);
+    expect(code).toContain('function defineConstruct');
     expect(code).toContain('export default [');
   });
 });

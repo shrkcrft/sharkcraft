@@ -222,7 +222,8 @@ function renderProposedFilePreview(
     .join('\n');
   if (!existingSource) {
     return [
-      "import { defineConstruct } from '@shrkcrft/plugin-api';",
+      '// Self-contained — no @shrkcrft/* imports required.',
+      'function defineConstruct<T>(construct: T): T { return construct; }',
       '',
       'export default [',
       additionBlock,

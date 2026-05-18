@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/knowledge",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.4",
   "description": "SharkCraft structured knowledge model: typed entries, index, search, loaders (TS + markdown), validation.",
   "license": "MIT",
   "author": "SharkCraft contributors",

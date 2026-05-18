@@ -12,6 +12,7 @@ import { listBuiltInSurfaceProfiles, suggestSurfaceProfile } from '@shrkcrft/ins
 import { INIT_FILES } from '../init/init-templates.ts';
 import { buildDetectedBlock, renderDetectedBlockText } from '../init/detected-block.ts';
 import { ensureSharkcraftGitignore, renderGitignorePatch } from '../init/gitignore.ts';
+import { annotatePathsAgainstDisk, type IPathsAdvisory } from '../init/paths-advisory.ts';
 import { applySurfaceTextEdit } from '../surface/surface-config-writer.ts';
 import { flagBool, flagString, type ICommandHandler, type ParsedArgs, resolveCwd } from '../command-registry.ts';
 import { bullet, header } from '../output/format-output.ts';
@@ -187,6 +188,12 @@ async function applyPresetInit(cwd: string, mode: IInitMode): Promise<number> {
     });
   }
 
+  // Workspace-shape advisory: when the preset emits path conventions
+  // that don't exist in this repo (common with generic presets in
+  // framework-specific repos), annotate paths.ts so the user knows
+  // which defaults to fix.
+  const pathsAdvisory = annotatePathsAgainstDisk(cwd, plan.sharkcraftDir);
+
   process.stdout.write(header('SharkCraft initialized'));
   process.stdout.write(`Preset: ${preset.id} — ${preset.title}\n`);
   process.stdout.write(`Folder: ${plan.sharkcraftDir}\n`);
@@ -223,6 +230,9 @@ async function applyPresetInit(cwd: string, mode: IInitMode): Promise<number> {
       process.stdout.write('\n' + renderGitignorePatch(patch, false));
     }
   }
+  if (pathsAdvisory.annotated) {
+    renderPathsAdvisory(pathsAdvisory);
+  }
   process.stdout.write('\nNext:\n');
   for (const cmd of preset.recommendedNextCommands ?? [
     'shrk doctor',
@@ -234,6 +244,21 @@ async function applyPresetInit(cwd: string, mode: IInitMode): Promise<number> {
     bullet('Start the MCP server: `shrk mcp serve` (or run it via Claude Code)') + '\n',
   );
   return 0;
+}
+
+function renderPathsAdvisory(advisory: IPathsAdvisory): void {
+  process.stdout.write('\n');
+  process.stdout.write(header('Paths advisory'));
+  process.stdout.write(
+    'These preset-default paths do not exist in this repo:\n',
+  );
+  for (const p of advisory.missingPaths) {
+    process.stdout.write(bullet(p) + '\n');
+  }
+  process.stdout.write(
+    '\nEdit sharkcraft/paths.ts to match your real layout. ' +
+      'Run `shrk onboard --dry-run` to see what the engine infers.\n',
+  );
 }
 
 function applyLegacyInit(cwd: string, force: boolean): number {
@@ -268,6 +293,10 @@ function applyLegacyInit(cwd: string, force: boolean): number {
   if (skipped.length) {
     process.stdout.write('\nSkipped (already exist; use --force to overwrite):\n');
     for (const s of skipped) process.stdout.write(bullet(s) + '\n');
+  }
+  const legacyAdvisory = annotatePathsAgainstDisk(cwd, sharkcraftDir);
+  if (legacyAdvisory.annotated) {
+    renderPathsAdvisory(legacyAdvisory);
   }
   process.stdout.write('\nNext:\n');
   process.stdout.write(bullet('Run `shrk inspect` to see your project summary.') + '\n');

@@ -450,7 +450,8 @@ export function renderConstructDraftsModule(
   lines.push(" * SharkCraft does NOT load this file automatically.");
   lines.push(` * Generated: ${result.generatedAt}`);
   lines.push(" */");
-  lines.push("import { defineConstruct } from '@shrkcrft/plugin-api';");
+  lines.push('// Self-contained — no @shrkcrft/* imports required.');
+  lines.push('function defineConstruct<T>(construct: T): T { return construct; }');
   lines.push('');
   lines.push('export default [');
   for (const c of result.candidates) {

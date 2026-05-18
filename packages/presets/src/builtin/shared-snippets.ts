@@ -220,6 +220,7 @@ export const COMMON_PATH_SERVICES = `defineKnowledgeEntry({
     scope: ['app'],
     appliesWhen: ['generate-service'],
     content: 'Service classes live in src/services/. One service per file.',
+    metadata: { path: 'src/services' },
   })`;
 
 export const COMMON_PATH_UTILS = `defineKnowledgeEntry({
@@ -230,6 +231,7 @@ export const COMMON_PATH_UTILS = `defineKnowledgeEntry({
     tags: ['paths', 'utils'],
     appliesWhen: ['generate-utility'],
     content: 'Pure helpers live in src/utils/. One function per file.',
+    metadata: { path: 'src/utils' },
   })`;
 
 export const COMMON_PATH_TESTS = `defineKnowledgeEntry({
@@ -240,6 +242,7 @@ export const COMMON_PATH_TESTS = `defineKnowledgeEntry({
     tags: ['paths', 'tests'],
     appliesWhen: ['generate-test'],
     content: 'Unit tests live under tests/, mirroring src/. Use *.spec.ts.',
+    metadata: { path: 'tests' },
   })`;
 
 export const COMMON_RULE_INTERFACE_PREFIX = `defineKnowledgeEntry({

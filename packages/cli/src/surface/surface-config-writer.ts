@@ -111,10 +111,11 @@ function fileExists(p: string): boolean {
   }
 }
 
-const DEFAULT_CONFIG_BODY = `import { defineSharkCraftConfig } from '@shrkcrft/config';
-
-export default defineSharkCraftConfig({
-});
+// Plain default export — no @shrkcrft/* import required. The config
+// loader (packages/config/src/config-loader.ts) validates by shape, so a
+// literal object works the same as a `defineSharkCraftConfig()` call.
+const DEFAULT_CONFIG_BODY = `export default {
+};
 `;
 
 const SURFACE_BLOCK_REGEX = /(^\s*surface\s*:\s*\{[\s\S]*?\}\s*,?\s*\n)/m;
@@ -160,15 +161,28 @@ export function applySurfaceTextEdit(original: string, surface: ISurfaceConfig):
     return original.replace(SURFACE_BLOCK_REGEX, block);
   }
 
-  // Insert before the closing `})` / `});` of the config object.
-  // Prefer the last `})` so nested objects don't trip us up.
-  const closeRegex = /(\n)(\}\)\s*;?\s*)$/m;
-  if (closeRegex.test(original)) {
-    return original.replace(closeRegex, `\n${block}$2`);
+  // (A) `defineSharkCraftConfig({ ... })` style — insert before the `})`.
+  const closeFn = /(\n)(\}\)\s*;?\s*)$/m;
+  if (closeFn.test(original)) {
+    return original.replace(closeFn, `\n${block}$2`);
   }
 
-  // Fallback: append at end with a defineSharkCraftConfig wrapper.
-  return `${original}\n${DEFAULT_CONFIG_BODY.replace('})', `${block}})`)}`;
+  // (B) `const config = { ... };\nexport default config;` plain style —
+  // insert before the `};` that closes the literal.
+  const closePlain = /(\n)(\};?\s*\nexport\s+default\s+\w+\s*;?\s*\n*)$/m;
+  if (closePlain.test(original)) {
+    return original.replace(closePlain, `\n${block}$2`);
+  }
+
+  // (C) `export default { ... };` direct style — insert before the `};`.
+  const closeDirect = /(\n)(\};?\s*\n*)$/m;
+  if (closeDirect.test(original)) {
+    return original.replace(closeDirect, `\n${block}$2`);
+  }
+
+  // Fallback: append at end with a plain default-exported config (no
+  // `@shrkcrft/*` import required).
+  return `${original}\n${DEFAULT_CONFIG_BODY.replace('};', `${block}};`)}`;
 }
 
 /** Default config file path for a project. */
