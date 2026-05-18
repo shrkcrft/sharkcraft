@@ -47,6 +47,10 @@
       "@shrkcrft/mcp-server": ["./packages/mcp-server/src/index.ts"]
     }
   },
-  "include": ["packages/*/src/**/*.ts", "examples/*/sharkcraft/**/*.ts"],
+  "include": [
+    "packages/*/src/**/*.ts",
+    "examples/*/sharkcraft/**/*.ts",
+    "tools/**/*.ts"
+  ],
   "exclude": ["**/node_modules", "**/dist", "packages/dashboard/**"]
 }
