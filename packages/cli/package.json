@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/cli",
-  "version": "0.1.0-alpha.5",
+  "version": "0.1.0-alpha.6",
   "description": "SharkCraft CLI (`shrk`): structured project intelligence for AI coding agents.",
   "license": "MIT",
   "author": "SharkCraft contributors",

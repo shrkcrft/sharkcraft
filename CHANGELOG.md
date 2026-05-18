@@ -5,6 +5,79 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [0.1.0-alpha.6] — 2026-05-18 — Angular 21 preset family
+
+Six new presets and 24 new rule snippets covering the post-decorators
+era of Angular (18 / 19 / 20 / 21). Signal-based queries, signal-based
+I/O, zoneless change detection, the new template control flow, the
+resource() / httpResource() async APIs, and the inject()-based modern
+DI surface.
+
+### Added
+
+- **`@shrkcrft/presets`** — `angular21-snippets.ts` and
+  `angular21-presets.ts`. Rule snippets cover: signal state /
+  computed / effect / linkedSignal; signal-based `viewChild()` /
+  `viewChildren()` / `contentChild()` / `contentChildren()`;
+  signal inputs (`input()` / `input.required()`); `output()` and
+  `model()`; `provideZonelessChangeDetection()` and the
+  no-NgZone-APIs posture; the new control flow (`@if` / `@for` /
+  `@switch` / `@defer` / `@let`); self-closing tags;
+  `NgOptimizedImage`; `inject()` over constructor DI;
+  `afterRender` / `afterNextRender`; `providedIn: 'root'`;
+  no-NgModules / `bootstrapApplication` + `provideX()` style;
+  `resource()` / `httpResource()`; hybrid rendering;
+  `provideHttpClient(withFetch())`; signal-forms interop via
+  `toSignal()`; signal-input setting in tests via
+  `fixture.componentRef.setInput()`.
+- **Six new presets** (weight 11-12, beats the older `modern-angular`
+  at weight 9 when the workspace declares HasAngular):
+  - `angular-21-signals` — local state + queries + inputs + outputs +
+    `model()` two-way binding.
+  - `angular-21-zoneless` — zoneless CD bootstrap + the
+    no-NgZone-APIs posture + `afterRender` lifecycle.
+  - `angular-21-control-flow` — `@if` / `@for` / `@switch` / `@defer`
+    / `@let`, self-closing tags, `NgOptimizedImage`.
+  - `angular-21-resource` — `resource()` and `httpResource()` as the
+    canonical async primitives, `linkedSignal` for writable derived
+    state.
+  - `angular-21-modern-di` — `inject()` function, `providedIn root`,
+    no new NgModules, `bootstrapApplication()` + `provideX()` family.
+  - `angular-21-modern` — the comprehensive preset that composes all
+    five focused ones. Also pulls in hybrid-rendering and the test
+    rules for signal inputs and zoneless CD.
+- **Tests** — `packages/presets/src/__tests__/angular21-presets.test.ts`
+  asserts: all six presets are registered; the canonical rule for each
+  area is present (e.g. `viewChild` mentioned in the signals preset,
+  `provideZonelessChangeDetection` in the zoneless preset); every
+  emitted .ts is self-contained; `recommendPresets` picks an
+  `angular-21-*` preset when the workspace is Angular.
+
+### Why
+
+The existing `modern-angular` family (alpha.5 and earlier) was written
+when Angular 16/17 was current and predates the signal-query /
+signal-I/O / zoneless / resource API surface. Rather than rewrite it
+in-place and break consumers who pinned to it, the alpha.6 set lives
+alongside as a separate, higher-weighted family. New projects get the
+Angular 21 stack by default; projects pinned to `modern-angular` keep
+their existing behaviour.
+
+### Migration notes
+
+Same as alpha.4 / alpha.5 — no automatic migration. To pick up the new
+presets in an existing repo:
+
+```bash
+shrk init --preset angular-21-modern --dry-run  # preview
+shrk init --preset angular-21-modern --write    # commit if happy
+```
+
+For projects already on a preset preset and willing to switch, the
+generated `sharkcraft/*.ts` files are mergeable — the local-mirror
+preamble means the new and old files have the same exported shape, so
+hand-merging rule arrays works.
+
 ## [0.1.0-alpha.5] — 2026-05-18 — Framework-correct paths for Nx, Angular, Nest, polyglot
 
 Follow-up to alpha.4 that fixes the second half of the benchmark finding:

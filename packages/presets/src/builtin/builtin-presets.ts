@@ -35,6 +35,7 @@ import {
 import { R26_PRESETS } from './r26-presets.ts';
 import { R45_PRESETS } from './r45-presets.ts';
 import { R47_PRESETS } from './r47-presets.ts';
+import { ANGULAR_21_PRESETS } from './angular21-presets.ts';
 
 const GENERIC: IPreset = definePreset({
   id: 'generic',
@@ -597,4 +598,9 @@ export const BUILTIN_PRESETS: readonly IPreset[] = Object.freeze([
   ...R45_PRESETS,
   // Universal adoption top-5: nest-service, angular-app canonical aliases
   ...R47_PRESETS,
+  // Angular 18 / 19 / 20 / 21 — signal queries, signal I/O, zoneless,
+  // @if/@for/@defer/@let, resource() / httpResource(), inject(), no
+  // NgModules. Weight 11-12 so the recommender prefers these over
+  // R26 `modern-angular` (weight 9) when the workspace is Angular.
+  ...ANGULAR_21_PRESETS,
 ]);

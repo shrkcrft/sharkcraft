@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/importer",
-  "version": "0.1.0-alpha.5",
+  "version": "0.1.0-alpha.6",
   "description": "SharkCraft importer: parse AGENTS.md / CLAUDE.md / .cursor/rules into structured knowledge entries.",
   "license": "MIT",
   "author": "SharkCraft contributors",
