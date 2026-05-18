@@ -1,0 +1,51 @@
+{
+  "name": "@shrkcrft/templates",
+  "version": "0.1.0-alpha.2",
+  "description": "SharkCraft templates: typed template definitions, registry, variable validation, rendering.",
+  "license": "MIT",
+  "author": "SharkCraft contributors",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shrkcrft/sharkcraft.git",
+    "directory": "packages/templates"
+  },
+  "homepage": "https://github.com/shrkcrft/sharkcraft",
+  "bugs": {
+    "url": "https://github.com/shrkcrft/sharkcraft/issues"
+  },
+  "keywords": [
+    "sharkcraft",
+    "templates",
+    "generator",
+    "codegen"
+  ],
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@shrkcrft/core": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

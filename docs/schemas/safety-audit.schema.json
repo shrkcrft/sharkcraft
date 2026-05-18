@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/safety-audit.json",
+  "title": "SharkCraft Safety Audit",
+  "type": "object",
+  "required": [
+    "mcp",
+    "commands"
+  ],
+  "properties": {
+    "mcp": {
+      "type": "object",
+      "properties": {
+        "anyWritable": {
+          "type": "boolean"
+        },
+        "tools": {
+          "type": "array"
+        }
+      }
+    },
+    "commands": {
+      "type": "object"
+    },
+    "verifications": {
+      "type": "object"
+    },
+    "packs": {
+      "type": "object"
+    },
+    "planSigning": {
+      "type": "object"
+    },
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

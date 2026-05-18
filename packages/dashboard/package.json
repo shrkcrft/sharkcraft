@@ -1,0 +1,57 @@
+{
+  "name": "@shrkcrft/dashboard",
+  "version": "0.1.0-alpha.2",
+  "description": "SharkCraft local read-only dashboard (React + Vite). Browser bundle that consumes @shrkcrft/dashboard-api over the local dashboard server.",
+  "license": "MIT",
+  "author": "SharkCraft contributors",
+  "type": "module",
+  "main": "./dist/index.html",
+  "exports": {
+    ".": "./dist/index.html",
+    "./dist/*": "./dist/*"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shrkcrft/sharkcraft.git",
+    "directory": "packages/dashboard"
+  },
+  "homepage": "https://github.com/shrkcrft/sharkcraft",
+  "bugs": {
+    "url": "https://github.com/shrkcrft/sharkcraft/issues"
+  },
+  "keywords": [
+    "sharkcraft",
+    "dashboard",
+    "react",
+    "vite"
+  ],
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@shrkcrft/dashboard-api": "workspace:*",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "vite": "^5.4.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

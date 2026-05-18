@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/inferred-template-candidate-v2.json",
+  "title": "SharkCraft Inferred Template Candidate v2",
+  "type": "object",
+  "required": [
+    "schema",
+    "sample"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.inferred-template-candidate/v2"
+    },
+    "sample": {
+      "type": "string"
+    },
+    "matchedPattern": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "templateId": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
+        }
+      }
+    },
+    "scaffold": {
+      "type": "object"
+    },
+    "variables": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "suggestedCommand": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+[project]
+name = "polyglot-python-pytest"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4", "mypy>=1.7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

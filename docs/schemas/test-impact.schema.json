@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/test-impact.json",
+  "title": "SharkCraft Test Impact",
+  "type": "object",
+  "required": [
+    "schema"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.test-impact/v1"
+    },
+    "likelyTestFiles": {
+      "type": "array"
+    },
+    "missingTestFiles": {
+      "type": "array"
+    },
+    "confidence": {
+      "type": "integer"
+    }
+  }
+}

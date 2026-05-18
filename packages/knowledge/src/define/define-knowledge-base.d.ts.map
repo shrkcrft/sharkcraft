@@ -1,0 +1,1 @@
+{"version":3,"file":"define-knowledge-base.d.ts","sourceRoot":"","sources":["define-knowledge-base.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,wBAAwB,EAAE,MAAM,4BAA4B,CAAC;AAC3E,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,6BAA6B,CAAC;AAEnE,wBAAgB,mBAAmB,CAAC,KAAK,EAAE;IACzC,IAAI,CAAC,EAAE,MAAM,CAAC;IACd,OAAO,EAAE,SAAS,eAAe,EAAE,CAAC;CACrC,GAAG,wBAAwB,CAE3B"}

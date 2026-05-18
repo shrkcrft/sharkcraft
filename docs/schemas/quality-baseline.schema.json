@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/quality-baseline.json",
+  "title": "SharkCraft Quality Baseline",
+  "type": "object",
+  "required": [
+    "schema",
+    "createdAt",
+    "qualityScore"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.quality-baseline/v1"
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "qualityScore": {
+      "type": "number"
+    },
+    "blockers": {
+      "type": "integer"
+    },
+    "warnings": {
+      "type": "integer"
+    },
+    "gates": {
+      "type": "array"
+    }
+  }
+}

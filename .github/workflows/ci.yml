@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    name: ${{ matrix.os }} / bun ${{ matrix.bun }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        bun: [latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Bun (${{ matrix.bun }})
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: ${{ matrix.bun }}
+
+      - name: Show versions
+        run: |
+          bun --version
+          node --version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck (whole repo)
+        run: bun x tsc -p tsconfig.base.json --noEmit
+
+      - name: Per-package typecheck (build script)
+        run: bun run build
+
+      - name: Lint (presence checks)
+        run: bun run lint
+
+      - name: Bun tests
+        run: bun test
+
+      - name: Build dist
+        run: bun run build:dist
+
+      - name: Publish dry-run
+        run: bun run publish:dry-run
+
+      - name: Release readiness check
+        run: bun run release:check

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/repo-memory.json",
+  "title": "SharkCraft Repository Memory Index",
+  "type": "object",
+  "required": [
+    "schema",
+    "projectRoot",
+    "sourceCount"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.memory/v1"
+    },
+    "projectRoot": {
+      "type": "string"
+    },
+    "sourceCount": {
+      "type": "integer"
+    },
+    "files": {
+      "type": "array"
+    },
+    "diagnostics": {
+      "type": "array"
+    }
+  }
+}

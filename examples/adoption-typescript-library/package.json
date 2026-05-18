@@ -1,0 +1,15 @@
+{
+  "name": "adoption-typescript-library",
+  "version": "0.1.0",
+  "description": "R47 adoption fixture — generic TypeScript library.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

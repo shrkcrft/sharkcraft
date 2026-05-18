@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/dashboard-session-response.json",
+  "title": "SharkCraft Dashboard Session Response",
+  "type": "object",
+  "required": [
+    "available",
+    "sessionId",
+    "artifacts",
+    "commandHints"
+  ],
+  "properties": {
+    "available": {
+      "type": "boolean"
+    },
+    "sessionId": {
+      "type": "string"
+    },
+    "task": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "startedAt": {
+      "type": "string"
+    },
+    "endedAt": {
+      "type": "string"
+    },
+    "artifacts": {
+      "type": "array"
+    },
+    "plans": {
+      "type": "array"
+    },
+    "reports": {
+      "type": "array"
+    },
+    "commandHints": {
+      "type": "array"
+    }
+  }
+}

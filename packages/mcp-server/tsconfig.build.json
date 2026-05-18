@@ -1,0 +1,59 @@
+{
+  "extends": "../../tsconfig.publish.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "baseUrl": ".",
+    "paths": {
+      "@shrkcrft/core": [
+        "../core/dist/index.d.ts"
+      ],
+      "@shrkcrft/config": [
+        "../config/dist/index.d.ts"
+      ],
+      "@shrkcrft/workspace": [
+        "../workspace/dist/index.d.ts"
+      ],
+      "@shrkcrft/knowledge": [
+        "../knowledge/dist/index.d.ts"
+      ],
+      "@shrkcrft/context": [
+        "../context/dist/index.d.ts"
+      ],
+      "@shrkcrft/rules": [
+        "../rules/dist/index.d.ts"
+      ],
+      "@shrkcrft/paths": [
+        "../paths/dist/index.d.ts"
+      ],
+      "@shrkcrft/templates": [
+        "../templates/dist/index.d.ts"
+      ],
+      "@shrkcrft/pipelines": [
+        "../pipelines/dist/index.d.ts"
+      ],
+      "@shrkcrft/presets": [
+        "../presets/dist/index.d.ts"
+      ],
+      "@shrkcrft/boundaries": [
+        "../boundaries/dist/index.d.ts"
+      ],
+      "@shrkcrft/packs": [
+        "../packs/dist/index.d.ts"
+      ],
+      "@shrkcrft/generator": [
+        "../generator/dist/index.d.ts"
+      ],
+      "@shrkcrft/inspector": [
+        "../inspector/dist/index.d.ts"
+      ]
+    },
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/__tests__/**/*"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/import-graph-analysis.json",
+  "title": "SharkCraft Import Graph Analysis",
+  "type": "object",
+  "required": [
+    "schema"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.import-graph-analysis/v1"
+    },
+    "cycles": {
+      "type": "array"
+    },
+    "topFanIn": {
+      "type": "array"
+    },
+    "topFanOut": {
+      "type": "array"
+    },
+    "orphans": {
+      "type": "array"
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/quality-report.json",
+  "title": "SharkCraft Quality Report",
+  "type": "object",
+  "required": [
+    "overall",
+    "gates",
+    "score"
+  ],
+  "properties": {
+    "overall": {
+      "enum": [
+        "pass",
+        "warn",
+        "fail"
+      ]
+    },
+    "blockers": {
+      "type": "integer"
+    },
+    "warnings": {
+      "type": "integer"
+    },
+    "score": {
+      "type": "integer"
+    },
+    "gates": {
+      "type": "array"
+    },
+    "drift": {
+      "type": "object"
+    },
+    "note": {
+      "type": "string"
+    },
+    "nextCommand": {
+      "type": "string"
+    },
+    "nextRecommendations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

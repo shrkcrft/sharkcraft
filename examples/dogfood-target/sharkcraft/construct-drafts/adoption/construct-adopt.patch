@@ -1,0 +1,19 @@
+# SharkCraft construct adoption pseudo-patch
+# Generated: 2026-05-13T20:42:49.332Z
+# Apply manually — SharkCraft never writes constructs.ts.
+
+## low-confidence
+### service.apply-test
++ Add construct: service.apply-test (service)
++   files: src/services/apply-test.service.ts
+
+### service.signed-demo
++ Add construct: service.signed-demo (service)
++   files: src/services/signed-demo.service.ts
+
+### service.user
++ Add construct: service.user (service)
++   files: src/services/user.service.ts
++   publicApi: src/services/user.service.ts
+
+

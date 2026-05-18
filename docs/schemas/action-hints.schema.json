@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/action-hints.json",
+  "title": "SharkCraft Action Hints",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "when": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "mcpTools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "tool"
+        ],
+        "properties": {
+          "tool": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "when": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "preferredFlow": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "forbiddenActions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "relatedTemplates": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "relatedPathConventions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "relatedKnowledge": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verificationCommands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "safetyNotes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "requiresHumanReview": {
+      "type": "boolean"
+    },
+    "writePolicy": {
+      "enum": [
+        "cli-only",
+        "mcp-allowed",
+        "none"
+      ]
+    }
+  }
+}

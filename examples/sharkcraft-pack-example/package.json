@@ -1,0 +1,17 @@
+{
+  "name": "@example/sharkcraft-pack-example",
+  "version": "0.1.0",
+  "description": "Example SharkCraft pack — shows the manifest shape and bundled assets (knowledge, rules, templates, pipelines).",
+  "private": true,
+  "type": "module",
+  "main": "./src/sharkcraft.plugin.ts",
+  "sharkcraft": {
+    "manifest": "./src/sharkcraft.plugin.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@shrkcrft/plugin-api": "workspace:*"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/dashboard-api-envelope.json",
+  "title": "SharkCraft Dashboard API Envelope",
+  "type": "object",
+  "required": [
+    "schema",
+    "generatedAt",
+    "projectRoot",
+    "data"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.dashboard-api/v1"
+    },
+    "generatedAt": {
+      "type": "string"
+    },
+    "projectRoot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commandHints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "available": {
+      "type": "boolean"
+    },
+    "apiVersion": {
+      "type": "string"
+    },
+    "data": {}
+  }
+}

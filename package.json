@@ -1,0 +1,72 @@
+{
+  "name": "sharkcraft",
+  "version": "0.1.0-alpha.2",
+  "private": true,
+  "description": "SharkCraft — universal AI-ready developer intelligence system (Bun-native).",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shrkcrft/sharkcraft.git"
+  },
+  "homepage": "https://github.com/shrkcrft/sharkcraft#readme",
+  "bugs": {
+    "url": "https://github.com/shrkcrft/sharkcraft/issues"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "developer-intelligence",
+    "code-generation",
+    "deterministic",
+    "monorepo",
+    "bun",
+    "cli",
+    "mcp"
+  ],
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "build:dist": "bun run scripts/build-dist.ts",
+    "publish:dry-run": "bun run scripts/publish-dry-run.ts",
+    "publish:packages": "bun run scripts/publish-packages.ts",
+    "release:check": "bun run scripts/check-publish-readiness.ts",
+    "release:dry-run": "bun run scripts/release-dry-run.ts",
+    "release:smoke-test": "bun run scripts/install-smoke-test.ts",
+    "release:preflight": "bun run scripts/release-preflight.ts",
+    "audit:doctor-json": "bun run scripts/audit-doctor-json.ts",
+    "bump-versions": "bun run scripts/bump-versions.ts",
+    "typecheck": "tsc -p tsconfig.base.json --noEmit",
+    "test": "bun test",
+    "lint": "bun run scripts/lint.ts",
+    "format": "bun run scripts/format.ts",
+    "dev": "bun run packages/cli/src/main.ts",
+    "shrk": "bun run packages/cli/src/main.ts",
+    "mcp": "bun run packages/mcp-server/src/main.ts",
+    "clean": "bun run scripts/clean.ts",
+    "compat:node": "bun run scripts/compat-node.ts",
+    "compat:node:cli": "bun run scripts/compat-node.ts --runtime --cli",
+    "compat:node:mcp": "bun run scripts/compat-node.ts --runtime --mcp",
+    "compat:node:runtime": "bun run scripts/compat-node.ts --runtime --build",
+    "dashboard:dev": "cd packages/dashboard && bun x vite",
+    "dashboard:build": "cd packages/dashboard && bun x vite build",
+    "dashboard:preview": "cd packages/dashboard && bun x vite preview",
+    "test:e2e": "bun x playwright test",
+    "test:e2e:dashboard": "bun x playwright test",
+    "test:e2e:dashboard:headed": "bun x playwright test --headed",
+    "test:e2e:dashboard:debug": "bun x playwright test --debug",
+    "e2e:install": "bun x playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.60.0",
+    "@types/bun": "latest",
+    "@types/node": "^22",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

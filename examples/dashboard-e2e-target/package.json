@@ -1,0 +1,7 @@
+{
+  "name": "@example/dashboard-e2e-target",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic fixture project for SharkCraft dashboard Playwright E2E tests. Intentionally minimal — adds just enough state to render every dashboard page.",
+  "type": "module"
+}

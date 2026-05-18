@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/dev-session-state.json",
+  "title": "SharkCraft Dev Session State",
+  "type": "object",
+  "required": [
+    "schema",
+    "id",
+    "task",
+    "phase"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.dev-session/v1"
+    },
+    "id": {
+      "type": "string"
+    },
+    "task": {
+      "type": "string"
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "updatedAt": {
+      "type": "string"
+    },
+    "phase": {
+      "type": "string"
+    },
+    "projectRoot": {
+      "type": "string"
+    },
+    "selectedPipeline": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "selectedTemplates": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "plans": {
+      "type": "array"
+    },
+    "reports": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "validations": {
+      "type": "array"
+    },
+    "appliedPlans": {
+      "type": "array"
+    },
+    "nextAction": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

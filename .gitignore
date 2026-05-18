@@ -1,0 +1,36 @@
+node_modules
+dist
+build
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+bun.lockb
+.bun
+*.tsbuildinfo
+coverage
+.nyc_output
+.turbo
+.cache
+.idea
+.vscode/*
+!.vscode/settings.json
+test-results/
+playwright-report/
+.playwright/
+
+# Nx daemon cache
+.nx/
+
+# Inspector runtime workspace state (auto-managed, never commit)
+.sharkcraft/
+**/.sharkcraft/
+!sharkcraft/
+
+# Generated quality / coverage HTML reports
+quality.html
+*-report.html
+
+# Smoke-test scratch files
+.tmp-*

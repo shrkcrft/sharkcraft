@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/agent-contract.json",
+  "title": "SharkCraft Agent Contract",
+  "type": "object",
+  "required": [
+    "schema",
+    "task",
+    "role",
+    "mode"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.agent-contract/v1"
+    },
+    "task": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "allowedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "forbiddenFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowedCommands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "forbiddenCommands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "requiredValidations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "requiredReviews": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "requiredPlanReviews": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "humanApprovalGates": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rollbackPlan": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "definitionOfDone": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@example/ingest-angular-modern",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@angular/core": "^17.0.0",
+    "@angular/common": "^17.0.0",
+    "rxjs": "^7.8.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  }
+}

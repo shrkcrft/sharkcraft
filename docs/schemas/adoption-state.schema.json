@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/adoption-state.json",
+  "title": "SharkCraft Adoption State",
+  "type": "object",
+  "required": [
+    "schema",
+    "projectRoot",
+    "createdAt",
+    "updatedAt",
+    "patchPath"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.adoption-state/v1"
+    },
+    "projectRoot": {
+      "type": "string"
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "updatedAt": {
+      "type": "string"
+    },
+    "sharkcraftVersion": {
+      "type": "string"
+    },
+    "command": {
+      "type": "string"
+    },
+    "sourceDraftFiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "relativePath",
+          "hash"
+        ],
+        "properties": {
+          "relativePath": {
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "targetFiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "relativePath",
+          "hash"
+        ],
+        "properties": {
+          "relativePath": {
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "generatedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "patchPath": {
+      "type": "string"
+    },
+    "summaryPath": {
+      "type": "string"
+    },
+    "reportPath": {
+      "type": "string"
+    },
+    "diffFormat": {
+      "enum": [
+        "pseudo",
+        "unified"
+      ]
+    },
+    "confidenceThreshold": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
+    },
+    "includedKinds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "excludedKinds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "categories": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown"
+          ]
+        },
+        "staleReasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "nextCommands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

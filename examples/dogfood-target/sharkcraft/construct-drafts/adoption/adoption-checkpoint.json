@@ -1,0 +1,13 @@
+{
+  "schema": "sharkcraft.adoption-checkpoint/v1",
+  "kind": "construct",
+  "generatedAt": "2026-05-13T23:42:54.894Z",
+  "command": "shrk constructs adopt diff --record-checkpoint",
+  "diffHash": "1aa241943ea08b9e359a92f286367049080867b10d438531f9d1e42b465926db",
+  "targetHashes": {
+    "sharkcraft/constructs.ts": "0979e556e730909d08ec9b4893d89fcb89b0e1fca206f6abe609233fd53d9bad"
+  },
+  "draftHashes": {
+    "sharkcraft/construct-drafts/constructs.draft.ts": "b036e1b89343ee7e525536b1256a5e78f73d2a96165f2c2298140265d0e69f51"
+  }
+}

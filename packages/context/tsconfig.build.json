@@ -1,0 +1,32 @@
+{
+  "extends": "../../tsconfig.publish.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "baseUrl": ".",
+    "paths": {
+      "@shrkcrft/core": [
+        "../core/dist/index.d.ts"
+      ],
+      "@shrkcrft/knowledge": [
+        "../knowledge/dist/index.d.ts"
+      ],
+      "@shrkcrft/rules": [
+        "../rules/dist/index.d.ts"
+      ],
+      "@shrkcrft/paths": [
+        "../paths/dist/index.d.ts"
+      ],
+      "@shrkcrft/templates": [
+        "../templates/dist/index.d.ts"
+      ]
+    },
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/__tests__/**/*"
+  ]
+}

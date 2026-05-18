@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/area-map.json",
+  "title": "SharkCraft Repository Area Map",
+  "type": "object",
+  "required": [
+    "schema",
+    "projectRoot",
+    "areas"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.area-map/v1"
+    },
+    "projectRoot": {
+      "type": "string"
+    },
+    "areas": {
+      "type": "array"
+    },
+    "unclassifiedFiles": {
+      "type": "integer"
+    }
+  }
+}

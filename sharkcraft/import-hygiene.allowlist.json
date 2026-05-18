@@ -1,0 +1,76 @@
+{
+  "$schema": "sharkcraft.import-hygiene-allowlist/v1",
+  "comment": "R36 — Allowlist for legitimate dynamic imports. Each entry must carry a reason. The checker downgrades these from warning to info.",
+  "allow": [
+    {
+      "path": "packages/cli/src/commands/context.command.ts",
+      "kind": "dynamic-import",
+      "reason": "CLI subcommand lazy-load — context build/refresh/status modules are only used when those subcommands fire."
+    },
+    {
+      "path": "packages/cli/src/commands/ci.command.ts",
+      "kind": "dynamic-import",
+      "reason": "CLI subcommand lazy-load — ci predict and would-fail modules only loaded when their subcommand fires."
+    },
+    {
+      "path": "packages/cli/src/commands/check.command.ts",
+      "kind": "dynamic-import",
+      "reason": "CLI subcommand lazy-load — registry-lifecycle is a rarely-used sibling check."
+    },
+    {
+      "path": "packages/cli/src/commands/apply.command.ts",
+      "kind": "dynamic-import",
+      "reason": "Contract gate path is only used when --contract is passed."
+    },
+    {
+      "path": "packages/mcp-server/src/server/create-mcp-server.ts",
+      "kind": "dynamic-import",
+      "reason": "Watcher + HTTP transport are optional MCP runtime features that should not be eagerly loaded for the stdio default path."
+    },
+    {
+      "path": "packages/inspector/src/dashboard-export.ts",
+      "kind": "dynamic-import",
+      "reason": "Language profile detection is heavy and only needed for the export subcommand."
+    },
+    {
+      "path": "packages/inspector/src/repository-map.ts",
+      "kind": "dynamic-import",
+      "reason": "Language profile detection is heavy and only needed for repository map builders."
+    },
+    {
+      "path": "packages/inspector/src/policy-engine.ts",
+      "kind": "dynamic-import",
+      "reason": "Feature-bundle reader is only loaded for bundle-aware policy evaluation paths."
+    },
+    {
+      "path": "packages/inspector/src/agent-handoff.ts",
+      "kind": "dynamic-import",
+      "reason": "Contract hash computation only fires when --include-contract is passed; keeps the default handoff path light."
+    },
+    {
+      "path": "packages/inspector/src/fix-preview.ts",
+      "kind": "dynamic-import",
+      "reason": "Heavy doctors (self-config doctor + pack contributions inventory) only run when the user requested the corresponding fix kind."
+    },
+    {
+      "path": "packages/inspector/src/self-config-doctor.ts",
+      "kind": "dynamic-import",
+      "reason": "Search-tuning + test-runner loaders only fire for the corresponding doctor check passes; lazy avoids paying their cost in the unrelated paths."
+    },
+    {
+      "path": "packages/inspector/src/registration-hint-registry.ts",
+      "kind": "dynamic-import",
+      "reason": "node:fs lazy-loaded inside an async glob resolver to keep the module's synchronous load path side-effect-free."
+    },
+    {
+      "path": "packages/inspector/src/plan-simulation.ts",
+      "kind": "dynamic-import",
+      "reason": "Plugin lifecycle profile registry only matters when plan-simulation runs against a plugin lifecycle plan."
+    },
+    {
+      "path": "packages/inspector/src/ingest-apply.ts",
+      "kind": "dynamic-import",
+      "reason": "Ingest body extractor is heavy and only loaded inside the ingest-apply path."
+    }
+  ]
+}

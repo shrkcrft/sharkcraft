@@ -1,0 +1,109 @@
+{
+  "schema": "sharkcraft.quality-baseline/v1",
+  "createdAt": "2026-05-13T07:30:10.739Z",
+  "projectRoot": "/Users/varadibence/IdeaProjects/SharkCraft-monorepo/examples/dogfood-target",
+  "sharkcraftVersion": "0.1.0-alpha.2",
+  "configHash": "6f6e9b3b86744c81",
+  "qualityScore": 88,
+  "readinessScore": 71,
+  "blockers": 0,
+  "warnings": 1,
+  "gates": [
+    {
+      "id": "doctor",
+      "passed": true,
+      "errors": 0,
+      "warnings": 10
+    },
+    {
+      "id": "readiness",
+      "passed": true,
+      "errors": 0,
+      "warnings": 0
+    },
+    {
+      "id": "boundaries",
+      "passed": true,
+      "errors": 0,
+      "warnings": 0
+    },
+    {
+      "id": "coverage",
+      "passed": false,
+      "errors": 0,
+      "warnings": 0
+    },
+    {
+      "id": "drift",
+      "passed": true,
+      "errors": 0,
+      "warnings": 0
+    },
+    {
+      "id": "context-tests",
+      "passed": true,
+      "errors": 0,
+      "warnings": 0
+    },
+    {
+      "id": "agent-tests",
+      "passed": true,
+      "errors": 0,
+      "warnings": 0
+    },
+    {
+      "id": "packs",
+      "passed": true,
+      "errors": 0,
+      "warnings": 0
+    }
+  ],
+  "categoryScores": [
+    {
+      "id": "coverage:template-descriptions",
+      "score": 100
+    },
+    {
+      "id": "coverage:template-related",
+      "score": 60
+    },
+    {
+      "id": "coverage:hint-coverage",
+      "score": 7
+    },
+    {
+      "id": "coverage:pipeline-step-refs",
+      "score": 0
+    },
+    {
+      "id": "coverage:preset-references",
+      "score": 100
+    },
+    {
+      "id": "coverage:boundary-fixes",
+      "score": 100
+    },
+    {
+      "id": "coverage:pack-docs",
+      "score": 100
+    },
+    {
+      "id": "coverage:overall",
+      "score": 67
+    },
+    {
+      "id": "readiness:overall",
+      "score": 71
+    }
+  ],
+  "driftFindings": 0,
+  "driftErrors": 0,
+  "driftWarnings": 0,
+  "packSignatures": {
+    "total": 1,
+    "verified": 0,
+    "unverified": 0,
+    "invalid": 0,
+    "notChecked": 1
+  }
+}

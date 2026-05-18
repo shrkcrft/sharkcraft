@@ -1,0 +1,13 @@
+{
+  "name": "@example/angular-style-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@shrkcrft/config": "workspace:*",
+    "@shrkcrft/knowledge": "workspace:*",
+    "@shrkcrft/rules": "workspace:*",
+    "@shrkcrft/paths": "workspace:*",
+    "@shrkcrft/templates": "workspace:*"
+  }
+}

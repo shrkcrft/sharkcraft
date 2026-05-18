@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/pack-manifest.json",
+  "title": "SharkCraft Pack Manifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "info",
+    "contributions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.pack/v1"
+    },
+    "info": {
+      "type": "object",
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        }
+      }
+    },
+    "contributions": {
+      "type": "object",
+      "properties": {
+        "knowledgeFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ruleFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pathFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "templateFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pipelineFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "docsFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "postInstallNotes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "adoption-nx-monorepo",
+  "version": "0.1.0",
+  "description": "R47 adoption fixture — Nx monorepo (no real Nx workspace, just markers).",
+  "workspaces": ["apps/*", "libs/*"],
+  "scripts": {
+    "build": "nx run-many -t build",
+    "test": "nx run-many -t test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "nx": "^18.0.0",
+    "typescript": "^5.0.0"
+  }
+}

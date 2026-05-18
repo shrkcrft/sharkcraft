@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/impact-analysis.json",
+  "title": "SharkCraft Impact Analysis",
+  "type": "object",
+  "required": [
+    "schema",
+    "task"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.impact-analysis/v1"
+    },
+    "task": {
+      "type": "string"
+    },
+    "risk": {
+      "type": "string"
+    },
+    "affectedFiles": {
+      "type": "array"
+    },
+    "affectedAreas": {
+      "type": "array"
+    }
+  }
+}

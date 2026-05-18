@@ -1,0 +1,49 @@
+{
+  "name": "@shrkcrft/plugin-api",
+  "version": "0.1.0-alpha.2",
+  "description": "SharkCraft plugin API: extension points for commands, knowledge, templates, MCP tools.",
+  "license": "MIT",
+  "author": "SharkCraft contributors",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shrkcrft/sharkcraft.git",
+    "directory": "packages/plugin-api"
+  },
+  "homepage": "https://github.com/shrkcrft/sharkcraft",
+  "bugs": {
+    "url": "https://github.com/shrkcrft/sharkcraft/issues"
+  },
+  "keywords": [
+    "sharkcraft",
+    "plugin-api"
+  ],
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@shrkcrft/core": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

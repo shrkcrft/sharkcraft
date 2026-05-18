@@ -1,0 +1,52 @@
+{
+  "name": "@shrkcrft/presets",
+  "version": "0.1.0-alpha.2",
+  "description": "SharkCraft presets: reusable project setups (knowledge/rules/paths/templates/pipelines/docs) that can be applied to a target repo through the CLI.",
+  "license": "MIT",
+  "author": "SharkCraft contributors",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shrkcrft/sharkcraft.git",
+    "directory": "packages/presets"
+  },
+  "homepage": "https://github.com/shrkcrft/sharkcraft",
+  "bugs": {
+    "url": "https://github.com/shrkcrft/sharkcraft/issues"
+  },
+  "keywords": [
+    "sharkcraft",
+    "presets",
+    "ai-agent"
+  ],
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@shrkcrft/core": "workspace:*",
+    "@shrkcrft/knowledge": "workspace:*",
+    "@shrkcrft/workspace": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

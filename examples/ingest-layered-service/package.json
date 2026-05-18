@@ -1,0 +1,10 @@
+{
+  "name": "@example/ingest-layered-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/api/server.ts",
+    "test": "vitest run"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/pack-compatibility.json",
+  "title": "SharkCraft Pack Compatibility",
+  "type": "object",
+  "required": [
+    "schema",
+    "packageName",
+    "overall"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.pack-compatibility/v1"
+    },
+    "packageName": {
+      "type": "string"
+    },
+    "overall": {
+      "type": "string"
+    },
+    "hits": {
+      "type": "array"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/healing-plan.json",
+  "title": "SharkCraft Healing Plan",
+  "type": "object",
+  "required": [
+    "schema",
+    "inputKind",
+    "confidence",
+    "recommendedCommands"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.healing-plan/v1"
+    },
+    "inputKind": {
+      "type": "string"
+    },
+    "confidence": {
+      "type": "string"
+    },
+    "recommendedCommands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "safeRecoverySteps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "forbiddenQuickFixes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

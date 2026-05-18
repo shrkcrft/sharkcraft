@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://shrkcrft.dev/schemas/review-packet-v2.json",
+  "title": "SharkCraft Review Packet v2",
+  "type": "object",
+  "required": [
+    "schema",
+    "base",
+    "impact"
+  ],
+  "properties": {
+    "schema": {
+      "const": "sharkcraft.review-packet-v2/v1"
+    },
+    "base": {
+      "type": "object"
+    },
+    "impact": {
+      "type": "object"
+    },
+    "testImpact": {
+      "type": "object"
+    },
+    "ownership": {
+      "type": "object"
+    },
+    "policy": {
+      "type": "object"
+    },
+    "riskScore": {
+      "type": "integer"
+    }
+  }
+}

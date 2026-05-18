@@ -1,0 +1,66 @@
+{
+  "name": "@shrkcrft/inspector",
+  "version": "0.1.0-alpha.2",
+  "description": "SharkCraft inspector: project overview, doctor checks, AI-agent instructions.",
+  "license": "MIT",
+  "author": "SharkCraft contributors",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shrkcrft/sharkcraft.git",
+    "directory": "packages/inspector"
+  },
+  "homepage": "https://github.com/shrkcrft/sharkcraft",
+  "bugs": {
+    "url": "https://github.com/shrkcrft/sharkcraft/issues"
+  },
+  "keywords": [
+    "sharkcraft",
+    "inspector",
+    "doctor"
+  ],
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@shrkcrft/core": "workspace:*",
+    "@shrkcrft/config": "workspace:*",
+    "@shrkcrft/workspace": "workspace:*",
+    "@shrkcrft/knowledge": "workspace:*",
+    "@shrkcrft/rules": "workspace:*",
+    "@shrkcrft/paths": "workspace:*",
+    "@shrkcrft/templates": "workspace:*",
+    "@shrkcrft/context": "workspace:*",
+    "@shrkcrft/pipelines": "workspace:*",
+    "@shrkcrft/packs": "workspace:*",
+    "@shrkcrft/presets": "workspace:*",
+    "@shrkcrft/boundaries": "workspace:*",
+    "@shrkcrft/generator": "workspace:*",
+    "@shrkcrft/importer": "workspace:*",
+    "@shrkcrft/plugin-api": "workspace:*",
+    "@shrkcrft/dashboard-api": "workspace:*",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
