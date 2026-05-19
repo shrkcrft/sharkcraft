@@ -1,6 +1,6 @@
 {
   "name": "shrk",
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-alpha.7",
   "description": "Unscoped install path for the SharkCraft CLI. `npx shrk@alpha <cmd>` forwards to @shrkcrft/cli.",
   "license": "MIT",
   "author": "SharkCraft contributors",

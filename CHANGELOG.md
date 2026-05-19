@@ -5,18 +5,13 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
-## [Unreleased / 0.1.0-alpha.7 — staged, not yet published] — NestJS 11+ and React 19+ preset families
+## [0.1.0-alpha.7] — 2026-05-19 — NestJS 11+ and React 19+ preset families
 
 Seventeen new presets and 70+ new rule snippets across two stacks —
 the modern NestJS service surface (Nest 11+) and the modern React app
 surface (React 19+). Both mirror the alpha.6 Angular 21 family in
 shape: focused presets each owning one slice, plus a comprehensive
 preset that composes them.
-
-**Staged but not published** — the new code is in the workspace; npm
-still serves alpha.6. Run `bun run scripts/bump-versions.ts 0.1.0-alpha.7 --write`
-followed by `bun run publish:packages --tag alpha --yes` when you're
-ready to ship.
 
 ### Added — React 19+ family
 
