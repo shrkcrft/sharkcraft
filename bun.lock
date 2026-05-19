@@ -174,7 +174,7 @@
     },
     "packages/ai": {
       "name": "@shrkcrft/ai",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/context": "workspace:*",
         "@shrkcrft/core": "workspace:*",
@@ -182,14 +182,14 @@
     },
     "packages/boundaries": {
       "name": "@shrkcrft/boundaries",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/cli": {
       "name": "@shrkcrft/cli",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "bin": {
         "shrk": "./dist/main.js",
       },
@@ -217,7 +217,7 @@
     },
     "packages/config": {
       "name": "@shrkcrft/config",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "zod": "^3.25.0 || ^4.0.0",
@@ -225,7 +225,7 @@
     },
     "packages/context": {
       "name": "@shrkcrft/context",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -236,14 +236,14 @@
     },
     "packages/core": {
       "name": "@shrkcrft/core",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "jiti": "^2.7.0",
       },
     },
     "packages/dashboard": {
       "name": "@shrkcrft/dashboard",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/dashboard-api": "workspace:*",
         "react": "^18.3.0",
@@ -258,11 +258,11 @@
     },
     "packages/dashboard-api": {
       "name": "@shrkcrft/dashboard-api",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
     },
     "packages/generator": {
       "name": "@shrkcrft/generator",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/paths": "workspace:*",
@@ -272,7 +272,7 @@
     },
     "packages/importer": {
       "name": "@shrkcrft/importer",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -280,7 +280,7 @@
     },
     "packages/inspector": {
       "name": "@shrkcrft/inspector",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/config": "workspace:*",
@@ -303,14 +303,14 @@
     },
     "packages/knowledge": {
       "name": "@shrkcrft/knowledge",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/mcp-server": {
       "name": "@shrkcrft/mcp-server",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.0.0",
         "@shrkcrft/boundaries": "workspace:*",
@@ -332,7 +332,7 @@
     },
     "packages/packs": {
       "name": "@shrkcrft/packs",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/plugin-api": "workspace:*",
@@ -340,7 +340,7 @@
     },
     "packages/paths": {
       "name": "@shrkcrft/paths",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -348,21 +348,21 @@
     },
     "packages/pipelines": {
       "name": "@shrkcrft/pipelines",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/plugin-api": {
       "name": "@shrkcrft/plugin-api",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/presets": {
       "name": "@shrkcrft/presets",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -371,7 +371,7 @@
     },
     "packages/rules": {
       "name": "@shrkcrft/rules",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -379,28 +379,18 @@
     },
     "packages/shared": {
       "name": "@shrkcrft/shared",
-      "version": "0.1.0-alpha.6",
-    },
-    "packages/shrk": {
-      "name": "shrk",
-      "version": "0.1.0-alpha.6",
-      "bin": {
-        "shrk": "./src/bin.ts",
-      },
-      "dependencies": {
-        "@shrkcrft/cli": "workspace:*",
-      },
+      "version": "0.1.0-alpha.7",
     },
     "packages/templates": {
       "name": "@shrkcrft/templates",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/workspace": {
       "name": "@shrkcrft/workspace",
-      "version": "0.1.0-alpha.6",
+      "version": "0.1.0-alpha.7",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
@@ -1532,8 +1522,6 @@
     "shebang-command": ["shebang-command@2.0.0", "", { "dependencies": { "shebang-regex": "^3.0.0" } }, "sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA=="],
 
     "shebang-regex": ["shebang-regex@3.0.0", "", {}, "sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A=="],
-
-    "shrk": ["shrk@workspace:packages/shrk"],
 
     "side-channel": ["side-channel@1.1.0", "", { "dependencies": { "es-errors": "^1.3.0", "object-inspect": "^1.13.3", "side-channel-list": "^1.0.0", "side-channel-map": "^1.0.1", "side-channel-weakmap": "^1.0.2" } }, "sha512-ZX99e6tRweoUXqR+VBrslhda51Nh5MTQwou5tnUDgbtyM0dBgmhEDtWGP/xbKn6hqfPRHujUNwz5fy/wbbhnpw=="],
 
