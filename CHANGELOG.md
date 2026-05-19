@@ -143,6 +143,24 @@ preset that composes them.
   families). Bumped the per-test timeout to 30s so the test doesn't
   flake under full-suite contention.
 
+### Removed
+
+- **Unscoped `shrk` wrapper package.** The repo previously shipped a
+  `packages/shrk/` thin forwarder so users could type
+  `npx shrk@alpha init` instead of `npx @shrkcrft/cli@alpha init`. The
+  unscoped name was blocked by npm's anti-typosquatting check on
+  first publish (too similar to `shx`, `sharp`, `swr`, etc.) and the
+  wrapper added no functional surface — `@shrkcrft/cli` already
+  declares `bin: { shrk: "./dist/main.js" }`, so once the scoped
+  package is installed, the `shrk` binary is on PATH from it directly.
+  Canonical install commands are now:
+  ```bash
+  npx @shrkcrft/cli@alpha init     # one-shot
+  npm install @shrkcrft/cli@alpha  # then `shrk` on PATH (or via npx --no-install shrk)
+  ```
+  The 22 scoped packages are unchanged and contain all the
+  functionality. README + docs updated accordingly.
+
 ### Why
 
 Same logic as alpha.6's Angular 21 family. The legacy presets predate
