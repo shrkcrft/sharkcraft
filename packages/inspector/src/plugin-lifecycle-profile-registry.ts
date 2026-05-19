@@ -7,12 +7,12 @@
  */
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
 import {
   validatePluginLifecycleProfile,
   type IPluginLifecycleProfile,
 } from '@shrkcrft/plugin-api';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const PLUGIN_LIFECYCLE_PROFILE_REGISTRY_SCHEMA =
   'sharkcraft.plugin-lifecycle-profile-registry/v1';
@@ -53,7 +53,7 @@ interface ICacheEntry {
 const CACHE = new Map<string, ICacheEntry>();
 
 async function importDefaultProfiles(file: string): Promise<readonly IPluginLifecycleProfile[]> {
-  const mod = (await import(pathToFileURL(file).href)) as {
+  const mod = (await importModuleViaLoader(file)) as {
     default?: readonly IPluginLifecycleProfile[] | IPluginLifecycleProfile;
     pluginLifecycleProfiles?: readonly IPluginLifecycleProfile[];
   };

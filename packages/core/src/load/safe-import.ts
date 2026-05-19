@@ -27,6 +27,61 @@ export interface ISafeImportOptions {
 
 export const DEFAULT_SAFE_IMPORT_TIMEOUT_MS = 8000;
 
+// Bun reads TypeScript natively. Node does not (Node 22+ has experimental
+// strip-types, but it is gated on a flag). When running on Node, route
+// every `.ts` / `.tsx` / `.mts` / `.cts` import through jiti so dist-mode
+// CLI invocations (`npx shrk …`) can load user-authored TypeScript config
+// files (`sharkcraft.config.ts`, `sharkcraft/boundaries.ts`, etc.).
+const isBun =
+  typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined' &&
+  (globalThis as { Bun?: { version?: string } }).Bun?.version !== undefined;
+const TS_FILE_RE = /\.(ts|tsx|mts|cts)$/i;
+
+interface IJitiInstance {
+  import<T = unknown>(id: string): Promise<T>;
+}
+let jitiInstance: IJitiInstance | null = null;
+let jitiLoadAttempted = false;
+
+async function getJiti(): Promise<IJitiInstance | null> {
+  if (jitiInstance) return jitiInstance;
+  if (jitiLoadAttempted) return null;
+  jitiLoadAttempted = true;
+  try {
+    const mod = (await import('jiti')) as {
+      createJiti?: (base: string, options?: Record<string, unknown>) => IJitiInstance;
+      default?: (base: string, options?: Record<string, unknown>) => IJitiInstance;
+    };
+    const factory = mod.createJiti ?? mod.default;
+    if (typeof factory !== 'function') return null;
+    jitiInstance = factory(pathToFileURL(import.meta.url).href, {
+      interopDefault: false,
+    });
+    return jitiInstance;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bun-or-jiti-aware dynamic import. Use this anywhere the engine needs to
+ * load a user-authored TypeScript file (config, knowledge, boundaries,
+ * pipelines, etc.) from an absolute path. Falls back to native `import()`
+ * for `.js` / `.mjs` so library consumers without TypeScript files pay
+ * nothing.
+ */
+export async function importModuleViaLoader<T = Record<string, unknown>>(
+  filePath: string,
+): Promise<T> {
+  if (!isBun && TS_FILE_RE.test(filePath)) {
+    const jiti = await getJiti();
+    if (jiti) return (await jiti.import<T>(filePath));
+    // Fall through to native import — Node 22+ with --experimental-strip-types
+    // can still resolve, otherwise the error surfaces to the caller.
+  }
+  return (await import(pathToFileURL(filePath).href)) as T;
+}
+
 export async function safeImport<T = Record<string, unknown>>(
   filePath: string,
   options: ISafeImportOptions = {},
@@ -62,7 +117,7 @@ export async function safeImport<T = Record<string, unknown>>(
 
   const importPromise = (async (): Promise<SafeImportResult<T>> => {
     try {
-      const mod = (await import(pathToFileURL(filePath).href)) as T;
+      const mod = await importModuleViaLoader<T>(filePath);
       return { ok: true, module: mod, elapsedMs: Date.now() - start };
     } catch (e) {
       return {

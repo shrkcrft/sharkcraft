@@ -438,6 +438,28 @@ describe('watch helpers', () => {
     const result = await maybeRunInWatchMode(args, async () => 0);
     expect(result).toBeNull();
   });
+
+  test('maybeRunInWatchMode (--watch --once) honors defaultPaths and runs a single snapshot', async () => {
+    const args = {
+      positional: [],
+      flags: new Map<string, string | boolean>([
+        ['watch', true],
+        ['once', true],
+      ]),
+      multiFlags: new Map(),
+    } as never;
+    let snapshots = 0;
+    const result = await maybeRunInWatchMode(
+      args,
+      async () => {
+        snapshots += 1;
+        return 0;
+      },
+      { defaultPaths: ['sharkcraft', 'packages'] },
+    );
+    expect(result).toBe(0);
+    expect(snapshots).toBe(1);
+  });
 });
 
 // ─────────────────────────── helpers ───────────────────────────

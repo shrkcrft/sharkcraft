@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
 import type { IPlaybookInput, IPlaybookStep } from '@shrkcrft/plugin-api';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const PLAYBOOK_REGISTRY_SCHEMA = 'sharkcraft.playbook-registry/v1';
 
@@ -20,7 +20,7 @@ interface ICacheEntry {
 const CACHE = new Map<string, ICacheEntry>();
 
 async function importDefault<T>(file: string): Promise<readonly T[]> {
-  const mod = (await import(pathToFileURL(file).href)) as {
+  const mod = (await importModuleViaLoader(file)) as {
     default?: readonly T[] | T;
     playbooks?: readonly T[];
   };

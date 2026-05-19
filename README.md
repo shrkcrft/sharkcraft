@@ -24,12 +24,17 @@ an MCP server for agents.
 ## Try it in 30 seconds
 
 ```bash
-# Once published:
+# Once published (Bun):
 bunx @shrkcrft/cli@alpha init                       # scaffold sharkcraft/ (preset = generic)
 bunx @shrkcrft/cli@alpha init --preset bun-service  # or pick a tailored preset
 bunx @shrkcrft/cli@alpha doctor                     # ready-for-AI verdict + 0..100 score
 bunx @shrkcrft/cli@alpha task "generate a service"  # AI-ready task packet
 bunx @shrkcrft/cli@alpha mcp serve                  # start the MCP server (stdio)
+
+# Or via the unscoped `shrk` package — same surface, same flags, npm/yarn/pnpm friendly:
+npx shrk@alpha init
+npx shrk@alpha doctor
+npx shrk@alpha task "generate a service"
 ```
 
 ### Try it in 60 seconds — adoption floor

@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.publish.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "baseUrl": ".",
+    "paths": {
+      "@shrkcrft/cli": [
+        "../cli/dist/index.d.ts"
+      ]
+    },
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/__tests__/**/*"
+  ]
+}

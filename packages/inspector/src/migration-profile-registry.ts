@@ -4,9 +4,9 @@
  */
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { type IMigrationProfile } from './migration-readiness.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const MIGRATION_PROFILE_REGISTRY_SCHEMA = 'sharkcraft.migration-profile-registry/v1';
 
@@ -31,7 +31,7 @@ export interface IMigrationProfileRegistryIssue {
 }
 
 async function importDefault<T>(file: string): Promise<readonly T[]> {
-  const mod = (await import(pathToFileURL(file).href)) as {
+  const mod = (await importModuleViaLoader(file)) as {
     default?: readonly T[] | T;
     migrationProfiles?: readonly T[];
   };

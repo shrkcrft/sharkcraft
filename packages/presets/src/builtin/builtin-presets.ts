@@ -36,6 +36,8 @@ import { R26_PRESETS } from './r26-presets.ts';
 import { R45_PRESETS } from './r45-presets.ts';
 import { R47_PRESETS } from './r47-presets.ts';
 import { ANGULAR_21_PRESETS } from './angular21-presets.ts';
+import { NEST_11_PRESETS } from './nest11-presets.ts';
+import { REACT_19_PRESETS } from './react19-presets.ts';
 
 const GENERIC: IPreset = definePreset({
   id: 'generic',
@@ -603,4 +605,17 @@ export const BUILTIN_PRESETS: readonly IPreset[] = Object.freeze([
   // NgModules. Weight 11-12 so the recommender prefers these over
   // R26 `modern-angular` (weight 9) when the workspace is Angular.
   ...ANGULAR_21_PRESETS,
+  // NestJS 11+ — thin controllers, global ValidationPipe + class-validator,
+  // async lifecycle, Fastify + cache + throttler, helmet + JWT guards,
+  // structured logging + terminus health, TestingModule + supertest e2e.
+  // Weight 11-12 so the recommender prefers these over R26 `nestjs-service`
+  // (weight 7) and R47 `nest-service` (weight 9) when the workspace is Nest.
+  ...NEST_11_PRESETS,
+  // React 19+ — function components + ref-as-prop, hooks discipline,
+  // Actions / useActionState / useOptimistic, TanStack Query for server
+  // state, React Compiler + lazy + virtualization, useTransition /
+  // Suspense, Vitest + RTL + userEvent + MSW, RSC + 'use client' +
+  // Server Actions. Weight 11-12 so the recommender prefers these over
+  // the legacy `frontend-app` (weight 6) when the workspace is React.
+  ...REACT_19_PRESETS,
 ]);

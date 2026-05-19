@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { validatePackManifest, type ISharkCraftPackManifest } from '@shrkcrft/plugin-api';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const PACK_RELEASE_CHECK_SCHEMA = 'sharkcraft.pack-release-check/v1';
 
@@ -49,7 +50,7 @@ async function loadManifest(file: string): Promise<ISharkCraftPackManifest | nul
       return JSON.parse(readFileSync(file, 'utf8')) as ISharkCraftPackManifest;
     }
     const { pathToFileURL } = await import('node:url');
-    const mod = (await import(pathToFileURL(file).href)) as {
+    const mod = (await importModuleViaLoader(file)) as {
       default?: ISharkCraftPackManifest;
       manifest?: ISharkCraftPackManifest;
     };
@@ -227,7 +228,7 @@ export async function runPackReleaseCheck(packPath: string): Promise<IPackReleas
         if (/\.(ts|js|mjs|cjs)$/.test(rel)) {
           try {
             const { pathToFileURL } = await import('node:url');
-            await import(pathToFileURL(full).href);
+            await importModuleViaLoader(full);
           } catch (e) {
             const message = (e as Error).message;
             const helperMissing =

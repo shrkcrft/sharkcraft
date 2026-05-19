@@ -16,9 +16,9 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { inspectSharkcraft } from './sharkcraft-inspector.ts';
 import { buildTaskPacket } from './task-packet.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export interface IPackTestCase {
   id: string;
@@ -78,7 +78,7 @@ function findTestsFile(packPath: string): string | null {
 }
 
 async function loadTestCases(file: string): Promise<IPackTestCase[]> {
-  const mod = (await import(pathToFileURL(file).href)) as {
+  const mod = (await importModuleViaLoader(file)) as {
     default?: ReadonlyArray<IPackTestCase>;
     tests?: ReadonlyArray<IPackTestCase>;
   };

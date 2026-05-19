@@ -7,7 +7,7 @@
  */
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { importModuleViaLoader } from '@shrkcrft/core';
 import {
   isRecognizedScaffoldStrategy,
   type IScaffoldPattern,
@@ -29,9 +29,9 @@ export async function loadScaffoldPatternsFromFile(
 ): Promise<{ patterns: IScaffoldPattern[]; warnings: string[] }> {
   if (!existsSync(file)) return { patterns: [], warnings: [`scaffold pattern file missing: ${file}`] };
   try {
-    const mod = (await import(pathToFileURL(file).href + '?t=' + Date.now())) as {
+    const mod = await importModuleViaLoader<{
       default?: unknown;
-    };
+    }>(file);
     const raw = mod.default ?? mod;
     if (!Array.isArray(raw)) {
       return {

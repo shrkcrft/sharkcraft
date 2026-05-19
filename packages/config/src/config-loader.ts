@@ -1,7 +1,14 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { AppErrorImpl, ERROR_CODES, err, ok, type AppError, type Result } from '@shrkcrft/core';
+import {
+  AppErrorImpl,
+  ERROR_CODES,
+  err,
+  importModuleViaLoader,
+  ok,
+  type AppError,
+  type Result,
+} from '@shrkcrft/core';
 import type { ISharkCraftConfig } from './sharkcraft-config.ts';
 import { withDefaults } from './default-config.ts';
 import { detectProjectRoot, findSharkcraftDir } from './project-config-resolver.ts';
@@ -35,7 +42,7 @@ export async function loadProjectConfig(startDir: string): Promise<Result<Loaded
     const fullPath = nodePath.join(folder, candidate);
     if (!existsSync(fullPath)) continue;
     try {
-      const mod = (await import(pathToFileURL(fullPath).href)) as { default?: ISharkCraftConfig };
+      const mod = await importModuleViaLoader<{ default?: ISharkCraftConfig }>(fullPath);
       const userConfig = (mod.default ?? (mod as unknown as ISharkCraftConfig)) || {};
 
       const parsed = SharkCraftConfigSchema.safeParse(userConfig);

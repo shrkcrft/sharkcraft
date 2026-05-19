@@ -103,6 +103,15 @@ export function buildPublishPkg(
   if (orig.bin !== undefined) out.bin = rewriteBin(orig.bin);
   // Override (not merge) files: published packages must ship dist only.
   out.files = ['dist', 'README.md', 'LICENSE'];
+  // Packages may opt into exact (no-caret) pinning for specific internal
+  // deps by listing them under `publishPinExact`. This is the safe default
+  // for thin re-export wrappers (e.g. `shrk` → `@shrkcrft/cli`) where any
+  // version skew between wrapper and target breaks the contract.
+  const pinExact = new Set<string>(
+    Array.isArray((orig as { publishPinExact?: unknown }).publishPinExact)
+      ? ((orig as { publishPinExact: string[] }).publishPinExact)
+      : [],
+  );
   // Concretize internal workspace pins.
   for (const block of ['dependencies', 'devDependencies', 'peerDependencies'] as const) {
     const deps = out[block] as Record<string, string> | undefined;
@@ -114,13 +123,19 @@ export function buildPublishPkg(
         (pin === 'workspace:*' || pin === 'workspace:^')
       ) {
         const v = versionByName.get(dep);
-        next[dep] = v ? `^${v}` : pin;
+        if (v) {
+          next[dep] = pinExact.has(dep) ? v : `^${v}`;
+        } else {
+          next[dep] = pin;
+        }
       } else {
         next[dep] = pin;
       }
     }
     out[block] = next;
   }
+  // Strip our build-only metadata before publishing.
+  delete (out as { publishPinExact?: unknown }).publishPinExact;
   return out;
 }
 

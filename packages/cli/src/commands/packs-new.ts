@@ -8,6 +8,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export type PackKind = 'generic' | 'framework' | 'architecture' | 'enterprise' | 'platform-adopter';
 
@@ -756,7 +757,7 @@ async function runRuntimePackTest(
   if (existsSync(entry)) {
     try {
       const { pathToFileURL } = await import('node:url');
-      const mod = (await import(pathToFileURL(entry).href + `?bust=${Date.now()}`)) as
+      const mod = (await importModuleViaLoader(entry)) as
         | { default?: unknown }
         | unknown;
       const value = (mod as { default?: unknown }).default ?? mod;
@@ -804,7 +805,7 @@ async function runRuntimePackTest(
     if (!existsSync(full)) continue;
     try {
       const { pathToFileURL } = await import('node:url');
-      const mod = (await import(pathToFileURL(full).href + `?bust=${Date.now()}`)) as {
+      const mod = (await importModuleViaLoader(full)) as {
         default?: unknown;
       };
       const value = mod.default;

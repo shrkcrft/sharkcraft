@@ -180,9 +180,13 @@ describe('adoption top-5', () => {
         }),
       );
       expect(result.exit).toBe(0);
-      // Critical: the recommender miss-penalty must keep next-app from
-      // dominating a React-only repo just because of its higher base weight.
-      expect(result.out).toContain('Picked preset: react-app');
+      // The new react-19-modern preset (weight 12, alpha.7+ staging)
+      // supersedes the legacy `react-app` (weight 6) as the canonical
+      // auto-pick for a React frontend workspace. The legacy id stays
+      // in the catalog and is reachable via explicit `--preset react-app`.
+      // Critical: the recommender miss-penalty must still keep next-app
+      // from dominating a React-only repo on base weight alone.
+      expect(result.out).toContain('Picked preset: react-19-modern');
       expect(result.out).not.toContain('Picked preset: next-app');
     });
 
@@ -217,7 +221,12 @@ describe('adoption top-5', () => {
         }),
       );
       expect(result.exit).toBe(0);
-      expect(result.out).toContain('Picked preset: nest-service');
+      // nest-11-modern (weight 12, alpha.7+) supersedes nest-service
+      // (weight 9, R47 canonical alias) as the auto-pick for any
+      // workspace whose profile matches HasNestJS+IsBackend+IsService.
+      // The legacy id stays in the catalog for projects that pin it
+      // explicitly via `--preset nest-service`.
+      expect(result.out).toContain('Picked preset: nest-11-modern');
     });
 
     test('nx-monorepo for an Nx workspace fixture', async () => {

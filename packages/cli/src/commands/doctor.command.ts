@@ -73,7 +73,7 @@ function describeStrictMode(mode: StrictMode): string {
     case 'all':
       return 'strict=all (every warning fails)';
     case 'warnings':
-      return 'strict=warnings (structural warnings fail, hint-quality excluded)';
+      return 'strict=warnings (structural warnings fail, advisory excluded)';
     case 'errors':
       return 'strict=errors (only errors fail)';
     case 'off':
@@ -90,7 +90,7 @@ interface IStrictEvaluation {
 
 function evaluateStrict(
   mode: StrictMode,
-  checks: readonly { id: string; severity: DoctorSeverity }[],
+  checks: readonly { id: string; severity: DoctorSeverity; advisory?: boolean }[],
   errorCount: number,
 ): IStrictEvaluation {
   if (mode === 'off' || mode === 'errors') {
@@ -105,8 +105,10 @@ function evaluateStrict(
   let excludedWarnings = 0;
   for (const c of checks) {
     if (c.severity !== DoctorSeverity.Warning) continue;
-    const isHintQuality = c.id.startsWith('actionhints-');
-    if (mode === 'warnings' && isHintQuality) {
+    // `--strict=warnings` excludes anything the inspector flagged as
+    // advisory (action-hint quality today, any future advisory category
+    // tomorrow). `--strict=all` counts every warning, advisory or not.
+    if (mode === 'warnings' && c.advisory === true) {
       excludedWarnings += 1;
     } else {
       countedWarnings += 1;
@@ -120,7 +122,7 @@ function evaluateStrict(
     reason:
       mode === 'all'
         ? 'any warning'
-        : 'structural warnings only (hint-quality excluded)',
+        : 'structural warnings only (advisory excluded)',
   };
 }
 
@@ -496,7 +498,7 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
     void existsSync;
     if (strictMode === 'warnings' && strictEval.excludedWarnings > 0) {
       process.stdout.write(
-        `  (strict=warnings excluded ${strictEval.excludedWarnings} hint-quality warning(s); use --strict=all to include)\n`,
+        `  (strict=warnings excluded ${strictEval.excludedWarnings} advisory warning(s); use --strict=all to include)\n`,
       );
     }
     // Surface acknowledgement state. Bare suppressions don't qualify as

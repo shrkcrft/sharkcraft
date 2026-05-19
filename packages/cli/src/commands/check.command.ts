@@ -27,6 +27,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { maybeRunInWatchMode } from '../output/watch-loop.ts';
 import { validateTemplateVariables } from '@shrkcrft/templates';
 import { FileChangeType, planGeneration } from '@shrkcrft/generator';
 import {
@@ -372,6 +373,23 @@ function readChangedScopeOptions(args: ParsedArgs, cwd: string): IChangedScopeOp
 }
 
 async function checkBoundaries(args: ParsedArgs): Promise<number> {
+  const watchExit = await maybeRunInWatchMode(args, checkBoundariesOnce, {
+    defaultPaths: BOUNDARIES_DEFAULT_WATCH_PATHS,
+  });
+  if (watchExit !== null) return watchExit;
+  return checkBoundariesOnce(args);
+}
+
+const BOUNDARIES_DEFAULT_WATCH_PATHS: readonly string[] = [
+  'sharkcraft',
+  'packages',
+  'apps',
+  'libs',
+  'src',
+  'tools',
+];
+
+async function checkBoundariesOnce(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const inspection = await inspectSharkcraft({ cwd });
   const rules = inspection.boundaryRegistry.list();
@@ -587,9 +605,9 @@ async function checkBoundaries(args: ParsedArgs): Promise<number> {
 export const checkCommand: ICommandHandler = {
   name: 'check',
   description:
-    'Run SharkCraft-level validation across knowledge / rules / templates / pipelines / packs / action hints / doctor.',
+    'Run SharkCraft-level validation across knowledge / rules / templates / pipelines / packs / action hints / doctor. `check boundaries [--watch [--paths a,b] [--debounce N] [--once]]` re-runs the boundary scan on file changes.',
   usage:
-    'shrk [--cwd <dir>] check [packs|pipelines|knowledge|generation] [--strict] [--min-score <0-100>] [--json]',
+    'shrk [--cwd <dir>] check [packs|pipelines|knowledge|generation|boundaries|imports] [--strict] [--min-score <0-100>] [--json] [--watch [--paths <list>] [--debounce N] [--once]]',
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
     if (sub === 'generation') return checkGeneration(args);

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const OWNERSHIP_SCHEMA = 'sharkcraft.ownership-rule/v1';
 
@@ -58,7 +58,7 @@ export async function loadOwnershipRules(
     if (full.endsWith('.ts') || full.endsWith('.js') || full.endsWith('.mjs') || full.endsWith('.cjs')) {
       try {
         // pathToFileURL mirrors the resolver pattern in TypeScriptKnowledgeLoader.
-        const mod = (await import(pathToFileURL(full).href)) as {
+        const mod = (await importModuleViaLoader(full)) as {
           default?: readonly IOwnershipRule[];
           ownershipRules?: readonly IOwnershipRule[];
         };

@@ -13,8 +13,8 @@
  * Schema: sharkcraft.feedback-ingestion/v1
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import * as nodePath from 'node:path';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const FEEDBACK_INGESTION_SCHEMA = 'sharkcraft.feedback-ingestion/v1';
 
@@ -413,7 +413,7 @@ export async function loadFeedbackRules(inspection: {
 async function importDefaultArray<T>(absPath: string): Promise<readonly T[]> {
   try {
     if (!existsSync(absPath)) return [];
-    const mod = (await import(pathToFileURL(absPath).href)) as { default?: unknown };
+    const mod = (await importModuleViaLoader(absPath)) as { default?: unknown };
     return Array.isArray(mod.default) ? (mod.default as T[]) : [];
   } catch {
     return [];

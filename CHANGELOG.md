@@ -5,6 +5,282 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [Unreleased / 0.1.0-alpha.7 — staged, not yet published] — NestJS 11+ and React 19+ preset families
+
+Seventeen new presets and 70+ new rule snippets across two stacks —
+the modern NestJS service surface (Nest 11+) and the modern React app
+surface (React 19+). Both mirror the alpha.6 Angular 21 family in
+shape: focused presets each owning one slice, plus a comprehensive
+preset that composes them.
+
+**Staged but not published** — the new code is in the workspace; npm
+still serves alpha.6. Run `bun run scripts/bump-versions.ts 0.1.0-alpha.7 --write`
+followed by `bun run publish:packages --tag alpha --yes` when you're
+ready to ship.
+
+### Added — React 19+ family
+
+- **`@shrkcrft/presets`** — `react19-snippets.ts` and
+  `react19-presets.ts`. Rule snippets cover: function components (no
+  React.FC, no class components for new code); props as interfaces;
+  ref-as-a-prop (no forwardRef in the common case); `<Context>` as the
+  provider directly (no `.Provider`); document metadata in the tree;
+  scoped stylesheets via `<link precedence>`; self-closing JSX; rules
+  of hooks; `useEffect` ONLY for external-system sync (no derived
+  state, no event responses, no fetches); `key` prop for state reset
+  (not useEffect); custom hook naming + cleanup; the React 19 Actions
+  surface (`<form action>`, `useActionState`, `useFormStatus`,
+  `useOptimistic`, `use()`); async functions in `startTransition`/
+  `useTransition`; server state in TanStack Query / SWR / RTK Query;
+  client state shape proportional to scope; React Hook Form + Zod for
+  non-trivial forms; the React Compiler obsoleting most hand-rolled
+  `useMemo`/`useCallback`; code-splitting via `React.lazy` + Suspense;
+  list virtualization past ~100 visible rows; stable list keys;
+  explicit image dimensions + `loading="lazy"`; `useTransition`/
+  `useDeferredValue`/Suspense boundaries; StrictMode in dev; Vitest +
+  Testing Library + `userEvent` + MSW; React Server Components
+  default with `"use client"` pushed to interactive leaves, Server
+  Actions for mutations, streaming SSR through Suspense.
+
+- **Nine new presets** (weight 11-12, beats the legacy `frontend-app`
+  at weight 6 in the recommender):
+  - `react-19-modern-components` — function components, ref-as-prop,
+    Context-as-provider, document metadata in the tree.
+  - `react-19-hooks-discipline` — rules of hooks, useEffect for
+    external sync only, key-for-reset, custom-hook naming + cleanup.
+  - `react-19-actions-forms` — Actions, useActionState, useFormStatus,
+    useOptimistic, use(), async transitions.
+  - `react-19-state` — TanStack Query for server state, the right
+    shape for client state, RHF + Zod for forms, no prop-drilling.
+  - `react-19-performance` — React Compiler, lazy + Suspense,
+    virtualization, stable keys, image optimization.
+  - `react-19-concurrent` — useTransition, useDeferredValue,
+    deliberate Suspense placement, StrictMode in dev.
+  - `react-19-testing` — Vitest + Testing Library + userEvent + MSW,
+    behavior-not-implementation testing posture.
+  - `react-19-rsc` — Server Components default, `"use client"` at the
+    leaf, Server Actions, streaming SSR. Intentionally NOT pulled in
+    by `react-19-modern` since it only applies to RSC frameworks
+    (Next.js app router, Remix, Waku).
+  - `react-19-modern` — comprehensive; composes the seven non-RSC
+    focused presets. Add `react-19-rsc` separately for fullstack apps.
+
+- **Path snippets** — `REACT_PATH_COMPONENTS`, `REACT_PATH_HOOKS`,
+  `REACT_PATH_PAGES`, `REACT_PATH_LIB` in `shared-snippets.ts`, each
+  with structured `metadata.path` so the init paths-advisory annotator
+  catches mismatches (e.g. a Next.js app-router project that uses
+  `app/` instead of `src/pages/`).
+
+- **Tests** — `packages/presets/src/__tests__/react19-presets.test.ts`
+  asserts: all nine presets are registered; `react-19-modern`
+  composes the seven non-RSC focused presets and intentionally does
+  NOT compose `react-19-rsc`; each focused preset includes its
+  canonical rule (e.g. `useActionState` in actions, `Vitest` + `MSW`
+  in testing, `"use client"` + `"use server"` in RSC); every emitted
+  .ts is self-contained; the recommender picks a `react-19-*` preset
+  for a React frontend workspace.
+
+### Added — NestJS 11+ family
+
+### Added — NestJS 11+ family content
+
+- **`@shrkcrft/presets`** — `nest11-snippets.ts` and `nest11-presets.ts`.
+  Rule snippets cover: thin controllers / service-owns-domain /
+  module-per-feature / module public-API / no-circular-modules /
+  DTOs-at-boundary / no-query-in-controller; global ValidationPipe
+  with whitelist + forbidNonWhitelisted + transform; class-validator
+  DTOs as classes (not interfaces); separated request / response DTOs;
+  `@ApiProperty` for OpenAPI; lifecycle hooks (OnModuleInit /
+  OnApplicationBootstrap / OnModuleDestroy / OnApplicationShutdown);
+  `enableShutdownHooks()` at bootstrap; async `useFactory` providers;
+  Fastify adapter; `@nestjs/cache-manager`; `@nestjs/throttler`;
+  mandatory pagination on list endpoints; helmet; explicit CORS
+  allowlist (no `origin: true` in prod); JWT auth via Guards (not
+  middleware); no-secrets-in-source; trust-proxy when behind a load
+  balancer; per-provider `Logger(MyService.name)`; structured JSON
+  logs (pino / nest-winston); no-log-secrets redaction; `@nestjs/terminus`
+  health checks with split liveness + readiness; `Test.createTestingModule`
+  + `overrideProvider`; e2e via supertest against the real AppModule;
+  unit specs co-located vs e2e under `test/`; URI API versioning when
+  the contract is external.
+
+- **Eight new presets** (weight 11-12, beats the existing
+  `nestjs-service` at weight 7 and `nest-service` canonical alias at
+  weight 9 in the recommender):
+  - `nest-11-architecture` — module + controller + service +
+    repository structure, DTOs at the HTTP boundary.
+  - `nest-11-validation` — global ValidationPipe strict-mode +
+    class-validator DTOs + separated request / response shapes.
+  - `nest-11-async-lifecycle` — async providers + lifecycle hooks +
+    `enableShutdownHooks()`.
+  - `nest-11-performance` — Fastify adapter + caching + throttling +
+    mandatory pagination.
+  - `nest-11-security` — helmet + CORS allowlist + JWT guards +
+    no-secrets + trust-proxy + throttler.
+  - `nest-11-observability` — per-provider Logger + structured JSON
+    logs + redact-list + terminus health (liveness + readiness).
+  - `nest-11-testing` — TestingModule + overrideProvider unit specs
+    + supertest e2e + co-located vs `test/` file layout.
+  - `nest-11-modern` — composes all seven, layers on URI API
+    versioning.
+
+- **Tests** — `packages/presets/src/__tests__/nest11-presets.test.ts`
+  asserts: all eight presets are registered; each canonical rule is
+  present in its area (e.g. `enableShutdownHooks` in async-lifecycle,
+  `helmet` + `JwtAuthGuard` + `trust-proxy` in security, `terminus`
+  + `liveness` + `readiness` in observability); every emitted .ts is
+  self-contained; `recommendPresets` picks a `nest-11-*` preset for a
+  NestJS+backend+service workspace.
+
+### Changed
+
+- **Auto-pick tests updated for both stacks** —
+  `r47-adoption-top5.test.ts` now expects the new canonical winners:
+  `nest-11-modern` (weight 12) supersedes `nest-service` (weight 9)
+  for NestJS workspaces; `react-19-modern` (weight 12) supersedes
+  `react-app` (weight 6) for React workspaces. The legacy ids stay in
+  the catalog and remain reachable via explicit
+  `--preset nest-service` / `--preset react-app` for projects that
+  pin them.
+- **One MCP test got a longer timeout** — `create_execution_graph
+  returns nodes and edges` calls `inspectSharkcraft()` which walks
+  the whole engine repo and the catalog is bigger now (3 new preset
+  families). Bumped the per-test timeout to 30s so the test doesn't
+  flake under full-suite contention.
+
+### Why
+
+Same logic as alpha.6's Angular 21 family. The legacy presets predate
+the patterns most teams now treat as table stakes — for Nest:
+Fastify, strict ValidationPipe, terminus health, explicit CORS
+allowlist, structured logging, throttler defaults. For React:
+function components only, hooks discipline (useEffect for external
+sync only), Actions/useActionState, server state in TanStack Query,
+React Compiler auto-memo, Vitest + Testing Library. Rather than
+rewrite the legacy presets in-place and break consumers who pinned,
+the alpha.7 set ships alongside as a higher-weighted family.
+
+### Added — Distribution + UX (agent feedback follow-up)
+
+A downstream Claude agent flagged three friction points using `shrk` in
+a host repo. All three are addressed in this slice.
+
+- **`npx shrk@alpha` resolves on the public registry.** New unscoped
+  wrapper package at `packages/shrk/` — its sole job is to depend on
+  `@shrkcrft/cli` and forward to `runCli()`. Same surface, same flags,
+  same exit codes. The published `bin` is `dist/bin.js` (named
+  `bin.js`, not `main.js`, so the CLI's own entry-point guard does not
+  double-fire when both modules load). Source: `packages/shrk/src/bin.ts`,
+  `packages/shrk/src/index.ts`, `packages/shrk/package.json`. Existing
+  scripts (`publish-packages`, `install-smoke-test`, `release-preflight`)
+  pick up the new package automatically via `discoverPackages`.
+
+- **Doctor headline no longer drowns in `actionhints-*` warnings.**
+  `runDoctor` in `packages/inspector/src/sharkcraft-inspector.ts` now
+  flags every action-hint quality check with `advisory: true`. The
+  existing fold pipeline (`foldDoctorChecks` in
+  `packages/cli/src/doctor/doctor-tags.ts`) already knew how to
+  collapse advisory warnings into a one-line summary —
+  `Folded: N advisory (run with --show-advisory or --strict to expand)`.
+  `--strict=warnings` continues to exclude hint-quality (existing
+  contract); `--strict=all` continues to count them; JSON output is
+  unchanged. A real downstream repo with 367 of these now shows a
+  single summary line by default. Test:
+  `packages/inspector/src/__tests__/actionhints-advisory.test.ts`.
+
+- **`shrk check boundaries --watch` for inner-loop iteration.** The
+  watch helper at `packages/cli/src/output/watch-loop.ts` gained a
+  `defaultPaths` option and a `--paths a,b,c` flag pass-through, so
+  callers that scan source outside `sharkcraft/` can watch the right
+  trees. `checkBoundaries` in
+  `packages/cli/src/commands/check.command.ts` now wraps its single-
+  shot path through `maybeRunInWatchMode`, defaulting the watched set
+  to `sharkcraft / packages / apps / libs / src / tools`. Flags:
+  `--watch [--paths <list>] [--debounce N] [--once]`. Test added in
+  `packages/inspector/src/__tests__/r31-feature-accelerator.test.ts`.
+
+### Why — agent feedback follow-up
+
+The three issues all came from the same source: a downstream Claude
+agent reporting that `shrk` earns its keep for boundary enforcement
+and the AI workflow, but the install story (`npx shrk` 404) and the
+inner loop (doctor nag, no boundary watch) made onboarding rougher
+than it should be. The fixes are intentionally small and surgical —
+no new abstractions, no rewrites — because the engine itself is fine;
+only the surface in front of it needed sharpening.
+
+### Fixed — Dist-under-Node TypeScript loading (`npx shrk` parity)
+
+A second round of feedback surfaced the *deeper* part of the same
+distribution issue: `npx shrk` resolved, but it couldn't actually
+read user `sharkcraft/*.ts` files because Node's `import()` doesn't
+speak TypeScript. The CLI silently degraded to "no boundary rules
+configured" and "AI-readiness 18/100" against a fully configured
+host repo, while `bunx shrk` worked normally. This made the npm
+path effectively cosmetic.
+
+- **New `importModuleViaLoader` helper in `@shrkcrft/core`.** When
+  running under Node (not Bun) and the target file ends in
+  `.ts`/`.tsx`/`.mts`/`.cts`, the helper routes the import through
+  [jiti](https://github.com/unjs/jiti) (a tiny TS-aware loader, oxc-
+  backed in v2). Under Bun, native `import()` is used unchanged — no
+  added latency for the dev path. The jiti instance is lazy-loaded
+  and cached.
+- **jiti added as a dependency of `@shrkcrft/core`** (`^2.7.0`). It
+  is the only addition; every other engine package gets it
+  transitively. Library consumers who only import types or pure
+  utilities still pay nothing at runtime — jiti loads only when a
+  TypeScript file is dynamically imported.
+- **23 raw `import(pathToFileURL(file).href)` call sites migrated**
+  to `importModuleViaLoader` across `@shrkcrft/config` (config
+  loader), `@shrkcrft/inspector` (every registry / loader that
+  consumes user-authored TS), and `@shrkcrft/cli/commands/packs*`.
+  The migration was scripted (`scripts/migrate-loader-imports.ts`)
+  so the diff is mechanical and idempotent.
+- **`shrk` wrapper now pins `@shrkcrft/cli` exactly at publish.**
+  New `publishPinExact: ["@shrkcrft/cli"]` metadata in
+  `packages/shrk/package.json`; `buildPublishPkg` in
+  `scripts/lib/publish-mode.ts` honors it by emitting the version
+  without a caret. Prevents the wrapper and the CLI drifting across
+  releases (a version skew there silently breaks the contract).
+- **Flake fix.** `r23-mcp-tools > create_agent_contract` got a 30s
+  timeout to match its sibling — same suite-contention story as
+  `create_execution_graph`.
+
+End-to-end verification: `node packages/cli/dist/main.js check
+boundaries` now returns `2 rules · 1491 files · 5318 imports · 0
+violations` (identical to `bun packages/cli/src/main.ts check
+boundaries`), and `doctor` reports 75/100 (not 18/100). Test:
+`scripts/__tests__/publish-mode.test.ts` adds a case for the
+`publishPinExact` transform.
+
+### Hardened — release gate and strict-mode generality
+
+Three small follow-ups to lock in the stability gains and remove the
+last bit of accidental coupling in the advisory-warning treatment.
+
+- **`install-smoke-test` now exercises the TS loader end-to-end.**
+  Post-init, the smoke test parses doctor output and asserts:
+  knowledge entries > 0 AND AI-readiness ≥ 50. It then writes a
+  sentinel `sharkcraft/boundaries.ts` rule, points the config at it,
+  and runs `npx shrk check boundaries` — failing if rule count < 1.
+  The previous test passed even when the Node-side TS loader was
+  fully broken (the "Verdict:" line printed regardless). This closes
+  the blind spot at release time. `scripts/install-smoke-test.ts`.
+
+- **`doctor --strict=warnings` now keys off `check.advisory === true`,
+  not `id.startsWith('actionhints-')`.** Future advisory categories
+  (template quality, rule quality, anything else flagged advisory)
+  are automatically respected by strict mode without a code edit. The
+  string-prefix special case was a quiet correctness trap. Same flag
+  surface, more general semantics. `packages/cli/src/commands/doctor.command.ts:91-125`.
+
+- **Removed the one-shot `scripts/migrate-loader-imports.ts`.** Its
+  job (migrating 23 raw `import(pathToFileURL(...))` sites to the
+  jiti-aware helper) is done. Leaving it in the repo would have
+  confused the next contributor into wondering if they needed to
+  update it.
+
 ## [0.1.0-alpha.6] — 2026-05-18 — Angular 21 preset family
 
 Six new presets and 24 new rule snippets covering the post-decorators

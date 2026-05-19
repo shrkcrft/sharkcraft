@@ -27,33 +27,45 @@ describe('r23 mcp tools', () => {
     }
   });
 
-  test('create_agent_contract returns a contract for a task', async () => {
-    const ctx = {
-      cwd: process.cwd(),
-      inspection: await (await import('@shrkcrft/inspector')).inspectSharkcraft({
+  test(
+    'create_agent_contract returns a contract for a task',
+    async () => {
+      const ctx = {
         cwd: process.cwd(),
-      }),
-    };
-    const tool = ALL_TOOLS.find((t) => t.name === 'create_agent_contract')!;
-    const result = await tool.handler({ task: 'docs cleanup', role: 'developer' }, ctx as never);
-    expect(result.isError).not.toBe(true);
-    expect(result.data).toBeDefined();
-  });
+        inspection: await (await import('@shrkcrft/inspector')).inspectSharkcraft({
+          cwd: process.cwd(),
+        }),
+      };
+      const tool = ALL_TOOLS.find((t) => t.name === 'create_agent_contract')!;
+      const result = await tool.handler({ task: 'docs cleanup', role: 'developer' }, ctx as never);
+      expect(result.isError).not.toBe(true);
+      expect(result.data).toBeDefined();
+    },
+    // inspectSharkcraft() walks the full engine repo and the catalog is
+    // big — this can flake past 5s under full-suite parallel contention.
+    30_000,
+  );
 
-  test('create_execution_graph returns nodes and edges', async () => {
-    const ctx = {
-      cwd: process.cwd(),
-      inspection: await (await import('@shrkcrft/inspector')).inspectSharkcraft({
+  test(
+    'create_execution_graph returns nodes and edges',
+    async () => {
+      const ctx = {
         cwd: process.cwd(),
-      }),
-    };
-    const tool = ALL_TOOLS.find((t) => t.name === 'create_execution_graph')!;
-    const result = await tool.handler({ task: 'add a new CLI subcommand', role: 'developer' }, ctx as never);
-    expect(result.isError).not.toBe(true);
-    const data = result.data as { nodes: unknown[]; edges: unknown[] };
-    expect(Array.isArray(data.nodes)).toBe(true);
-    expect(Array.isArray(data.edges)).toBe(true);
-  });
+        inspection: await (await import('@shrkcrft/inspector')).inspectSharkcraft({
+          cwd: process.cwd(),
+        }),
+      };
+      const tool = ALL_TOOLS.find((t) => t.name === 'create_execution_graph')!;
+      const result = await tool.handler({ task: 'add a new CLI subcommand', role: 'developer' }, ctx as never);
+      expect(result.isError).not.toBe(true);
+      const data = result.data as { nodes: unknown[]; edges: unknown[] };
+      expect(Array.isArray(data.nodes)).toBe(true);
+      expect(Array.isArray(data.edges)).toBe(true);
+    },
+    // inspectSharkcraft() walks the full engine repo and the catalog is
+    // big — this can take >5s under full-suite parallel contention.
+    30_000,
+  );
 
   test('create_healing_plan accepts errorText input', async () => {
     const ctx = {

@@ -11,6 +11,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const DECISION_RECORD_SCHEMA = 'sharkcraft.decision/v1';
 
@@ -230,7 +231,7 @@ async function importDefaultArray<T>(absPath: string): Promise<readonly T[]> {
   try {
     if (!existsSync(absPath)) return [];
     const { pathToFileURL } = await import('node:url');
-    const mod = (await import(pathToFileURL(absPath).href)) as { default?: unknown };
+    const mod = (await importModuleViaLoader(absPath)) as { default?: unknown };
     return Array.isArray(mod.default) ? (mod.default as T[]) : [];
   } catch {
     return [];

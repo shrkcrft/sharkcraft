@@ -1,12 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
 import type {
   IConstructFacetInput,
   IConstructFacetValue,
   IConstructInput,
 } from '@shrkcrft/plugin-api';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const CONSTRUCT_REGISTRY_SCHEMA = 'sharkcraft.construct-registry/v1';
 
@@ -35,7 +35,7 @@ function readJsonOrEmpty(file: string): unknown {
 }
 
 async function importDefault<T>(file: string): Promise<readonly T[]> {
-  const mod = (await import(pathToFileURL(file).href)) as {
+  const mod = (await importModuleViaLoader(file)) as {
     default?: readonly T[] | T;
     constructs?: readonly T[];
     playbooks?: readonly T[];

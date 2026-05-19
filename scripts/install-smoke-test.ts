@@ -14,6 +14,7 @@ import { spawnSync } from 'node:child_process';
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -117,7 +118,98 @@ async function main(): Promise<void> {
     throw new Error('shrk doctor (post-init) missing Verdict line');
   }
 
-  // 6b. Node-only probe — invoke the installed CLI explicitly with `node`
+  // 6a. TS-loader regression gate.
+  //
+  // The init scaffold produces TypeScript files under sharkcraft/ (config,
+  // knowledge, rules, paths, templates). If Node's dynamic `import()` can
+  // no longer read them — for example because @shrkcrft/core's jiti
+  // routing regressed — doctor will silently report "0 entries loaded"
+  // and an AI-readiness score in the teens instead of the 60s. That mode
+  // *also* still prints "Verdict:" so the older check above can't catch
+  // it. The two assertions below pin the contract: post-init, the loaded
+  // surface must be non-empty AND the score must clear a floor.
+  const entriesMatch = doctor2.match(/knowledge entries[^\n]*?(\d+)\s+entries loaded/);
+  const entryCount = entriesMatch ? Number(entriesMatch[1]) : 0;
+  if (entryCount <= 0) {
+    throw new Error(
+      `shrk doctor (post-init) reports ${entryCount} knowledge entries — Node-side TS loader is broken. Doctor output:\n${doctor2}`,
+    );
+  }
+  console.log(`  → knowledge entries loaded: ${entryCount}`);
+  const scoreMatch = doctor2.match(/AI-readiness:\s+(\d+)\s*\/\s*100/);
+  const score = scoreMatch ? Number(scoreMatch[1]) : 0;
+  // 50 is a conservative floor — the init scaffold currently produces
+  // ~71. Anything under 50 means a major load path broke.
+  if (score < 50) {
+    throw new Error(
+      `shrk doctor (post-init) AI-readiness ${score}/100 below the 50 floor — likely a Node-side TS loader regression. Doctor output:\n${doctor2}`,
+    );
+  }
+  console.log(`  → AI-readiness: ${score}/100`);
+
+  // 6b. End-to-end `check boundaries` against a user-written TS rule file.
+  //     This is the path that silently failed before jiti landed — the
+  //     boundaries loader uses dynamic import on a .ts file, and Node
+  //     without a TS loader returns no rules.
+  console.log('• write sharkcraft/boundaries.ts + npx shrk check boundaries');
+  const boundariesFile = join(tmp, 'sharkcraft', 'boundaries.ts');
+  writeFileSync(
+    boundariesFile,
+    [
+      '// Smoke-test boundary rule. Verifies the Node-side TS loader can',
+      '// read user-authored .ts files end-to-end.',
+      'export default [',
+      '  {',
+      "    id: 'smoke.no-self-import',",
+      "    title: 'sentinel rule',",
+      "    severity: 'warning',",
+      "    from: ['src/**/*.ts'],",
+      "    forbiddenImports: ['nonexistent-package-xyz'],",
+      "    suggestedFix: 'no-op',",
+      '  },',
+      '];',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  // The boundary loader only reads files listed in
+  // config.boundaryFiles, so make sure the scaffolded config references
+  // our sentinel rule file. Patching the init-scaffolded config in place
+  // would be fragile (presets emit different shapes); easier and stable
+  // to overwrite with a minimal known-good config for the smoke test.
+  const cfgPath = join(tmp, 'sharkcraft', 'sharkcraft.config.ts');
+  const minimalCfg = [
+    '// Smoke-test config. Overwritten by install-smoke-test.ts to make',
+    '// the boundary-file assertion deterministic across init scaffolds.',
+    'export default {',
+    "  projectName: 'smoke-consumer',",
+    "  description: 'Install smoke test consumer repo.',",
+    "  knowledgeFiles: ['knowledge.ts'],",
+    "  ruleFiles: ['rules.ts'],",
+    "  pathFiles: ['paths.ts'],",
+    "  templateFiles: ['templates.ts'],",
+    "  boundaryFiles: ['boundaries.ts'],",
+    '  defaultMaxTokens: 3500,',
+    '};',
+    '',
+  ].join('\n');
+  writeFileSync(cfgPath, minimalCfg, 'utf8');
+  const boundariesOut = capture('npx', tmp, [
+    '--no-install',
+    'shrk',
+    'check',
+    'boundaries',
+  ]);
+  const rulesMatch = boundariesOut.match(/rules\s+(\d+)/);
+  const ruleCount = rulesMatch ? Number(rulesMatch[1]) : 0;
+  if (ruleCount < 1) {
+    throw new Error(
+      `shrk check boundaries reported ${ruleCount} rules — TS-rule loader is broken. Output:\n${boundariesOut}`,
+    );
+  }
+  console.log(`  → boundaries rule(s) loaded: ${ruleCount}`);
+
+  // 6c. Node-only probe — invoke the installed CLI explicitly with `node`
   //     so we catch any regression to a Bun-required shebang even when bun
   //     is on PATH.
   console.log('• node node_modules/@shrkcrft/cli/dist/main.js --version');

@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { evaluateBoundaries, loadTsconfigPaths, scanImports } from '@shrkcrft/boundaries';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { impactFor, loadOwnershipRules, type IOwnershipRule } from './ownership.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const POLICY_REPORT_SCHEMA = 'sharkcraft.policy-report/v1';
 
@@ -278,7 +278,7 @@ export async function evaluatePolicy(
     const full = nodePath.isAbsolute(rel) ? rel : nodePath.join(cwd, rel);
     if (!existsSync(full)) continue;
     try {
-      const mod = (await import(pathToFileURL(full).href)) as {
+      const mod = (await importModuleViaLoader(full)) as {
         default?: readonly IPackPolicyCheck[];
         policyChecks?: readonly IPackPolicyCheck[];
       };
@@ -337,7 +337,7 @@ export async function evaluatePolicy(
         const full = nodePath.resolve(pack.packageRoot, rel);
         if (!existsSync(full)) continue;
         try {
-          const mod = (await import(pathToFileURL(full).href)) as {
+          const mod = (await importModuleViaLoader(full)) as {
             default?: readonly IPackPolicyCheck[];
             policyChecks?: readonly IPackPolicyCheck[];
           };

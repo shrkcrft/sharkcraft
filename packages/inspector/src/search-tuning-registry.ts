@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
 import type { ISearchTuning } from '@shrkcrft/plugin-api';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const SEARCH_TUNING_SCHEMA = 'sharkcraft.search-tuning-registry/v1';
 
@@ -31,7 +31,7 @@ const CACHE = new Map<string, ICacheEntry>();
 const MAX_BOOST = 5;
 
 async function importDefault<T>(file: string): Promise<readonly T[]> {
-  const mod = (await import(pathToFileURL(file).href)) as {
+  const mod = (await importModuleViaLoader(file)) as {
     default?: readonly T[] | T;
     searchTuning?: readonly T[];
   };

@@ -820,6 +820,7 @@ export function runDoctor(inspection: ISharkcraftInspection): IDoctorResult {
         id: `actionhints-${i.code}-${i.entryId}`,
         title: `Action-hint quality (${i.code})`,
         severity: DoctorSeverity.Warning,
+        advisory: true,
         message: i.message,
         fix: i.suggestion,
         category: 'action-hint-quality',

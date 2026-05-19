@@ -4,13 +4,13 @@
  */
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
 import {
   ALL_CONTRACT_TEMPLATES,
   AGENT_CONTRACT_TEMPLATE_SCHEMA,
   type IAgentContractTemplate,
 } from './agent-contract-templates.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const CONTRACT_TEMPLATE_REGISTRY_SCHEMA = 'sharkcraft.contract-template-registry/v1';
 
@@ -44,7 +44,7 @@ interface ICacheEntry {
 const CACHE = new Map<string, ICacheEntry>();
 
 async function importDefault<T>(file: string): Promise<readonly T[]> {
-  const mod = (await import(pathToFileURL(file).href)) as {
+  const mod = (await importModuleViaLoader(file)) as {
     default?: readonly T[] | T;
     contractTemplates?: readonly T[];
   };

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { importModuleViaLoader } from '@shrkcrft/core';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import {
   evaluatePolicy,
@@ -121,7 +121,7 @@ async function loadLocalPolicyChecks(
   for (const file of localCandidates) {
     if (!existsSync(file)) continue;
     try {
-      const mod = (await import(pathToFileURL(file).href)) as {
+      const mod = (await importModuleViaLoader(file)) as {
         default?: readonly IPackPolicyCheck[];
         policyChecks?: readonly IPackPolicyCheck[];
       };
@@ -140,7 +140,7 @@ async function loadLocalPolicyChecks(
       const file = nodePath.resolve(pack.packageRoot, rel);
       if (!existsSync(file)) continue;
       try {
-        const mod = (await import(pathToFileURL(file).href)) as {
+        const mod = (await importModuleViaLoader(file)) as {
           default?: readonly IPackPolicyCheck[];
           policyChecks?: readonly IPackPolicyCheck[];
         };

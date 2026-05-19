@@ -76,6 +76,24 @@ describe('buildPublishPkg', () => {
     expect(out.dependencies?.['@shrkcrft/core']).toBe('^0.1.0-alpha.2');
     expect(out.dependencies?.zod).toBe('^3.0.0');
   });
+
+  test('publishPinExact drops the caret on listed deps and is stripped from output', () => {
+    const orig: IPackageJson = {
+      ...pkg('shrk', {
+        '@shrkcrft/cli': 'workspace:*',
+        '@shrkcrft/core': 'workspace:*',
+      }),
+      publishPinExact: ['@shrkcrft/cli'],
+    } as IPackageJson;
+    const versionByName = new Map<string, string>([
+      ['@shrkcrft/cli', '0.1.0-alpha.6'],
+      ['@shrkcrft/core', '0.1.0-alpha.6'],
+    ]);
+    const out = buildPublishPkg(orig, versionByName);
+    expect(out.dependencies?.['@shrkcrft/cli']).toBe('0.1.0-alpha.6');
+    expect(out.dependencies?.['@shrkcrft/core']).toBe('^0.1.0-alpha.6');
+    expect((out as { publishPinExact?: unknown }).publishPinExact).toBeUndefined();
+  });
 });
 
 describe('withPublishMode', () => {

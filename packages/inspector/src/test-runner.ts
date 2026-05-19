@@ -1,6 +1,5 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { buildContext } from '@shrkcrft/context';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { buildTaskPacket } from './task-packet.ts';
@@ -11,6 +10,7 @@ import {
 } from './test-definitions.ts';
 import { buildProjectOverview, renderOverviewText } from './project-overview.ts';
 import { HELPERS } from './helper-registry.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 /**
  * Pre-loaded registry id snapshots used to evaluate strict agent-test
@@ -98,7 +98,7 @@ export interface IAgentContractTestResult {
 async function importDefaultArray(absPath: string): Promise<unknown[]> {
   if (!existsSync(absPath)) return [];
   try {
-    const mod = (await import(pathToFileURL(absPath).href)) as { default?: unknown };
+    const mod = (await importModuleViaLoader(absPath)) as { default?: unknown };
     return Array.isArray(mod.default) ? (mod.default as unknown[]) : [];
   } catch {
     return [];
@@ -597,7 +597,7 @@ export async function loadAgentContractRegistries(
 async function importDefaultIdsArray(absPath: string): Promise<readonly { id: string }[]> {
   if (!existsSync(absPath)) return [];
   try {
-    const mod = (await import(pathToFileURL(absPath).href)) as {
+    const mod = (await importModuleViaLoader(absPath)) as {
       default?: readonly { id: string }[];
     };
     return Array.isArray(mod.default) ? mod.default : [];

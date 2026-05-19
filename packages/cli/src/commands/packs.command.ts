@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
 import {
   buildPackDoctorReport,
   buildPackSignatureStatusReport,
@@ -27,6 +26,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 function statusLabel(valid: boolean): string {
   return valid ? 'OK     ' : 'INVALID';
@@ -621,7 +621,7 @@ async function loadManifestFromPath(
   if (manifestPath.endsWith('.json')) {
     return JSON.parse(readFileSync(manifestPath, 'utf8')) as ISharkCraftPackManifest;
   }
-  const mod = (await import(pathToFileURL(manifestPath).href)) as {
+  const mod = (await importModuleViaLoader(manifestPath)) as {
     default?: ISharkCraftPackManifest;
   };
   return (mod.default ?? (mod as unknown as ISharkCraftPackManifest)) as ISharkCraftPackManifest;

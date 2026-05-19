@@ -343,6 +343,60 @@ export const ANGULAR_PATH_SERVICES = `defineKnowledgeEntry({
     metadata: { path: 'src/app/services' },
   })`;
 
+// React workspaces — many flavors (Vite SPA, Next.js, Remix). The
+// snippets below cover the most common SPA layout (src/components,
+// src/hooks, src/pages, src/lib). Frameworks that follow a different
+// convention (e.g. Next.js app router under app/) will trigger the
+// init paths-advisory; the user is expected to swap them at that point.
+
+export const REACT_PATH_COMPONENTS = `defineKnowledgeEntry({
+    id: 'paths.react.components',
+    title: 'React components',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.High,
+    tags: ['paths', 'react', 'components'],
+    scope: ['react'],
+    appliesWhen: ['generate-component'],
+    content: 'Components live under src/components/ (cross-feature shared) or under their feature folder. Keep each component in its own file; pair with a co-located *.test.tsx beside it.',
+    metadata: { path: 'src/components' },
+  })`;
+
+export const REACT_PATH_HOOKS = `defineKnowledgeEntry({
+    id: 'paths.react.hooks',
+    title: 'React custom hooks',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.High,
+    tags: ['paths', 'react', 'hooks'],
+    scope: ['react'],
+    appliesWhen: ['generate-hook'],
+    content: 'Custom hooks live under src/hooks/ (cross-feature) or under their feature folder. File and exported function are both named useX. Co-locate the test as useX.test.ts beside the hook.',
+    metadata: { path: 'src/hooks' },
+  })`;
+
+export const REACT_PATH_PAGES = `defineKnowledgeEntry({
+    id: 'paths.react.pages',
+    title: 'React route / page components',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.Medium,
+    tags: ['paths', 'react', 'pages', 'routing'],
+    scope: ['react'],
+    appliesWhen: ['create-feature', 'add-route'],
+    content: 'Top-level route components live under src/pages/ (React Router / TanStack Router convention) or under src/routes/. For Next.js app router, see src/app/<segment>/page.tsx instead — adjust this entry if your project uses that layout.',
+    metadata: { path: 'src/pages' },
+  })`;
+
+export const REACT_PATH_LIB = `defineKnowledgeEntry({
+    id: 'paths.react.lib',
+    title: 'React app utilities + clients',
+    type: KnowledgeType.Path,
+    priority: KnowledgePriority.Medium,
+    tags: ['paths', 'react', 'lib'],
+    scope: ['react'],
+    appliesWhen: ['generate-utility', 'generate-code'],
+    content: 'Framework-agnostic helpers (formatters, validators, API clients) live under src/lib/. Keep them pure — no React imports unless the helper is a hook (in which case it belongs under src/hooks/).',
+    metadata: { path: 'src/lib' },
+  })`;
+
 // NestJS services — module-per-folder convention; e2e tests in `test/`.
 export const NEST_PATH_SRC = `defineKnowledgeEntry({
     id: 'paths.nest.src',

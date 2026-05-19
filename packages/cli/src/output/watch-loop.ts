@@ -123,7 +123,16 @@ export function buildWatchPlan(
 }
 
 import type { ParsedArgs } from '../command-registry.ts';
-import { flagBool, flagNumber, resolveCwd } from '../command-registry.ts';
+import { flagBool, flagNumber, flagString, resolveCwd } from '../command-registry.ts';
+
+export interface IWatchModeOptions {
+  /**
+   * Paths to watch when the user does not pass `--paths`. Defaults to
+   * `['sharkcraft']` if omitted. Use this for commands that scan code
+   * outside `sharkcraft/` (e.g. `check boundaries` scans the whole repo).
+   */
+  defaultPaths?: readonly string[];
+}
 
 /**
  * Run a command's `run` function inside a watch loop when --watch is set.
@@ -134,16 +143,28 @@ import { flagBool, flagNumber, resolveCwd } from '../command-registry.ts';
 export async function maybeRunInWatchMode(
   args: ParsedArgs,
   runner: (innerArgs: ParsedArgs) => Promise<number>,
+  options: IWatchModeOptions = {},
 ): Promise<number | null> {
   if (!flagBool(args, 'watch')) return null;
   const cwd = resolveCwd(args);
   const debounce = flagNumber(args, 'debounce') ?? 300;
   const once = flagBool(args, 'once');
+  const pathsFlag = flagString(args, 'paths');
+  const userPaths = pathsFlag
+    ? pathsFlag.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+    : [];
+  const paths =
+    userPaths.length > 0
+      ? userPaths
+      : options.defaultPaths && options.defaultPaths.length > 0
+        ? options.defaultPaths
+        : ['sharkcraft'];
   // Strip --watch so the inner snapshot doesn't recurse.
   const innerFlags = new Map(args.flags);
   innerFlags.delete('watch');
   innerFlags.delete('once');
   innerFlags.delete('debounce');
+  innerFlags.delete('paths');
   const innerArgs: ParsedArgs = {
     positional: args.positional,
     flags: innerFlags,
@@ -151,7 +172,7 @@ export async function maybeRunInWatchMode(
     ...(args.globalCwd ? { globalCwd: args.globalCwd } : {}),
   };
   return runWatchLoop(
-    { cwd, debounce, once },
+    { cwd, debounce, once, paths },
     {
       snapshot: async (): Promise<void> => {
         const ts = new Date().toLocaleTimeString();

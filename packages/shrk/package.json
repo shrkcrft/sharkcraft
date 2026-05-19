@@ -1,7 +1,7 @@
 {
-  "name": "@shrkcrft/core",
+  "name": "shrk",
   "version": "0.1.0-alpha.6",
-  "description": "SharkCraft core primitives: Result, AppError, logger, file-system abstraction, path/string/object utils, IDs.",
+  "description": "Unscoped install path for the SharkCraft CLI. `npx shrk@alpha <cmd>` forwards to @shrkcrft/cli.",
   "license": "MIT",
   "author": "SharkCraft contributors",
   "type": "module",
@@ -10,9 +10,13 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     }
+  },
+  "bin": {
+    "shrk": "./dist/bin.js"
   },
   "files": [
     "dist",
@@ -22,7 +26,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/shrkcrft/sharkcraft.git",
-    "directory": "packages/core"
+    "directory": "packages/shrk"
   },
   "homepage": "https://github.com/shrkcrft/sharkcraft",
   "bugs": {
@@ -30,11 +34,10 @@
   },
   "keywords": [
     "sharkcraft",
-    "core",
-    "result",
-    "error",
-    "logger",
-    "path"
+    "cli",
+    "shrk",
+    "ai-agent",
+    "mcp"
   ],
   "engines": {
     "bun": ">=1.1.0",
@@ -44,8 +47,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "jiti": "^2.7.0"
+    "@shrkcrft/cli": "workspace:*"
   },
+  "publishPinExact": [
+    "@shrkcrft/cli"
+  ],
   "publishConfig": {
     "access": "public"
   }

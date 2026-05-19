@@ -10,13 +10,13 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { pathToFileURL } from 'node:url';
 import {
   validateRegistrationHint,
   type IRegistrationHint,
   type IRegistrationHintOperation,
 } from '@shrkcrft/plugin-api';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const REGISTRATION_HINT_REGISTRY_SCHEMA = 'sharkcraft.registration-hint-registry/v1';
 
@@ -42,7 +42,7 @@ export interface IRegistrationHintDoctorIssue {
 }
 
 async function importDefault<T>(file: string): Promise<readonly T[]> {
-  const mod = (await import(pathToFileURL(file).href)) as {
+  const mod = (await importModuleViaLoader(file)) as {
     default?: readonly T[] | T;
     registrationHints?: readonly T[];
   };
