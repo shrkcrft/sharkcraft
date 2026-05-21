@@ -421,24 +421,9 @@ export async function simulatePlan(
           sizeBytes: Number(c.sizeBytes ?? 0),
         }));
 
-  // Marker-driven detection. Project-specific markers identify pack-owned regions.
-  // Markers come from registered lifecycle profiles. The engine ships only
-  // generic naming conventions.
-  const baseKeyTableMarkers = ['PluginKey', 'pluginKeys'];
-  const profileKeyMarkers: string[] = [];
-  try {
-    const { listPluginLifecycleProfiles } = await import('./plugin-lifecycle-profile-registry.ts');
-    const profiles = await listPluginLifecycleProfiles(inspection);
-    for (const entry of profiles) {
-      if (entry.profile.keyTable?.path) {
-        const base = entry.profile.keyTable.path.split('/').pop()?.replace(/\.\w+$/, '');
-        if (base) profileKeyMarkers.push(base);
-      }
-    }
-  } catch {
-    // best-effort
-  }
-  const KEY_TABLE_MARKERS = [...baseKeyTableMarkers, ...profileKeyMarkers];
+  // Marker-driven detection. Generic naming conventions for common
+  // pack-owned regions; the engine ships only these defaults.
+  const KEY_TABLE_MARKERS = ['Keys', 'keys'];
   const EVENT_REGISTRY_MARKERS = ['EventRegistry', 'EVENTS', 'eventRegistry', 'events.ts'];
   const TOKEN_REGISTRY_MARKERS = ['TokenRegistry', 'TOKENS', 'tokenRegistry', 'tokens.ts'];
 

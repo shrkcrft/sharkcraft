@@ -234,10 +234,14 @@ async function applyPresetInit(cwd: string, mode: IInitMode): Promise<number> {
     renderPathsAdvisory(pathsAdvisory);
   }
   process.stdout.write('\nNext:\n');
-  for (const cmd of preset.recommendedNextCommands ?? [
-    'shrk doctor',
-    'shrk context --task "<task>"',
-  ]) {
+  process.stdout.write(bullet('$ shrk doctor                            — verify the setup (shape-aware verdict)') + '\n');
+  process.stdout.write(
+    bullet('$ shrk brief                             — single-page brief Claude reads first') + '\n',
+  );
+  process.stdout.write(
+    bullet('$ shrk export claude-skill --write       — inline the rules into Claude\'s prompt via .claude/skills/') + '\n',
+  );
+  for (const cmd of preset.recommendedNextCommands ?? []) {
     process.stdout.write(bullet(`$ ${cmd}`) + '\n');
   }
   process.stdout.write(
@@ -308,15 +312,26 @@ function applyLegacyInit(cwd: string, force: boolean): number {
 export const initCommand: ICommandHandler = {
   name: 'init',
   description:
-    'Initialize a sharkcraft/ folder in the current repository. Pass --preset <id> to apply a built-in preset (default: generic). Use --zero-config or --preset auto to detect the workspace and pick a preset automatically. Use --legacy for the full pre-preset seed.',
+    'Initialize a sharkcraft/ folder in the current repository. Pass --preset <id> to apply a built-in preset (default: generic). Use --zero-config or --preset auto to detect the workspace and pick a preset automatically. Use --legacy for the full pre-preset seed. Pass --infer to scan the repo and populate sharkcraft/* with the real signals it finds (paths from disk, rules from tsconfig/package.json, boundaries from layer structure) — combines with --preset to add inferred entries on top of the preset baseline. Pass --with-claude-skill to also generate .claude/skills/<name>/SKILL.md so Claude Code picks up the rules automatically.',
   usage:
-    'shrk init [--preset <id|auto>] [--zero-config] [--dry-run] [--write] [--legacy] [--force] [--merge] [--suggest-only] [--no-gitignore] [--surface-profile <id>]',
+    'shrk init [--preset <id|auto>] [--zero-config] [--infer] [--dry-run] [--write] [--with-claude-skill] [--legacy] [--force] [--merge] [--suggest-only] [--no-gitignore] [--surface-profile <id>]',
   async run(args: ParsedArgs): Promise<number> {
     const force = flagBool(args, 'force');
     const merge = flagBool(args, 'merge');
     const cwd = resolveCwd(args);
+    const wantInfer = flagBool(args, 'infer');
 
     const skipGitignore = flagBool(args, 'no-gitignore');
+
+    // `--infer` mode short-circuits the preset path entirely. The
+    // inferred output IS the populated sharkcraft/*, no preset
+    // baseline to merge against. This is the cleaner contract: the
+    // user opted into "scan my repo and tell me what's there", and
+    // adding a preset's static defaults on top would muddy the
+    // confidence reporting in .inferred-report.md.
+    if (wantInfer) {
+      return runInferInit(cwd, args, force);
+    }
 
     if (flagBool(args, 'legacy')) {
       const code = applyLegacyInit(cwd, force);
@@ -385,7 +400,7 @@ export const initCommand: ICommandHandler = {
       );
     }
 
-    return applyPresetInit(cwd, {
+    const presetCode = await applyPresetInit(cwd, {
       presetId,
       dryRun,
       force,
@@ -395,5 +410,175 @@ export const initCommand: ICommandHandler = {
       surfaceProfile: surfaceDecision.profile,
       surfaceProfileReason: surfaceDecision.reason,
     });
+
+    // `--with-claude-skill` chains the claude-skill export onto the init
+    // so a fresh user goes from `npx shrk init --with-claude-skill --write`
+    // to a working .claude/skills/<name>/SKILL.md in one step. Skipped in
+    // dry-run + when init itself didn't succeed.
+    if (
+      presetCode === 0 &&
+      !dryRun &&
+      (flagBool(args, 'with-claude-skill') || flagBool(args, 'with-skill'))
+    ) {
+      const skillCode = await runClaudeSkillExportAfterInit(cwd, force);
+      // Init success is what we report; skill failure is logged but
+      // doesn't fail the init exit code (otherwise users would see a
+      // half-applied repo with a non-zero exit and panic).
+      if (skillCode !== 0) {
+        process.stderr.write(
+          '\n(claude-skill export failed — re-run `shrk export claude-skill --write` to retry.)\n',
+        );
+      }
+    }
+    return presetCode;
   },
 };
+
+/**
+ * Chain the claude-skill export onto a successful init. Loads the
+ * exporter lazily (it depends on inspectSharkcraft which has its own
+ * caching) and writes the skill file using the same `--force` semantics
+ * as init itself.
+ */
+/**
+ * `shrk init --infer` — scan the repo and populate `sharkcraft/*`
+ * with the real signals it finds, instead of writing preset defaults.
+ *
+ * Pipeline:
+ *   1. `inspectSharkcraft({ cwd })` builds the full inspection.
+ *   2. `buildOnboardingPlan(inspection)` extracts inferred paths,
+ *      rules, boundaries, pipelines, verification commands.
+ *   3. `synthesizeFromOnboarding(plan)` triages each entry by
+ *      confidence and emits populated `sharkcraft/*.ts` files plus
+ *      a companion `.inferred-report.md` + `.inferred-report.json`.
+ *   4. Writer respects `--dry-run` / `--write` / `--force` /
+ *      `--with-claude-skill` semantics consistently with the
+ *      preset-init path.
+ *
+ * Honest-by-default: every adopted entry is tagged with its source
+ * signal; medium-confidence rows get a `// TODO: review` marker; low-
+ * confidence rows are dropped from the populated files and listed in
+ * the report so the user knows exactly what was inferred vs needs
+ * authoring.
+ */
+async function runInferInit(
+  cwd: string,
+  args: ParsedArgs,
+  force: boolean,
+): Promise<number> {
+  const { inspectSharkcraft, buildOnboardingPlan, synthesizeFromOnboarding } =
+    await import('@shrkcrft/inspector');
+  const dryRun = !flagBool(args, 'write');
+  const sharkcraftDir = nodePath.join(cwd, 'sharkcraft');
+
+  process.stdout.write(header('SharkCraft init — infer'));
+  process.stdout.write(`Folder: ${sharkcraftDir}\n`);
+
+  const inspection = await inspectSharkcraft({ cwd });
+  const plan = buildOnboardingPlan(inspection);
+  const result = synthesizeFromOnboarding(plan);
+
+  // Summary block — print BEFORE writing so the user can ctrl-C if the
+  // confidence triage doesn't look right.
+  process.stdout.write(`\nDetected profiles: ${plan.projectSummary.profiles.join(', ') || '(none)'}\n`);
+  process.stdout.write(
+    `Inference triage: ${result.report.adoptedHigh.length} adopted directly · ` +
+      `${result.report.adoptedMedium.length} marked for review · ` +
+      `${result.report.dropped.length} dropped (in report).\n\n`,
+  );
+
+  const written: string[] = [];
+  const skipped: string[] = [];
+  const wouldWrite: string[] = [];
+
+  for (const file of result.files) {
+    const fullPath = nodePath.join(sharkcraftDir, file.path);
+    if (dryRun) {
+      wouldWrite.push(file.path);
+      continue;
+    }
+    mkdirSync(nodePath.dirname(fullPath), { recursive: true });
+    if (existsSync(fullPath) && !force) {
+      skipped.push(file.path);
+      continue;
+    }
+    writeFileSync(fullPath, file.content, 'utf8');
+    written.push(file.path);
+  }
+
+  if (dryRun) {
+    process.stdout.write('Would write:\n');
+    for (const p of wouldWrite) process.stdout.write(bullet(p) + '\n');
+    process.stdout.write('\nRe-run with --write to persist.\n');
+    return 0;
+  }
+
+  if (written.length) {
+    process.stdout.write('Wrote:\n');
+    for (const p of written) process.stdout.write(bullet(p) + '\n');
+  }
+  if (skipped.length) {
+    process.stdout.write('\nSkipped (already exist; use --force to overwrite):\n');
+    for (const p of skipped) process.stdout.write(bullet(p) + '\n');
+  }
+
+  process.stdout.write(
+    `\nRead the confidence report: \`${nodePath.join('sharkcraft', '.inferred-report.md')}\`\n` +
+      `It lists what was adopted high-confidence, what's marked for your review, ` +
+      `and what shrk can't infer (project-specific decisions you should author by hand).\n`,
+  );
+
+  process.stdout.write('\nNext:\n');
+  process.stdout.write(bullet('$ shrk doctor                            — verify the setup (shape-aware verdict)') + '\n');
+  process.stdout.write(bullet('$ shrk brief                             — single-page brief Claude reads first') + '\n');
+  process.stdout.write(
+    bullet('$ shrk export claude-skill --write       — inline the rules into Claude\'s prompt') + '\n',
+  );
+
+  // Chain claude-skill if requested.
+  if (flagBool(args, 'with-claude-skill') || flagBool(args, 'with-skill')) {
+    const skillCode = await runClaudeSkillExportAfterInit(cwd, force);
+    if (skillCode !== 0) {
+      process.stderr.write(
+        '\n(claude-skill export failed — re-run `shrk export claude-skill --write` to retry.)\n',
+      );
+    }
+  }
+
+  // Gitignore + paths advisory same as preset path.
+  const skipGitignore = flagBool(args, 'no-gitignore');
+  if (!skipGitignore) {
+    const patch = ensureSharkcraftGitignore({ cwd, dryRun: false });
+    if (patch.added.length > 0) {
+      process.stdout.write('\n' + renderGitignorePatch(patch, false));
+    }
+  }
+
+  return 0;
+}
+
+async function runClaudeSkillExportAfterInit(
+  cwd: string,
+  force: boolean,
+): Promise<number> {
+  const { inspectSharkcraft } = await import('@shrkcrft/inspector');
+  const { renderExport } = await import('../export/export-formats.ts');
+  const inspection = await inspectSharkcraft({ cwd });
+  const result = renderExport(inspection, { format: 'claude-skill' });
+  const outputPath = nodePath.join(cwd, result.suggestedPath);
+  mkdirSync(nodePath.dirname(outputPath), { recursive: true });
+  if (existsSync(outputPath) && !force) {
+    process.stdout.write(
+      `\nSkipped claude-skill export — ${result.suggestedPath} already exists. Pass --force to overwrite, or run \`shrk export claude-skill --write --force\`.\n`,
+    );
+    return 0;
+  }
+  writeFileSync(outputPath, result.content, 'utf8');
+  process.stdout.write('\n');
+  process.stdout.write(header('Claude-skill exported'));
+  process.stdout.write(
+    `Wrote ${result.suggestedPath}\n` +
+      `  → Claude Code will auto-load this skill in any session opened against this repo.\n`,
+  );
+  return 0;
+}

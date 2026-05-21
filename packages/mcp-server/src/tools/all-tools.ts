@@ -215,7 +215,8 @@ import {
 } from './r27-polyglot.tool.ts';
 
 import { getChangedBoundaryReportTool } from './r28-changed-boundary.tool.ts';
-import { previewPluginRemoveTool, previewPluginRenameTool } from './r28-plugin-lifecycle.tool.ts';
+import { getDiffCheckReportTool } from './diff-check.tool.ts';
+import { getFileAdviceTool } from './file-advice.tool.ts';
 import { getHelperTool, listHelpersTool, previewHelperPlanTool } from './r28-helpers.tool.ts';
 import { getPackDevStatusTool, previewPackTestsTool } from './r28-pack-author.tool.ts';
 import { getRegistryLifecycleReportTool } from './r28-registry-lifecycle.tool.ts';
@@ -259,9 +260,6 @@ import {
   listProfilesTool,
   getProfileTool,
   getProfilesDoctorTool,
-  listPluginLifecycleProfilesTool,
-  getPluginLifecycleProfileTool,
-  getPluginLifecycleProfileDoctorTool,
 } from './r32-profiles.tool.ts';
 import { getProjectCouplingReportTool } from './r32-project-coupling.tool.ts';
 import {
@@ -492,8 +490,8 @@ export const ALL_TOOLS: readonly IToolDefinition[] = Object.freeze([
   getLanguageCacheStatusTool,
   getLanguageProfilesLiveTool,
   getChangedBoundaryReportTool,
-  previewPluginRenameTool,
-  previewPluginRemoveTool,
+  getDiffCheckReportTool,
+  getFileAdviceTool,
   listHelpersTool,
   getHelperTool,
   previewHelperPlanTool,
@@ -528,9 +526,6 @@ export const ALL_TOOLS: readonly IToolDefinition[] = Object.freeze([
   listProfilesTool,
   getProfileTool,
   getProfilesDoctorTool,
-  listPluginLifecycleProfilesTool,
-  getPluginLifecycleProfileTool,
-  getPluginLifecycleProfileDoctorTool,
   getProjectCouplingReportTool,
   getPackContributionsTool,
   getPackConflictsTool,

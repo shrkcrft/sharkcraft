@@ -200,12 +200,6 @@ const KEYWORD_RULES: IKeywordRule[] = [
     suggestedCommands: ['shrk commands list --filter mcp'],
   },
   {
-    pattern: /\b(plugin)\b/i,
-    tags: ['plugin'],
-    targetArea: 'plugin-lifecycle',
-    suggestedCommands: ['shrk plugin lifecycle list', 'shrk plugin rename <old> <new>'],
-  },
-  {
     pattern: /\b(helper[s]?)\b/i,
     tags: ['helpers'],
     targetArea: 'helpers',

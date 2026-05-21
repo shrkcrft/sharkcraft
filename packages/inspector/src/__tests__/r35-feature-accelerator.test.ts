@@ -33,7 +33,6 @@ import {
 import {
   buildUncertaintyReport,
   buildRegistrationHintRegistryFixture,
-  PLUGIN_LIFECYCLE_SYNTHETIC_TEMPLATE,
   type IRegistrationHint,
 } from './r35-fixtures.ts';
 
@@ -150,12 +149,12 @@ describe('source operation primitives', () => {
     const root = makeTempProject();
     writeFileSync(
       nodePath.join(root, 'keys.ts'),
-      `export const FEATURE_KEYS = {\n  USER_CARD: 'userCard',\n} as const;\n`,
+      `export const ROUTE_KEYS = {\n  USER_CARD: 'userCard',\n} as const;\n`,
       'utf8',
     );
     const change = evaluateOp(root, 'keys.ts', {
       kind: 'insert-object-entry',
-      objectName: 'FEATURE_KEYS',
+      objectName: 'ROUTE_KEYS',
       entryKey: 'PAGINATION',
       entryValue: `'pagination'`,
     });
@@ -265,7 +264,7 @@ describe('saved plan folder ops', () => {
 
 describe('synthetic plan evaluation', () => {
   it('detects synthetic templateId by prefix', () => {
-    expect(isSyntheticTemplateId(PLUGIN_LIFECYCLE_SYNTHETIC_TEMPLATE)).toBe(true);
+    expect(isSyntheticTemplateId('__helper__')).toBe(true);
     expect(isSyntheticTemplateId('demo.event')).toBe(false);
   });
 

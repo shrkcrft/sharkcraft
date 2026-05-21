@@ -73,13 +73,9 @@ field exists, we fall back to the `has-bun` profile signal, otherwise `npm`.
 
 ## Boundary rules
 
-Triggered only when **3 or more** of `core, common, runtime, kernel, plugin,
-adapter, ui` appear as top-level directories or as children of `libs/` /
-`packages/`. For each detected layer we emit an `architecture.<layer>.no-imports-up`
-rule whose `forbiddenImports` lists every higher layer detected.
-
-This is conservative on purpose — it avoids generating rules for repos where
-layers are not actually a thing.
+Boundary rules are not inferred. Author them explicitly in
+`sharkcraft/boundaries.ts` once the repo's actual import directions
+are known. The engine does not guess architecture shapes.
 
 ## Template candidates
 

@@ -47,7 +47,7 @@ See [inference.md](./inference.md) for the full inference rules. A summary:
 |---|---|
 | Path conventions | Detected folders (`src/`, `src/services`, `libs/`, `apps/`, `tests/`, …) |
 | Verification commands | `package.json scripts.{test,typecheck,lint,build,affected:*}` |
-| Boundary rules | Layer-style folder names (`core / common / runtime / kernel / plugin / adapter / ui`) — only when 3+ detected |
+| Boundary rules | Not inferred — author explicitly in `sharkcraft/boundaries.ts` once import directions are known |
 | Template candidates | File-name patterns (`*.service.ts`, `*.util.ts`, `*.component.tsx`, `*.spec.ts`) |
 | Rules | Package manager, TS strict, test runner, monorepo layout, ESLint, existing AGENTS.md/CLAUDE.md/.cursor/rules |
 | Pipelines | Profiles + scripts (`unit-test`, `safe-generation`, `feature-dev`, `release-check`, `pr-review`) |

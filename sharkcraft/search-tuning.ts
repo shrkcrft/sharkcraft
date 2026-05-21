@@ -28,28 +28,6 @@ function defineSearchTuning(t: ILocalSearchTuning): ILocalSearchTuning {
 }
 
 export default [
-  // ─────────────────────────── Plugin lifecycle (R32 generic) ───────────────
-  defineSearchTuning({
-    id: 'r32.bias.plugin-lifecycle',
-    taskHints: [
-      {
-        whenTokens: ['rename', 'plugin'],
-        boostIds: {
-          'engine.plugin-lifecycle-profiles': 4,
-          'plan-v2-no-delete-op': 3,
-        },
-        boostTags: { plugins: 2, lifecycle: 2, rename: 3 },
-      },
-      {
-        whenTokens: ['remove', 'plugin'],
-        boostIds: {
-          'engine.plugin-lifecycle-profiles': 4,
-          'helpers-produce-plans-not-writes': 2,
-        },
-        boostTags: { plugins: 2, lifecycle: 2, remove: 3 },
-      },
-    ],
-  }),
   defineSearchTuning({
     id: 'r29.bias.changed-only-boundaries',
     taskHints: [

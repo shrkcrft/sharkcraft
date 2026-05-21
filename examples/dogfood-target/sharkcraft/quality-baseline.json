@@ -1,7 +1,7 @@
 {
   "schema": "sharkcraft.quality-baseline/v1",
   "createdAt": "2026-05-13T07:30:10.739Z",
-  "projectRoot": "/Users/varadibence/IdeaProjects/SharkCraft-monorepo/examples/dogfood-target",
+  "projectRoot": "examples/dogfood-target",
   "sharkcraftVersion": "0.1.0-alpha.2",
   "configHash": "6f6e9b3b86744c81",
   "qualityScore": 88,

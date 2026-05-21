@@ -146,7 +146,7 @@ export async function runComplianceCheck(
 
   // MCP read-only contract — info only; the canonical check is the
   // separate `shrk safety audit` command, which has access to the MCP
-  // tool list. We surface a hint here so adopters know to run it.
+  // tool list. We surface a hint here so consumers know to run it.
   if (profile.requiredMcpReadOnly) {
     findings.push({
       profileId: profile.id,

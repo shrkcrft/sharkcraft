@@ -50,8 +50,8 @@ describe('strict agent contract expectations', () => {
       inspection,
       {
         id: 'sanity-knowledge-ok',
-        task: 'rename a plugin',
-        expectedKnowledge: ['engine.plugin-lifecycle-profiles'],
+        task: 'fix a boundary issue introduced in my changed files only',
+        expectedKnowledge: ['engine.changed-only-boundaries'],
       },
       registries,
     );

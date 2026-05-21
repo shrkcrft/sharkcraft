@@ -18,7 +18,6 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { listConventions } from './convention-registry.ts';
-import { listPluginLifecycleProfiles } from './plugin-lifecycle-profile-registry.ts';
 import { loadAllContractTemplates } from './contract-template-registry.ts';
 import { listMigrationProfilesFromPacks } from './migration-profile-registry.ts';
 import { listPackHelpers } from './pack-helper-registry.ts';
@@ -59,7 +58,6 @@ export type SelfConfigKind =
   | 'decision'
   | 'profile'
   | 'migration-profile'
-  | 'plugin-lifecycle-profile'
   | 'contract-template'
   | 'pack'
   | 'schema'
@@ -131,7 +129,6 @@ interface IIdLookupsV2 {
   conventions: Set<string>;
   contractTemplates: Set<string>;
   migrationProfiles: Set<string>;
-  pluginLifecycleProfiles: Set<string>;
   helpers: Set<string>;
   routingHints: Set<string>;
   registrationHints: Set<string>;
@@ -159,9 +156,6 @@ async function buildLookupsV2(
 
   const conventions = new Set<string>(
     (await listConventions(inspection)).map((e) => e.convention.id),
-  );
-  const lifecycleProfiles = new Set<string>(
-    (await listPluginLifecycleProfiles(inspection)).map((e) => e.profile.id),
   );
   const contractTemplatesPair = await loadAllContractTemplates(inspection);
   const contractTemplates = new Set<string>(
@@ -231,7 +225,6 @@ async function buildLookupsV2(
     conventions,
     contractTemplates,
     migrationProfiles,
-    pluginLifecycleProfiles: lifecycleProfiles,
     helpers,
     routingHints,
     registrationHints,
@@ -337,7 +330,6 @@ async function checkSearchTuning(
           lookups.templates.has(targetId) ||
           lookups.pipelines.has(targetId) ||
           lookups.contractTemplates.has(targetId) ||
-          lookups.pluginLifecycleProfiles.has(targetId) ||
           lookups.conventions.has(targetId) ||
           lookups.playbooks.has(targetId) ||
           lookups.helpers.has(targetId) ||
@@ -466,17 +458,17 @@ function checkTemplateMetadata(
       });
     }
     for (const id of m.requiredProfileIds ?? []) {
-      if (lookups.pluginLifecycleProfiles.has(id)) continue;
+      if (lookups.migrationProfiles.has(id)) continue;
       pushFinding(findings, {
         severity: SelfConfigSeverityV2.Warning,
         code: 'template-profile-missing',
         sourceKind: 'template',
         sourceId: t.id,
-        targetKind: 'plugin-lifecycle-profile',
+        targetKind: 'profile',
         targetId: id,
         relation: 'requires',
-        message: `Template "${t.id}" requires plugin-lifecycle profile "${id}" but it is not registered.`,
-        nextCommand: 'shrk plugin lifecycle profiles',
+        message: `Template "${t.id}" requires profile "${id}" but it is not registered.`,
+        nextCommand: 'shrk profiles list',
       });
     }
     for (const id of m.registrationHintIds ?? []) {
@@ -536,7 +528,7 @@ async function checkRoutingHints(
     probe(rec.templates, 'template', lookups.templates);
     probe(rec.helpers, 'helper', lookups.helpers);
     probe(rec.conventions, 'convention', lookups.conventions);
-    probe(rec.profiles, 'plugin-lifecycle-profile', lookups.pluginLifecycleProfiles);
+    probe(rec.profiles, 'profile', lookups.migrationProfiles);
     probe(rec.commands, 'command', lookups.commands);
     probe(rec.playbooks, 'playbook', lookups.playbooks);
   }
@@ -687,7 +679,7 @@ async function checkRegistrationHints(
     };
     probe(h.relatedTemplateIds, 'template', lookups.templates);
     probe(h.relatedConventionIds, 'convention', lookups.conventions);
-    probe(h.relatedProfileIds, 'plugin-lifecycle-profile', lookups.pluginLifecycleProfiles);
+    probe(h.relatedProfileIds, 'profile', lookups.migrationProfiles);
   }
 }
 

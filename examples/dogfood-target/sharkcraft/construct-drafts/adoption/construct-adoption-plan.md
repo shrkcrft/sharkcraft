@@ -1,7 +1,7 @@
 # Construct adoption plan
 
 Generated: 2026-05-13T20:42:49.332Z
-Drafts: /Users/varadibence/IdeaProjects/SharkCraft-monorepo/examples/dogfood-target/sharkcraft/construct-drafts/constructs.draft.ts
+Drafts: examples/dogfood-target/sharkcraft/construct-drafts/constructs.draft.ts
 
 ## Summary
 

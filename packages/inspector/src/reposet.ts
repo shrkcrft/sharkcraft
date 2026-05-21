@@ -86,7 +86,7 @@ function exampleConfigBody(): string {
       schema: REPOSET_SCHEMA,
       repos: [
         { id: 'sharkcraft', name: 'SharkCraft', root: '.', tags: ['engine'], role: 'engine' },
-        { id: 'example-adopter', name: 'Example adopter project', root: '../example-adopter', tags: ['adopter'], role: 'adopter' },
+        { id: 'example-consumer', name: 'Example consumer project', root: '../example-consumer', tags: ['consumer'], role: 'consumer' },
       ],
     },
     null,

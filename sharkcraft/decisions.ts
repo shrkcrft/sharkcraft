@@ -133,9 +133,9 @@ export default [
     status: 'accepted',
     date: '2026-05-15',
     context:
-      'Each adopter project has its own folder layout. SharkCraft itself does not know which folders any specific project uses.',
+      'Each consumer project has its own folder layout. SharkCraft itself does not know which folders any specific project uses.',
     decision:
-      'Document recommended additions in adopter-side reports and leave pack maintainers to paste the conventions into `<pack>/src/assets/paths.ts`. SharkCraft engine code never duplicates project-specific knowledge.',
+      'Document recommended additions in consumer-side reports and leave pack maintainers to paste the conventions into `<pack>/src/assets/paths.ts`. SharkCraft engine code never duplicates project-specific knowledge.',
     consequences:
       'Engine stays free of project-specific data. Pack maintainers decide when to publish additions and re-sign the manifest.',
   }),

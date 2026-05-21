@@ -1,7 +1,7 @@
 # Runtime compatibility
 
 SharkCraft is **Bun-first** for local development. The published CLI and
-MCP server should also run under **Node** so that adopters who don't use
+MCP server should also run under **Node** so that consumers who don't use
 Bun can still consume them.
 
 This document records the current state and the audit tooling.
@@ -38,7 +38,7 @@ runtime. Test files (`__tests__`) are skipped — those are Bun-only.
 ## Building the dist
 
 `bun run build:dist` produces `packages/<name>/dist/` for every package.
-This is what `npm install <pack>` consumes when an adopter runs under
+This is what `npm install <pack>` consumes when an consumer runs under
 Node.
 
 ## Where Bun is allowed

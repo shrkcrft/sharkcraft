@@ -6,6 +6,7 @@ import {
   isExportFormat,
   renderExport,
 } from '../export/export-formats.ts';
+import { buildClaudeCommands } from '../export/claude-commands-export.ts';
 import {
   flagBool,
   flagNumber,
@@ -14,7 +15,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
-import { asJson, header } from '../output/format-output.ts';
+import { asJson, bullet, header } from '../output/format-output.ts';
 import {
   exportBundleCommand,
   exportSessionCommand,
@@ -32,7 +33,7 @@ const ARCHIVE_SUBCOMMANDS: Record<string, ICommandHandler> = {
 export const exportCommand: ICommandHandler = {
   name: 'export',
   description:
-    'Render SharkCraft knowledge as a flat agent-rule file (AGENTS.md / CLAUDE.md / .cursor/rules / copilot-instructions). Dry-run by default; pass --write to save.',
+    'Inversion — pull SharkCraft rules into the agent\'s prompt instead of the agent calling back to shrk. Single-file outputs: claude-skill (.claude/skills/<name>/SKILL.md, recommended), agents-md (AGENTS.md), claude-md (CLAUDE.md), cursor-rules (.cursor/rules/*.mdc), copilot-instructions. Multi-file output: claude-commands (.claude/commands/*.md — per-project slash commands like /new-service, /check-changes, /follow-shrk). Dry-run by default; pass --write to save.',
   usage:
     'shrk [--cwd <dir>] export <format> [--write] [--output <path>] [--task "<task>"] [--max-rules N] [--max-paths N] [--json]',
   async run(args: ParsedArgs): Promise<number> {
@@ -47,9 +48,14 @@ export const exportCommand: ICommandHandler = {
       const sub: ParsedArgs = { ...args, positional: args.positional.slice(1) };
       return archive.run(sub);
     }
+    // Multi-file `claude-commands` dispatches separately — it emits
+    // one .md per slash command, not a single rendered file.
+    if (format === 'claude-commands') {
+      return runClaudeCommandsExport(args);
+    }
     if (!isExportFormat(format)) {
       process.stderr.write(
-        `Unknown export format "${format}".\nFormats: ${ALL_EXPORT_FORMATS.join(', ')}, bundle, session, quality, review\n`,
+        `Unknown export format "${format}".\nFormats: ${ALL_EXPORT_FORMATS.join(', ')}, claude-commands, bundle, session, quality, review\n`,
       );
       return 2;
     }
@@ -112,3 +118,80 @@ export const exportCommand: ICommandHandler = {
     return 0;
   },
 };
+
+/**
+ * `shrk export claude-commands` — multi-file generator for Claude
+ * Code's native `.claude/commands/` slash-command primitive. Produces
+ * one .md per command (static + per-template).
+ *
+ * Unlike single-file exports (claude-skill / claude-md / etc.) this
+ * writes a SET of files. Each file is a complete recipe Claude Code
+ * loads when the user types the matching slash command.
+ */
+async function runClaudeCommandsExport(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const inspection = await inspectSharkcraft({ cwd });
+  const result = buildClaudeCommands(inspection);
+  const wantJson = flagBool(args, 'json');
+  const doWrite = flagBool(args, 'write');
+  const force = flagBool(args, 'force');
+
+  if (wantJson) {
+    process.stdout.write(
+      asJson({
+        format: 'claude-commands',
+        write: doWrite,
+        files: result.files.map((f) => ({
+          path: f.path,
+          slash: f.slash,
+          source: f.source,
+        })),
+      }) + '\n',
+    );
+    return 0;
+  }
+
+  if (!doWrite) {
+    process.stdout.write(header('Export (claude-commands) — dry-run'));
+    process.stdout.write(`Would write ${result.files.length} command file(s):\n\n`);
+    for (const f of result.files) {
+      process.stdout.write(`  ${f.path}\n`);
+      process.stdout.write(`    → users type \`/${f.slash}\` in Claude Code (${f.source})\n`);
+    }
+    process.stdout.write('\nRe-run with --write to save.\n');
+    return 0;
+  }
+
+  const written: string[] = [];
+  const skipped: string[] = [];
+  for (const file of result.files) {
+    const fullPath = join(cwd, file.path);
+    mkdirSync(dirname(fullPath), { recursive: true });
+    if (existsSync(fullPath) && !force) {
+      skipped.push(file.path);
+      continue;
+    }
+    writeFileSync(fullPath, file.content, 'utf8');
+    written.push(file.path);
+  }
+
+  process.stdout.write(header('Claude commands exported'));
+  if (written.length) {
+    process.stdout.write(`Wrote ${written.length} command file(s):\n`);
+    for (const p of written) {
+      const f = result.files.find((x) => x.path === p)!;
+      process.stdout.write(bullet(`${p}  → \`/${f.slash}\``) + '\n');
+    }
+  }
+  if (skipped.length) {
+    process.stdout.write(
+      `\nSkipped ${skipped.length} (already exist; use --force to overwrite):\n`,
+    );
+    for (const p of skipped) process.stdout.write(bullet(p) + '\n');
+  }
+  process.stdout.write(
+    '\nClaude Code picks up `.claude/commands/*.md` automatically. ' +
+      'Open the project in Claude Code, type `/` — the slash commands are in the palette.\n',
+  );
+  return 0;
+}

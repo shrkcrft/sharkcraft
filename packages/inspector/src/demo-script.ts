@@ -2,7 +2,6 @@ export const DEMO_SCRIPT_SCHEMA = 'sharkcraft.demo-script/v1';
 
 export enum DemoScenario {
   UnconfiguredRepo = 'unconfigured-repo',
-  PlatformPlugin = 'platform-plugin',
   PrReview = 'pr-review',
   Governance = 'governance',
 }
@@ -67,49 +66,6 @@ const SCRIPTS: Record<DemoScenario, IDemoScript> = {
       {
         title: 'Generate a static report site',
         commands: ['shrk report site --output .sharkcraft/reports/site --manifest'],
-      },
-    ],
-  },
-  [DemoScenario.PlatformPlugin]: {
-    schema: DEMO_SCRIPT_SCHEMA,
-    scenario: DemoScenario.PlatformPlugin,
-    title: 'Add a plugin to a platform-adopter project',
-    description:
-      'Uses a pack-contributed plugin construct + playbook + lifecycle profile. SharkCraft does not embed any platform-specific assumptions; everything comes from the pack.',
-    steps: [
-      {
-        title: 'Confirm packs loaded',
-        commands: ['shrk packs doctor --require-signatures'],
-        notes: 'Set SHARKCRAFT_PACK_SECRET so signature verification can run.',
-      },
-      {
-        title: 'Inspect the plugin construct contributed by the pack',
-        commands: ['shrk constructs list --filter plugin', 'shrk constructs get <pack>.plugin'],
-      },
-      {
-        title: 'Walk the add-plugin playbook',
-        commands: [
-          'shrk playbooks recommend "add a profile plugin"',
-          'shrk playbooks list --filter plugin',
-        ],
-      },
-      {
-        title: 'Use the lifecycle profile (rename / remove preview)',
-        commands: [
-          'shrk plugin lifecycle profiles',
-          'shrk plugin lifecycle list --profile <id>',
-          'shrk plugin rename old new --profile <id> --dry-run',
-        ],
-      },
-      {
-        title: 'Render a chunked agent brief',
-        commands: [
-          'shrk brief "create a user profile plugin" --mode implementation --chunk --output-dir .sharkcraft/briefs/profile-plugin',
-        ],
-      },
-      {
-        title: 'Start a dev session and let an agent take it from here',
-        commands: ['shrk dev start "create a user profile plugin" --brief'],
       },
     ],
   },

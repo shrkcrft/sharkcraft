@@ -3,7 +3,7 @@
 `modern-angular` is a baseline Angular preset for signal-aware, standalone-
 first, OnPush-driven, RxJS-disciplined apps. Sub-presets carve out granular
 slices: signals-first, RxJS, standalone components, enterprise architecture,
-performance, testing, accessibility, security, plugin platform.
+performance, testing, accessibility, security.
 
 Apply via:
 
@@ -62,11 +62,6 @@ to bring it into your repo as drafts.
 - `angular.accessible`
 - `angular.security.no-bypass`
 
-### Plugin platform (sub-preset `angular-plugin-platform`)
-
-- `angular.plugin.stable-contract`
-- `angular.plugin.no-deep-imports`
-
 ## Adoption modes
 
 Modern Angular ships an `angular-modes.md` task file describing four
@@ -89,7 +84,6 @@ adoption modes:
 | `angular-testing` | Behaviour over snapshots; deterministic async. |
 | `angular-accessibility` | Semantic HTML + keyboard + focus management. |
 | `angular-security` | No `bypassSecurityTrust*`; validate route params. |
-| `angular-plugin-platform` | Plugin contracts + isolation. |
 
 ## Transformational intent
 

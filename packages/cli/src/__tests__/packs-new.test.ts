@@ -31,12 +31,6 @@ describe('pack scaffolder (planPackScaffold)', () => {
     expect(paths).toContain('src/assets/boundaries.ts');
   });
 
-  test('platform-adopter kind adds the plugin contract example', () => {
-    const r = planPackScaffold({ name: 'platformish', outDir: '/tmp/x', kind: 'platform-adopter' });
-    const paths = r.files.map((f) => f.relativePath);
-    expect(paths).toContain('src/assets/contracts/plugin-contract.example.ts');
-  });
-
   test('enterprise kind adds review-workflow + security-baseline docs', () => {
     const r = planPackScaffold({ name: 'corp', outDir: '/tmp/x', kind: 'enterprise' });
     const paths = r.files.map((f) => f.relativePath);

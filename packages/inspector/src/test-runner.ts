@@ -243,8 +243,8 @@ function buildMissingIncludeSuggestions(
   }
   return [
     `Entry "${id}" exists but did not make the context for task "${task}".`,
-    `Try adding domain-aligned appliesWhen values (create-plugin / generate-service / register-defaults / …).`,
-    `Add task-relevant tags (plugin / capability / adapter / …).`,
+    `Try adding domain-aligned appliesWhen values (generate-service / generate-utility / create-pipeline / …).`,
+    `Add task-relevant tags (service / utility / route / …).`,
     `Reference the entry from a preset's includes.knowledgeIds / ruleIds so it ranks higher.`,
     `Or raise its priority / shorten the title to include task-relevant tokens.`,
   ];
@@ -344,7 +344,7 @@ export function runAgentContractTest(
         suggestions: exists
           ? [
               `Template "${id}" exists but the ranker did not place it in the top results.`,
-              'Add task-aligned tags/appliesWhen to the template (e.g. tags:["plugin"], appliesWhen:["create-plugin"]).',
+              'Add task-aligned tags/appliesWhen to the template (e.g. tags:["service"], appliesWhen:["generate-service"]).',
               'Reference the template from a preset that matches the task profile (includes.templateIds).',
               'Reference it from a pipeline step (`step.references`).',
             ]
@@ -362,8 +362,8 @@ export function runAgentContractTest(
         suggestions: exists
           ? [
               `Rule "${id}" exists but the ranker did not surface it for "${test.task}".`,
-              'Align its appliesWhen with the domain (e.g. create-plugin / register-defaults / generate-service).',
-              'Add domain tags (plugin / capability / adapter / defaults).',
+              'Align its appliesWhen with the domain (e.g. generate-service / generate-utility / create-pipeline).',
+              'Add domain tags (service / utility / route / pipeline).',
               'Reference it from actionHints.relatedTemplates on a rule that *is* ranking, or include it in a preset.',
             ]
           : [

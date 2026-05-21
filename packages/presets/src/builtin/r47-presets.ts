@@ -81,7 +81,7 @@ export const ANGULAR_APP_PRESET: IPreset = definePreset({
   ],
 });
 
-export const R47_PRESETS: readonly IPreset[] = Object.freeze([
+export const CANONICAL_ALIAS_PRESETS: readonly IPreset[] = Object.freeze([
   NEST_SERVICE_PRESET,
   ANGULAR_APP_PRESET,
 ]);

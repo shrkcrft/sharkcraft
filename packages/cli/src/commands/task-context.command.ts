@@ -460,21 +460,6 @@ async function collectLikelyFilesV2(input: ILikelyFilesInput): Promise<ILikelyFi
     }
   }
 
-  // Boost files that sit on registered plugin-lifecycle profile barrels.
-  try {
-    const { listPluginLifecycleProfiles } = await import('@shrkcrft/inspector');
-    const profiles = await listPluginLifecycleProfiles(inspection);
-    for (const entry of profiles) {
-      for (const b of entry.profile.barrels ?? []) {
-        for (const f of [...scoreByPath.keys()]) {
-          if (f.includes(b.path)) bump(f, 3, `lifecycle profile barrel: ${b.id}`);
-        }
-      }
-    }
-  } catch {
-    // Profile registry unavailable — skip the boost.
-  }
-
   // 10) Tests — files that look like they test the matched files.
   const tests: string[] = [];
   for (const f of [...scoreByPath.keys()]) {

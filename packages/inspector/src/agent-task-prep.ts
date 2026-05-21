@@ -13,7 +13,6 @@
  * Read-only. Never writes; never executes commands.
  */
 import { buildTaskPacket } from './task-packet.ts';
-import { listPluginLifecycleProfiles } from './plugin-lifecycle-profile-registry.ts';
 import { listConventions } from './convention-registry.ts';
 import { listTaskRoutingHints, explainTaskRouting } from './task-routing-hint-registry.ts';
 import { buildUncertaintySummary } from './uncertainty.ts';
@@ -45,7 +44,6 @@ export async function prepareAgentTask(
 ): Promise<IAgentTaskPrepReport> {
   const packet = buildTaskPacket(inspection, task);
   const uncertaintyReport = buildUncertaintySummary(packet);
-  const lifecycle = await listPluginLifecycleProfiles(inspection);
   const conventions = await listConventions(inspection);
   const routing = await explainTaskRouting(inspection, task);
   await listTaskRoutingHints(inspection); // warm cache
@@ -84,7 +82,7 @@ export async function prepareAgentTask(
     inspectionCommands,
     generationCommands,
     validationCommands,
-    relevantProfiles: lifecycle.slice(0, 5).map((e) => ({ id: e.profile.id, title: e.profile.title })),
+    relevantProfiles: [],
     relevantConventions: conventions.slice(0, 5).map((e) => ({ id: e.convention.id, title: e.convention.title })),
     routingHints: routing.slice(0, 5).map((m) => ({ id: m.hint.id, title: m.hint.title, reasons: m.reasons })),
     safetyNotes: [

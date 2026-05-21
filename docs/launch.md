@@ -63,7 +63,7 @@ Highlights:
     human to walk.
   • Imports parse existing AGENTS.md / CLAUDE.md / .cursor/rules into
     structured drafts.
-  • A real-world adopter pack ships 60+ entries for a complex monorepo
+  • A real-world consumer pack ships 60+ entries for a complex monorepo
     and verifies under --require-signatures.
 
 This is alpha. Pin exact versions; expect breaking changes before 0.1.0.
@@ -114,7 +114,7 @@ The full copy-paste demo lives in
 2. **MCP:** `mcp serve` over stdio + a Claude Code config snippet; expected
    tools/resources listing.
 3. **Complex repo:** `packs verify --required → doctor →
-   context for plugin dev → pipelines script plugin-dev → plan-first
+   context for a feature → pipelines script feature-dev → plan-first
    generation`.
 
 ## 8. FAQ

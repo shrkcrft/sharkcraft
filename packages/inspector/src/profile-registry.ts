@@ -1,21 +1,19 @@
 /**
  * Generic profile registry.
  *
- * Unifies profile-shaped contributions (plugin lifecycle profiles, migration
- * profiles, future profile kinds) under a single `shrk profiles ...` surface.
- * The engine ships zero built-in profiles; everything comes from pack
- * contributions or local config.
+ * Unifies profile-shaped contributions (migration profiles, future
+ * profile kinds) under a single `shrk profiles ...` surface. The engine
+ * ships zero built-in profiles; everything comes from pack contributions
+ * or local config.
  *
  * Read-only.
  */
-import { listPluginLifecycleProfiles } from './plugin-lifecycle-profile-registry.ts';
 import { loadMigrationProfiles } from './migration-profile-registry.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
 export const PROFILE_REGISTRY_SCHEMA = 'sharkcraft.profile-registry/v1';
 
 export enum ProfileKind {
-  PluginLifecycle = 'plugin-lifecycle',
   Migration = 'migration',
   /** Future: command-behavior, generator, boundary, naming, architecture, language, report. */
 }
@@ -57,32 +55,6 @@ export async function loadAllProfiles(
 }> {
   const entries: IProfileEntry[] = [];
   const issues: IProfileRegistryIssue[] = [];
-
-  // Plugin lifecycle profiles
-  try {
-    const lifecycle = await listPluginLifecycleProfiles(inspection);
-    for (const e of lifecycle) {
-      entries.push({
-        id: e.profile.id,
-        kind: ProfileKind.PluginLifecycle,
-        title: e.profile.title,
-        ...(e.profile.description ? { description: e.profile.description } : {}),
-        source: e.source as unknown as ProfileSource,
-        ...(e.packageName ? { packageName: e.packageName } : {}),
-        sourceFile: e.sourceFile,
-        ...(e.profile.tags ? { tags: e.profile.tags } : {}),
-        ...(e.profile.appliesWhen ? { appliesWhen: e.profile.appliesWhen } : {}),
-        payload: e.profile,
-      });
-    }
-  } catch (err) {
-    issues.push({
-      severity: 'warning',
-      code: 'lifecycle-load-failed',
-      message: `Plugin lifecycle profile load failed: ${(err as Error).message}`,
-      kind: ProfileKind.PluginLifecycle,
-    });
-  }
 
   // Migration profiles
   try {

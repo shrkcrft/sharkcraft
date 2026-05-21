@@ -266,7 +266,14 @@ export function renderConstructAdoptionMarkdown(plan: IConstructAdoptionPlan): s
   lines.push('# Construct adoption plan');
   lines.push('');
   lines.push(`Generated: ${plan.generatedAt}`);
-  lines.push(`Drafts: ${plan.draftsFile ?? '(none)'}`);
+  // Render the drafts path relative to the project root so the rendered
+  // markdown (which often gets committed) doesn't leak absolute paths.
+  const relDrafts = plan.draftsFile
+    ? plan.draftsFile.startsWith(plan.projectRoot + nodePath.sep)
+      ? plan.draftsFile.slice(plan.projectRoot.length + 1)
+      : nodePath.basename(plan.draftsFile)
+    : '(none)';
+  lines.push(`Drafts: ${relDrafts}`);
   lines.push('');
   lines.push('## Summary');
   lines.push('');

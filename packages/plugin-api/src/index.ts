@@ -12,7 +12,6 @@ export * from './construct.ts';
 export * from './playbook.ts';
 export * from './policy-check.ts';
 export * from './search-tuning.ts';
-export * from './plugin-lifecycle-profile.ts';
 export * from './convention.ts';
 export * from './pack-helper.ts';
 export * from './task-routing-hint.ts';

@@ -9,9 +9,9 @@ date: 2026-05-15
 
 ## Context
 
-R28 introduced plugin lifecycle helpers (`shrk plugin rename`, `shrk plugin
-remove`). The natural design was to add `delete-file` and `rename-folder`
-operations to the plan engine.
+Various scaffolding helpers want to delete files or rename folders as part
+of a generated plan. The natural design was to add `delete-file` and
+`rename-folder` operations to the plan engine.
 
 We chose not to.
 
@@ -32,8 +32,8 @@ helpers emit a structured `manualSteps` checklist with `kind:
 
 - Destructive folder operations stay in human hands. A plan can be
   applied automatically; a destructive checklist cannot.
-- Lifecycle helpers are robust to "I changed my mind" — the human can
-  skip the manual step and only the plan's edit ops apply.
+- Helpers are robust to "I changed my mind" — the human can skip the
+  manual step and only the plan's edit ops apply.
 - Adding a `delete-file` operation requires a follow-up ADR that
   supersedes this one and explicitly addresses approval flow.
 
@@ -44,6 +44,4 @@ helpers emit a structured `manualSteps` checklist with `kind:
 
 ## Related commands
 
-- shrk plugin remove
-- shrk plugin rename
 - shrk apply

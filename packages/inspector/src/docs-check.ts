@@ -141,7 +141,7 @@ export function buildDocsCheck(
         severity: 'warning',
         message: 'README does not explicitly state that MCP is read-only.',
         file: 'README.md',
-        suggestion: 'Include the phrase "MCP is read-only" so adopters can scan-find it.',
+        suggestion: 'Include the phrase "MCP is read-only" so consumers can scan-find it.',
       });
     }
     // Validate internal links.

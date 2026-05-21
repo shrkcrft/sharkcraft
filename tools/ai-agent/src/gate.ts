@@ -1,5 +1,5 @@
-import { ALLOWED_ACTORS } from './config/allowed-actors.ts';
-import { MAINTAINERS } from './config/maintainers.ts';
+import { getAllowedActors } from './config/allowed-actors.ts';
+import { getMaintainers } from './config/maintainers.ts';
 import { LABELS } from './config/labels.ts';
 
 export interface IIssueEventLabel {
@@ -33,7 +33,7 @@ const AI_TITLE_PREFIX = '[AI]';
 export function gate(event: IIssueEvent): IGateDecision {
   if (event.action === 'opened') {
     const author = event.issue.user.login;
-    const isAllowed = ALLOWED_ACTORS.includes(author);
+    const isAllowed = getAllowedActors().includes(author);
     const hasPrefix = event.issue.title.startsWith(AI_TITLE_PREFIX);
     if (isAllowed && hasPrefix) {
       return {
@@ -59,7 +59,7 @@ export function gate(event: IIssueEvent): IGateDecision {
     if (labelName !== LABELS.plan && labelName !== LABELS.implement) {
       return { kind: 'ignore', reason: `unrelated label "${labelName}"` };
     }
-    if (!MAINTAINERS.includes(senderLogin)) {
+    if (!getMaintainers().includes(senderLogin)) {
       return {
         kind: 'ignore',
         reason: `label "${labelName}" applied by non-maintainer ${senderLogin}`,

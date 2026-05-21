@@ -129,7 +129,7 @@ returns a `nextCommand` hint; humans run the writes on the CLI.
   commands + how to see more). `shrk --full-help` keeps the long form.
 - `shrk commands` (no subcommand) prints the compact view: primary +
   curated common. `shrk commands --all` brings back the full catalog.
-- Free-form input (`shrk rename a plugin safely`) returns a
+- Free-form input (`shrk rename a service safely`) returns a
   did-you-mean pointing at `shrk recommend "<task>"` — no writes,
   exit 2.
 

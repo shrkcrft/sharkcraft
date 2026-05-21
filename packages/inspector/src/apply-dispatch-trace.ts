@@ -17,7 +17,6 @@ export const APPLY_DISPATCH_TRACE_SCHEMA = 'sharkcraft.apply-dispatch-trace/v1';
 export enum DispatchKind {
   Template = 'template',
   Helper = 'helper',
-  PluginLifecycle = 'plugin-lifecycle',
   RegistrationHint = 'registration-hint',
   Synthetic = 'synthetic',
   Unknown = 'unknown',
@@ -26,7 +25,6 @@ export enum DispatchKind {
 export type DispatchSource =
   | 'registry/template'
   | 'registry/helper'
-  | 'registry/plugin-lifecycle-profile'
   | 'registry/registration-hint'
   | 'synthetic'
   | 'unknown';
@@ -114,7 +112,6 @@ export interface IBuildDispatchTraceOptions {
 }
 
 const TEMPLATE_PREFIX_HELPER = '__helper__';
-const TEMPLATE_PREFIX_PLUGIN_LIFECYCLE = '__plugin-lifecycle__';
 const TEMPLATE_PREFIX_REGISTRATION_HINT = '__registration-hint__';
 
 function classifyTemplate(templateId: string): {
@@ -128,14 +125,6 @@ function classifyTemplate(templateId: string): {
       source: 'registry/helper',
       handler:
         '@shrkcrft/inspector/helper-registry + @shrkcrft/generator/synthetic-plan.evaluateSavedPlanInPlace',
-    };
-  }
-  if (templateId.startsWith(TEMPLATE_PREFIX_PLUGIN_LIFECYCLE)) {
-    return {
-      kind: DispatchKind.PluginLifecycle,
-      source: 'registry/plugin-lifecycle-profile',
-      handler:
-        '@shrkcrft/inspector/plugin-lifecycle + @shrkcrft/generator/synthetic-plan.evaluateSavedPlanInPlace',
     };
   }
   if (templateId.startsWith(TEMPLATE_PREFIX_REGISTRATION_HINT)) {

@@ -1,8 +1,23 @@
-import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { orchestrate } from '../src/orchestrate.ts';
 import type { IIssueEvent } from '../src/gate.ts';
 import { AgentError, ErrorCategory } from '../src/errors.ts';
 import type { IAgentRunner } from '../src/runner/types.ts';
+
+// Generic test fixture login — see gate.test.ts for the rationale.
+const TEST_ACTOR = 'repo-owner';
+const savedAllowed = process.env['SHARKCRAFT_AI_ALLOWED_ACTORS'];
+const savedMaintainers = process.env['SHARKCRAFT_AI_MAINTAINERS'];
+beforeAll(() => {
+  process.env['SHARKCRAFT_AI_ALLOWED_ACTORS'] = TEST_ACTOR;
+  process.env['SHARKCRAFT_AI_MAINTAINERS'] = TEST_ACTOR;
+});
+afterAll(() => {
+  if (savedAllowed === undefined) delete process.env['SHARKCRAFT_AI_ALLOWED_ACTORS'];
+  else process.env['SHARKCRAFT_AI_ALLOWED_ACTORS'] = savedAllowed;
+  if (savedMaintainers === undefined) delete process.env['SHARKCRAFT_AI_MAINTAINERS'];
+  else process.env['SHARKCRAFT_AI_MAINTAINERS'] = savedMaintainers;
+});
 
 function event(
   overrides: Partial<Omit<IIssueEvent, 'issue'>> & { issue?: Partial<IIssueEvent['issue']> } = {},
@@ -14,7 +29,7 @@ function event(
       number: 42,
       title: '[AI] do a thing',
       body: 'body text',
-      user: { login: 'bence312' },
+      user: { login: 'repo-owner' },
       ...issueOverride,
     },
     ...rest,
@@ -55,6 +70,10 @@ beforeEach(() => {
   process.env.GITHUB_REPOSITORY = 'owner/repo';
   process.env.GITHUB_SERVER_URL = 'https://github.com';
   process.env.GITHUB_RUN_ID = '12345';
+  // The gate reads these per-call; restore them every test in case a
+  // prior afterEach reset the env to the pre-test snapshot.
+  process.env['SHARKCRAFT_AI_ALLOWED_ACTORS'] = TEST_ACTOR;
+  process.env['SHARKCRAFT_AI_MAINTAINERS'] = TEST_ACTOR;
   delete process.env.GITHUB_STEP_SUMMARY;
 });
 
@@ -87,7 +106,7 @@ describe('orchestrate — gate outcomes', () => {
       event({
         action: 'labeled',
         label: { name: 'ai:implement' },
-        sender: { login: 'bence312' },
+        sender: { login: 'repo-owner' },
       }),
       { runner, writeStepSummaryFn: () => {} },
     );

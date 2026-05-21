@@ -2,7 +2,7 @@
 
 `shrk report` renders runtime artifacts in text / markdown / html / json.
 It reuses the same renderers as the per-feature commands, but routes them
-through a single group so adopters get one consistent surface.
+through a single group so consumers get one consistent surface.
 
 ```bash
 shrk report adoption                                  # text by default

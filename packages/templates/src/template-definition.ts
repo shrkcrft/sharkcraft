@@ -144,7 +144,7 @@ export interface ITemplateDefinition {
   metadata?: {
     /** Files that must NOT be produced by this template (regex fragments). */
     forbiddenPathFragments?: readonly string[];
-    /** Plugin lifecycle profile ids this template depends on. */
+    /** Profile ids this template depends on. */
     requiredProfileIds?: readonly string[];
     /** Convention ids this template's outputs are expected to satisfy. */
     requiredConventionIds?: readonly string[];

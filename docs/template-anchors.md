@@ -39,18 +39,17 @@ interface ITemplateAnchorDeclaration {
 - `missing-required-anchor` — anchor X is required by template T but no
   other template declares it as a producer.
 
-## Example (a plugin pack)
+## Example
 
 ```ts
-// app.plugin-contract.metadata
+// app.service.metadata
 producedAnchors: [
-  { anchor: '// region:events:enum', in: 'packages/app/plugins/plugin-api/src/lib/plugins/*/events.ts', usedBy: ['insert-enum-entry'] },
+  { anchor: '// region:events:enum', in: 'packages/app/src/events.ts', usedBy: ['insert-enum-entry'] },
   { anchor: '// region:events:body', in: '...', usedBy: ['insert-between-anchors'] },
-  { anchor: '// region:events:module-augmentation', in: '...', usedBy: ['insert-between-anchors'] },
 ]
 
 // app.event.metadata
-requiredAnchors: [ <same three> ]
+requiredAnchors: [ <same anchors> ]
 ```
 
 ## Engine guarantees

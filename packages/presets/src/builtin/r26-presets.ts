@@ -29,8 +29,6 @@ import {
   NG_NO_DEEP_LIB_IMPORTS,
   NG_NO_GOD_SERVICES,
   NG_ON_PUSH,
-  NG_PLUGIN_NO_DEEP_IMPORTS,
-  NG_PLUGIN_STABLE_CONTRACT,
   NG_RXJS_NO_NESTED_SUBSCRIBE,
   NG_SIGNALS_FIRST,
   NG_STANDALONE_COMPONENTS,
@@ -358,23 +356,6 @@ export const ANGULAR_SECURITY: IPreset = definePreset({
   },
 });
 
-export const ANGULAR_PLUGIN_PLATFORM: IPreset = definePreset({
-  id: 'angular-plugin-platform',
-  title: 'Angular — plugin platform',
-  description: 'Plugin contracts, lifecycle, capability tokens, isolation.',
-  tags: ['angular', 'plugins'],
-  appliesTo: [WorkspaceProfile.HasAngular],
-  weight: 5,
-  includes: {
-    knowledge: [],
-    rules: [NG_PLUGIN_STABLE_CONTRACT, NG_PLUGIN_NO_DEEP_IMPORTS],
-    paths: [],
-    templates: [],
-    pipelines: [],
-    docs: { 'overview.md': OVERVIEW_DOC('Angular plugin platform', 'Plugin contracts are stable. No plugin-to-plugin deep imports. Lifecycle is deterministic.') },
-  },
-});
-
 export const ANGULAR_ENTERPRISE_APP: IPreset = definePreset({
   id: 'angular-enterprise-app',
   title: 'Angular enterprise app',
@@ -394,17 +375,6 @@ export const ANGULAR_LIBRARY: IPreset = definePreset({
   appliesTo: [WorkspaceProfile.HasAngular, WorkspaceProfile.IsLibrary],
   weight: 6,
   composes: ['modern-angular', 'npm-package'],
-  includes: { knowledge: [], rules: [], paths: [], templates: [], pipelines: [], docs: {} },
-});
-
-export const ANGULAR_SMART_UI_PLATFORM: IPreset = definePreset({
-  id: 'angular-smart-ui-platform',
-  title: 'Angular smart UI platform',
-  description: 'Smart/dumb component split, deliberate state ownership, large-app organisation.',
-  tags: ['angular', 'ui-platform'],
-  appliesTo: [WorkspaceProfile.HasAngular],
-  weight: 6,
-  composes: ['modern-angular'],
   includes: { knowledge: [], rules: [], paths: [], templates: [], pipelines: [], docs: {} },
 });
 
@@ -508,7 +478,7 @@ export const FASTIFY_SERVICE: IPreset = definePreset({
   includes: { knowledge: [], rules: [], paths: [], templates: [], pipelines: [], docs: { 'overview.md': OVERVIEW_DOC('Fastify service', 'Schema-validate routes. Encapsulate features as plugins. Keep startup ordering deterministic.') } },
 });
 
-export const R26_PRESETS: readonly IPreset[] = Object.freeze([
+export const MULTI_STACK_PRESETS: readonly IPreset[] = Object.freeze([
   GENERIC_SAFE_REPO,
   AI_AGENT_SAFE_DEVELOPMENT,
   ENTERPRISE_REVIEW_GATED,
@@ -524,10 +494,8 @@ export const R26_PRESETS: readonly IPreset[] = Object.freeze([
   ANGULAR_TESTING,
   ANGULAR_ACCESSIBILITY,
   ANGULAR_SECURITY,
-  ANGULAR_PLUGIN_PLATFORM,
   ANGULAR_ENTERPRISE_APP,
   ANGULAR_LIBRARY,
-  ANGULAR_SMART_UI_PLATFORM,
   VITEST_FOCUSED,
   JEST_FOCUSED,
   PLAYWRIGHT_FOCUSED,

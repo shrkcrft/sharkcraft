@@ -142,7 +142,7 @@ the path of the draft. See [`asset-provenance.md`](./asset-provenance.md).
 | --- | --- | --- |
 | `file` / `directory` | `file:<path>` | `file:packages/cli/src/main.ts` |
 | `symbol` | `symbol:<name>` | `symbol:CommandRegistry` |
-| `command` / `template` / `playbook` / `construct` / `helper` / `policy` / `boundary-rule` / `path-convention` / `package` / `url` | `<kind>:<id>` | `template:app.layout-primitive-adapter` |
+| `command` / `template` / `playbook` / `construct` / `helper` / `policy` / `boundary-rule` / `path-convention` / `package` / `url` | `<kind>:<id>` | `template:app.service` |
 
 Append `:required` to mark the reference as required for stale-check.
 

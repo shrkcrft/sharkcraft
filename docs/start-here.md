@@ -1,7 +1,7 @@
 # `shrk start-here`
 
 The human entry point. SharkCraft ships 380+ catalog entries; this is the
-screen that gets a new adopter to their first productive command in 30
+screen that gets a new consumer to their first productive command in 30
 seconds.
 
 > **R41 note.** The canonical "which command first?" reference is

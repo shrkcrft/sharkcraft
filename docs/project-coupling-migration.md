@@ -23,8 +23,7 @@ identifiers are project-specific in your workspace, e.g.:
 
 ```bash
 shrk migrate project-coupling audit \
-  --token <project-id> --token packages/<project> --token FEATURE_KEYS \
-  --token primitive --token sandbox
+  --token <project-id> --token packages/<project> --token <project-constant>
 ```
 
 ## Output

@@ -1,6 +1,6 @@
 /**
  * `shrk profiles ...` — unified read-only surface for all pack-/local-
- * contributed profiles (plugin lifecycle, migration, and future kinds).
+ * contributed profiles (migration, and future kinds).
  */
 import {
   findProfile,
@@ -27,7 +27,7 @@ function parseKind(value: string | undefined): ProfileKind | undefined {
 
 export const profilesListCommand: ICommandHandler = {
   name: 'list',
-  description: 'List all registered profiles (plugin-lifecycle, migration, ...).',
+  description: 'List all registered profiles (migration, ...).',
   usage: 'shrk profiles list [--kind <kind>] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
@@ -41,7 +41,7 @@ export const profilesListCommand: ICommandHandler = {
     process.stdout.write(header(`Profiles (${entries.length}${kind ? `, kind=${kind}` : ''})`));
     if (entries.length === 0) {
       process.stdout.write(
-        '  (none — contribute via packs: pluginLifecycleProfileFiles, migrationProfileFiles, etc.)\n',
+        '  (none — contribute via packs: migrationProfileFiles, etc.)\n',
       );
       return 0;
     }
@@ -149,7 +149,7 @@ export const profilesSearchCommand: ICommandHandler = {
 export const profilesCommand: ICommandHandler = {
   name: 'profiles',
   description:
-    'List / inspect pack-contributed profiles (plugin-lifecycle, migration, conventions, …).',
+    'List / inspect pack-contributed profiles (migration, conventions, …).',
   usage: 'shrk profiles list|get|doctor|search ...',
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];

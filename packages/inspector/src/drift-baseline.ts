@@ -68,7 +68,10 @@ export function createDriftBaseline(
   const baseline: IDriftBaseline = {
     schema: DRIFT_BASELINE_SCHEMA,
     createdAt: nowIso(),
-    projectRoot: inspection.projectRoot,
+    // Store only the repo basename, not the absolute path — baselines are
+    // committed to version control and absolute paths leak the author's
+    // filesystem layout into the public repo.
+    projectRoot: nodePath.basename(inspection.projectRoot),
     findings,
   };
   mkdirSync(nodePath.dirname(outFile), { recursive: true });
@@ -105,7 +108,7 @@ export function compareDriftBaseline(
     current: {
       schema: DRIFT_BASELINE_SCHEMA,
       createdAt: nowIso(),
-      projectRoot: inspection.projectRoot,
+      projectRoot: nodePath.basename(inspection.projectRoot),
       findings: currentList,
     },
     existing,

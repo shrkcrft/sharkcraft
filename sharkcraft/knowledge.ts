@@ -1,5 +1,5 @@
 /**
- * R29 PART 14 — SharkCraft self knowledge entries.
+ * SharkCraft self-knowledge entries.
  *
  * Each entry describes one piece of engine-internal knowledge an AI
  * agent (or new contributor) needs to do their work safely. Every
@@ -53,16 +53,16 @@ export default [
     title: 'Changed-only boundary checking',
     type: 'technical',
     priority: 'high',
-    scope: ['boundaries', 'r28', 'r29'],
-    tags: ['boundaries', 'changed-only', 'r28'],
+    scope: ['boundaries'],
+    tags: ['boundaries', 'changed-only'],
     appliesWhen: ['fixing-boundary-issues', 'reviewing-changes'],
     summary:
       'Filters boundary violations to those introduced by the changed-file set — hides 25 legacy violations the agent didn\'t cause.',
     content: [
-      '`shrk check boundaries --changed-only` is the headline R28 deliverable.',
+      '`shrk check boundaries --changed-only` is the canonical changed-only boundary check — filters violations to those introduced by your diff.',
       'Resolves changed files via `git diff` (working tree, `--since <ref>`, `--staged`, or `--files a,b,c`) and filters violations to those whose origin file is in the changed set.',
       'Exit code is 0 only if the *included* violations are empty — legacy violations don\'t fail the check.',
-      'Backed by the shared `IChangedScopeClassification` (R29) which generalises the model across boundaries / policy / drift.',
+      'Backed by the shared `IChangedScopeClassification` which generalises the model across boundaries / policy / drift.',
     ].join('\n\n'),
     references: [
       { kind: 'file', path: 'packages/inspector/src/boundaries-changed-only.ts', required: true },
@@ -74,41 +74,15 @@ export default [
     ],
   }),
   defineKnowledgeEntry({
-    id: 'engine.plugin-lifecycle-profiles',
-    title: 'Plugin lifecycle profiles (R32)',
-    type: 'technical',
-    priority: 'high',
-    scope: ['plugins', 'profiles', 'r32'],
-    tags: ['plugins', 'lifecycle', 'profile', 'pack', 'r32'],
-    appliesWhen: ['renaming-a-plugin', 'removing-a-plugin'],
-    summary:
-      'Plan-only plugin rename / remove driven by pack-contributed lifecycle profiles. The engine ships zero project-specific paths; profiles describe pluginRoots / barrels / keyTable / registryFiles.',
-    content: [
-      '`shrk plugin rename <old> <new> --profile <id>` / `shrk plugin remove <name> --profile <id>` emit a `sharkcraft.plugin-lifecycle/v1` plan.',
-      'Profiles ship via the pack manifest `pluginLifecycleProfileFiles[]` slot or sharkcraft/plugin-lifecycle-profiles.ts.',
-      '`shrk plugin lifecycle profiles|profile|doctor` inspect what is registered.',
-      'Folder rename / delete is a manual checklist by default; see folder-ops docs for the optional plan-v2 surface.',
-    ].join('\n\n'),
-    references: [
-      { kind: 'file', path: 'packages/plugin-api/src/plugin-lifecycle-profile.ts', required: true },
-      { kind: 'file', path: 'packages/inspector/src/plugin-lifecycle.ts', required: true },
-      { kind: 'file', path: 'packages/inspector/src/plugin-lifecycle-profile-registry.ts' },
-      { kind: 'file', path: 'packages/cli/src/commands/plugin.command.ts' },
-      { kind: 'command', command: 'shrk plugin rename' },
-      { kind: 'command', command: 'shrk plugin remove' },
-      { kind: 'command', command: 'shrk plugin lifecycle profiles' },
-    ],
-  }),
-  defineKnowledgeEntry({
     id: 'engine.helper-plan-registry',
     title: 'Helper plan registry',
     type: 'technical',
     priority: 'medium',
-    scope: ['helpers', 'r28'],
-    tags: ['helpers', 'plan', 'r28'],
+    scope: ['helpers'],
+    tags: ['helpers', 'plan'],
     appliesWhen: ['adding-a-helper'],
     summary:
-      'Helpers emit plan-v2 ops for repeated small edits (add a plugin key, add a barrel export, etc.). Dry-run by default; destructive helpers require human approval.',
+      'Helpers emit plan-v2 ops for repeated small edits (add a barrel export, register a service, etc.). Dry-run by default; destructive helpers require human approval.',
     content: [
       '`shrk helper list|get|plan <id>` is the surface.',
       'Schema: sharkcraft.helper-plan/v1.',
@@ -125,8 +99,8 @@ export default [
     title: 'Registry lifecycle symmetry rule',
     type: 'rule',
     priority: 'medium',
-    scope: ['registry', 'r28'],
-    tags: ['registry', 'lifecycle', 'r28'],
+    scope: ['registry'],
+    tags: ['registry', 'lifecycle'],
     appliesWhen: ['adding-a-registry'],
     summary:
       'Every `registerFoo` must have a matching `removeFoo` / `unregisterFoo` / `clearFoo` — or an explicit `@shrkcrft lifecycle-ignore` annotation.',
@@ -144,8 +118,8 @@ export default [
     title: 'Pack-author watch + dev-status',
     type: 'technical',
     priority: 'medium',
-    scope: ['packs', 'r28'],
-    tags: ['packs', 'watch', 'dev', 'r28'],
+    scope: ['packs'],
+    tags: ['packs', 'watch', 'dev'],
     appliesWhen: ['authoring-a-pack'],
     summary:
       'Live pack-author workflow. `shrk packs watch` re-runs doctor + commands doctor on change; `shrk packs dev-status` shows signature staleness and contribution counts.',
@@ -163,11 +137,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.project-coupling-migration',
-    title: 'Project-coupling migration (R32)',
+    title: 'Project-coupling migration',
     type: 'technical',
     priority: 'medium',
-    scope: ['migration', 'project-coupling', 'r32'],
-    tags: ['migration', 'genericity', 'r32'],
+    scope: ['migration', 'project-coupling'],
+    tags: ['migration', 'genericity'],
     appliesWhen: ['migrating-project-coupling'],
     summary:
       '`shrk migrate project-coupling audit|plan|report` scans the workspace for project-specific tokens (configurable via --token) and tells you how to externalize them into a pack or sharkcraft config.',
@@ -187,11 +161,11 @@ export default [
     title: 'Polyglot language tooling',
     type: 'technical',
     priority: 'medium',
-    scope: ['languages', 'r27', 'r28'],
-    tags: ['polyglot', 'languages', 'r27'],
+    scope: ['languages'],
+    tags: ['polyglot', 'languages'],
     appliesWhen: ['adding-polyglot-support', 'fixing-language-detection'],
     summary:
-      'Language detection, command inference, dependency scanning, test impact. R28 added a runner allowlist (`sharkcraft/runner.allowlist.json`).',
+      'Language detection, command inference, dependency scanning, test impact. added a runner allowlist (`sharkcraft/runner.allowlist.json`).',
     content: [
       '`shrk languages run` honours the allow/deny policy; built-in deny patterns cannot be bypassed.',
       '`shrk languages runner config` to inspect / edit allowlist.',
@@ -205,11 +179,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.contract-gates',
-    title: 'Contract gates (R24)',
+    title: 'Contract gates',
     type: 'rule',
     priority: 'medium',
-    scope: ['contracts', 'r24'],
-    tags: ['contracts', 'gates', 'r24'],
+    scope: ['contracts'],
+    tags: ['contracts', 'gates'],
     appliesWhen: ['gating-apply-on-approval'],
     summary:
       'Contract gates are opt-in but strict — when active, `shrk apply --contract <id>` requires a fresh approval.',
@@ -227,8 +201,8 @@ export default [
     title: 'Memory drift detection',
     type: 'technical',
     priority: 'low',
-    scope: ['memory', 'r25'],
-    tags: ['memory', 'drift', 'r25'],
+    scope: ['memory'],
+    tags: ['memory', 'drift'],
     appliesWhen: ['inspecting-history'],
     summary:
       'Local repo-memory tracks historical risk signals. `shrk memory drift` compares the live index with the latest snapshot.',
@@ -249,8 +223,8 @@ export default [
     title: 'Plan simulation diff',
     type: 'technical',
     priority: 'medium',
-    scope: ['plan', 'r23'],
-    tags: ['plan', 'simulation', 'r23'],
+    scope: ['plan'],
+    tags: ['plan', 'simulation'],
     appliesWhen: ['reviewing-a-plan'],
     summary:
       '`shrk plan simulate <plan.json>` shows the virtual final content of each file plus gate verdicts (boundary, policy, impact, tests).',
@@ -268,8 +242,8 @@ export default [
     title: 'Agent execution graph',
     type: 'technical',
     priority: 'low',
-    scope: ['agent', 'r23'],
-    tags: ['agent', 'graph', 'r23'],
+    scope: ['agent'],
+    tags: ['agent', 'graph'],
     appliesWhen: ['building-agent-orchestration'],
     summary:
       '`shrk agent graph <task>` builds a task → intent → risk → contract → constructs → plans → gates → validation graph.',
@@ -283,11 +257,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.fuzzy-trace-impact',
-    title: 'Fuzzy trace / impact (R29)',
+    title: 'Fuzzy trace / impact',
     type: 'technical',
     priority: 'medium',
-    scope: ['trace', 'impact', 'r29'],
-    tags: ['trace', 'impact', 'r29', 'fuzzy'],
+    scope: ['trace', 'impact'],
+    tags: ['trace', 'impact', 'fuzzy'],
     appliesWhen: ['exploring-the-codebase'],
     summary:
       '`shrk trace <query>` resolves any free-form query (file, construct, symbol, plugin key, helper, template) and prints structured trace output.',
@@ -304,11 +278,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.knowledge-stale-check',
-    title: 'Knowledge stale-check (R29)',
+    title: 'Knowledge stale-check',
     type: 'technical',
     priority: 'high',
-    scope: ['knowledge', 'r29'],
-    tags: ['knowledge', 'stale', 'r29'],
+    scope: ['knowledge'],
+    tags: ['knowledge', 'stale'],
     appliesWhen: ['verifying-knowledge'],
     summary:
       '`shrk knowledge stale-check` verifies references[] and anchors[] against the workspace. No network, no AI.',
@@ -324,11 +298,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.template-drift',
-    title: 'Template drift verification (R29)',
+    title: 'Template drift verification',
     type: 'technical',
     priority: 'high',
-    scope: ['templates', 'r29'],
-    tags: ['templates', 'drift', 'r29'],
+    scope: ['templates'],
+    tags: ['templates', 'drift'],
     appliesWhen: ['verifying-templates', 'releasing-a-pack'],
     summary:
       '`shrk templates drift` verifies templates against path conventions, forbidden legacy paths, missing barrels, missing anchors, unresolved related ids.',
@@ -344,11 +318,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.doctor-suppression',
-    title: 'Doctor suppression (R29)',
+    title: 'Doctor suppression',
     type: 'technical',
     priority: 'medium',
-    scope: ['doctor', 'r29'],
-    tags: ['doctor', 'suppression', 'r29'],
+    scope: ['doctor'],
+    tags: ['doctor', 'suppression'],
     appliesWhen: ['quieting-noisy-warnings'],
     summary:
       '`shrk doctor --focus errors,warnings-new`, `--hide action-hint-quality`, `--quiet-known` plus `shrk doctor suppress` / `suppressions list|check`.',
@@ -364,15 +338,15 @@ export default [
     ],
   }),
   // ─────────────────────────────────────────────────────────────────────
-  // R30 PART 10 — new self-knowledge entries.
+  // More self-knowledge entries
   // ─────────────────────────────────────────────────────────────────────
   defineKnowledgeEntry({
     id: 'engine.fuzzy-impact',
-    title: 'Fuzzy impact (R30)',
+    title: 'Fuzzy impact',
     type: 'technical',
     priority: 'high',
-    scope: ['impact', 'r30'],
-    tags: ['impact', 'fuzzy', 'r30'],
+    scope: ['impact'],
+    tags: ['impact', 'fuzzy'],
     appliesWhen: ['investigating-impact', 'tracing-a-construct'],
     summary:
       '`shrk impact <query>` accepts the same fuzzy queries as `shrk trace`. `--resolve-only`, `--explain-resolution`, `--no-resolve` flags. Read-only.',
@@ -390,11 +364,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.agent-test-strict-expectations',
-    title: 'Strict agent test expectations (R30)',
+    title: 'Strict agent test expectations',
     type: 'technical',
     priority: 'high',
-    scope: ['agent-tests', 'r30'],
-    tags: ['agent-tests', 'ranker', 'r30'],
+    scope: ['agent-tests'],
+    tags: ['agent-tests', 'ranker'],
     appliesWhen: ['running-agent-tests', 'catching-ranker-drift'],
     summary:
       'IAgentContractTest gains expectedHelpers, expectedPlaybooks, expectedPolicies, expectedConstructs, expectedCommands, expectedKnowledge, mustNotInclude, minConfidence.',
@@ -411,11 +385,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.knowledge-stale-ci-gate',
-    title: 'Knowledge stale-check CI gate (R30)',
+    title: 'Knowledge stale-check CI gate',
     type: 'technical',
     priority: 'high',
-    scope: ['knowledge', 'ci', 'r30'],
-    tags: ['knowledge', 'ci', 'stale-check', 'r30'],
+    scope: ['knowledge', 'ci'],
+    tags: ['knowledge', 'ci', 'stale-check'],
     appliesWhen: ['enabling-ci-integrity'],
     summary:
       '`shrk knowledge stale-check` adds --ci / --strict / --fail-on / --baseline / --report / --format. Local mode stays non-blocking unless flags are passed.',
@@ -433,17 +407,17 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.ast-backed-symbol-verification',
-    title: 'AST-backed symbol verification (R30)',
+    title: 'AST-backed symbol verification',
     type: 'technical',
     priority: 'high',
-    scope: ['knowledge', 'symbol', 'r30'],
-    tags: ['knowledge', 'ast', 'symbol', 'r30'],
+    scope: ['knowledge', 'symbol'],
+    tags: ['knowledge', 'ast', 'symbol'],
     appliesWhen: ['verifying-symbol-references'],
     summary:
       '`packages/inspector/src/symbol-index.ts` uses the TypeScript compiler (`createSourceFile`) to parse single files and resolve symbols as exact-export / exact-local / exact-reexport / probable-text / missing.',
     content: [
       'No whole-program type-checking. No new dependencies — typescript is already present.',
-      'Falls back to the R29 text-scan when the file cannot be parsed.',
+      'Falls back to the text-scan when the file cannot be parsed.',
       'Wired into knowledge-stale.ts; available standalone via `resolveSymbolInFile`.',
     ].join('\n\n'),
     references: [
@@ -454,11 +428,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.template-drift-noise-control',
-    title: 'Template drift noise control (R30)',
+    title: 'Template drift noise control',
     type: 'technical',
     priority: 'medium',
-    scope: ['templates', 'r30'],
-    tags: ['templates', 'drift', 'noise', 'r30'],
+    scope: ['templates'],
+    tags: ['templates', 'drift', 'noise'],
     appliesWhen: ['tuning-drift-output'],
     summary:
       '`shrk templates drift` adds --min-severity, --hide, --strict, --ci, --format text|markdown|html|json, --report, --output.',
@@ -475,11 +449,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.feedback-rules-pack-extensible',
-    title: 'Pack-extensible feedback rules (R30)',
+    title: 'Pack-extensible feedback rules',
     type: 'technical',
     priority: 'medium',
-    scope: ['feedback', 'r30'],
-    tags: ['feedback', 'rules', 'r30'],
+    scope: ['feedback'],
+    tags: ['feedback', 'rules'],
     appliesWhen: ['adding-feedback-categorisation'],
     summary:
       '`IFeedbackRule` (schema sharkcraft.feedback-rule/v1) loaded from sharkcraft/feedback-rules.ts + pack feedbackRuleFiles[]. CLI: `shrk feedback rules list|doctor`, `shrk feedback ingest <file> --with-pack-rules`.',
@@ -498,11 +472,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.ts-decisions-loader',
-    title: 'TypeScript decisions loader (R30)',
+    title: 'TypeScript decisions loader',
     type: 'technical',
     priority: 'medium',
-    scope: ['decisions', 'r30'],
-    tags: ['decisions', 'adr', 'r30'],
+    scope: ['decisions'],
+    tags: ['decisions', 'adr'],
     appliesWhen: ['adding-typed-decisions'],
     summary:
       '`loadTsDecisions` reads sharkcraft/decisions.ts + pack decisionFiles[]. Markdown ADRs remain primary; TS entries fold in via cache.',
@@ -519,14 +493,14 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.ci-integrity-gates',
-    title: 'CI scaffold integrity gates (R30)',
+    title: 'CI scaffold integrity gates',
     type: 'technical',
     priority: 'medium',
-    scope: ['ci', 'r30'],
-    tags: ['ci', 'scaffold', 'integrity', 'r30'],
+    scope: ['ci'],
+    tags: ['ci', 'scaffold', 'integrity'],
     appliesWhen: ['wiring-ci-checks'],
     summary:
-      '`shrk ci scaffold <provider> --with-knowledge-check --with-template-drift --with-integrity` adds the R29/R30 integrity gates to the scaffold.',
+      '`shrk ci scaffold <provider> --with-knowledge-check --with-template-drift --with-integrity` adds the integrity gates to the scaffold.',
     content: [
       'Each gate writes JSON under `.sharkcraft/reports/` so artifact uploads stay symmetric.',
       'Default behaviour unchanged — flags are explicit opt-in per safety policy.',
@@ -536,20 +510,20 @@ export default [
       { kind: 'command', command: 'shrk ci scaffold github-actions --with-integrity' },
     ],
   }),
-  // ── R31 entries ─────────────────────────────────────────────────────
+  // ── more entries ─────────────────────────────────────────────────────
   defineKnowledgeEntry({
     id: 'engine.ranker-why',
-    title: 'Ranker explainability — `get_ranker_explanation` / `get_ranker_why_not` (R31; CLI surface removed in R46)',
+    title: 'Ranker explainability — `get_ranker_explanation` / `get_ranker_why_not`',
     type: 'technical',
     priority: 'high',
-    scope: ['ranker', 'explainability', 'r31'],
-    tags: ['ranker', 'explainability', 'r31'],
+    scope: ['ranker', 'explainability'],
+    tags: ['ranker', 'explainability'],
     appliesWhen: ['debug-ranker', 'explain-task-result'],
     summary:
-      'Read-only MCP tools `get_ranker_explanation` / `get_ranker_why_not` answer "why was X included / not included for task Y?" without writing an agent test. (R46 removed the `shrk why` / `shrk why-not` CLI; the inspector library remains.)',
+      'Read-only MCP tools `get_ranker_explanation` / `get_ranker_why_not` answer "why was X included / not included for task Y?" without writing an agent test.',
     content: [
       'Reports include matched/missing signals, score, rank, threshold, outranked-by, search-tuning trace, and suggested metadata fixes.',
-      'For missing ids, the report returns nearestIds + suggested commands. The read-only MCP tools `get_ranker_explanation` and `get_ranker_why_not` are the canonical surfaces (no CLI equivalent after R46).',
+      'For missing ids, the report returns nearestIds + suggested commands. The read-only MCP tools `get_ranker_explanation` and `get_ranker_why_not` are the canonical surfaces (no CLI equivalent).',
     ].join('\n\n'),
     references: [
       { kind: 'file', path: 'packages/inspector/src/ranker-explainability.ts', required: true },
@@ -559,11 +533,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.command-discovery',
-    title: 'Command discovery + did-you-mean (R31)',
+    title: 'Command discovery + did-you-mean',
     type: 'technical',
     priority: 'high',
-    scope: ['cli', 'discovery', 'r31'],
-    tags: ['commands', 'discovery', 'did-you-mean', 'r31'],
+    scope: ['cli', 'discovery'],
+    tags: ['commands', 'discovery', 'did-you-mean'],
     appliesWhen: ['unknown-command', 'find-command'],
     summary:
       '`shrk commands suggest "<partial>"`, `shrk commands explain "<cmd>"` and unknown-subcommand did-you-mean hints — typo-tolerant matching over the catalog.',
@@ -579,11 +553,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.watch-loops',
-    title: 'Watch loops (R31)',
+    title: 'Watch loops',
     type: 'technical',
     priority: 'medium',
-    scope: ['watch', 'r31'],
-    tags: ['watch', 'doctor', 'stale', 'drift', 'r31'],
+    scope: ['watch'],
+    tags: ['watch', 'doctor', 'stale', 'drift'],
     appliesWhen: ['active-development'],
     summary:
       '`shrk doctor watch`, `--watch` flag on stale-check / templates drift / test agent, and `shrk watch integrity` combine doctor + stale + drift + agent tests in one loop.',
@@ -598,11 +572,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.fix-preview',
-    title: 'Fix preview system (R31)',
+    title: 'Fix preview system',
     type: 'technical',
     priority: 'medium',
-    scope: ['fixes', 'r31'],
-    tags: ['fix', 'preview', 'r31'],
+    scope: ['fixes'],
+    tags: ['fix', 'preview'],
     appliesWhen: ['preview-fix', 'resolve-doctor-warning'],
     summary:
       '`shrk fix list|doctor|preview` previews fixes for action hints / stale knowledge / template drift. Preview-only by default; `--write-preview` writes only under `.sharkcraft/fixes/`.',
@@ -618,11 +592,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.scaffold-coverage',
-    title: 'Scaffold coverage gap reporting (R31)',
+    title: 'Scaffold coverage gap reporting',
     type: 'technical',
     priority: 'medium',
-    scope: ['coverage', 'r31'],
-    tags: ['scaffold', 'coverage', 'r31', 'gaps'],
+    scope: ['coverage'],
+    tags: ['scaffold', 'coverage', 'gaps'],
     appliesWhen: ['discover-missing-scaffolds'],
     summary:
       '`shrk coverage scaffolds --task "<task>"|--domain <domain>` surfaces which axes (knowledge / rules / paths / templates / scaffold patterns / playbooks / helpers / validation commands / contract templates) are missing for a task or domain.',
@@ -632,16 +606,16 @@ export default [
     references: [
       { kind: 'file', path: 'packages/inspector/src/scaffold-coverage.ts', required: true },
       { kind: 'symbol', symbol: 'buildScaffoldCoverageReport', path: 'packages/inspector/src/scaffold-coverage.ts', required: true },
-      { kind: 'command', command: 'shrk coverage scaffolds --task "add primitive adapter"' },
+      { kind: 'command', command: 'shrk coverage scaffolds --task "add a new service"' },
     ],
   }),
   defineKnowledgeEntry({
     id: 'engine.search-tuning-explain-cli',
-    title: 'Search-tuning explain — first-class CLI (R31)',
+    title: 'Search-tuning explain — first-class CLI',
     type: 'technical',
     priority: 'medium',
-    scope: ['search-tuning', 'r31'],
-    tags: ['search-tuning', 'explain', 'r31'],
+    scope: ['search-tuning'],
+    tags: ['search-tuning', 'explain'],
     appliesWhen: ['debug-tuning'],
     summary:
       '`shrk search-tuning explain "<query>"` top-level alias; `--kind` / `--source` / `--limit` / `--format` flags on the subcommand form.',
@@ -655,11 +629,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.symbol-impact',
-    title: 'Direct symbol impact / trace (R31)',
+    title: 'Direct symbol impact / trace',
     type: 'technical',
     priority: 'medium',
-    scope: ['impact', 'trace', 'symbol', 'r31'],
-    tags: ['impact', 'trace', 'symbol', 'r31'],
+    scope: ['impact', 'trace', 'symbol'],
+    tags: ['impact', 'trace', 'symbol'],
     appliesWhen: ['impact-symbol', 'trace-symbol'],
     summary:
       '`shrk impact --symbol <Name>` and `shrk trace --symbol <Name>` walk the AST-backed symbol index and run the file-impact engine when exactly one exact-export match exists.',
@@ -674,11 +648,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.changes-summary',
-    title: 'Changes summary (R31)',
+    title: 'Changes summary',
     type: 'technical',
     priority: 'medium',
-    scope: ['changes', 'r31'],
-    tags: ['changes', 'diff', 'r31'],
+    scope: ['changes'],
+    tags: ['changes', 'diff'],
     appliesWhen: ['summarise-changes'],
     summary:
       '`shrk changes summary --since <ref>|--staged|--files a,b` groups the diff by area, flags safety-relevant + MCP files, and suggests validation commands. Schema: `sharkcraft.changes-summary/v1`.',
@@ -693,11 +667,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.pr-summary',
-    title: 'PR summary generator (R31)',
+    title: 'PR summary generator',
     type: 'technical',
     priority: 'medium',
-    scope: ['pr', 'r31'],
-    tags: ['pr', 'review', 'r31'],
+    scope: ['pr'],
+    tags: ['pr', 'review'],
     appliesWhen: ['generate-pr-description'],
     summary:
       '`shrk pr summary --since <ref>` builds a deterministic PR description from the changes summary + .sharkcraft/reports. Defaults to markdown stdout; `--output <file>` writes to disk.',
@@ -712,11 +686,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.ci-integrity-report',
-    title: 'CI integrity report aggregator (R31)',
+    title: 'CI integrity report aggregator',
     type: 'technical',
     priority: 'medium',
-    scope: ['ci', 'r31'],
-    tags: ['ci', 'integrity', 'r31'],
+    scope: ['ci'],
+    tags: ['ci', 'integrity'],
     appliesWhen: ['aggregate-ci-reports'],
     summary:
       '`shrk ci report --reports-dir <dir> --format markdown|html|json --fail-on error|warning|none` reads .sharkcraft/reports/*.json and renders a single CI integrity verdict.',
@@ -731,11 +705,11 @@ export default [
   }),
   defineKnowledgeEntry({
     id: 'engine.uncertainty-reporting',
-    title: 'Uncertainty reporting (R31)',
+    title: 'Uncertainty reporting',
     type: 'technical',
     priority: 'medium',
-    scope: ['uncertainty', 'r31'],
-    tags: ['uncertainty', 'task-packet', 'r31'],
+    scope: ['uncertainty'],
+    tags: ['uncertainty', 'task-packet'],
     appliesWhen: ['build-task-packet'],
     summary:
       '`shrk task "<task>"` always renders a confidence + uncertainty[] footer. Signals: no template / no path convention / weak knowledge / no validation. `--show-coverage-gaps` includes the coverage report inline.',
@@ -745,7 +719,7 @@ export default [
     references: [
       { kind: 'file', path: 'packages/inspector/src/uncertainty.ts', required: true },
       { kind: 'symbol', symbol: 'buildUncertaintySummary', path: 'packages/inspector/src/uncertainty.ts', required: true },
-      { kind: 'command', command: 'shrk task "add primitive adapter" --show-coverage-gaps' },
+      { kind: 'command', command: 'shrk task "add a new service" --show-coverage-gaps' },
     ],
   }),
 ];

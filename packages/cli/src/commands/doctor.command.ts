@@ -548,12 +548,35 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
       );
     }
 
+    // Honest binary verdicts come first — yes/no on the two questions
+    // users actually want answered (can I let an agent write here? can
+    // I let an agent read here?). The 0..100 score follows, scoped to
+    // the workspace shape so libraries don't get dinged for "no
+    // pipelines" and apps don't get dinged for "no published API".
     process.stdout.write(
-      `\nAI-readiness: ${report.score} / 100 (${report.grade})\n`,
+      `\nShape: ${report.workspaceShape.label}` +
+        ` (score counts ${report.dimensions.filter((d) => d.applies === 'core').length} of ${report.dimensions.length} dimensions)\n`,
+    );
+    process.stdout.write(
+      `  ${report.verdicts.readyForAgentReads ? '✓' : '✗'} Ready for agent reads (context / task lookups)\n`,
+    );
+    process.stdout.write(
+      `  ${report.verdicts.readyForAgentWrites ? '✓' : '✗'} Ready for agent writes (apply / generate)\n`,
+    );
+    if (report.verdicts.blockers.length > 0) {
+      process.stdout.write(`  Blockers:\n`);
+      for (const b of report.verdicts.blockers) {
+        process.stdout.write(`    • ${b}\n`);
+      }
+    }
+    process.stdout.write(
+      `\nAI-readiness: ${report.score} / 100 (${report.grade}, shape-aware)\n`,
     );
     if (report.topRecommendations.length) {
       // Keep the default doctor output short: top 3 recommendations,
-      // pass `--verbose` for the full list.
+      // pass `--verbose` for the full list. Recommendations only fire
+      // from `core` dimensions now — n/a-for-shape dimensions stop
+      // generating the misleading "add a pipeline" advice for libraries.
       const verbose = flagBool(args, 'verbose');
       const visible = verbose ? report.topRecommendations : report.topRecommendations.slice(0, 3);
       process.stdout.write(`Top recommendations${verbose ? '' : ` (top ${visible.length})`}:\n`);
@@ -562,6 +585,20 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
         process.stdout.write(
           `  … (${report.topRecommendations.length - visible.length} more — pass --verbose to see all)\n`,
         );
+      }
+    }
+    // Surface N/A dimensions when --show-na is passed, so users can see
+    // what was deliberately skipped and disagree if they want to.
+    if (flagBool(args, 'show-na')) {
+      const skipped = report.dimensions.filter((d) => d.applies !== 'core');
+      if (skipped.length > 0) {
+        process.stdout.write(`\nNot counted in score (${skipped.length} dimensions):\n`);
+        for (const d of skipped) {
+          const tag = d.applies === 'n/a-for-shape' ? 'n/a' : 'advisory';
+          process.stdout.write(`  [${tag}] ${d.title}: ${d.note}`);
+          if (d.appliesReason) process.stdout.write(` — ${d.appliesReason}`);
+          process.stdout.write('\n');
+        }
       }
     }
     if (strictEval.failed) {

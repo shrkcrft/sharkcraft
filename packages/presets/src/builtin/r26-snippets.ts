@@ -277,21 +277,3 @@ export const NG_AVOID_BYPASS_SECURITY = ruleSnippet({
   appliesWhen: ['generate-code', 'review'],
   content: '`DomSanitizer.bypassSecurityTrust*` opens an XSS hole. Only use it with reviewed, trusted inputs — sanitize otherwise.',
 });
-
-export const NG_PLUGIN_STABLE_CONTRACT = ruleSnippet({
-  id: 'angular.plugin.stable-contract',
-  title: 'Plugin contracts are stable',
-  priority: 'critical',
-  tags: ['angular', 'plugins'],
-  appliesWhen: ['generate-code', 'review'],
-  content: 'Plugin manifests, lifecycle hooks, and capability tokens are public API. Breaking changes require a migration note and a major-version bump.',
-});
-
-export const NG_PLUGIN_NO_DEEP_IMPORTS = ruleSnippet({
-  id: 'angular.plugin.no-deep-imports',
-  title: 'Plugins cannot deep-import each other',
-  priority: 'critical',
-  tags: ['angular', 'plugins', 'boundaries'],
-  appliesWhen: ['generate-code', 'review'],
-  content: 'Plugin-to-plugin communication must use the documented event/token contract. Direct imports between plugin packages are forbidden.',
-});

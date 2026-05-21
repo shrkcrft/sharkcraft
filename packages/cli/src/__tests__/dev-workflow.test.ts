@@ -177,31 +177,37 @@ describe('shrk dev (workflow CLI)', () => {
     expect(out.command).toContain('shrk dev plan');
   });
 
-  test('dev plan creates an intent file when required variables are missing', () => {
-    const root = makeFixture();
-    shrk(['--cwd', root, 'dev', 'start', 'create user profile service'], root);
-    const id = findSessionId(root);
-    // Skip --name so both `name` and `className` (auto-derived from --name)
-    // are missing — exercising the intent-file path.
-    const r = shrk(
-      ['--cwd', root, 'dev', 'plan', id, '--template', 'typescript.service'],
-      root,
-    );
-    expect(r.status).toBe(0);
-    const plansDir = join(root, '.sharkcraft', 'sessions', id, 'plans');
-    const intentFiles = readdirSync(plansDir).filter((f) => f.endsWith('.intent.md'));
-    expect(intentFiles.length).toBeGreaterThan(0);
-    const body = readFileSync(join(plansDir, intentFiles[0]!), 'utf8');
-    expect(body).toContain('Plan intent');
-    expect(body).toContain('shrk dev plan');
+  test(
+    'dev plan creates an intent file when required variables are missing',
+    () => {
+      const root = makeFixture();
+      shrk(['--cwd', root, 'dev', 'start', 'create user profile service'], root);
+      const id = findSessionId(root);
+      // Skip --name so both `name` and `className` (auto-derived from --name)
+      // are missing — exercising the intent-file path.
+      const r = shrk(
+        ['--cwd', root, 'dev', 'plan', id, '--template', 'typescript.service'],
+        root,
+      );
+      expect(r.status).toBe(0);
+      const plansDir = join(root, '.sharkcraft', 'sessions', id, 'plans');
+      const intentFiles = readdirSync(plansDir).filter((f) => f.endsWith('.intent.md'));
+      expect(intentFiles.length).toBeGreaterThan(0);
+      const body = readFileSync(join(plansDir, intentFiles[0]!), 'utf8');
+      expect(body).toContain('Plan intent');
+      expect(body).toContain('shrk dev plan');
 
-    const state = readJson<{ plans: { status: string; missingVariables: string[] }[] }>(
-      join(root, '.sharkcraft', 'sessions', id, 'session.json'),
-    );
-    const intentEntry = state.plans.find((p) => p.status === 'intent');
-    expect(intentEntry).toBeDefined();
-    expect(intentEntry!.missingVariables.length).toBeGreaterThan(0);
-  });
+      const state = readJson<{ plans: { status: string; missingVariables: string[] }[] }>(
+        join(root, '.sharkcraft', 'sessions', id, 'session.json'),
+      );
+      const intentEntry = state.plans.find((p) => p.status === 'intent');
+      expect(intentEntry).toBeDefined();
+      expect(intentEntry!.missingVariables.length).toBeGreaterThan(0);
+    },
+    // shrk dev plan spawns a CLI subprocess that walks the full repo —
+    // flaky past 5s under full-suite parallel contention.
+    30_000,
+  );
 
   test('dev plan saves + reviews a plan when all variables are provided', () => {
     const root = makeFixture();
@@ -240,38 +246,44 @@ describe('shrk dev (workflow CLI)', () => {
     expect(entry?.status).toBe('reviewed');
   });
 
-  test('dev validate runs harmless verificationCommands and updates session.json', () => {
-    const root = makeFixture();
-    shrk(['--cwd', root, 'dev', 'start', 'create user profile service'], root);
-    const id = findSessionId(root);
-    // Plan + auto-review (so we have something to "validate against")
-    shrk(
-      [
-        '--cwd', root,
-        'dev', 'plan', id,
-        '--template', 'typescript.service',
-        '--name', 'user-profile',
-        '--var', 'className=UserProfileService',
-      ],
-      root,
-    );
-    const r = shrk(
-      ['--cwd', root, 'dev', 'validate', id, '--verification', 'smoke', '--json'],
-      root,
-    );
-    expect(r.status).toBe(0);
-    const out = JSON.parse(r.stdout) as { passed: boolean; commandsRun: { command: string; passed: boolean }[] };
-    expect(out.passed).toBe(true);
-    expect(out.commandsRun.some((c) => c.command.includes('smoke'))).toBe(true);
-    // The harmless side-effect file from the verification command should exist.
-    expect(existsSync(join(root, '.tmp-smoke-output.txt'))).toBe(true);
+  test(
+    'dev validate runs harmless verificationCommands and updates session.json',
+    () => {
+      const root = makeFixture();
+      shrk(['--cwd', root, 'dev', 'start', 'create user profile service'], root);
+      const id = findSessionId(root);
+      // Plan + auto-review (so we have something to "validate against")
+      shrk(
+        [
+          '--cwd', root,
+          'dev', 'plan', id,
+          '--template', 'typescript.service',
+          '--name', 'user-profile',
+          '--var', 'className=UserProfileService',
+        ],
+        root,
+      );
+      const r = shrk(
+        ['--cwd', root, 'dev', 'validate', id, '--verification', 'smoke', '--json'],
+        root,
+      );
+      expect(r.status).toBe(0);
+      const out = JSON.parse(r.stdout) as { passed: boolean; commandsRun: { command: string; passed: boolean }[] };
+      expect(out.passed).toBe(true);
+      expect(out.commandsRun.some((c) => c.command.includes('smoke'))).toBe(true);
+      // The harmless side-effect file from the verification command should exist.
+      expect(existsSync(join(root, '.tmp-smoke-output.txt'))).toBe(true);
 
-    const sessionFile = join(root, '.sharkcraft', 'sessions', id, 'session.json');
-    const state = readJson<{ phase: string; validations: { passed: boolean }[] }>(sessionFile);
-    expect(state.validations.length).toBe(1);
-    expect(state.validations[0]!.passed).toBe(true);
-    expect(state.phase).toBe('validated');
-  });
+      const sessionFile = join(root, '.sharkcraft', 'sessions', id, 'session.json');
+      const state = readJson<{ phase: string; validations: { passed: boolean }[] }>(sessionFile);
+      expect(state.validations.length).toBe(1);
+      expect(state.validations[0]!.passed).toBe(true);
+      expect(state.phase).toBe('validated');
+    },
+    // dev validate fan-outs through multiple shrk subprocesses — past 5s
+    // under full-suite parallel contention.
+    30_000,
+  );
 
   test('dev report writes final-report.md and marks the session completed', () => {
     const root = makeFixture();
@@ -318,6 +330,9 @@ describe('shrk dev (workflow CLI)', () => {
     expect(out.nextAction.command).toContain('shrk dev');
   });
 
+  // Three chained `shrk` subprocesses (start × 2 + list). Each is a
+  // ~1-2s bun cold-start; under full-suite contention the 5s default
+  // can squeeze past. Bump explicitly so this never flakes.
   test('dev list enumerates sessions', () => {
     const root = makeFixture();
     shrk(['--cwd', root, 'dev', 'start', 'session a'], root);
@@ -326,7 +341,7 @@ describe('shrk dev (workflow CLI)', () => {
     expect(r.status).toBe(0);
     const out = JSON.parse(r.stdout) as { id: string }[];
     expect(out.length).toBe(2);
-  });
+  }, 30_000);
 
   test('dev plan fails clearly when neither --template nor a suggestedGen template exists', () => {
     const root = makeFixture();

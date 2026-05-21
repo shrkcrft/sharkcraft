@@ -1,5 +1,25 @@
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { gate, type IIssueEvent } from '../src/gate.ts';
+
+// Generic test fixture login. The real maintainer handle is configured
+// at runtime via SHARKCRAFT_AI_ALLOWED_ACTORS / SHARKCRAFT_AI_MAINTAINERS
+// — no specific GitHub login is hardcoded in source.
+const TEST_ACTOR = 'repo-owner';
+
+const savedAllowed = process.env['SHARKCRAFT_AI_ALLOWED_ACTORS'];
+const savedMaintainers = process.env['SHARKCRAFT_AI_MAINTAINERS'];
+
+beforeAll(() => {
+  process.env['SHARKCRAFT_AI_ALLOWED_ACTORS'] = TEST_ACTOR;
+  process.env['SHARKCRAFT_AI_MAINTAINERS'] = TEST_ACTOR;
+});
+
+afterAll(() => {
+  if (savedAllowed === undefined) delete process.env['SHARKCRAFT_AI_ALLOWED_ACTORS'];
+  else process.env['SHARKCRAFT_AI_ALLOWED_ACTORS'] = savedAllowed;
+  if (savedMaintainers === undefined) delete process.env['SHARKCRAFT_AI_MAINTAINERS'];
+  else process.env['SHARKCRAFT_AI_MAINTAINERS'] = savedMaintainers;
+});
 
 function makeEvent(
   overrides: Partial<Omit<IIssueEvent, 'issue'>> & { issue?: Partial<IIssueEvent['issue']> } = {},
@@ -19,22 +39,22 @@ function makeEvent(
 }
 
 describe('gate — opened action', () => {
-  test('bence312 + [AI] prefix => plan', () => {
+  test('allowed actor + [AI] prefix => plan', () => {
     const decision = gate(
       makeEvent({
         action: 'opened',
-        issue: { number: 7, title: '[AI] add knob X', body: null, user: { login: 'bence312' } },
+        issue: { number: 7, title: '[AI] add knob X', body: null, user: { login: TEST_ACTOR } },
       }),
     );
     expect(decision.kind).toBe('plan');
-    expect(decision.reason).toContain('bence312');
+    expect(decision.reason).toContain(TEST_ACTOR);
   });
 
-  test('bence312 without [AI] prefix => ignore', () => {
+  test('allowed actor without [AI] prefix => ignore', () => {
     const decision = gate(
       makeEvent({
         action: 'opened',
-        issue: { number: 7, title: 'normal title', body: null, user: { login: 'bence312' } },
+        issue: { number: 7, title: 'normal title', body: null, user: { login: TEST_ACTOR } },
       }),
     );
     expect(decision.kind).toBe('ignore');
@@ -70,7 +90,7 @@ describe('gate — labeled action', () => {
         action: 'labeled',
         issue: { number: 7, title: 'whatever', body: null, user: { login: 'stranger' } },
         label: { name: 'ai:plan' },
-        sender: { login: 'bence312' },
+        sender: { login: TEST_ACTOR },
       }),
     );
     expect(decision.kind).toBe('plan');
@@ -82,7 +102,7 @@ describe('gate — labeled action', () => {
         action: 'labeled',
         issue: { number: 7, title: 'whatever', body: null, user: { login: 'stranger' } },
         label: { name: 'ai:implement' },
-        sender: { login: 'bence312' },
+        sender: { login: TEST_ACTOR },
       }),
     );
     expect(decision.kind).toBe('implement');
@@ -119,7 +139,7 @@ describe('gate — labeled action', () => {
         action: 'labeled',
         issue: { number: 7, title: 'whatever', body: null, user: { login: 'stranger' } },
         label: { name: 'bug' },
-        sender: { login: 'bence312' },
+        sender: { login: TEST_ACTOR },
       }),
     );
     expect(decision.kind).toBe('ignore');
@@ -131,7 +151,7 @@ describe('gate — labeled action', () => {
       makeEvent({
         action: 'labeled',
         issue: { number: 7, title: 'whatever', body: null, user: { login: 'stranger' } },
-        sender: { login: 'bence312' },
+        sender: { login: TEST_ACTOR },
       }),
     );
     expect(decision.kind).toBe('ignore');
@@ -154,7 +174,7 @@ describe('gate — unrelated actions', () => {
     const decision = gate(
       makeEvent({
         action: 'edited',
-        issue: { number: 7, title: '[AI] x', body: null, user: { login: 'bence312' } },
+        issue: { number: 7, title: '[AI] x', body: null, user: { login: TEST_ACTOR } },
       }),
     );
     expect(decision.kind).toBe('ignore');
@@ -165,7 +185,7 @@ describe('gate — unrelated actions', () => {
     const decision = gate(
       makeEvent({
         action: 'closed',
-        issue: { number: 7, title: '[AI] x', body: null, user: { login: 'bence312' } },
+        issue: { number: 7, title: '[AI] x', body: null, user: { login: TEST_ACTOR } },
       }),
     );
     expect(decision.kind).toBe('ignore');

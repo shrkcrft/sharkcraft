@@ -171,7 +171,7 @@ the full bundle above (minus plans/reports, which are empty). Output:
 ```
 === Dev session started: 2026-05-12T...-create-a-user-profile-service ===
   task               create a user profile service
-  pipeline           plugin-dev
+  pipeline           feature-dev
   top templates      typescript.service
   top rules          tests-required, name-pascal-case
 Verification commands:

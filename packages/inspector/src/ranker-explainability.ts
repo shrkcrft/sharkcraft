@@ -294,13 +294,12 @@ function suggestedFixes(
 }
 
 /**
- * Generic domain-token inference. Project-specific tokens (e.g.
- * "primitive", "adapter", "sandbox") move to pack-contributed search-tuning
- * rather than hardcoded heuristics in the engine.
+ * Generic domain-token inference. Project-specific tokens move to
+ * pack-contributed search-tuning rather than hardcoded heuristics
+ * in the engine.
  */
 function inferDomainTags(taskLower: string): string[] {
   const out: string[] = [];
-  if (/\bplugin\b/.test(taskLower)) out.push('plugin');
   if (/\brenderer\b/.test(taskLower)) out.push('renderer');
   if (/\b(angular|react)\b/.test(taskLower)) out.push(/\bangular\b/.test(taskLower) ? 'angular' : 'react');
   if (/\b(layout|drag|drop)\b/.test(taskLower)) out.push('layout');
@@ -310,9 +309,7 @@ function inferDomainTags(taskLower: string): string[] {
 function inferDomainAppliesWhen(taskLower: string): string[] {
   const out: string[] = [];
   if (/\b(create|add|new|generate|build)\b/.test(taskLower)) out.push('generate-code');
-  if (/\bplugin\b/.test(taskLower)) out.push('create-plugin');
   if (/\b(rename|move)\b/.test(taskLower)) out.push('refactor');
-  if (/\bcapability\b/.test(taskLower)) out.push('create-capability');
   return Array.from(new Set(out));
 }
 

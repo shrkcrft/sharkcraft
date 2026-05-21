@@ -38,10 +38,9 @@ The `--kind` flag changes the seed content:
 | Kind          | Use for                                                       |
 |---------------|---------------------------------------------------------------|
 | generic       | Minimal scaffold — knowledge + a placeholder rule             |
-| framework     | Includes an example template/pipeline so adopters have a model |
+| framework     | Includes an example template/pipeline so consumers have a model |
 | architecture  | Adds a `boundaries.ts` example for layer rules                |
 | enterprise    | Adds review/security baseline docs and a stricter rule seed   |
-| plugin-layered | Adds plugin/policy/capability/adapter-style example files    |
 
 You can combine `--with-examples` to attach the optional example files to
 any kind.
@@ -73,7 +72,7 @@ my-pack/
   locally-configured `sharkcraft.config.ts verificationCommands[]` is
   trusted as runnable.
 - Packs may ship signed manifests. Sign with `shrk packs sign`, verify with
-  `shrk packs verify`. Adopters can require signatures via
+  `shrk packs verify`. Consumers can require signatures via
   `shrk packs doctor --require-signatures`.
 - The CLI is the only write path; MCP tools are read-only.
 

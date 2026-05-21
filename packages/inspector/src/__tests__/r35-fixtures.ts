@@ -10,8 +10,6 @@ export {
   type IUncertaintyReport,
 } from '../uncertainty-report.ts';
 
-export { PLUGIN_LIFECYCLE_SYNTHETIC_TEMPLATE } from '../plugin-lifecycle.ts';
-
 import type { IRegistrationHint } from '@shrkcrft/plugin-api';
 export type { IRegistrationHint };
 

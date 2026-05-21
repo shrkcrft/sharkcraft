@@ -522,10 +522,10 @@ function affectedPolicies(
       severity: 'warning',
     });
   }
-  if (affected.some((a) => a.kind === AreaKind.Core || a.kind === AreaKind.Kernel)) {
+  if (affected.some((a) => a.kind === AreaKind.Core)) {
     concerns.push({
       policyId: 'core.protected-area',
-      reason: 'Core / kernel area touched; requires elevated review.',
+      reason: 'Core area touched; requires elevated review.',
       severity: 'error',
     });
   }
@@ -610,7 +610,7 @@ function classifyRisk(input: {
     score += 18;
     reasons.push({
       code: 'core-area',
-      message: 'Touches core / kernel area.',
+      message: 'Touches core area.',
     });
   }
   if (input.boundaryCount > 0) {
@@ -802,11 +802,10 @@ export async function analyzeImpact(
     (f) =>
       f.endsWith('/index.ts') ||
       f.endsWith('main.ts') ||
-      f.includes('plugin-api/') ||
       f.includes('public-api/'),
   );
   const hitsCore = affectedAreas.some(
-    (a) => a.kind === AreaKind.Core || a.kind === AreaKind.Kernel || a.kind === AreaKind.Common,
+    (a) => a.kind === AreaKind.Core,
   );
   const hitsPolicy = files.some((f) => f.includes('policy') || f.includes('policy-engine'));
   const hitsTemplates = templates.length > 0 || pipelines.length > 0;

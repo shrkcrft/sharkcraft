@@ -50,16 +50,15 @@ describe('r13 CI scaffolds', () => {
 });
 
 describe('r13 demo scripts', () => {
-  test('list returns 4 scenarios', () => {
+  test('list returns 3 scenarios', () => {
     const list = listDemoScenarios();
-    expect(list.length).toBe(4);
+    expect(list.length).toBe(3);
   });
 
   test('renders bash with comments and verification commands', () => {
-    const script = getDemoScript(DemoScenario.PlatformPlugin);
+    const script = getDemoScript(DemoScenario.PrReview);
     const body = renderDemoScriptShell(script);
     expect(body).toContain('#!/usr/bin/env bash');
-    expect(body).toContain('shrk plugin lifecycle profiles');
     expect(body).toContain('set -euo pipefail');
   });
 

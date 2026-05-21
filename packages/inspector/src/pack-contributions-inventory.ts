@@ -13,7 +13,6 @@ import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 // Structural loaders used to replace regex-fallback noise per kind.
 import { HELPERS } from './helper-registry.ts';
 import { listConventions } from './convention-registry.ts';
-import { listPluginLifecycleProfiles } from './plugin-lifecycle-profile-registry.ts';
 import { listPackHelpers } from './pack-helper-registry.ts';
 import { listTaskRoutingHints } from './task-routing-hint-registry.ts';
 import { listRegistrationHints } from './registration-hint-registry.ts';
@@ -49,7 +48,6 @@ export enum ContributionKind {
   Decision = 'decision',
   ContractTemplate = 'contract-template',
   MigrationProfile = 'migration-profile',
-  PluginLifecycleProfile = 'plugin-lifecycle-profile',
   ContextTest = 'context-test',
   AgentTest = 'agent-test',
   Helper = 'helper',
@@ -153,7 +151,6 @@ const KIND_TO_SLOT: Record<ContributionKind, string> = {
   [ContributionKind.Decision]: 'decisionFiles',
   [ContributionKind.ContractTemplate]: 'contractTemplateFiles',
   [ContributionKind.MigrationProfile]: 'migrationProfileFiles',
-  [ContributionKind.PluginLifecycleProfile]: 'pluginLifecycleProfileFiles',
   [ContributionKind.ContextTest]: 'contextTestFiles',
   [ContributionKind.AgentTest]: 'agentTestFiles',
   [ContributionKind.Helper]: 'helperFiles',
@@ -214,10 +211,6 @@ function buildContribFileEntries(inspection: ISharkcraftInspection): IContribFil
       { kind: ContributionKind.FeedbackRule, relCandidates: ['feedback-rules.ts'] },
       { kind: ContributionKind.Decision, relCandidates: ['decisions.ts'] },
       { kind: ContributionKind.AgentTest, relCandidates: ['agent-tests.ts'] },
-      {
-        kind: ContributionKind.PluginLifecycleProfile,
-        relCandidates: ['plugin-lifecycle-profiles.ts'],
-      },
       { kind: ContributionKind.ContractTemplate, relCandidates: ['contract-templates.ts'] },
       { kind: ContributionKind.MigrationProfile, relCandidates: ['migration-profiles.ts'] },
       { kind: ContributionKind.Helper, relCandidates: ['helpers.ts'] },
@@ -402,24 +395,6 @@ async function loadStructuralEntries(
         ...(p.title ? { title: p.title } : {}),
         source: p.source === 'pack' ? ContributionSource.Pack : ContributionSource.Local,
         ...(p.packageName ? { packageName: p.packageName } : {}),
-      });
-    }
-  } catch {
-    // ignore
-  }
-
-  // Plugin-lifecycle profiles — same problem (sub-object ids).
-  try {
-    const entries = await listPluginLifecycleProfiles(inspection);
-    for (const e of entries) {
-      record(ContributionKind.PluginLifecycleProfile, e.sourceFile, {
-        id: e.profile.id,
-        ...((e.profile as { title?: string }).title ? { title: (e.profile as { title?: string }).title } : {}),
-        source:
-          (e as { source?: string }).source === 'pack'
-            ? ContributionSource.Pack
-            : ContributionSource.Local,
-        ...(e.packageName ? { packageName: e.packageName } : {}),
       });
     }
   } catch {

@@ -13,7 +13,7 @@ shrk rules scaffold \
   --id architecture.no-reexport-proxy \
   --kind architecture \
   --rationale "Files whose body is purely re-exports hide the real source." \
-  --owner platform
+  --owner team
 ```
 
 By default the command prints a preview to stdout — nothing is

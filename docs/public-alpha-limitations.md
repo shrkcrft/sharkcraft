@@ -1,7 +1,7 @@
 # Public alpha — known limitations
 
 This is the canonical list of caveats for SharkCraft 0.1.0-alpha.2.
-None of them block adoption, but adopters should be aware.
+None of them block adoption, but consumers should be aware.
 
 ## Smoke harness
 

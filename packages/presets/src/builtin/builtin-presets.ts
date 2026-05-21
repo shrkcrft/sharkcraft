@@ -32,9 +32,9 @@ import {
   RUST_PATH_SRC,
   RUST_PATH_TESTS,
 } from './shared-snippets.ts';
-import { R26_PRESETS } from './r26-presets.ts';
-import { R45_PRESETS } from './r45-presets.ts';
-import { R47_PRESETS } from './r47-presets.ts';
+import { MULTI_STACK_PRESETS } from './r26-presets.ts';
+import { UNIVERSAL_ADOPTION_PRESETS } from './r45-presets.ts';
+import { CANONICAL_ALIAS_PRESETS } from './r47-presets.ts';
 import { ANGULAR_21_PRESETS } from './angular21-presets.ts';
 import { NEST_11_PRESETS } from './nest11-presets.ts';
 import { REACT_19_PRESETS } from './react19-presets.ts';
@@ -194,7 +194,7 @@ const ANGULAR_APP: IPreset = definePreset({
 const NX_MONOREPO: IPreset = definePreset({
   id: 'nx-monorepo',
   title: 'Nx monorepo',
-  description: 'Conventions for Nx workspaces: layer order, public entrypoints, no relative cross-lib imports, affected build/test commands.',
+  description: 'Conventions for Nx workspaces: public entrypoints, no relative cross-lib imports, affected build/test commands.',
   tags: ['nx', 'monorepo'],
   appliesTo: [WorkspaceProfile.HasNx, WorkspaceProfile.IsMonorepo],
   weight: 8,
@@ -202,13 +202,13 @@ const NX_MONOREPO: IPreset = definePreset({
     knowledge: [
       COMMON_AGENT_BRIEFING,
       `defineKnowledgeEntry({
-    id: 'nx.layer-order',
-    title: 'Nx layers: lower layers do not import higher',
+    id: 'nx.boundary-tags',
+    title: 'Respect Nx boundary tags',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.Critical,
     tags: ['nx', 'architecture'],
     appliesWhen: ['generate-code', 'refactor'],
-    content: 'Respect the documented layer order. Lower layers must never import higher ones.',
+    content: 'Respect the boundary tags declared on each project (scope, type). The enforce-module-boundaries lint rule must stay green.',
   })`,
       `defineKnowledgeEntry({
     id: 'nx.public-entrypoints',
@@ -595,11 +595,11 @@ export const BUILTIN_PRESETS: readonly IPreset[] = Object.freeze([
   RUST_CRATE,
   POLYGLOT_MONOREPO,
   // Modern Angular, strict TypeScript, frontend/backend/testing variants
-  ...R26_PRESETS,
+  ...MULTI_STACK_PRESETS,
   // Universal adoption: next-app, turborepo, package-workspace, clean-architecture-ts
-  ...R45_PRESETS,
+  ...UNIVERSAL_ADOPTION_PRESETS,
   // Universal adoption top-5: nest-service, angular-app canonical aliases
-  ...R47_PRESETS,
+  ...CANONICAL_ALIAS_PRESETS,
   // Angular 18 / 19 / 20 / 21 — signal queries, signal I/O, zoneless,
   // @if/@for/@defer/@let, resource() / httpResource(), inject(), no
   // NgModules. Weight 11-12 so the recommender prefers these over

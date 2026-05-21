@@ -27,7 +27,6 @@ import {
   type ISavedPlan,
 } from '@shrkcrft/generator';
 
-import { helperPlanToSavedPlan, HELPER_SYNTHETIC_TEMPLATE } from '../helper-registry.ts';
 
 function mkProject(): string {
   return mkdtempSync(nodePath.join(tmpdir(), 'shrk-r36-'));
@@ -249,51 +248,3 @@ describe('Multi-op-per-path plan diff', () => {
   });
 });
 
-describe('Helper plan saved-plan conversion', () => {
-  it('converts a helper plan into a synthetic saved plan', () => {
-    const helperPlan = {
-      schema: 'sharkcraft.helper-plan/v1' as const,
-      helperId: 'sample-helper' as never,
-      variables: { name: 'foo' },
-      ops: [
-        {
-          targetPath: 'src/foo.ts',
-          operation: { kind: 'append', snippet: 'export const FOO = 1;\n' },
-        },
-      ],
-      manualSteps: ['Review imports'],
-      conflicts: [],
-      destructive: false,
-      humanReviewRequired: true,
-    };
-    const saved = helperPlanToSavedPlan(helperPlan, '/tmp');
-    expect(saved.templateId).toBe(HELPER_SYNTHETIC_TEMPLATE);
-    expect(saved.schema).toBe('sharkcraft.plan/v2');
-    expect(saved.expectedChanges.length).toBe(1);
-    expect(saved.expectedChanges[0]?.operation['kind']).toBe('append');
-    expect(saved.variables['helperId']).toBe('sample-helper');
-    expect(saved.note).toContain('Manual steps');
-  });
-});
-
-describe('Plugin rename word boundary', () => {
-  it('does not match plugin name inside a longer plugin folder name', () => {
-    // Sanity check on the regex we use: `data` followed by anything that's
-    // not an identifier-continuation character.
-    const segment = 'plugins';
-    const name = 'data';
-    const re = new RegExp(
-      `${segment}/${name}(?![A-Za-z0-9_\\-.])`,
-      'g',
-    );
-    expect(re.test('./lib/plugins/data;')).toBe(true);
-    re.lastIndex = 0;
-    expect(re.test('./lib/plugins/data/foo')).toBe(true);
-    re.lastIndex = 0;
-    expect(re.test('./lib/plugins/dataflow;')).toBe(false);
-    re.lastIndex = 0;
-    expect(re.test('./lib/plugins/data-flow;')).toBe(false);
-    re.lastIndex = 0;
-    expect(re.test('./lib/plugins/data.foo;')).toBe(false);
-  });
-});

@@ -127,15 +127,31 @@ describe('lifecycle metadata', () => {
 });
 
 describe('bare shrk start screen', () => {
-  test('renderStartScreen is short and mentions the canonical first commands', () => {
+  test('renderStartScreen is the curated ~20-command starter surface', () => {
     const out = renderStartScreen();
     const lines = out.split('\n');
-    // ≤ 30 lines including blank lines; current target is much smaller.
-    expect(lines.length).toBeLessThanOrEqual(30);
+    // ≤ 55 lines including blank lines and section headers. The curated
+    // starter surface organizes ~20 commands into 5 workflow sections;
+    // each `$ shrk <cmd>` line is one verb. If this grows past 55 it
+    // means another verb crept onto the start screen — push it to
+    // --full-help instead.
+    expect(lines.length).toBeLessThanOrEqual(55);
+    // Anchor on the section headers that group the curated 20.
+    expect(out).toContain('Bootstrap:');
+    expect(out).toContain('Use it for a task:');
+    expect(out).toContain('Generate code safely:');
+    expect(out).toContain('Browse what shrk knows:');
+    expect(out).toContain('Run shrk for an agent:');
+    // Canonical first-touch commands the curated surface MUST include.
     expect(out).toContain('shrk recommend');
     expect(out).toContain('shrk doctor');
-    // start screen pruned to core tier; surface verbs
-    // replace the older `shrk search` shortcut as the discovery path.
+    expect(out).toContain('shrk init');
+    expect(out).toContain('shrk context');
+    expect(out).toContain('shrk gen');
+    expect(out).toContain('shrk apply');
+    expect(out).toContain('shrk dashboard');
+    expect(out).toContain('shrk mcp serve');
+    // Discovery path to the wider surface stays linked.
     expect(out).toContain('shrk surface list');
     expect(out).toContain('--full-help');
   });

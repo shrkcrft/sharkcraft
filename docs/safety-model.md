@@ -164,9 +164,9 @@ MCP additions (R24, all read-only):
 - `create_contract_approval_preview` — preview only; never persists.
 - `query_execution_graph` — query a saved or rebuilt execution graph.
 
-## Polyglot platform (R25, advisory)
+## Polyglot support (advisory)
 
-R25 adds language detection / command inference / dependency scanning /
+Language detection / command inference / dependency scanning /
 test impact for Java, C#, Python, Go, Rust. Everything is advisory and
 read-only. The only write paths affected:
 

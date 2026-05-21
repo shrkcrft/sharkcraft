@@ -14,8 +14,8 @@ shrk templates smoke
 ## What's checked
 
 - **Forbidden legacy fragments** — per-template denylist of path
-  fragments that must not appear. Example: `app.plugin-contract`
-  must not emit anything under `contracts/<name>/`.
+  fragments that must not appear. Example: a `app.service` template
+  must not emit anything under a deprecated `legacy/` folder.
 - **Missing barrels** — when a template emits an `export` op, the
   target barrel must exist (warning if not).
 - **Missing anchors** — `insert-after` / `insert-before` ops must
@@ -32,9 +32,9 @@ shrk templates smoke
 
 ```json
 {
-  "templateId": "app.plugin-contract",
+  "templateId": "app.service",
   "status": "pass | warn | fail",
-  "samplePaths": ["libs/.../plugins/sample/index.ts"],
+  "samplePaths": ["src/services/sample.service.ts"],
   "issues": [
     { "severity": "error", "code": "forbidden-legacy-path", "message": "..." }
   ]

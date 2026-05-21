@@ -7,7 +7,7 @@ export interface IPipelineDefinition {
   description: string;
   tags?: readonly string[];
   scope?: readonly string[];
-  /** Free-form task hints (e.g. "create-plugin"). Used for relevance lookup. */
+  /** Free-form task hints (e.g. "generate-service"). Used for relevance lookup. */
   appliesWhen?: readonly string[];
   inputs?: readonly IPipelineInput[];
   steps: readonly IPipelineStep[];

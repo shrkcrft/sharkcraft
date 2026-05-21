@@ -143,6 +143,67 @@ export interface DiscoverPacksOptions {
   verifySignatures?: boolean;
   /** Override the secret used for signature verification. */
   packSecret?: string;
+  /**
+   * Skip the process-level discovery cache. The cache is keyed by
+   * projectRoot + lockfile mtime, so installs/upgrades invalidate it
+   * automatically. Pass `noCache: true` to force a fresh scan (e.g.
+   * after editing a manifest in place during a long-running process).
+   */
+  noCache?: boolean;
+}
+
+// Process-level cache keyed by (projectRoot + lockfile fingerprint).
+// `discoverPacks` walks node_modules and reads every package.json,
+// which is the slowest single step of `inspectSharkcraft()` on large
+// monorepos. The cache is invalidated by lockfile mtime, so any
+// install/uninstall/upgrade causes a fresh scan automatically.
+//
+// Bypassed when:
+//   - `verifySignatures: true` is set (security-sensitive: always re-verify)
+//   - `extraRoots` is non-empty (tests sometimes drop packs outside node_modules)
+//   - `noCache: true` is passed (escape hatch)
+interface ICacheKey {
+  projectRoot: string;
+  lockFingerprint: string;
+}
+
+const discoveryCache = new Map<string, IPackDiscoveryResult>();
+
+function lockFingerprintFor(projectRoot: string): string {
+  // Try each known lock file in order; first existing one wins. mtimeMs
+  // changes every install, so it's a tight invalidation signal.
+  const candidates = ['bun.lockb', 'bun.lock', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'];
+  for (const name of candidates) {
+    const p = nodePath.join(projectRoot, name);
+    if (existsSync(p)) {
+      try {
+        const st = statSync(p);
+        return `${name}:${st.mtimeMs}:${st.size}`;
+      } catch {
+        // fall through and try the next candidate
+      }
+    }
+  }
+  // No lock file — also cache by node_modules mtime as a fallback.
+  const nm = nodePath.join(projectRoot, 'node_modules');
+  if (existsSync(nm)) {
+    try {
+      const st = statSync(nm);
+      return `node_modules:${st.mtimeMs}`;
+    } catch {
+      // ignore
+    }
+  }
+  return 'none';
+}
+
+function cacheKeyOf(key: ICacheKey): string {
+  return `${key.projectRoot}::${key.lockFingerprint}`;
+}
+
+/** Clear the process-level pack-discovery cache. Tests use this. */
+export function clearPackDiscoveryCache(): void {
+  discoveryCache.clear();
 }
 
 /**
@@ -150,11 +211,31 @@ export interface DiscoverPacksOptions {
  * package whose `package.json` declares a `sharkcraft` field. For each, load
  * the manifest and run validatePackManifest. Returns a structured discovery
  * result; never throws on individual pack failures.
+ *
+ * The result is cached at process-level keyed by projectRoot + lock-file
+ * mtime, so repeated calls within a single CLI invocation (or MCP server
+ * session) skip the node_modules walk. The cache invalidates automatically
+ * on any install/upgrade and is bypassed entirely when signature
+ * verification is requested or extra roots are supplied.
  */
 export async function discoverPacks(options: DiscoverPacksOptions): Promise<IPackDiscoveryResult> {
   const projectRoot = nodePath.resolve(options.projectRoot);
   const nodeModulesPath = nodePath.join(projectRoot, 'node_modules');
   const nodeModulesExists = existsSync(nodeModulesPath);
+
+  // Cache lookup — only when the caller doesn't disable it AND when no
+  // signature-verification or extra-root option might change the answer.
+  const cacheable =
+    !options.noCache &&
+    !options.verifySignatures &&
+    (!options.extraRoots || options.extraRoots.length === 0);
+  const cacheKey = cacheable
+    ? cacheKeyOf({ projectRoot, lockFingerprint: lockFingerprintFor(projectRoot) })
+    : null;
+  if (cacheKey) {
+    const cached = discoveryCache.get(cacheKey);
+    if (cached) return cached;
+  }
 
   const result: IPackDiscoveryResult = {
     projectRoot,
@@ -282,5 +363,8 @@ export async function discoverPacks(options: DiscoverPacksOptions): Promise<IPac
     }
   }
 
+  if (cacheKey) {
+    discoveryCache.set(cacheKey, result);
+  }
   return result;
 }

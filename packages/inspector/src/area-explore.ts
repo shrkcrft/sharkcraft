@@ -164,17 +164,13 @@ function describeRole(relPath: string, kind: AreaKind): string {
   }
   switch (kind) {
     case AreaKind.Core:
-      return 'Core building blocks (Result, errors, ids) — lowest in the layer order.';
+      return 'Core building blocks (Result, errors, ids).';
     case AreaKind.Tests:
       return 'Tests.';
     case AreaKind.Docs:
       return 'Documentation.';
     case AreaKind.Generated:
       return 'Generated output — do not hand-edit.';
-    case AreaKind.Adapter:
-      return 'Framework / runtime adapter glue.';
-    case AreaKind.Plugin:
-      return 'Plugin / pack code.';
     default:
       return `${kind} area.`;
   }

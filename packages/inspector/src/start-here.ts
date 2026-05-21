@@ -1,7 +1,7 @@
 /**
  * `shrk start-here` — the human entry point.
  *
- * SharkCraft ships 200+ commands. New adopters need a 30-second answer to
+ * SharkCraft ships 200+ commands. New consumers need a 30-second answer to
  * "what should I run first?". This module is the deterministic source of
  * that answer. It does not call any external system, does not read the
  * project state, and never writes — it's a curated list.

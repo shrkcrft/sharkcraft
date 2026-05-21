@@ -195,15 +195,15 @@ describe('fix preview', () => {
 describe('scaffold coverage', () => {
   test('coverage grade is deterministic for an empty inspection', async () => {
     const inspection = makeMinimalInspection();
-    const r1 = await buildScaffoldCoverageReport(inspection, { task: 'add primitive adapter' });
-    const r2 = await buildScaffoldCoverageReport(inspection, { task: 'add primitive adapter' });
+    const r1 = await buildScaffoldCoverageReport(inspection, { task: 'add a new service' });
+    const r2 = await buildScaffoldCoverageReport(inspection, { task: 'add a new service' });
     expect(r1.grade).toBe(r2.grade);
     expect(r1.confidence).toBe(r2.confidence);
   });
 
   test('missing template surfaces as missing axis', async () => {
     const inspection = makeMinimalInspection();
-    const r = await buildScaffoldCoverageReport(inspection, { task: 'add primitive adapter' });
+    const r = await buildScaffoldCoverageReport(inspection, { task: 'add a new service' });
     expect(r.missing).toContain('templates');
     expect([CoverageGrade.Missing, CoverageGrade.Weak, CoverageGrade.Partial]).toContain(r.grade);
   });
@@ -303,7 +303,7 @@ describe('CI integrity', () => {
 describe('uncertainty', () => {
   test('no template matched produces medium/low confidence', () => {
     const packet = {
-      task: 'add primitive adapter',
+      task: 'add a new service',
       projectOverview: '',
       detectedProfiles: [],
       presetRecommendations: [],
@@ -328,7 +328,7 @@ describe('uncertainty', () => {
 
   test('healthy packet returns high confidence', () => {
     const packet = {
-      task: 'add primitive adapter',
+      task: 'add a new service',
       projectOverview: '',
       detectedProfiles: [],
       presetRecommendations: [],
@@ -402,19 +402,19 @@ describe('ranker explainability', () => {
       knowledgeEntries: [
         {
           id: 'engine.demo-knowledge',
-          title: 'plugin adapter knowledge',
+          title: 'service utility knowledge',
           type: 'knowledge',
           priority: 'high',
           scope: [],
-          tags: ['plugin', 'adapter'],
-          appliesWhen: ['create-adapter'],
+          tags: ['service', 'utility'],
+          appliesWhen: ['generate-service'],
           content: 'demo',
         },
       ],
     });
     const r = explainRankerDecision(inspection, {
       id: 'engine.demo-knowledge',
-      task: 'create a plugin adapter',
+      task: 'create a service utility',
     });
     expect(r.found).toBe(true);
     expect(r.matchedSignals.length).toBeGreaterThan(0);

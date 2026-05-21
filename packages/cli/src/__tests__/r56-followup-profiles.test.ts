@@ -107,16 +107,17 @@ describe('preset surfaceProfile wiring', () => {
   });
 });
 
-describe('start screen pruned to core', () => {
-  test('start screen no longer mentions write verbs (gen/apply)', async () => {
+describe('start screen — curated ~20-command starter surface', () => {
+  test('start screen surfaces the safe-codegen pair (gen + apply)', async () => {
     const mod = await import('../commands/help.command.ts');
     const out = mod.renderStartScreen();
-    // Write verbs were in the old "Start here" list — they should no
-    // longer be on the first screen.
-    expect(out).not.toMatch(/^\s*\$ shrk gen /m);
-    expect(out).not.toMatch(/^\s*\$ shrk apply /m);
-    // Discovery surface (`surface list`) replaces them as the way to
-    // see everything else.
+    // The original alpha hid gen/apply behind `surface list`. After the
+    // alpha.8 curation pass the canonical 20-command starter surface
+    // surfaces them directly — paired with `check boundaries` and
+    // `quality` so the safe-codegen flow is one read away. Discovery
+    // (`surface list`) stays linked for the rest.
+    expect(out).toMatch(/^\s*\$ shrk gen /m);
+    expect(out).toMatch(/^\s*\$ shrk apply /m);
     expect(out).toMatch(/shrk surface list/);
   });
 });

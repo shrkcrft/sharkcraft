@@ -19,6 +19,7 @@ import type {
   McpGateResolver,
 } from './tool-definition.ts';
 import { ALL_TOOLS } from '../tools/index.ts';
+import { PRIMARY_MCP_TOOLS, shouldAdvertiseFullToolset } from '../tools/primary-tools.ts';
 import { validateToolInput } from './tool-input-validators.ts';
 import { buildResourceList, readResource } from '../resources/index.ts';
 
@@ -126,13 +127,24 @@ export function createSharkcraftServer(config: CreateSharkcraftServerOptions): {
     },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: ALL_TOOLS.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema as unknown as Record<string, unknown>,
-    })),
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    // Default `tools/list` advertises only the ~30 primary tools to
+    // keep the agent's tool-selection surface focused. The other ~200
+    // tools stay CALLABLE via `tools/call` for agents that already
+    // know the name (e.g. via `shrk export claude-skill` referencing
+    // them). Set SHRK_MCP_FULL_TOOLS=1 to advertise everything.
+    const advertiseFull = shouldAdvertiseFullToolset();
+    const advertised = advertiseFull
+      ? ALL_TOOLS
+      : ALL_TOOLS.filter((t) => PRIMARY_MCP_TOOLS.has(t.name));
+    return {
+      tools: advertised.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema as unknown as Record<string, unknown>,
+      })),
+    };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;

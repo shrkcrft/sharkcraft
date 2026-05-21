@@ -6,11 +6,6 @@ export const AREA_MAP_SCHEMA = 'sharkcraft.area-map/v1';
 
 export enum AreaKind {
   Core = 'core',
-  Common = 'common',
-  Runtime = 'runtime',
-  Kernel = 'kernel',
-  Plugin = 'plugin',
-  Adapter = 'adapter',
   Ui = 'ui',
   App = 'app',
   Api = 'api',
@@ -46,11 +41,6 @@ export interface IAreaMap {
 
 const AREA_PATTERNS: Array<{ kind: AreaKind; match: RegExp[]; idHint: string }> = [
   { kind: AreaKind.Core, match: [/^packages\/core(\/|$)/, /^src\/core(\/|$)/], idHint: 'core' },
-  { kind: AreaKind.Common, match: [/^packages\/(common|shared)(\/|$)/, /^src\/(common|shared)(\/|$)/], idHint: 'common' },
-  { kind: AreaKind.Runtime, match: [/^packages\/runtime(\/|$)/, /^src\/runtime(\/|$)/], idHint: 'runtime' },
-  { kind: AreaKind.Kernel, match: [/^packages\/kernel(\/|$)/, /^src\/kernel(\/|$)/], idHint: 'kernel' },
-  { kind: AreaKind.Plugin, match: [/plugins?(\/|$)/, /^packages\/plugin-/], idHint: 'plugin' },
-  { kind: AreaKind.Adapter, match: [/adapters?(\/|$)/, /^packages\/adapter-/], idHint: 'adapter' },
   { kind: AreaKind.Ui, match: [/^packages\/(ui|dashboard|web)(\/|$)/, /^(src|app)\/(ui|components|pages|views)(\/|$)/], idHint: 'ui' },
   { kind: AreaKind.App, match: [/^apps?\//, /^packages\/app(\/|$)/], idHint: 'app' },
   { kind: AreaKind.Api, match: [/^packages\/api(\/|$)/, /\/api\//, /\/routes\//, /\/controllers\//], idHint: 'api' },

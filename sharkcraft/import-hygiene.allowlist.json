@@ -63,11 +63,6 @@
       "reason": "node:fs lazy-loaded inside an async glob resolver to keep the module's synchronous load path side-effect-free."
     },
     {
-      "path": "packages/inspector/src/plan-simulation.ts",
-      "kind": "dynamic-import",
-      "reason": "Plugin lifecycle profile registry only matters when plan-simulation runs against a plugin lifecycle plan."
-    },
-    {
       "path": "packages/inspector/src/ingest-apply.ts",
       "kind": "dynamic-import",
       "reason": "Ingest body extractor is heavy and only loaded inside the ingest-apply path."

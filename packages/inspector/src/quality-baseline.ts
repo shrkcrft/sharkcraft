@@ -180,7 +180,9 @@ function extractBaseline(
   return {
     schema: QUALITY_BASELINE_SCHEMA,
     createdAt: nowIso(),
-    projectRoot: inspection.projectRoot,
+    // Repo basename only — baselines are committed and absolute paths
+    // leak the author's filesystem layout into the public repo.
+    projectRoot: nodePath.basename(inspection.projectRoot),
     sharkcraftVersion: readSharkcraftVersion(inspection.projectRoot),
     configHash: configHashFor(inspection),
     qualityScore: report.score,

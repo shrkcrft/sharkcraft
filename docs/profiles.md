@@ -1,14 +1,12 @@
-# Profiles (R32)
+# Profiles
 
 A *profile* in SharkCraft is a typed, named description of a
-project-specific concern (plugin layout, migration gate, naming
-convention, …). The engine ships zero built-in profiles; every profile
-comes from a pack contribution or local `sharkcraft/` config.
+project-specific concern (migration gate, naming convention, …). The
+engine ships zero built-in profiles; every profile comes from a pack
+contribution or local `sharkcraft/` config.
 
-## Kinds (R32)
+## Kinds
 
-- `plugin-lifecycle` — describes where plugins live, the key-table, and
-  barrels. Drives `shrk plugin rename|remove`.
 - `migration` — describes a multi-phase migration gate (files / env vars
   to probe). Drives `shrk migration readiness`.
 
@@ -19,7 +17,7 @@ Future kinds (reserved): `command-behavior`, `generator`, `boundary`,
 
 ```bash
 shrk profiles list                         # all kinds
-shrk profiles list --kind plugin-lifecycle
+shrk profiles list --kind migration
 shrk profiles get <id> [--kind <kind>]
 shrk profiles doctor                       # registry-wide load issues
 shrk profiles search <query> [--kind <kind>]
@@ -35,8 +33,7 @@ shrk profiles search <query> [--kind <kind>]
 
 1. Add the typed interface to `packages/plugin-api/src/<kind>-profile.ts`.
 2. Add a pack manifest slot (e.g. `commandBehaviorProfileFiles?`).
-3. Add a loader in `packages/inspector/src/<kind>-profile-registry.ts`
-   (mirror `plugin-lifecycle-profile-registry.ts`).
+3. Add a loader in `packages/inspector/src/<kind>-profile-registry.ts`.
 4. Extend `profile-registry.ts` to surface the new kind under the
    generic `shrk profiles` commands.
 5. Add a doc and a fixture-based test.
@@ -52,5 +49,4 @@ Each profile entry records:
 ## Schemas
 
 - `sharkcraft.profile-registry/v1`
-- `sharkcraft.plugin-lifecycle-profile-registry/v1`
 - `sharkcraft.migration-profile-registry/v1`

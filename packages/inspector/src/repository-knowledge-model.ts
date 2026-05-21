@@ -106,7 +106,7 @@ export interface IArchitectureModel {
   layers: readonly IArchitectureLayerSummary[];
   /** Public API surfaces (paths whose deep imports should be forbidden). */
   publicApis: readonly string[];
-  /** Notes about cycles or imports that violate the inferred layer order. */
+  /** Notes about cycles or other import-graph observations. */
   notes: readonly string[];
 }
 

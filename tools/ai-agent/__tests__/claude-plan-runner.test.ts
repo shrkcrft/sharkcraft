@@ -10,7 +10,7 @@ function makeInput(overrides: Partial<IAgentRunInput> = {}): IAgentRunInput {
       number: 1,
       title: 'Test issue',
       body: 'body',
-      authorLogin: 'bence312',
+      authorLogin: 'repo-owner',
     },
     context: { shrkTaskOutput: 'context' },
     limits: {

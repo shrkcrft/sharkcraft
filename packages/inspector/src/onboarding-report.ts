@@ -1,3 +1,4 @@
+import * as nodePath from 'node:path';
 import type { IOnboardingPlan } from './onboarding.ts';
 
 /**
@@ -13,7 +14,10 @@ export function renderOnboardingReport(plan: IOnboardingPlan): string {
   out.push('## Project summary');
   out.push('');
   const s = plan.projectSummary;
-  out.push(`- Project root: \`${s.projectRoot}\``);
+  // Repo basename only — the onboarding report is meant to be
+  // committed and reviewed; leaking the author's filesystem layout
+  // (e.g. `/Users/<name>/...`) into a public repo is pointless noise.
+  out.push(`- Project root: \`${nodePath.basename(s.projectRoot)}\``);
   if (s.projectName) out.push(`- Name: \`${s.projectName}\``);
   if (s.description) out.push(`- Description: ${s.description}`);
   out.push(`- Package manager: \`${s.packageManager}\``);

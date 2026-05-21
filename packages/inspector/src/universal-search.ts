@@ -17,7 +17,6 @@ import { buildPackContributionsInventory } from './pack-contributions-inventory.
 import { listConventions } from './convention-registry.ts';
 import { listPackHelpers } from './pack-helper-registry.ts';
 import { explainTaskRouting } from './task-routing-hint-registry.ts';
-import { listPluginLifecycleProfiles } from './plugin-lifecycle-profile-registry.ts';
 import { uncertaintyReportFromSummary, type IUncertaintyReport } from './uncertainty-report.ts';
 import { buildUncertaintySummary } from './uncertainty.ts';
 import { buildTaskPacket } from './task-packet.ts';
@@ -41,7 +40,6 @@ export enum SearchResultKind {
   ScaffoldPattern = 'scaffold-pattern',
   ContractTemplate = 'contract-template',
   MigrationProfile = 'migration-profile',
-  PluginLifecycleProfile = 'plugin-lifecycle-profile',
   FeedbackRule = 'feedback-rule',
   TaskRoutingHint = 'task-routing-hint',
   Docs = 'docs',
@@ -145,7 +143,6 @@ export async function buildUniversalSearch(
   const conventions = await listConventions(inspection);
   const helpers = await listPackHelpers(inspection);
   const routing = await explainTaskRouting(inspection, q);
-  const lifecycle = await listPluginLifecycleProfiles(inspection);
   const knowledgeEntries = inspection.knowledgeEntries;
 
   const allHits: IUniversalSearchHit[] = [];
@@ -205,24 +202,6 @@ export async function buildUniversalSearch(
     }
   }
 
-  // Plugin lifecycle profiles
-  for (const p of lifecycle) {
-    const s = score(`${p.profile.id} ${p.profile.title} ${(p.profile.tags ?? []).join(' ')}`, q);
-    if (s.score > 0) {
-      allHits.push(
-        makeHit(
-          SearchResultKind.PluginLifecycleProfile,
-          p.profile.id,
-          p.profile.title,
-          p.source === 'pack' ? 'pack' : 'local',
-          p.packageName,
-          s,
-          `shrk plugin lifecycle profile ${p.profile.id}`,
-        ),
-      );
-    }
-  }
-
   // Pack contributions (catch-all for kinds we didn't iterate above)
   for (const e of inv.entries) {
     if (allHits.find((h) => h.id === e.id && String(h.kind) === e.kind)) continue;
@@ -242,7 +221,6 @@ export async function buildUniversalSearch(
         decision: SearchResultKind.Decision,
         'contract-template': SearchResultKind.ContractTemplate,
         'migration-profile': SearchResultKind.MigrationProfile,
-        'plugin-lifecycle-profile': SearchResultKind.PluginLifecycleProfile,
         'feedback-rule': SearchResultKind.FeedbackRule,
         'task-routing-hint': SearchResultKind.TaskRoutingHint,
         helper: SearchResultKind.Helper,
@@ -291,7 +269,6 @@ export async function buildUniversalSearch(
           SearchResultKind.Policy,
           SearchResultKind.ContractTemplate,
           SearchResultKind.MigrationProfile,
-          SearchResultKind.PluginLifecycleProfile,
           SearchResultKind.ScaffoldPattern,
           SearchResultKind.FeedbackRule,
           SearchResultKind.TaskRoutingHint,

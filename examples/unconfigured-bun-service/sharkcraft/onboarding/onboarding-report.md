@@ -2,7 +2,7 @@
 
 ## Project summary
 
-- Project root: `/Users/varadibence/IdeaProjects/sharkcraft2/examples/unconfigured-bun-service`
+- Project root: `unconfigured-bun-service`
 - Name: `@example/unconfigured-bun-service`
 - Description: A small Bun + TS service used as a dogfood target for `shrk onboard`. No sharkcraft/ folder on purpose.
 - Package manager: `unknown`
@@ -11,8 +11,8 @@
 
 ## AI-readiness — current vs. expected
 
-- Current: **poor** (score 19/100)
-- Expected after drafts: **poor** (score ~38/100)
+- Current: **poor** (score 24/100)
+- Expected after drafts: **poor** (score ~43/100)
 
 Top improvements:
 - Create sharkcraft/sharkcraft.config.ts.

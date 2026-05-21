@@ -106,7 +106,7 @@ export const helperPlanCommand: ICommandHandler = {
     // buildHelperPlan via requireProfile(); we surface a friendly message.
     if ('requiresProfile' in def && (def as { requiresProfile?: boolean }).requiresProfile) {
       process.stderr.write(
-        `Helper "${id}" requires a plugin-lifecycle profile. Available:\n  $ shrk plugin lifecycle profiles\n`,
+        `Helper "${id}" requires a registered profile. Available:\n  $ shrk profiles list\n`,
       );
       // Still try to build the plan; the registry throws with the same idea.
     }

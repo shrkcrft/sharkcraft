@@ -10,10 +10,10 @@ import { defineContextTest } from '@shrkcrft/inspector';
 
 export default [
   defineContextTest({
-    id: 'plugin-task',
-    task: 'create a user profile plugin',
-    mustInclude: ['plugin.no-own-defaults', 'architecture.layer-order'],
-    mustNotInclude: ['adapter.no-business-logic'],
+    id: 'service-task',
+    task: 'create a new user profile service',
+    mustInclude: ['repo.architecture.respect-boundaries'],
+    mustNotInclude: ['some-rule-that-should-not-fire'],
     maxTokens: 3500,
   }),
 ];

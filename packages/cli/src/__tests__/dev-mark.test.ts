@@ -60,6 +60,9 @@ function makeFixture(): string {
 }
 
 describe('shrk dev mark-applied / mark-validated', () => {
+  // This test spawns 3 chained `shrk` subprocesses (start → plan →
+  // mark-applied). Each costs ~1-2s of bun startup. Under full-suite
+  // parallel contention the 5s default is too tight.
   test('mark-applied promotes the plan entry to applied and records appliedPlans', () => {
     const root = makeFixture();
     const r1 = shrk(['--cwd', root, 'dev', 'start', 'create user profile service'], root);
@@ -82,7 +85,7 @@ describe('shrk dev mark-applied / mark-validated', () => {
     expect(state.appliedPlans.some((a) => a.file === 'user-profile.json')).toBe(true);
     const entry = state.plans.find((p) => p.name === 'user-profile');
     expect(entry?.status).toBe('applied');
-  });
+  }, 30_000);
 
   test('mark-validated records a validation entry and sets phase=validated', () => {
     const root = makeFixture();

@@ -64,13 +64,11 @@ shrk constructs infer [--type X] [--confidence high|medium|low] [--limit N] [--w
 
 `shrk constructs infer` proposes construct candidates by scanning:
 
-- Folder names (`services/`, `plugins/`, `policies/`, `capabilities/`,
-  `adapters/`, `routes/`, `controllers/`, `components/`, `features/`,
-  `modules/`).
-- Filename suffixes (`*.service.ts`, `*.plugin.ts`, `*.policy.ts`,
-  `*.controller.ts`, `*.adapter.ts`).
+- Folder names (`services/`, `routes/`, `controllers/`, `components/`,
+  `features/`, `modules/`).
+- Filename suffixes (`*.service.ts`, `*.controller.ts`).
 - Import-graph clusters (files imported by N siblings).
-- Simple event/token string-constant patterns inside the candidate files.
+- Simple string-constant patterns inside the candidate files.
 
 ```bash
 shrk constructs infer

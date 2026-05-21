@@ -14,7 +14,6 @@ import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { buildPackContributionsInventory } from './pack-contributions-inventory.ts';
 import { listConventions } from './convention-registry.ts';
-import { listPluginLifecycleProfiles } from './plugin-lifecycle-profile-registry.ts';
 import { loadAllContractTemplates } from './contract-template-registry.ts';
 import { listMigrationProfilesFromPacks } from './migration-profile-registry.ts';
 import { listPackHelpers } from './pack-helper-registry.ts';
@@ -84,7 +83,6 @@ interface IIdLookup {
   conventions: Set<string>;
   contractTemplates: Set<string>;
   migrationProfiles: Set<string>;
-  pluginLifecycleProfiles: Set<string>;
   helpers: Set<string>;
   routingHints: Set<string>;
   registrationHints: Set<string>;
@@ -113,9 +111,6 @@ async function buildLookups(
   // Convention/profile/contract registries return entries asynchronously.
   const conventions = new Set<string>(
     (await listConventions(inspection)).map((e) => e.convention.id),
-  );
-  const lifecycleProfiles = new Set<string>(
-    (await listPluginLifecycleProfiles(inspection)).map((e) => e.profile.id),
   );
   const contractTemplatesPair = await loadAllContractTemplates(inspection);
   const contractTemplates = new Set<string>(
@@ -149,7 +144,6 @@ async function buildLookups(
     conventions,
     contractTemplates,
     migrationProfiles,
-    pluginLifecycleProfiles: lifecycleProfiles,
     helpers,
     routingHints,
     registrationHints,
@@ -215,7 +209,6 @@ async function checkSearchTuningTargets(
           lookups.templates.has(targetId) ||
           lookups.pipelines.has(targetId) ||
           lookups.contractTemplates.has(targetId) ||
-          lookups.pluginLifecycleProfiles.has(targetId) ||
           lookups.conventions.has(targetId);
         if (!exists) {
           findings.push({
@@ -300,7 +293,7 @@ async function checkPackContributionConflicts(
  *   - `metadata.requiredConventionIds` → conventions registry
  *   - `metadata.requiredHelperIds` → helpers registry
  *   - `metadata.registrationHintIds` → registration-hints registry
- *   - `metadata.requiredProfileIds` → plugin-lifecycle-profiles registry
+ *   - `metadata.requiredProfileIds` → profile registry
  */
 async function checkTemplateMetadataReferences(
   inspection: ISharkcraftInspection,
@@ -346,15 +339,15 @@ async function checkTemplateMetadataReferences(
       }
     }
     for (const id of m.requiredProfileIds ?? []) {
-      if (!lookups.pluginLifecycleProfiles.has(id)) {
+      if (!lookups.migrationProfiles.has(id)) {
         findings.push({
           severity: SelfConfigSeverity.Warning,
           code: 'template-profile-missing',
-          message: `Template "${t.id}" requires plugin-lifecycle profile "${id}" but it is not registered.`,
+          message: `Template "${t.id}" requires profile "${id}" but it is not registered.`,
           referencingId: t.id,
           referencedId: id,
-          referencedKind: 'plugin-lifecycle-profile',
-          nextCommand: `shrk plugin lifecycle profiles`,
+          referencedKind: 'profile',
+          nextCommand: `shrk profiles list`,
         });
       }
     }
@@ -422,14 +415,14 @@ async function checkRoutingHintTargets(
       }
     }
     for (const id of rec.profiles ?? []) {
-      if (!lookups.pluginLifecycleProfiles.has(id)) {
+      if (!lookups.migrationProfiles.has(id)) {
         findings.push({
           severity: SelfConfigSeverity.Info,
           code: 'routing-hint-profile-missing',
           message: `Routing hint "${e.hint.id}" recommends profile "${id}" but it is not registered.`,
           referencingId: e.hint.id,
           referencedId: id,
-          referencedKind: 'plugin-lifecycle-profile',
+          referencedKind: 'profile',
         });
       }
     }
@@ -493,7 +486,6 @@ export async function buildSelfConfigGraph(
   for (const id of lookups.pipelines) nodes.push({ id, kind: 'pipeline' });
   for (const id of lookups.conventions) nodes.push({ id, kind: 'convention' });
   for (const id of lookups.contractTemplates) nodes.push({ id, kind: 'contract-template' });
-  for (const id of lookups.pluginLifecycleProfiles) nodes.push({ id, kind: 'plugin-lifecycle-profile' });
   for (const id of lookups.migrationProfiles) nodes.push({ id, kind: 'migration-profile' });
 
   // Edges from knowledge → referenced ids (best-effort).

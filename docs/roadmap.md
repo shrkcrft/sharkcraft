@@ -13,7 +13,7 @@
 - Target-root resolution for MCP via `projectRoot` option, `--cwd`, or `SHARKCRAFT_PROJECT_ROOT` env.
 - Claude HTTP adapter + Claude CLI adapter.
 - Examples: `generic-typescript-app`, `dogfood-target`, `angular-style-app`, `react-style-app`.
-- Dogfood adopter setup (44 entries / 6 templates / 0 warnings) without modifying adopter source.
+- Dogfood consumer setup (44 entries / 6 templates / 0 warnings) without modifying consumer source.
 - Publish-ready package metadata + `scripts/build-dist.ts` (topo-sorted tsc emit) + `scripts/publish-dry-run.ts` (npm-pack smoke test).
 - 100+ Bun unit / integration tests across 15 files.
 

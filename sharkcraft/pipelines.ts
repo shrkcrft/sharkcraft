@@ -166,7 +166,7 @@ export default [
     notes: [
       'Writes happen only via `shrk apply`. MCP never writes.',
       'If the change touches release behavior, packs, or signing, also run `bun run release:preflight`.',
-      'If the change introduces a schema field consumers will need to adopt, update the pack-author docs so adopters can pick it up.',
+      'If the change introduces a schema field consumers will need to adopt, update the pack-author docs so consumers can pick it up.',
       'R57: non-trivial features should be driven by `shrk spec create` → review → implement → verify. The spec stays in `.sharkcraft/specs/` as the audit trail.',
     ],
   },

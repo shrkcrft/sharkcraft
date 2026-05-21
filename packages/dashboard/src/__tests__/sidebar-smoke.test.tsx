@@ -13,24 +13,30 @@ import { Sidebar } from '../components/layout/Sidebar.tsx';
 import { CommandBlock } from '../components/primitives/CommandBlock.tsx';
 
 describe('dashboard smoke render', () => {
-  test('Sidebar renders the expected nav items', () => {
+  test('Sidebar renders the curated nav items (alpha.8 trim)', () => {
     const html = renderToString(<Sidebar />);
+    // The dashboard surfaces 10 pages: project state + dev sessions +
+    // configuration + MCP. Onboarding / Reports / Review & CI / Commands
+    // were removed in the alpha.8 trim — their backing CLI verbs still
+    // work; the dashboard pages were tied to advanced workflows, not
+    // "see project state".
     for (const label of [
       'Overview',
-      'Dev Sessions',
-      'Quality',
-      'Safety',
+      'Statistics',
       'Architecture',
       'Knowledge Graph',
+      'Quality',
+      'Safety',
+      'Dev Sessions',
       'Packs',
       'Presets &amp; Pipelines',
-      'Onboarding',
-      'Reports',
-      'Review &amp; CI',
-      'Commands',
       'MCP',
     ]) {
       expect(html).toContain(label);
+    }
+    // Removed labels must NOT appear in the trimmed sidebar.
+    for (const removed of ['Onboarding', 'Reports', 'Review &amp; CI', 'Commands']) {
+      expect(html).not.toContain(removed);
     }
   });
 

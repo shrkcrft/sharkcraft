@@ -207,26 +207,11 @@ export const constructsImpactCommand: ICommandHandler = {
     }
     const trace = traceConstruct(c);
     /**
-     * Registry touch-points are inferred from the active plugin
-     * lifecycle profile (key-table + barrels). The engine no longer
-     * hardcodes project-specific paths.
+     * Registry touch-points are not inferred — pack-contributed
+     * touch-point hints can be added in the future via the convention
+     * registry.
      */
     const registryTouchPoints: string[] = [];
-    try {
-      const { listPluginLifecycleProfiles } = await import('@shrkcrft/inspector');
-      const profiles = await listPluginLifecycleProfiles(inspection);
-      for (const entry of profiles) {
-        const p = entry.profile;
-        if (c.tags?.some((t) => /plugin-key|key-table/i.test(t)) && p.keyTable) {
-          registryTouchPoints.push(p.keyTable.path);
-        }
-        if (c.tags?.some((t) => /barrel|public-api/i.test(t)) && p.barrels) {
-          for (const b of p.barrels) registryTouchPoints.push(b.path);
-        }
-      }
-    } catch {
-      // Best-effort enrichment; absence of profiles just means no touch-points.
-    }
     const verificationCommands: string[] = [
       'shrk check boundaries --changed-only',
       'shrk doctor',

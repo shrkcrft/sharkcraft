@@ -72,7 +72,7 @@ function makeMonorepoLayerFixture(): string {
       workspaces: ['libs/*', 'apps/*'],
     }),
   );
-  for (const layer of ['core', 'common', 'runtime', 'kernel', 'plugin']) {
+  for (const layer of ['core', 'common', 'runtime', 'ui']) {
     mkdirSync(join(root, 'libs', layer), { recursive: true });
     writeFileSync(join(root, 'libs', layer, 'index.ts'), '// placeholder\n');
   }
@@ -125,23 +125,13 @@ describe('buildOnboardingPlan', () => {
     expect(service.confidence).toBe('high');
   });
 
-  test('infers monorepo boundary rules when 3+ layers detected', async () => {
+  test('does not invent boundary rules from folder structure alone', async () => {
     const root = makeMonorepoLayerFixture();
     const inspection = await inspectSharkcraft({ cwd: root });
     const plan = buildOnboardingPlan(inspection);
-    const ids = plan.inferredBoundaryRules.map((b) => b.id);
-    // core / common / runtime / kernel each get a no-imports-up rule
-    expect(ids).toContain('architecture.core.no-imports-up');
-    expect(ids).toContain('architecture.common.no-imports-up');
-    expect(ids).toContain('architecture.runtime.no-imports-up');
-    // The "plugin" layer at the top has no higher layer present in this fixture
-    // (no adapter / ui), so the kernel rule should forbid plugin only.
-    const kernel = plan.inferredBoundaryRules.find(
-      (b) => b.id === 'architecture.kernel.no-imports-up',
-    )!;
-    expect(kernel.forbiddenImports!.some((f) => f.includes('plugin'))).toBe(
-      true,
-    );
+    // Boundary rules must be authored explicitly in sharkcraft/boundaries.ts —
+    // the onboarding engine no longer guesses architecture shapes.
+    expect(plan.inferredBoundaryRules).toEqual([]);
   });
 
   test('does not infer boundary rules when fewer than 3 layers detected', async () => {

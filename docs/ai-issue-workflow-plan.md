@@ -104,8 +104,8 @@ tools/ai-agent/
       factory.ts                     # createRunner(): IAgentRunner — single swap point
       claude-plan-runner.ts          # Phase 1 implementation (Anthropic SDK)
     config/
-      allowed-actors.ts              # ALLOWED_ACTORS = ['bence312']
-      maintainers.ts                 # MAINTAINERS = ['bence312']
+      allowed-actors.ts              # getAllowedActors() — reads SHARKCRAFT_AI_ALLOWED_ACTORS
+      maintainers.ts                 # getMaintainers() — reads SHARKCRAFT_AI_MAINTAINERS
       labels.ts                      # LABELS = { plan: 'ai:plan', implement: 'ai:implement' }
       model.ts                       # MODEL_ID = 'claude-opus-4-7'
       limits.ts                      # token caps, byte budgets, timeouts
@@ -315,8 +315,8 @@ Target size: ~100 lines including imports and error mapping.
 
 | `event.action` | `issue.user.login` | Title starts with `[AI]` | Label state | `event.sender.login` | Decision |
 | --- | --- | --- | --- | --- | --- |
-| `opened` | `bence312` | yes | (any) | n/a | `plan` |
-| `opened` | `bence312` | no | (any) | n/a | `ignore` |
+| `opened` | `<allowed-actor>` | yes | (any) | n/a | `plan` |
+| `opened` | `<allowed-actor>` | no | (any) | n/a | `ignore` |
 | `opened` | anyone else | (any) | (any) | n/a | `ignore` |
 | `labeled` | (any) | (any) | added label is `ai:plan` | in `MAINTAINERS` | `plan` |
 | `labeled` | (any) | (any) | added label is `ai:implement` | in `MAINTAINERS` | `implement` |
@@ -326,7 +326,7 @@ Target size: ~100 lines including imports and error mapping.
 Notes:
 - For `labeled` events, the gate inspects `event.label.name` (the label just added),
   not the issue's full label set — this is what GitHub's webhook gives us.
-- `bence312`'s `[AI]` issues do **not** auto-route to `implement` even if they carry
+- `<allowed-actor>`'s `[AI]` issues do **not** auto-route to `implement` even if they carry
   the `ai:implement` label on first open. Implement mode is Phase 2; for now it
   short-circuits to a "deferred" log entry. When Phase 2 lands, the gate row for
   `opened` will be extended.
@@ -338,14 +338,22 @@ Notes:
 
 Centralized so swaps are one-file edits.
 
-**`config/allowed-actors.ts`**
+**`config/allowed-actors.ts`** — env-driven so the OSS repo doesn't ship
+a specific GitHub handle. Set `SHARKCRAFT_AI_ALLOWED_ACTORS` to a
+comma-separated list in the repo's Actions variables.
 ```ts
-export const ALLOWED_ACTORS: readonly string[] = ['bence312'] as const;
+export function getAllowedActors(): readonly string[] {
+  const raw = process.env['SHARKCRAFT_AI_ALLOWED_ACTORS'] ?? '';
+  return raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+}
 ```
 
-**`config/maintainers.ts`**
+**`config/maintainers.ts`** — same env-driven shape via `SHARKCRAFT_AI_MAINTAINERS`.
 ```ts
-export const MAINTAINERS: readonly string[] = ['bence312'] as const;
+export function getMaintainers(): readonly string[] {
+  const raw = process.env['SHARKCRAFT_AI_MAINTAINERS'] ?? '';
+  return raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+}
 ```
 
 **`config/labels.ts`**
@@ -573,8 +581,8 @@ are designed so this all lands as additive changes.
 Phase 1 tests, all in `tools/ai-agent/__tests__/`:
 
 **`gate.test.ts`** — exhaustive decision matrix:
-- `bence312` + `[AI]` title + `opened` -> `plan`.
-- `bence312` + non-`[AI]` title + `opened` -> `ignore`.
+- `<allowed-actor>` + `[AI]` title + `opened` -> `plan`.
+- `<allowed-actor>` + non-`[AI]` title + `opened` -> `ignore`.
 - Random user + any title + `opened` -> `ignore`.
 - `labeled` with `ai:plan` by maintainer -> `plan`.
 - `labeled` with `ai:implement` by maintainer -> `implement`.
@@ -627,7 +635,7 @@ Ship Phase 1 when **all** are true:
 6. `shrk check boundaries` passes (no cross-layer imports from `tools/ai-agent/`
    into `packages/*` source).
 7. Manual smoke test on a throwaway repo:
-   - `bence312` opens issue titled `[AI] hello` -> plan comment appears within 5 min.
+   - `<allowed-actor>` opens issue titled `[AI] hello` -> plan comment appears within 5 min.
    - Random user opens issue titled `[AI] hello` -> no comment, no runner call.
    - Maintainer adds `ai:plan` label to a random user's issue -> plan comment appears.
    - Random user self-applies `ai:plan` label -> no comment.
@@ -664,7 +672,7 @@ Phase 2 is a separate PR after Phase 1 has been used in anger for a while.
 For traceability — these are not re-litigated:
 
 - Triggers: `issues.types: [opened, labeled]`. No `edited`, `reopened`, `issue_comment`.
-- Gate: `bence312` + `[AI]` opened -> plan; others opened -> ignore; `ai:plan` by
+- Gate: `<allowed-actor>` + `[AI]` opened -> plan; others opened -> ignore; `ai:plan` by
   maintainer -> plan; `ai:implement` -> Phase 2 stub only.
 - Maintainer check: explicit allowlist in `config/maintainers.ts`.
 - Comments: append one new comment per run. No sticky-comment. No label cleanup.

@@ -430,60 +430,14 @@ function packageManagerRunPrefix(manager: PackageManager): string {
 
 // ─── Boundary rule candidates ────────────────────────────────────────────────
 
-const LAYER_ORDER = [
-  'core',
-  'common',
-  'runtime',
-  'kernel',
-  'plugin',
-  'adapter',
-  'ui',
-];
-
 export function inferBoundaryRules(
-  ws: IWorkspaceSummary,
-  subDirs: ReadonlyMap<string, readonly string[]>,
+  _ws: IWorkspaceSummary,
+  _subDirs: ReadonlyMap<string, readonly string[]>,
 ): IInferredBoundaryRule[] {
-  const out: IInferredBoundaryRule[] = [];
-  // Detect layer prefixes in libs/* and packages/* and (top-level) layer dirs.
-  const layerHits = new Map<string, string>(); // layer → from-pattern
-  for (const layer of LAYER_ORDER) {
-    if (ws.topLevelDirs.includes(layer)) {
-      layerHits.set(layer, `${layer}/**`);
-    }
-  }
-  for (const parent of ['libs', 'packages']) {
-    const children = subDirs.get(parent) ?? [];
-    for (const layer of LAYER_ORDER) {
-      if (children.includes(layer)) {
-        layerHits.set(layer, `${parent}/${layer}/**`);
-      }
-    }
-  }
-  if (layerHits.size < 3) return out;
-  // Build one rule per detected layer that forbids importing from any higher
-  // layer.
-  for (let i = 0; i < LAYER_ORDER.length; i += 1) {
-    const layer = LAYER_ORDER[i]!;
-    if (!layerHits.has(layer)) continue;
-    const higher = LAYER_ORDER.slice(i + 1).filter((l) => layerHits.has(l));
-    if (higher.length === 0) continue;
-    const forbiddenImports = higher.flatMap((l) => {
-      const from = layerHits.get(l)!;
-      const prefix = from.replace(/\/\*\*$/, '');
-      return [prefix, `${prefix}/**`];
-    });
-    out.push({
-      id: `architecture.${layer}.no-imports-up`,
-      title: `${layer} must not import higher layers`,
-      severity: 'error',
-      from: [layerHits.get(layer)!],
-      forbiddenImports,
-      suggestedFix: `Move shared contracts down to ${layer}/ or invert the dependency so the higher layer depends on a contract defined in ${layer}/.`,
-      reason: `${layer}/ + ${higher.length} higher layer(s) detected`,
-    });
-  }
-  return out;
+  // SharkCraft does not guess your boundary rules. Author them
+  // explicitly in `sharkcraft/boundaries.ts` once the repo's actual
+  // import directions are known.
+  return [];
 }
 
 // ─── Template candidates ─────────────────────────────────────────────────────
@@ -645,18 +599,6 @@ export function inferRules(ws: IWorkspaceSummary): IInferredRule[] {
       priority: 'medium',
       source: 'package-json',
       reason: 'jest dependency',
-    });
-  }
-  // Monorepo layering.
-  if (ws.profiles.includes(WorkspaceProfile.IsMonorepo)) {
-    out.push({
-      id: 'architecture.layer-order',
-      title: 'Respect monorepo layer order',
-      content:
-        'Lower layers (core, common, runtime) must not import from higher layers (kernel, plugin, ui, apps). Run `shrk check boundaries` after touching cross-layer code.',
-      priority: 'high',
-      source: 'folder-structure',
-      reason: 'monorepo layout detected',
     });
   }
   // ESLint.

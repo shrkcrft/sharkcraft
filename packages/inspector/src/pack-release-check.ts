@@ -260,7 +260,7 @@ export async function runPackReleaseCheck(packPath: string): Promise<IPackReleas
       code: 'unsigned-manifest',
       severity: 'warning',
       message:
-        'Manifest has no HMAC signature. Adopters who run `shrk packs verify` will see signature status "missing-signature".',
+        'Manifest has no HMAC signature. Consumers who run `shrk packs verify` will see signature status "missing-signature".',
       suggestedFix: 'Run `shrk packs sign <manifest.ts> --output ...signed.json` with SHARKCRAFT_PACK_SECRET set.',
       suggestedCommand: 'shrk packs sign ' + manifestFile + ' --verify-after-sign',
       file: manifestFile,

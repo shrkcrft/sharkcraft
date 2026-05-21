@@ -1,25 +1,141 @@
 # SharkCraft
 
-> **Structured project intelligence for AI coding agents.**
+> **For TypeScript monorepos with architecture boundaries that need
+> to outlive any single PR — shrk turns those boundaries into
+> mechanical gates and inlines them into Claude / Cursor / Aider
+> automatically.**
 
-SharkCraft does **not** replace AI coding agents like Claude Code, Cursor,
-or Aider. It makes repositories understandable and safer for them. Encode
-your project's rules, paths, templates, architecture facts, and AI
-workflows as typed entries — then serve them through a CLI for humans and
-an MCP server for agents.
+shrk is narrow on purpose. Two specific things it does that
+`CLAUDE.md` / `.cursor/rules` / `.claude/skills/<name>/SKILL.md`
+can't:
 
-| | Coding agents (Claude Code / Cursor / Aider) | SharkCraft |
+1. **Mechanical boundary enforcement.** Rules in a skill are
+   *suggestions*. `shrk check boundaries` and `shrk apply
+   --validate` *fail the build* when the architecture is violated —
+   whether a human wrote the code or an agent did. The boundary
+   rules and the prompt rules come from the same source of truth, so
+   what Claude is told matches what CI enforces.
+2. **One source of truth, multiple agent formats.** You write rules
+   in typed TypeScript once; shrk emits `.claude/skills/`,
+   `CLAUDE.md`, `AGENTS.md`, `.cursor/rules/`, and
+   `.github/copilot-instructions.md`. If your team uses more than
+   one agent (or switches), the rules don't drift between formats.
+
+If you don't need both of those, **native Claude Skills + a
+hand-written `CLAUDE.md` is the better answer.** See [Is shrk
+right for you?](#is-shrk-right-for-you) below.
+
+### Is shrk right for you?
+
+shrk pays off when most of these are true:
+
+- ✅ TypeScript codebase (Node, Bun, browser, RN).
+- ✅ Monorepo OR a repo with explicit layer / boundary rules to
+  enforce (e.g. "core can't import cli", "domain can't import
+  infra").
+- ✅ A team of 2+ engineers sharing conventions — not a solo project.
+- ✅ Active AI-assisted development on non-trivial features (PRs that
+  touch multiple files, not one-shot snippets).
+- ✅ Someone willing to author + maintain typed rules in
+  `sharkcraft/`.
+
+shrk is **probably overhead** when:
+
+- ❌ Solo dev, small project — write `.claude/skills/<name>/SKILL.md`
+  by hand in 20 minutes.
+- ❌ ≤10 conventions worth encoding — markdown is fine.
+- ❌ The team uses Claude only and you don't care about Cursor /
+  Aider — `CLAUDE.md` covers it.
+- ❌ Non-TypeScript primary stack — polyglot presets exist but are
+  shallow.
+
+The honest summary: shrk is a tool for teams that take architecture
+seriously enough to write down boundary rules, then want those same
+rules to be (a) what the agent sees in its prompt and (b) what CI
+enforces on every PR. Different from "Claude Skills with extra
+steps."
+
+### The 60-second loop, end-to-end
+
+```bash
+# Adoption cost ≈ 0 — pick the one that matches your repo today:
+
+# (a) Fresh repo / no existing rule files:
+shrk init --infer --write --with-claude-skill
+#     Scans your tsconfig + package.json + folder layout and writes
+#     populated sharkcraft/paths.ts, rules.ts, pipelines.ts. Also emits
+#     .claude/skills/<name>/SKILL.md so Claude Code auto-loads the rules.
+
+# (b) Existing CLAUDE.md / AGENTS.md / .cursor/rules:
+shrk import claude-md ./CLAUDE.md --populate --write
+#     Parses your existing rule file and routes entries by type into
+#     populated sharkcraft/rules.ts + paths.ts + knowledge.ts.
+#     (Also: --format agents-md / cursor-rules.)
+
+# (c) Want a framework-correct preset baseline instead?
+shrk init --with-claude-skill --preset react-19-modern --write
+#     (also: nest-11-modern, nx-monorepo, angular-21-modern, ...)
+
+# All three modes produce the same shape of populated sharkcraft/
+# plus a `.inferred-report.md` or `.imported-report.md` with the
+# confidence triage (what was adopted high / marked for review / dropped).
+
+# From now on, every Claude Code session in this repo loads the skill
+# automatically — zero MCP round-trip, zero CLAUDE.md drift.
+
+# Per task: focused brief, generate via templates, apply through the
+# safe write path that validates against the same boundary rules.
+shrk brief                                           # 1-page brief Claude reads first
+shrk gen typescript.service profile --dry-run --save-plan plan.json
+shrk apply plan.json --verify-signature --validate  # fails on boundary violation
+```
+
+### What shrk does that CLAUDE.md / native Skills don't
+
+| | Native Claude Skills + CLAUDE.md | shrk |
 |---|---|---|
-| Writes code | Yes | No (MCP), CLI only |
-| Reads everything in the repo | Yes (window-bounded) | Only the relevant slice per task |
-| Conventions awareness | From context dump | From typed rules + path conventions |
-| Generation safety | Up to the agent | Plan-first, dry-run by default, signed plans |
-| Workflow guidance | Ad-hoc | Declarative pipelines |
+| Loads rules into Claude's prompt | ✅ (you write the markdown) | ✅ (auto-generated from typed source) |
+| Multi-agent (Claude + Cursor + Aider + Copilot) | ❌ (write each format by hand) | ✅ (one source → all formats) |
+| Mechanical boundary enforcement | ❌ (rules are suggestions) | ✅ (`check boundaries`, gates `apply`) |
+| Validates the rules don't go stale | ❌ (markdown rots silently) | ✅ (`knowledge stale-check`, `drift`) |
+| Per-task filtering of relevant rules | ❌ (load everything) | ✅ (`task "<task>"` returns just what matters) |
+| Plan / review / apply gate for AI writes | ❌ (agent writes directly) | ✅ (signed plans + validation) |
 
-> Status: **0.1.0-alpha.2**. APIs may shift. Bun ≥ 1.1 is the primary runtime.
+If the right column doesn't look like a problem you have, **stop
+here and just use Claude Skills.** This README is honest about that.
+
+> Status: **0.1.0-alpha.7**. APIs may shift. Bun ≥ 1.1 is the primary runtime.
 > Release notes: [`docs/releases/0.1.0-alpha.2.md`](docs/releases/0.1.0-alpha.2.md) ·
 > known limitations: [`docs/public-alpha-limitations.md`](docs/public-alpha-limitations.md) ·
 > external quickstart: [`docs/external-repo-quickstart.md`](docs/external-repo-quickstart.md).
+
+### Does it actually help an AI agent today?
+
+**Honest answer: only when configured for the repo.** In an internal
+benchmark on a NestJS / Angular / NX repo with the *default* generic
+preset and no path customization, shrk was **net-negative**: +31%
+wall-clock, +18% tokens, identical task-completion quality. The
+agent fell back to reading sibling files anyway because the default
+knowledge / path / template entries didn't match the Nx layout.
+
+The full report — methodology, raw numbers, fix path — is in
+[`bench/BENCHMARK-REPORT.md`](bench/BENCHMARK-REPORT.md) on the
+`bench-baseline` branch.
+
+**What makes shrk pay off** (the work the benchmark didn't do):
+
+1. Pick a framework-correct preset (`shrk init --preset nx-monorepo` /
+   `angular-21-modern` / `nest-11-modern` / `react-19-modern` —
+   matching the real layout of your repo).
+2. Populate `sharkcraft/paths.ts` with paths that exist (the alpha.5+
+   advisory annotator flags non-existent paths automatically).
+3. Define rules that ARE NOT already in the agent's training data —
+   project-specific conventions, not "use TypeScript strict mode."
+4. Run `shrk doctor` and read the shape-aware verdict before trusting
+   it for agent workflows.
+
+The benchmark hasn't been re-run on the alpha.5+ family of framework-
+correct presets. If you do, we'd love the numbers.
 
 ## Try it in 30 seconds
 
@@ -523,14 +639,6 @@ shrk export agents-md --write
 
 The exports include the agent briefing, the high-priority rules, the action
 hints, and a "what to do first" pointer to the MCP tools.
-
-## A more complex flow: layered plugin architecture
-
-This is the kind of workflow SharkCraft is built for — a deeply layered
-codebase where an agent must obey ordering, layer boundaries, and "do not
-duplicate framework-specific defaults" rules. An adopter pack ships the
-project's knowledge base, pipelines, and templates so a single `shrk`
-session can plan a feature end-to-end.
 
 ```bash
 shrk doctor                                         # baseline health

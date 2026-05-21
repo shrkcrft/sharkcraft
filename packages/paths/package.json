@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/paths",
-  "version": "0.1.0-alpha.7",
+  "version": "0.1.0-alpha.8",
   "description": "SharkCraft path-convention service: typed path entries and best-fit selection.",
   "license": "MIT",
   "author": "SharkCraft contributors",

@@ -66,8 +66,6 @@ export interface ISharkCraftPackContributions {
   decisionFiles?: readonly string[];
   /** Pack-extensible path conventions when separate from `pathFiles`. */
   pathConventionFiles?: readonly string[];
-  /** Pack-contributed plugin lifecycle profiles. Files default-export `readonly IPluginLifecycleProfile[]`. */
-  pluginLifecycleProfileFiles?: readonly string[];
   /** Pack-contributed agent-contract templates. Files default-export `readonly IAgentContractTemplate[]`. */
   contractTemplateFiles?: readonly string[];
   /** Pack-contributed migration readiness profiles. */
@@ -183,7 +181,6 @@ export function validatePackManifest(value: unknown): IPackManifestValidationRes
       'feedbackRuleFiles',
       'decisionFiles',
       'pathConventionFiles',
-      'pluginLifecycleProfileFiles',
       'contractTemplateFiles',
       'migrationProfileFiles',
       'conventionFiles',

@@ -25,10 +25,10 @@ interface IActionHints {
 
 - **Rules that drive an action** (e.g. "shrk gen is dry-run by default" → list
   commands + preferred flow).
-- **Architecture rules with clear "do this / don't do this"** (e.g. layer
-  order, no embedded defaults).
-- **Workflow entries** (`plugin.design-sequence`, `plugin.quickstart`) — these
-  should always carry hints; they exist to drive the agent.
+- **Architecture rules with clear "do this / don't do this"** (e.g.
+  boundary direction, no embedded defaults).
+- **Workflow entries** (e.g. `workflow.design-sequence`, `workflow.quickstart`)
+  — these should always carry hints; they exist to drive the agent.
 
 Descriptive entries (`project.overview`, `tech-stack`) don't need hints.
 

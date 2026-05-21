@@ -102,12 +102,12 @@ already define.
 
 ```ts
 definePreset({
-  id: 'plugin-dev',
+  id: 'feature-dev',
   composes: ['ai-agent-ready', 'safe-codegen'],
   includes: {
     // Project-specific assets only — composed presets give us the safety baseline.
-    pipelineIds: ['plugin-dev'],
-    templateIds: ['app.plugin-contract', 'app.plugin-cross'],
+    pipelineIds: ['feature-dev'],
+    templateIds: ['app.service'],
   },
 });
 ```
@@ -115,8 +115,8 @@ definePreset({
 Inspect the composition chain:
 
 ```bash
-shrk presets get plugin-dev
-# →   composed from   plugin-dev → ai-agent-ready → safe-codegen
+shrk presets get feature-dev
+# →   composed from   feature-dev → ai-agent-ready → safe-codegen
 ```
 
 ## References to existing assets
@@ -128,10 +128,10 @@ optional id arrays:
 ```ts
 includes: {
   knowledgeIds:       ['agent.briefing'],
-  ruleIds:            ['architecture.layer-order', 'plugin.no-own-defaults'],
-  pathConventionIds:  ['app.plugin-api', 'app.plugin-cross'],
-  templateIds:        ['app.plugin-contract'],
-  pipelineIds:        ['plugin-dev'],
+  ruleIds:            ['repo.architecture.respect-boundaries'],
+  pathConventionIds:  ['app.services'],
+  templateIds:        ['app.service'],
+  pipelineIds:        ['feature-dev'],
 }
 ```
 

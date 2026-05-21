@@ -8,3 +8,4 @@ export * from './api/import-agents-md.ts';
 export * from './api/import-claude-md.ts';
 export * from './api/import-cursor-rules.ts';
 export * from './emit/emit-knowledge-ts.ts';
+export * from './emit/synthesize-populated.ts';

@@ -35,19 +35,18 @@ Selected fields:
 | `allowedFiles` / `forbiddenFiles` | Files the agent is and isn't allowed to touch. |
 | `allowedCommands` / `forbiddenCommands` | CLI / MCP commands the agent may and may not call. |
 | `requiredValidations` | `bun test`, `shrk doctor`, etc. — must pass. |
-| `requiredReviews` | Human/API/adapter reviews needed. |
+| `requiredReviews` | Human/API reviews needed. |
 | `requiredPlanReviews` | `shrk plan review` + `shrk plan simulate` if applicable. |
 | `humanApprovalGates` | Where a human must explicitly approve. |
 | `rollbackPlan` | Step-by-step rollback. |
 | `definitionOfDone` | What must be true before the task closes. |
-| `publicApiRisks` | Plugin-api / public API surfaces touched. |
+| `publicApiRisks` | Public API surfaces touched. |
 | `safetyNotes` | Reminders (MCP read-only, CLI is the only write path, …). |
 
 ## Rules (deterministic)
 
 - `risk` high/critical or `intent.requiredHumanReview` → human approval required.
-- Plugin-api / public-API touch → API review.
-- Adapter path → adapter-boundary review.
+- Public-API touch → API review.
 - Saved-plan / update-operation language in the task → `shrk plan review` +
   `shrk plan simulate` required.
 - Release / migration intent → publish/tag forbidden without explicit

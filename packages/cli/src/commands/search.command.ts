@@ -51,7 +51,7 @@ function parseSources(args: ParsedArgs): readonly SearchSource[] | undefined {
 export const searchCommand: ICommandHandler = {
   name: 'search',
   description:
-    'Universal search across commands, MCP tools, knowledge, rules, paths, conventions, templates, helpers, playbooks, constructs, policies, decisions, scaffold patterns, contract templates, migration profiles, plugin lifecycle profiles, feedback rules, task routing hints, docs, recent reports. Default emits the 7-section unified output; pass --legacy for the flat output.',
+    'Universal search across commands, MCP tools, knowledge, rules, paths, conventions, templates, helpers, playbooks, constructs, policies, decisions, scaffold patterns, contract templates, migration profiles, feedback rules, task routing hints, docs, recent reports. Default emits the 7-section unified output; pass --legacy for the flat output.',
   usage:
     'shrk search <query> [--kind <kind>] [--source local|pack|...] [--limit N] [--explain] [--commands-only] [--actions-only] [--format text|markdown|json] [--legacy]',
   async run(args: ParsedArgs): Promise<number> {

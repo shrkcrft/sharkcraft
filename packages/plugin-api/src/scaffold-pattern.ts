@@ -29,7 +29,7 @@ export interface IScaffoldPatternVariable {
 }
 
 export interface IScaffoldPattern {
-  /** Stable id, e.g. "myproj.plugin-contract-pattern". */
+  /** Stable id, e.g. "myproj.service-pattern". */
   id: string;
   /** Short human-readable title. */
   title: string;
@@ -44,7 +44,7 @@ export interface IScaffoldPattern {
   /** Variable extraction strategies. */
   variables: readonly IScaffoldPatternVariable[];
   /** Lifecycle hooks where this pattern is consulted. */
-  appliesWhen: readonly ('onboard' | 'infer-template' | 'create-plugin' | string)[];
+  appliesWhen: readonly ('onboard' | 'infer-template' | string)[];
   /** Confidence floor when matched. */
   confidence: 'high' | 'medium' | 'low';
   /** Free-form tags for grouping. */

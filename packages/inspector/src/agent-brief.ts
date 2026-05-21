@@ -236,13 +236,23 @@ function pipelineSection(packet: ReturnType<typeof buildTaskPacket>): IAgentBrie
 function actionHintsSection(packet: ReturnType<typeof buildTaskPacket>): IAgentBriefSection {
   const lines: string[] = [];
   const h = packet.actionHints;
+  // h.commands is IActionHintCommand[] (objects with .command + optional
+  // .purpose); h.mcpTools is IActionHintMcpTool[] (.tool + .purpose).
+  // Earlier versions string-interpolated the whole object, producing
+  // `- [object Object]` in the rendered brief.
   if (h.commands.length > 0) {
     lines.push('**Commands:**');
-    for (const c of h.commands.slice(0, 5)) lines.push(`- \`${c}\``);
+    for (const c of h.commands.slice(0, 5)) {
+      const purpose = c.purpose ? ` — ${c.purpose}` : '';
+      lines.push(`- \`${c.command}\`${purpose}`);
+    }
   }
   if (h.mcpTools.length > 0) {
     lines.push('**MCP tools:**');
-    for (const m of h.mcpTools.slice(0, 5)) lines.push(`- \`${m}\``);
+    for (const m of h.mcpTools.slice(0, 5)) {
+      const purpose = m.purpose ? ` — ${m.purpose}` : '';
+      lines.push(`- \`${m.tool}\`${purpose}`);
+    }
   }
   if (h.verificationCommands.length > 0) {
     lines.push('**Verification:**');
@@ -315,18 +325,34 @@ function boundarySection(impact: IImpactAnalysis | null): IAgentBriefSection {
   return section('boundary', 'Boundary concerns', lines.join('\n'));
 }
 
+/**
+ * Compute the deduplicated suggested-commands list. The result lands
+ * in `IAgentBrief.suggestedCommands` (JSON contract preserved); a
+ * markdown section is rendered ONLY if the list isn't already
+ * covered by action-hints + verification (which it usually is — the
+ * duplication was a major source of the ~100-line brief bloat).
+ */
 function suggestedCommandsSection(impact: IImpactAnalysis | null, packet: ReturnType<typeof buildTaskPacket>): {
-  section: IAgentBriefSection;
+  section: IAgentBriefSection | null;
   commands: string[];
 } {
-  const lines: string[] = [];
   const commands = new Set<string>();
   for (const c of impact?.suggestedTestCommands ?? []) commands.add(c);
   for (const c of impact?.suggestedValidationCommands ?? []) commands.add(c);
   for (const c of packet.recommendedCliCommands ?? []) commands.add(c);
-  for (const c of [...commands].slice(0, 10)) lines.push(`- \`${c}\``);
+  // Already-shown set: verification commands + action-hint commands
+  // that are about to render in the actionHintsSection. Anything in
+  // that set should NOT also appear in "Suggested commands".
+  const alreadyShown = new Set<string>();
+  for (const v of packet.actionHints.verificationCommands ?? []) alreadyShown.add(v);
+  for (const c of packet.actionHints.commands ?? []) alreadyShown.add(c.command);
+  const uniqueNew = [...commands].filter((c) => !alreadyShown.has(c));
+  if (uniqueNew.length === 0) {
+    return { section: null, commands: [...commands] };
+  }
+  const lines = uniqueNew.slice(0, 10).map((c) => `- \`${c}\``);
   return {
-    section: section('suggested-commands', 'Suggested commands', lines.join('\n') || '_None._'),
+    section: section('suggested-commands', 'Suggested commands (not already listed above)', lines.join('\n')),
     commands: [...commands],
   };
 }
@@ -406,6 +432,20 @@ async function qualitySection(
   return section('quality', 'Quality baseline', lines.join('\n'));
 }
 
+/**
+ * Empty-section detector. A section is "empty" when its body is just
+ * an italicized placeholder like `_None._` / `_No impact analysis
+ * available._` / `_No ownership data._`. Suppressing these compresses
+ * the typical brief from ~100 lines to ~40 — Claude doesn't need to
+ * read "Policy concerns: _None detected._" to make a decision.
+ */
+function isEmptyBody(body: string): boolean {
+  const trimmed = body.trim();
+  if (!trimmed) return true;
+  // Pure single-line italicized placeholder, e.g. `_None._` / `_No X data._`.
+  return /^_[^_]+_$/.test(trimmed);
+}
+
 function sectionsToMarkdown(
   task: string,
   mode: BriefMode,
@@ -414,8 +454,12 @@ function sectionsToMarkdown(
   const lines: string[] = [];
   lines.push(`# SharkCraft brief: ${task || '(no task)'}`);
   lines.push('');
-  lines.push(`_Mode: \`${mode}\` — ${new Date().toISOString()}_`);
+  // Mode only — timestamp adds noise to a "single page Claude reads
+  // first" doc. The IAgentBrief.generatedAt field still carries it
+  // for tooling that needs the timestamp.
+  lines.push(`_Mode: \`${mode}\`_`);
   for (const s of sections) {
+    if (isEmptyBody(s.body)) continue;
     lines.push('');
     lines.push(`## ${s.title}`);
     lines.push('');
@@ -505,7 +549,11 @@ export async function buildAgentBrief(
 
   // Always include suggested commands + safety.
   const { section: cmdSection, commands } = suggestedCommandsSection(impact, packet);
-  sections.push(cmdSection);
+  // Only push when the section returns one — most briefs no longer
+  // include this section because everything it would list is already
+  // in action-hints / verification. The `commands` array still ships
+  // in IAgentBrief.suggestedCommands for tooling that consumes it.
+  if (cmdSection) sections.push(cmdSection);
   sections.push(safetySection());
 
   // Apply per-section budgets when requested.

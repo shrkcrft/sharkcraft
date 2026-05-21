@@ -51,33 +51,8 @@ const VERB_HINTS: { regex: RegExp; appliesWhen: string[]; tags: string[] }[] = [
 // ── Domain hints (what *kind of thing* is being worked on) ──────────────
 // These boost rules/templates/pipelines whose own `appliesWhen` or `tags`
 // declare the same domain — much higher signal than verb hints alone for
-// "create a user profile *plugin*" vs "add pagination *capability*".
+// "create a *service*" vs "add a *utility*".
 const DOMAIN_HINTS: { token: string; appliesWhen: string[]; tags: string[] }[] = [
-  {
-    token: 'plugin',
-    appliesWhen: ['create-plugin', 'generate-plugin', 'plugin-dev', 'register-plugin'],
-    tags: ['plugin'],
-  },
-  {
-    token: 'defaults',
-    appliesWhen: ['register-defaults', 'create-defaults', 'plugin-defaults'],
-    tags: ['defaults'],
-  },
-  {
-    token: 'capability',
-    appliesWhen: ['create-capability', 'generate-capability'],
-    tags: ['capability'],
-  },
-  {
-    token: 'policy',
-    appliesWhen: ['create-policy', 'generate-policy'],
-    tags: ['policy'],
-  },
-  {
-    token: 'adapter',
-    appliesWhen: ['create-adapter', 'generate-adapter'],
-    tags: ['adapter'],
-  },
   {
     token: 'service',
     appliesWhen: ['generate-service'],
@@ -102,11 +77,6 @@ const DOMAIN_HINTS: { token: string; appliesWhen: string[]; tags: string[] }[] =
     token: 'route',
     appliesWhen: ['generate-route'],
     tags: ['http', 'routes', 'api'],
-  },
-  {
-    token: 'kernel',
-    appliesWhen: ['create-kernel-service'],
-    tags: ['kernel'],
   },
 ];
 

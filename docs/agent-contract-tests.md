@@ -10,11 +10,11 @@ import { defineAgentContractTest } from '@shrkcrft/inspector';
 
 export default [
   defineAgentContractTest({
-    id: 'plugin-packet',
-    task: 'create a user profile plugin',
-    expectedPipeline: 'plugin-dev',
-    expectedTemplates: ['app.plugin-contract'],
-    expectedRules: ['plugin.no-own-defaults'],
+    id: 'service-packet',
+    task: 'create a new user profile service',
+    expectedPipeline: 'feature-dev',
+    expectedTemplates: ['app.service'],
+    expectedRules: ['repo.architecture.respect-boundaries'],
     expectedForbiddenActions: ['Do not write files through MCP.'],
     expectedVerificationCommands: ['bun x tsc -p tsconfig.base.json --noEmit'],
   }),
@@ -44,8 +44,8 @@ When an expectation fails, the result includes per-id `diagnostics` with:
 - (context tests) top-ranked alternatives the ranker chose instead, with
   scoring reasons
 - concrete suggestions: align `appliesWhen` with the task domain, add
-  domain tags (`plugin`, `capability`, …), reference the id from a
-  preset, or update the test if the expectation is wrong
+  domain tags (e.g. `service`, `utility`, `route`), reference the id
+  from a preset, or update the test if the expectation is wrong
 
 `shrk test context|agent` prints diagnostics inline; `--json` exposes
 them under `results[].diagnostics`.

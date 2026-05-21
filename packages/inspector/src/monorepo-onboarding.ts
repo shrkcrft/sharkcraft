@@ -257,7 +257,7 @@ function buildBoundaryCandidates(
       title: 'packages/* must not import from apps/*',
       from: ['packages/**'],
       forbiddenImports: ['apps/**'],
-      reason: 'packages/ + apps/ both present; packages depending on apps inverts the layer order',
+      reason: 'packages/ + apps/ both present; packages depending on apps inverts the expected dependency direction',
     });
   }
   // Standard rule: libs/* should not import from apps/*.
@@ -267,7 +267,7 @@ function buildBoundaryCandidates(
       title: 'libs/* must not import from apps/*',
       from: ['libs/**'],
       forbiddenImports: ['apps/**'],
-      reason: 'libs/ + apps/ both present; libs depending on apps inverts the layer order',
+      reason: 'libs/ + apps/ both present; libs depending on apps inverts the expected dependency direction',
     });
   }
   return out;

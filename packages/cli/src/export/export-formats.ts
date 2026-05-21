@@ -5,6 +5,7 @@ import { priorityWeight } from '@shrkcrft/knowledge';
 export type ExportFormat =
   | 'agents-md'
   | 'claude-md'
+  | 'claude-skill'
   | 'cursor-rules'
   | 'copilot-instructions';
 
@@ -26,12 +27,31 @@ export interface ExportResult {
   content: string;
 }
 
-const DEFAULT_OUTPUT_PATH: Record<ExportFormat, string> = {
-  'agents-md': 'AGENTS.md',
-  'claude-md': 'CLAUDE.md',
-  'cursor-rules': '.cursor/rules/sharkcraft.mdc',
-  'copilot-instructions': '.github/copilot-instructions.md',
-};
+function projectSlug(name: string | undefined): string {
+  if (!name) return 'project';
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'project'
+  );
+}
+
+function defaultOutputFor(format: ExportFormat, inspection: ISharkcraftInspection): string {
+  switch (format) {
+    case 'agents-md':
+      return 'AGENTS.md';
+    case 'claude-md':
+      return 'CLAUDE.md';
+    case 'claude-skill':
+      return `.claude/skills/${projectSlug(inspection.config?.projectName)}/SKILL.md`;
+    case 'cursor-rules':
+      return '.cursor/rules/sharkcraft.mdc';
+    case 'copilot-instructions':
+      return '.github/copilot-instructions.md';
+  }
+}
 
 function selectTopByPriority<T extends IKnowledgeEntry>(entries: readonly T[], limit: number): T[] {
   return [...entries]
@@ -141,27 +161,149 @@ function renderBody(inspection: ISharkcraftInspection, options: ExportOptions): 
   return sections.join('\n\n');
 }
 
+/**
+ * Filter rules / paths to the high-signal subset for an inlined skill.
+ *
+ * Every rule the skill carries pays in Claude's context every time the
+ * skill is loaded. Low-priority items dilute the signal of the
+ * load-bearing ones (`Critical` safety + `High` architecture). We keep
+ * only Critical + High by default, falling back to "all" only if the
+ * filtered list is empty (e.g. a repo with no high-priority entries
+ * yet shouldn't ship an empty skill).
+ */
+function filterHighSignal<T extends IKnowledgeEntry>(entries: readonly T[]): T[] {
+  const filtered = entries.filter((e) => {
+    const p = String(e.priority).toLowerCase();
+    return p === 'critical' || p === 'high';
+  });
+  return filtered.length > 0 ? filtered : [...entries];
+}
+
+/**
+ * Render the body in tight, decision-driving form for the Claude Code
+ * Skill format. Skills get loaded into Claude's prompt when the skill's
+ * `description` matches the current task, so the body must be short and
+ * directly actionable — no preamble, no metadata about generation, no
+ * pipelines (Claude can run `shrk task` for those when needed).
+ *
+ * Sections:
+ *   1. Where files belong (path conventions, top N) — most-leveraged signal.
+ *   2. Rules to follow (Critical + High only) — pads context otherwise.
+ *   3. Do / Don't — forbidden actions and verification commands.
+ *   4. How to write code in this repo — the gen → review → apply loop
+ *      verbatim, since Claude needs to know shrk is the write path.
+ */
+function renderSkillBody(inspection: ISharkcraftInspection, options: ExportOptions): string {
+  const { rules: allRules, paths: allPaths } = gatherRulesAndPaths(inspection, {
+    ...options,
+    // Pull more upfront, then filter down to high-signal — keeps the
+    // softcap-at-15 default but the inlined skill stays terse.
+    maxRules: options.maxRules ?? 24,
+    maxPaths: options.maxPaths ?? 18,
+  });
+  // Skills are inlined into the prompt — every entry costs Claude
+  // context. Only ship the items the user said are load-bearing.
+  const rules = filterHighSignal(allRules).slice(0, options.maxRules ?? 12);
+  const paths = filterHighSignal(allPaths).slice(0, options.maxPaths ?? 10);
+  const sections: string[] = [];
+
+  if (inspection.config?.description) {
+    sections.push(`## About this codebase\n\n${inspection.config.description}`);
+  }
+
+  const pathsBody = renderPathsSection(paths);
+  if (pathsBody) {
+    sections.push(
+      `## Where files belong\n\nWhen creating or moving a file, place it according to these conventions:\n\n${pathsBody}`,
+    );
+  }
+
+  const rulesBody = renderRulesSection(rules);
+  if (rulesBody) {
+    sections.push(
+      `## Rules this codebase follows\n\nApply these whenever you generate, modify, or review code:\n\n${rulesBody}`,
+    );
+  }
+
+  const agg = aggregateActionHints(inspection.knowledgeEntries);
+  const doDont: string[] = [];
+  if (agg.forbiddenActions.length) {
+    doDont.push('**Do not:**');
+    for (const f of agg.forbiddenActions.slice(0, 8)) doDont.push(`- ${f}`);
+    doDont.push('');
+  }
+  if (agg.verificationCommands.length) {
+    doDont.push('**Verify changes with:**');
+    for (const c of agg.verificationCommands.slice(0, 6)) doDont.push(`- \`${c}\``);
+  }
+  if (doDont.length) {
+    sections.push(`## Do / Don't\n\n${doDont.join('\n').trim()}`);
+  }
+
+  sections.push(
+    `## How to write code in this repo\n\n` +
+      `This repository uses [SharkCraft](https://github.com/shrkcrft/sharkcraft) to gate writes — the CLI is the only write path, and writes go through a plan → review → apply loop.\n\n` +
+      `1. **Get a task packet** before non-trivial work: \`shrk task "<one-sentence task>"\` returns the focused rules, paths, templates, and verification commands for that task.\n` +
+      `2. **Scaffold via templates** instead of writing files freehand: \`shrk gen <template-id> <name> --dry-run --save-plan plan.json\` produces a signed plan.\n` +
+      `3. **Apply the plan** through the CLI: \`shrk apply plan.json --verify-signature\` — never write through MCP.\n` +
+      `4. **Check the result**: \`shrk check boundaries\` + the verification commands listed above.\n\n` +
+      `For ad-hoc questions about the codebase, query the MCP server (\`shrk mcp serve\`) or run \`shrk context --task "<query>"\` for token-budgeted context.`,
+  );
+
+  return sections.join('\n\n');
+}
+
+/**
+ * Build the YAML frontmatter for a Claude Code Skill. The `description`
+ * field is what Claude uses to decide whether to load this skill — keep
+ * it specific (project name + what's covered) so it doesn't trigger on
+ * unrelated tasks.
+ */
+function renderSkillFrontmatter(inspection: ISharkcraftInspection): string {
+  const slug = projectSlug(inspection.config?.projectName);
+  const projectName = inspection.config?.projectName ?? slug;
+  const description =
+    `Codebase rules, path conventions, and review gates for ${projectName}. ` +
+    `Use this skill whenever generating, modifying, or reviewing code in this repository — ` +
+    `it tells you the per-file path conventions, the architecture boundaries, the verification commands, ` +
+    `and the safe write path (CLI plan → review → apply).`;
+  return `---\nname: ${slug}\ndescription: ${JSON.stringify(description)}\n---`;
+}
+
 export function renderExport(
   inspection: ISharkcraftInspection,
   options: ExportOptions,
 ): ExportResult {
-  const body = renderBody(inspection, options);
-  const suggestedPath = DEFAULT_OUTPUT_PATH[options.format];
+  const suggestedPath = defaultOutputFor(options.format, inspection);
 
   let content = '';
   switch (options.format) {
-    case 'agents-md':
+    case 'agents-md': {
+      const body = renderBody(inspection, options);
       content = `# Agents Guide\n\n${PREAMBLE}\n\n${body}\n`;
       break;
-    case 'claude-md':
+    }
+    case 'claude-md': {
+      const body = renderBody(inspection, options);
       content = `# CLAUDE.md\n\n${PREAMBLE}\n\nThis file is read by Claude Code (claude.ai/code) at session start. Treat it as a compatibility view of the project's SharkCraft knowledge — use the MCP server (\`shrk mcp serve\`) for the live, queryable source of truth.\n\n${body}\n`;
       break;
+    }
+    case 'claude-skill': {
+      // Claude Code Skill: YAML frontmatter declares when to load this,
+      // body is tight decision-driving content. No preamble, no boilerplate
+      // — every token in here costs Claude context when loaded.
+      const frontmatter = renderSkillFrontmatter(inspection);
+      const projectName = inspection.config?.projectName ?? 'this codebase';
+      const body = renderSkillBody(inspection, options);
+      content = `${frontmatter}\n\n# ${projectName} — codebase guide\n\n${body}\n`;
+      break;
+    }
     case 'cursor-rules':
       // Cursor MDC frontmatter: leave alwaysApply off so the user can tune.
-      content = `---\ndescription: SharkCraft project rules (auto-generated)\nalwaysApply: false\n---\n\n${PREAMBLE}\n\n${body}\n`;
+      content = `---\ndescription: SharkCraft project rules (auto-generated)\nalwaysApply: false\n---\n\n${PREAMBLE}\n\n${renderBody(inspection, options)}\n`;
       break;
     case 'copilot-instructions':
-      content = `# Copilot instructions\n\n${PREAMBLE}\n\n${body}\n`;
+      content = `# Copilot instructions\n\n${PREAMBLE}\n\n${renderBody(inspection, options)}\n`;
       break;
   }
 
@@ -172,6 +314,7 @@ export function isExportFormat(value: string): value is ExportFormat {
   return (
     value === 'agents-md' ||
     value === 'claude-md' ||
+    value === 'claude-skill' ||
     value === 'cursor-rules' ||
     value === 'copilot-instructions'
   );
@@ -180,6 +323,7 @@ export function isExportFormat(value: string): value is ExportFormat {
 export const ALL_EXPORT_FORMATS: readonly ExportFormat[] = Object.freeze([
   'agents-md',
   'claude-md',
+  'claude-skill',
   'cursor-rules',
   'copilot-instructions',
 ]);

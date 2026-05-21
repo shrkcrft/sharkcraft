@@ -257,8 +257,8 @@ interface ISmokeTarget {
   warning?: string;
 }
 
-// Generic adopter target replaces the previous hardcoded project target.
-const BUILTIN_TARGET_IDS = ['sharkcraft', 'dogfood', 'synthetic', 'adopter'] as const;
+// Generic consumer target replaces the previous hardcoded project target.
+const BUILTIN_TARGET_IDS = ['sharkcraft', 'dogfood', 'synthetic', 'consumer'] as const;
 type BuiltinTargetId = (typeof BUILTIN_TARGET_IDS)[number];
 
 function resolveTargets(
@@ -284,20 +284,20 @@ function resolveTargets(
     );
     out.push({ id: 'synthetic', cwd: root, label: 'synthetic-fixture' });
   }
-  if (want('adopter')) {
-    const adopterRoot =
-      flagString(args, 'adopter-root') ??
-      process.env['SHARKCRAFT_ADOPTER_ROOT'] ??
+  if (want('consumer')) {
+    const consumerRoot =
+      flagString(args, 'consumer-root') ??
+      process.env['SHARKCRAFT_CONSUMER_ROOT'] ??
       '';
-    if (adopterRoot && existsSync(adopterRoot)) {
-      out.push({ id: 'adopter', cwd: adopterRoot, label: `adopter:${adopterRoot}` });
+    if (consumerRoot && existsSync(consumerRoot)) {
+      out.push({ id: 'consumer', cwd: consumerRoot, label: `consumer:${consumerRoot}` });
     } else {
       out.push({
-        id: 'adopter',
-        cwd: adopterRoot || '(unset)',
-        label: 'adopter target',
+        id: 'consumer',
+        cwd: consumerRoot || '(unset)',
+        label: 'consumer target',
         warning:
-          'Adopter root not set (pass --adopter-root or set SHARKCRAFT_ADOPTER_ROOT) — skipped.',
+          'Consumer root not set (pass --consumer-root or set SHARKCRAFT_CONSUMER_ROOT) — skipped.',
       });
     }
   }
@@ -356,7 +356,7 @@ async function runReleaseSmoke(args: ParsedArgs): Promise<number> {
  *    examples/dogfood-target as the fixture.
  *  - `synthetic` runs the scenarios that don't depend on a prepared source
  *    (unconfigured-repo + pack-authoring).
- *  - `adopter` runs the read-only scenarios that don't write outside the
+ *  - `consumer` runs the read-only scenarios that don't write outside the
  *    fixture (e.g. an external project that consumes a SharkCraft pack).
  */
 function isScenarioApplicableTo(scenario: SmokeScenarioId, target: ISmokeTarget): boolean {
@@ -367,7 +367,7 @@ function isScenarioApplicableTo(scenario: SmokeScenarioId, target: ISmokeTarget)
   if (target.id === 'dogfood') {
     return scenario === 'dev-workflow' || scenario === 'pr-review' || scenario === 'governance';
   }
-  if (target.id === 'adopter') {
+  if (target.id === 'consumer') {
     return scenario === 'unconfigured-repo' || scenario === 'pack-authoring' || scenario === 'governance';
   }
   return true;

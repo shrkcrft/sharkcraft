@@ -8,10 +8,6 @@ import { ArchitecturePage } from './architecture.page.tsx';
 import { GraphPage } from './graph.page.tsx';
 import { PacksPage } from './packs.page.tsx';
 import { PresetsPipelinesPage } from './presets-pipelines.page.tsx';
-import { OnboardingPage } from './onboarding.page.tsx';
-import { ReportsPage } from './reports.page.tsx';
-import { ReviewCiPage } from './review-ci.page.tsx';
-import { CommandsPage } from './commands.page.tsx';
 import { McpPage } from './mcp.page.tsx';
 import { matchSegment } from '../utils/routing.ts';
 
@@ -19,6 +15,12 @@ export interface IResolvedRoute {
   title: string;
   node: JSX.Element;
 }
+
+// The dashboard surfaces ten pages — focused on "what is the state of
+// this project right now". Commands / Onboarding / Reports / Review & CI
+// were dropped in the alpha.8 trim: they were tied to advanced
+// workflows, not project state. Their backing data endpoints stay live
+// for power users / CLI consumers.
 
 export function resolveRoute(path: string): IResolvedRoute {
   if (path === '/' || path === '/overview') return { title: 'Overview', node: <OverviewPage /> };
@@ -32,10 +34,6 @@ export function resolveRoute(path: string): IResolvedRoute {
   if (path === '/graph') return { title: 'Knowledge Graph', node: <GraphPage /> };
   if (path === '/packs') return { title: 'Packs', node: <PacksPage /> };
   if (path === '/presets-pipelines') return { title: 'Presets & Pipelines', node: <PresetsPipelinesPage /> };
-  if (path === '/onboarding') return { title: 'Onboarding', node: <OnboardingPage /> };
-  if (path === '/reports') return { title: 'Reports', node: <ReportsPage /> };
-  if (path === '/review-ci') return { title: 'Review & CI', node: <ReviewCiPage /> };
-  if (path === '/commands') return { title: 'Commands', node: <CommandsPage /> };
   if (path === '/mcp') return { title: 'MCP', node: <McpPage /> };
   return {
     title: 'Not found',

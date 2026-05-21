@@ -1,10 +1,12 @@
 import type { CommandRegistry } from '../command-registry.ts';
 import { header } from '../output/format-output.ts';
+import { COMMAND_CATALOG, defaultShowInHelp } from './command-catalog.ts';
 
 /**
- * Short product start screen for bare `shrk` / `shrk --help`. Pruned
- * to the core tier set; extended verbs live one link away via
- * `shrk surface list`.
+ * Product start screen for bare `shrk` / `shrk --help`. Shows the
+ * curated ~20-command "starter" surface organized by workflow phase.
+ * Everything else stays callable; users see the full ~70-verb catalog
+ * via `shrk --full-help` or browse it through `shrk surface list`.
  *
  * Returns the lines (without trailing newline). Pulled into a function
  * so tests can assert on the structure without grepping stdout.
@@ -14,20 +16,46 @@ export function renderStartScreen(): string {
   lines.push('SharkCraft CLI — deterministic, local-first project intelligence for AI coding agents.');
   lines.push('Usage: shrk [--cwd <dir>] <command> [...args]');
   lines.push('');
-  lines.push('Core (always on):');
-  lines.push('  $ shrk recommend "<task>"        — what should I do?');
+  lines.push('Bootstrap:');
+  lines.push('  $ shrk init --infer --write      — scan the repo + populate sharkcraft/ from real signals (recommended for new repos)');
+  lines.push('  $ shrk import claude-md ./CLAUDE.md --populate --write  — populate sharkcraft/ from existing CLAUDE.md / AGENTS.md / .cursor/rules');
+  lines.push('  $ shrk init --with-claude-skill --write  — scaffold sharkcraft/ AND inline rules into .claude/skills/ (one-step)');
+  lines.push('  $ shrk init                      — scaffold sharkcraft/ + config skeleton (preset defaults)');
   lines.push('  $ shrk doctor                    — is the workspace healthy?');
-  lines.push('  $ shrk context --task "<task>"   — focused context for a task');
-  lines.push('  $ shrk init                      — create sharkcraft/ + config skeleton');
-  lines.push('  $ shrk check boundaries          — boundary enforcement');
-  lines.push('  $ shrk surface list              — every command grouped by tier');
+  lines.push('  $ shrk inspect                   — detect frameworks, paths, package manager');
+  lines.push('  $ shrk onboard                   — analyze an existing repo (advisory)');
   lines.push('');
-  lines.push('Discover the rest (extended tier — always callable):');
-  lines.push('  $ shrk surface list              — full surface, grouped by tier and profile');
+  lines.push('Use it for a task:');
+  lines.push('  $ shrk brief                     — single-page brief Claude reads first (project + rules + paths + verification)');
+  lines.push('  $ shrk recommend "<task>"        — what should I do?');
+  lines.push('  $ shrk context --task "<task>"   — token-budgeted relevant context');
+  lines.push('  $ shrk task "<task>"             — full AI-ready task packet (JSON)');
+  lines.push('  $ shrk coverage                  — what knowledge is missing');
+  lines.push('');
+  lines.push('Generate code safely:');
+  lines.push('  $ shrk gen <template> <name>     — generate from template (dry-run by default)');
+  lines.push('  $ shrk apply <plan.json>         — apply a reviewed plan (CLI is the only write path)');
+  lines.push('  $ shrk check boundaries          — enforce layer / import boundaries');
+  lines.push('  $ shrk quality                   — pre-PR gate (doctor + boundaries + coverage + drift)');
+  lines.push('');
+  lines.push('Browse what shrk knows:');
+  lines.push('  $ shrk knowledge list            — knowledge entries');
+  lines.push('  $ shrk rules list                — rules + conventions');
+  lines.push('  $ shrk templates list            — generator templates');
+  lines.push('  $ shrk import                    — parse AGENTS.md / CLAUDE.md / .cursor/rules');
+  lines.push('  $ shrk export                    — render to a flat agent-rule file');
+  lines.push('');
+  lines.push('Run shrk for an agent:');
+  lines.push('  $ shrk export claude-skill --write — generate .claude/skills/<name>/SKILL.md (rules INTO the prompt — no MCP roundtrip)');
+  lines.push('  $ shrk export agents-md --write  — generate AGENTS.md / CLAUDE.md / .cursor/rules / copilot-instructions');
+  lines.push('  $ shrk mcp serve                 — start the MCP server (stdio) for live queries');
+  lines.push('  $ shrk dashboard                 — start the local read-only dashboard');
+  lines.push('');
+  lines.push('Discover the rest (always callable, hidden from this screen by default):');
+  lines.push('  $ shrk surface list              — full ~70-verb catalog by tier');
   lines.push('  $ shrk surface profiles          — named profiles (small-app / monorepo / ci / agent / pack-author)');
-  lines.push('  $ shrk surface explain <cmd>     — why a command has its current tier');
   lines.push('  $ shrk help <command>            — usage for a specific command');
-  lines.push('  $ shrk --full-help               — the long, exhaustive help');
+  lines.push('  $ shrk --full-help               — long, exhaustive help');
   lines.push('  $ shrk --about                   — what shrk is and is not');
   lines.push('');
   lines.push('Free-form input is fine — `shrk "<task>"` routes to `shrk recommend`.');
@@ -93,15 +121,43 @@ export function makeHelpCommand(registry: CommandRegistry) {
         process.stdout.write(renderStartScreen());
         return 0;
       }
+      const wantsAll = args.flags.get('all') === true;
       process.stdout.write(`SharkCraft CLI — structured project intelligence for AI coding agents\n`);
       process.stdout.write(`Usage: shrk [--cwd <dir>] <command> [...args]\n`);
 
+      // The catalog has ~360 entries; only ~30 top-level verbs pay
+      // rent (see PRIMARY_VERBS_ALLOWLIST in command-catalog.ts).
+      // Default --full-help filters to that set; `--full-help --all`
+      // dumps the entire catalog for power users.
+      const visibleVerbs = new Set<string>();
+      if (!wantsAll) {
+        for (const entry of COMMAND_CATALOG) {
+          if (defaultShowInHelp(entry)) {
+            const verb = entry.command.split(/\s+/)[0] ?? '';
+            if (verb) visibleVerbs.add(verb);
+          }
+        }
+      }
+      const visibleTopLevel = registry.list().filter((c) => {
+        if (wantsAll) return true;
+        return visibleVerbs.has(c.name);
+      });
       process.stdout.write(header('Top-level commands'));
-      for (const c of registry.list()) {
+      for (const c of visibleTopLevel) {
         process.stdout.write(`  ${c.name.padEnd(10)} — ${c.description}\n`);
       }
+      if (!wantsAll) {
+        const hiddenCount = registry.list().length - visibleTopLevel.length;
+        if (hiddenCount > 0) {
+          process.stdout.write(
+            `\n  …and ${hiddenCount} more, hidden from default help. Run \`shrk --full-help --all\` to see them, ` +
+              `or \`shrk surface list\` to browse by tier.\n`,
+          );
+        }
+      }
 
-      // Show each canonical group once.
+      // Show each canonical group once — also filtered by the allowlist
+      // unless --all was passed.
       const canonicalGroups: string[] = [];
       const aliasMap = registry.listGroupAliases();
       const seen = new Set<string>();
@@ -109,7 +165,9 @@ export function makeHelpCommand(registry: CommandRegistry) {
         const canonical = aliasMap.get(g) ?? g;
         if (!seen.has(canonical)) {
           seen.add(canonical);
-          canonicalGroups.push(canonical);
+          if (wantsAll || visibleVerbs.has(canonical)) {
+            canonicalGroups.push(canonical);
+          }
         }
       }
       const aliasesByCanonical = new Map<string, string[]>();

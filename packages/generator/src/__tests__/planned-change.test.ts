@@ -96,12 +96,12 @@ describe('evaluatePlannedChange — insert-after / insert-before', () => {
   test('insert-after: happy path', () => {
     const out = evaluatePlannedChange({
       change: {
-        targetPath: 'FEATURE_KEYS.ts',
+        targetPath: 'ROUTE_KEYS.ts',
         operation: { kind: 'insert-after', anchor: 'PAGINATION: \'pagination\',', snippet: '\n  SAMPLE: \'sample\',' },
       },
-      absolutePath: '/abs/FEATURE_KEYS.ts',
-      relativePath: 'FEATURE_KEYS.ts',
-      existing: 'export const FEATURE_KEYS = {\n  PAGINATION: \'pagination\',\n} as const;\n',
+      absolutePath: '/abs/ROUTE_KEYS.ts',
+      relativePath: 'ROUTE_KEYS.ts',
+      existing: 'export const ROUTE_KEYS = {\n  PAGINATION: \'pagination\',\n} as const;\n',
     });
     expect(out.type).toBe(FileChangeType.InsertAfter);
     expect(out.contents).toContain('SAMPLE: \'sample\',');
@@ -110,12 +110,12 @@ describe('evaluatePlannedChange — insert-after / insert-before', () => {
   test('insert-before: happy path', () => {
     const out = evaluatePlannedChange({
       change: {
-        targetPath: 'FEATURE_KEYS.ts',
+        targetPath: 'ROUTE_KEYS.ts',
         operation: { kind: 'insert-before', anchor: '} as const;', snippet: '  SAMPLE: \'sample\',\n' },
       },
-      absolutePath: '/abs/FEATURE_KEYS.ts',
-      relativePath: 'FEATURE_KEYS.ts',
-      existing: 'export const FEATURE_KEYS = {\n  PAGINATION: \'pagination\',\n} as const;\n',
+      absolutePath: '/abs/ROUTE_KEYS.ts',
+      relativePath: 'ROUTE_KEYS.ts',
+      existing: 'export const ROUTE_KEYS = {\n  PAGINATION: \'pagination\',\n} as const;\n',
     });
     expect(out.type).toBe(FileChangeType.InsertBefore);
     expect(out.contents).toContain('SAMPLE: \'sample\',');

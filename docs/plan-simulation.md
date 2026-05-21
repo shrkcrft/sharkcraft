@@ -29,7 +29,7 @@ HTML wraps each diff in a static `<details>` block — no JS).
 ## What it reports
 
 - **Per-file outcome**: `ready / skip-idempotent / conflict / modifies-existing / creates-new`.
-- **Marker detection**: public API, barrel export, `FEATURE_KEYS`, event registry, token registry, adapter boundary.
+- **Marker detection**: public API, barrel export, key tables, event registry, token registry.
 - **Boundary impact**: current-state boundary violations on the planned paths, plus boundary violations the plan would *introduce* (computed from the re-rendered virtual contents when the template is in the live registry).
 - **Ownership review**: files that match a `requiredReview: true` ownership rule.
 - **Likely tests**: missing `*.spec.ts` companions for changed `src/**` TS files.

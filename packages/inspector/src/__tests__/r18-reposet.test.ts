@@ -25,7 +25,7 @@ describe('r18 reposet', () => {
         schema: 'sharkcraft.reposet/v1',
         repos: [
           { id: 'present', name: 'present', root: root, tags: [], role: 'engine' },
-          { id: 'missing', name: 'missing', root: nodePath.join(root, 'does-not-exist'), tags: [], role: 'adopter' },
+          { id: 'missing', name: 'missing', root: nodePath.join(root, 'does-not-exist'), tags: [], role: 'consumer' },
         ],
       }),
     );

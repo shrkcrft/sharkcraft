@@ -50,8 +50,8 @@ Optional flags:
 
 A simple weighted score combining direct/transitive dependent counts,
 public-API touches, boundary rule density, package count, ownership
-review status, missing tests, core/kernel touches, policy surface
-touches, and area span. Returns one of `low | medium | high | critical`
+review status, missing tests, core touches, policy surface touches, and
+area span. Returns one of `low | medium | high | critical`
 plus a list of `riskReasons` for transparency.
 
 ## MCP

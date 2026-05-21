@@ -23,8 +23,8 @@ shrk plan review <plan> --trace-dispatch     # add trace to plan review output
 ## What the trace describes
 
 ```
-dispatchKind:         template | helper | plugin-lifecycle | registration-hint | synthetic | unknown
-source:               registry/template | registry/helper | registry/plugin-lifecycle-profile | registry/registration-hint | synthetic | unknown
+dispatchKind:         template | helper | registration-hint | synthetic | unknown
+source:               registry/template | registry/helper | registry/registration-hint | synthetic | unknown
 handler:              module + symbol that will run
 synthetic:            templateId starts with `__`
 totalFileOps:         number of file changes carried by the plan

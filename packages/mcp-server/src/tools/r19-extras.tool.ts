@@ -113,7 +113,7 @@ export const getCommandTaxonomyTool: IToolDefinition = {
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   async handler() {
     // The CLI carries the canonical catalog; here we describe the surface
-    // without importing it (no inspector → CLI dependency). Adopters can
+    // without importing it (no inspector → CLI dependency). Consumers can
     // run `shrk commands taxonomy` for the full grouped output.
     return {
       data: {

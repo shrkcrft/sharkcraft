@@ -75,8 +75,8 @@ reports the strategy in a "Composition" block whenever a key has more
 than one contributor:
 
 ```
-- `rule:plugin.no-own-defaults`
-  - tag:plugin (strategy=max): [my.bias +3, other.bias +2] → +3
+- `rule:repo.architecture.respect-boundaries`
+  - tag:service (strategy=max): [my.bias +3, other.bias +2] → +3
 ```
 
 ## MCP (read-only)

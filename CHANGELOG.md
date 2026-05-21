@@ -5,6 +5,702 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [Unreleased / 0.1.0-alpha.8 — staged, not yet published] — Cleaner shrk: honest doctor, polished errors, pack-discovery cache
+
+A focused round of "make shrk genuinely cleaner and more useful
+without adding features," in three layers:
+
+  1. **Substantial UX:** honest doctor verdicts + shape-aware
+     scoring, polished error / did-you-mean output, README that
+     openly links the benchmark.
+  2. **Substantial perf:** pack-discovery now caches at process
+     level (16× speedup on warm calls).
+  3. **Substantial cleanup carried over from prior staging:** ~20-
+     command starter surface, R-cycle markers stripped, dashboard
+     pruned to 10 "project state" pages.
+
+**Staged but not published.** Run
+`bun run scripts/bump-versions.ts 0.1.0-alpha.8 --write` followed by
+`bun run publish:packages --tag alpha --yes` when ready to ship.
+
+### Changed — Honest doctor output (replaces fuzzy 0..100 score)
+
+The old `AI-readiness: X / 100 (grade)` was an aggregate that didn't
+know what kind of project it was scoring. A library got dinged for
+"no pipelines"; a generic CLI got dinged for "no templates"; a repo
+with zero installed packs got a neutral 5/10 on pack-discovery
+that rewarded inaction. Self-scored 75/100 even when the benchmark
+showed shrk was net-negative in real use.
+
+`buildAiReadinessReport()` now classifies each readiness dimension
+as one of:
+
+- `core` — counts in the aggregate score, produces a recommendation
+  if below threshold.
+- `advisory` — shown in output, NOT counted, NO recommendation.
+  For dimensions that are nice-to-have but not load-bearing for the
+  detected workspace shape (e.g. "templates" on a generic library).
+- `n/a-for-shape` — hidden by default, NOT counted, NO recommendation.
+  For dimensions that are irrelevant (e.g. "pack discovery" when
+  no packs are installed).
+
+Two honest binary verdicts ride alongside the score:
+
+- `Ready for agent reads` — config + knowledge loaded, doctor clean.
+- `Ready for agent writes` — all of the above + cli-only safety rule
+  + no doctor errors. Lists concrete blockers if false.
+
+The visible output now leads with:
+
+```
+Shape: monorepo (score counts 13 of 15 dimensions)
+  ✓ Ready for agent reads (context / task lookups)
+  ✓ Ready for agent writes (apply / generate)
+
+AI-readiness: 79 / 100 (good, shape-aware)
+```
+
+Pass `--show-na` to see what was deliberately skipped:
+
+```
+Not counted in score (2 dimensions):
+  [advisory] Pipelines: 1 pipelines — a repo can be agent-ready with just rules + path conventions.
+  [n/a] Pack discovery health: no packs discovered — does not apply.
+```
+
+The "Add at least one feature-dev or safe-generation pipeline"
+recommendation no longer fires on libraries.
+
+### Changed — Polished unknown-command / did-you-mean output
+
+Before:
+
+```
+Unknown command: doctorz
+Did you mean:
+  shrk commands doctor — Check catalog completeness …
+  shrk doctor — Workspace doctor …
+  shrk fix doctor — Fix-system doctor …
+```
+
+After:
+
+```
+shrk doesn't have a `doctorz` command.
+Did you mean `shrk doctor`?
+  Workspace doctor: config + entry validation.
+Other close matches:
+  shrk fix doctor — …
+  shrk packs doctor — …
+```
+
+The renderer now:
+
+- Re-ranks ties by command length so the canonical short verb beats
+  longer descendants on a tie (e.g. `doctor` beats `commands doctor`).
+- Uses Levenshtein distance to gate the "confident match" path
+  (1-char-off typo like `inspct → inspect` qualifies; description-
+  token-overlap noise like `frobnicate → bundle diff` does not).
+- Falls back to "Run `shrk help` to see the curated commands" when
+  no close match exists, instead of dumping unrelated guesses.
+
+### Added — Pack-discovery caching
+
+`discoverPacks()` is the slowest single step of `inspectSharkcraft()`
+(it walks `node_modules/` reading every `package.json`). The function
+now caches its result at process level, keyed by `projectRoot` +
+lockfile fingerprint (mtime + size of `bun.lockb` / `bun.lock` /
+`package-lock.json` / `pnpm-lock.yaml` / `yarn.lock`, whichever
+exists).
+
+- **Cold call:** 16 ms (unchanged).
+- **Warm call (same lockfile):** 1 ms — 16× speedup.
+- **Cache invalidation:** automatic on any install / uninstall / upgrade.
+- **Bypassed** when `verifySignatures: true` (security-sensitive) or
+  `extraRoots` (test setups), or explicitly via `noCache: true`.
+- **Public escape hatch:** `clearPackDiscoveryCache()` for tests that
+  want a clean slate between runs.
+
+Repeated `inspectSharkcraft()` calls within a single CLI invocation
+(common in MCP servers and chained commands like `shrk doctor &&
+shrk task`) now skip the node_modules walk on the second+ call.
+
+### Added — Catalog hint: `understand-task` points at `task`
+
+`shrk understand-task "<task>"` now declares `overlapsWith: ['task',
+'recommend']` and `preferredCommand: 'shrk task "<task>"'`. Surface
+this via `shrk surface explain understand-task` or `shrk commands
+docs-check`. No behavioral change to existing scripts.
+
+### Changed — README is honest about the benchmark
+
+The README now has a "Does it actually help an AI agent today?"
+section that links the benchmark result directly. The honest
+summary: out-of-the-box on a NestJS / Angular / Nx repo, shrk was
+net-negative (+31% wall-clock, +18% tokens, identical quality).
+The section lists the four configuration steps that move shrk
+from net-negative to net-positive (framework-correct preset,
+populate paths, write project-specific rules, run `shrk doctor`
+before trusting for agent workflows).
+
+The benchmark hasn't been re-run on the alpha.5+ framework-correct
+preset families. README invites the result.
+
+### Added — `shrk export claude-commands` (per-project slash commands for Claude Code)
+
+Pairs with the alpha.8 `claude-skill` export to cover the second
+half of Claude Code's native primitive set: `.claude/commands/*.md`
+slash commands.
+
+```
+shrk export claude-commands         # dry-run preview
+shrk export claude-commands --write # writes the .md files
+```
+
+Produces a small set of stable, project-specific slash commands users
+type in Claude Code:
+
+  - `/follow-shrk` — reminder of the apply-gate flow.
+  - `/check-changes` — runs the diff-scoped boundary + import-hygiene
+    checks (delegates to `shrk diff-check` below).
+  - `/shrk-brief` — pulls `shrk brief` for the current project.
+  - `/explain-file <path>` — per-file rules / paths / boundaries.
+  - `/new-<template>` — one slash per id in `sharkcraft/templates.ts`,
+    capped at 20. Runs the full plan → apply → validate flow.
+
+Each file is a self-contained recipe (YAML frontmatter +
+markdown body). No `@shrkcrft/*` imports, no shell expansions —
+Claude Code reads the file and follows the steps. Companion semantics
+to `claude-skill`:
+
+  - **claude-skill** = passive (rules pulled into Claude's prompt by
+    description match).
+  - **claude-commands** = active (user invokes by typing the slash).
+
+Slash-name collisions (two templates sharing a tail like
+`new-service`) fall back to the full id (`new-typescript-service`)
+to disambiguate. Sorted by template id for deterministic output.
+
+### Added — `shrk diff-check` (one-call agent self-validation)
+
+The replacement for "remember to run two checks after every edit."
+One command, one envelope, one verdict:
+
+```
+shrk diff-check          # human output with Next: line
+shrk diff-check --json   # structured envelope for agents
+```
+
+Composes `shrk check boundaries --changed-only` and `shrk check
+imports --changed-only` against the same scope (worktree / staged /
+since / files), then collapses into:
+
+```json
+{
+  "schema": "sharkcraft.diff-check/v1",
+  "scope": { "mode": "worktree", "files": [...], "fileCount": 5 },
+  "boundaries": { "ran": true, "counts": { "error": 0, ... }, "violations": [...] },
+  "imports": { "ran": true, "verdict": "ok", "counts": {...}, "findings": [...] },
+  "verdict": "ok" | "warnings" | "errors",
+  "summary": "Diff passes the gate (...).",
+  "nextAction": "Safe to declare done."
+}
+```
+
+Exit code reflects verdict (0 for ok/warnings, 1 for errors). The
+`nextAction` line is concrete: agents know exactly what to do next
+without re-asking the user.
+
+Also exposed as the `get_diff_check_report` MCP tool (read-only).
+Added to the primary MCP tools allowlist so it shows up in
+`tools/list` by default. Pairs with the `/check-changes` slash
+command above — Claude users typing `/check-changes` get the same
+gate via a slash, MCP-connected agents get it via the tool.
+
+### Added — `get_file_advice` MCP tool (per-file context for agents)
+
+The MCP-side mirror of `shrk why <file>`. For a given file path,
+returns the rules, path conventions, boundary rules, and knowledge
+entries that apply to it — single call, no browsing-the-catalog
+required.
+
+```
+Tool: get_file_advice
+Input: { "file": "apps/users/src/profile.service.ts", "limit": 10 }
+Output: { schema, target, pathConventions, rules, boundaries, knowledge, suggestedNext }
+```
+
+Same engine as the CLI's `shrk why` (the existing `buildWhyReport`)
+— no logic duplication. Added to the primary MCP tools allowlist.
+
+We did NOT add a `shrk advise` CLI alias — `shrk why <file>` already
+covers the CLI side; a second command would be pure surface bloat.
+
+### Added — `shrk import <format> --populate` (populate sharkcraft/ from existing CLAUDE.md / AGENTS.md / .cursor/rules)
+
+The mirror half of `--infer`. Most teams using AI agents today
+already have ONE of: `CLAUDE.md`, `AGENTS.md`, or
+`.cursor/rules/*.mdc`. `shrk import` previously parsed those files
+into a draft TS file under `sharkcraft/imports/` that the user had
+to adopt by hand. The new `--populate` flag does the adoption
+automatically.
+
+```bash
+# Most teams have one of these already.
+shrk import claude-md ./CLAUDE.md --populate --write
+shrk import agents-md ./AGENTS.md --populate --write
+shrk import cursor-rules ./.cursor/rules/ --populate --write
+
+# Each routes entries by type into the canonical files:
+#   sharkcraft/rules.ts        ← KnowledgeType.Rule entries
+#   sharkcraft/paths.ts        ← KnowledgeType.Path entries
+#   sharkcraft/knowledge.ts    ← Convention / Architecture / Warning / Workflow / etc.
+#   sharkcraft/sharkcraft.config.ts (auto-wired to whatever was populated)
+#   sharkcraft/.imported-report.md   ← confidence triage
+#   sharkcraft/.imported-report.json ← machine-readable
+```
+
+**Same honest confidence triage as `--infer`:**
+
+- **Adopted directly** (priority Critical/High + non-trivial body) — written without marker.
+- **Adopted with `// TODO: review`** (Medium priority) — written with an inline review comment.
+- **Dropped** (Low priority / title-only / Template type) — left out and listed in the report so the user knows what was considered.
+
+**Why Template entries always drop:** markdown describes templates
+but doesn't give a runnable scaffold body. Listed in the report,
+not pretended to be populated. Users author runnable templates in
+`sharkcraft/templates.ts` by hand.
+
+**The adoption story is now complete.** Combined with `--infer`:
+
+- Fresh repo, no existing rule files → `shrk init --infer --write`
+- Existing repo with `CLAUDE.md` → `shrk import claude-md ./CLAUDE.md --populate --write`
+- Existing repo with `.cursor/rules/` → `shrk import cursor-rules ./.cursor/rules/ --populate --write`
+
+In every case, **adoption cost ≈ 0**: one command, populated repo, honest report.
+
+**Safety identical to `--infer`:**
+- Dry-run by default; `--write` to persist.
+- Refuses to overwrite without `--force`.
+- Bypasses the older `--write` (writes-draft-under-`sharkcraft/imports/`) path.
+
+**Architecture.**
+- `packages/importer/src/emit/synthesize-populated.ts` — pure
+  function: `IImportedEntry[]` → `{ files, report }`. Type-based
+  routing, confidence triage, self-contained output (matches the
+  local-mirror preamble pattern).
+- `packages/cli/src/commands/import.command.ts` — `runPopulateImport`
+  wires the engine into `shrk import --populate`. Composes with
+  `--write` / `--force` / `--json` consistently with the existing
+  drafts path.
+- 16 new tests in `packages/importer/src/__tests__/synthesize-populated.test.ts`
+  pin: file-set contract, type routing (Rule → rules.ts etc.),
+  confidence tiers (high / medium / low / Template-always-drops),
+  determinism, config-doesn't-reference-missing-files, and the
+  every-entry-has-type invariant (the bug that surfaced on first
+  integration — knowledge validator rejects entries missing `type:`
+  even when the file context implies it).
+
+**End-to-end verified** against the engine's own CLAUDE.md:
+22 entries parsed, 2 adopted high / 18 marked for review / 2
+dropped. Resulting populated repo passes `shrk doctor` with
+"Verdict: Ready for AI-agent use ✓" and 0 errors.
+
+### Added — `shrk init --infer` (populate sharkcraft/ from real codebase signals)
+
+The single largest UX improvement in alpha.8 staging. Instead of
+writing preset defaults + a `TODO: customize these` advisory, shrk
+now scans the repo and emits **populated** `sharkcraft/*.ts` files
+from what it actually finds.
+
+```bash
+shrk init --infer --write
+# Scans the workspace, runs the existing buildOnboardingPlan +
+# triages each inferred entry by confidence, then writes:
+#   sharkcraft/sharkcraft.config.ts
+#   sharkcraft/knowledge.ts          ← agent briefing + safety seed
+#   sharkcraft/paths.ts              ← from detected directories
+#   sharkcraft/rules.ts              ← from tsconfig + package.json signals
+#   sharkcraft/boundaries.ts         ← from layer structure (when detected)
+#   sharkcraft/pipelines.ts          ← from package.json scripts
+#   sharkcraft/.inferred-report.md   ← what was adopted vs needs review
+#   sharkcraft/.inferred-report.json ← machine-readable equivalent
+```
+
+**Honest-by-design confidence triage.** Every inferred entry lands
+in one of three buckets:
+
+- **Adopted directly** (high confidence) — written without a marker.
+- **Adopted with `// TODO: review`** (medium confidence) — written
+  with an inline comment so the user reviews + removes the marker.
+- **Dropped** (low confidence) — left out of the populated files and
+  listed in `.inferred-report.md` so the user knows what was
+  considered.
+
+The companion `.inferred-report.md` lists the triage by category, an
+explicit "what shrk can't infer" section (project-specific
+decisions, deprecated paths, cross-cutting concerns, team workflow
+conventions), and points the user at `shrk onboard --write-drafts`
+for the dropped-templates case.
+
+**End-to-end verified** against `examples/unconfigured-bun-service`:
+- 14 entries adopted directly (4 path conventions + 1 rule + 4
+  pipelines + 5 verification commands)
+- 1 entry marked for review (medium-confidence rule)
+- 3 entries dropped (template candidates — too speculative to
+  auto-emit; available as drafts via `shrk onboard`)
+- The resulting populated repo passes `shrk doctor` with "Ready for
+  agent reads ✓" and a shape-aware AI-readiness score.
+
+**Composes with `--with-claude-skill`.** Run
+`shrk init --infer --write --with-claude-skill` to scan + populate
++ inline into Claude's prompt in one command.
+
+**Safety:**
+- Dry-run by default; `--write` to persist.
+- Refuses to overwrite existing files without `--force`.
+- Emits the report file even on re-run with `--force` so the user
+  can re-read the triage.
+- Bypasses `--preset` entirely — the inferred output IS the
+  populated `sharkcraft/`. Mixing inferred + preset defaults would
+  muddy the confidence reporting.
+
+**Architecture.**
+- `packages/inspector/src/synthesize-from-onboarding.ts` — pure
+  function: `IOnboardingPlan` → `{ files, report }`. Reuses the
+  existing `buildOnboardingPlan` (already scans tsconfig, package.json,
+  file layout, import structure, etc.).
+- `packages/cli/src/commands/init.command.ts` — `runInferInit`
+  wires the engine into `shrk init --infer`, handles `--dry-run` /
+  `--write` / `--force` / `--with-claude-skill` semantics
+  consistently with the preset path.
+- 7 new tests in
+  `packages/inspector/src/__tests__/synthesize-from-onboarding.test.ts`
+  pin the file-set contract, self-contained-emit invariant,
+  confidence triage shape, determinism, and config-doesn't-reference-
+  files-that-don't-exist.
+
+This is the work that closes the "shrk's authoring cost is too
+high" gap. A user can now run one command and get a populated repo
+that reflects their actual codebase signals — no upfront authoring,
+no "fill in the TODOs" scaffolding.
+
+### Added — `shrk init --with-claude-skill` (one-step setup)
+
+A new flag on `shrk init` chains the claude-skill export onto a
+successful preset apply, so a fresh user goes from a clean repo to a
+working `.claude/skills/<name>/SKILL.md` in one command:
+
+```bash
+shrk init --with-claude-skill --write
+# scaffolds sharkcraft/ + writes .claude/skills/<project-slug>/SKILL.md
+# in a single invocation; init's "Next" block points at brief + the
+# canonical generation flow.
+```
+
+The flag is also aliased as `--with-skill` for typing convenience.
+Skipped silently in `--dry-run`; respects `--force` for overwriting
+an existing skill file.
+
+### Changed — `shrk export claude-skill` body is high-signal only
+
+Skills are inlined into Claude's prompt, so every entry costs
+context every time the skill loads. The skill body now filters rules
++ path conventions to `priority: critical | high` only, with a
+fallback to "all" if the filtered list is empty (no high-priority
+entries yet ≠ ship-empty-skill). Caps stay configurable via
+`--max-rules` / `--max-paths`. Result: smaller, denser skills with
+no padding from medium / low entries.
+
+### Added — Primary MCP tools allowlist
+
+The MCP server now advertises ~32 primary tools by default via
+`tools/list` instead of all ~250. Every tool stays callable via
+`tools/call` — the allowlist only affects discovery — but the
+focused list dramatically improves Claude's tool-selection accuracy
+(the strict-review feedback specifically flagged this). Escape
+hatch: set `SHRK_MCP_FULL_TOOLS=1` to advertise everything (useful
+when debugging tool selection).
+
+Primary tools cover the core agent loops: project orientation,
+context routing, registry browsing, safe code generation,
+read-only validation, doctor, and search. See
+`packages/mcp-server/src/tools/primary-tools.ts` for the exact set.
+
+### Changed — Start screen highlights the one-step path
+
+```
+Bootstrap:
+  $ shrk init --with-claude-skill --write  — scaffold sharkcraft/ AND inline rules into .claude/skills/ (one-step)
+  $ shrk init                              — scaffold sharkcraft/ + config skeleton (without claude-skill)
+```
+
+Init's `Next:` block already pointed at `shrk brief` and
+`shrk export claude-skill --write` after alpha.8 staging; the new
+flag makes the latter a single-command path.
+
+### Changed — README narrowed to honest positioning
+
+The header pitch (`"structured project intelligence"`) was broad
+enough to imply shrk fits any repo. The strict review made clear
+that's not the right framing — shrk pays off for a specific repo
+profile, and trying to sell it as universal undercuts credibility
+in the cases where it genuinely shines.
+
+The rewritten top of the README leads with:
+
+1. **A narrow pitch** — "For TypeScript monorepos with architecture
+   boundaries that need to outlive any single PR." Names the
+   audience directly.
+2. **Two specific claims** of what shrk does that native Claude
+   Skills + `CLAUDE.md` can't: mechanical boundary enforcement,
+   and one-source-of-truth multi-agent emission.
+3. **An "Is shrk right for you?" decision tree** — ~5 green-check
+   conditions for "yes" and ~4 red-X conditions for "no, use
+   Claude Skills directly." A reader self-qualifies in 30 seconds
+   instead of installing and discovering it's a bad fit.
+4. **A side-by-side comparison table** explicitly framing shrk vs
+   native Skills + `CLAUDE.md` (not vs Claude Code itself). The
+   right-column items either land for the reader or they don't —
+   the doc tells them to "stop here and just use Claude Skills"
+   if not.
+
+The existing detailed sections (presets, architecture intelligence,
+docs links) are unchanged and stay lower in the document; only the
+top-of-fold positioning was rewritten.
+
+### Changed — `shrk brief` compressed from ~100 lines to ~70
+
+Three targeted fixes in `packages/inspector/src/agent-brief.ts`:
+
+1. **Empty sections suppressed.** Sections whose body was just an
+   italicized placeholder (`_None._`, `_No impact analysis
+   available._`, `_No ownership data._`) used to render anyway,
+   taking 3-5 lines each. They're now skipped — the section list
+   only includes what actually has content.
+
+2. **Timestamp dropped from the header.** The mode line was
+   `_Mode: \`implementation\` — 2026-05-20T...Z_`. A timestamp adds
+   noise to a "single page Claude reads first" doc and the
+   `IAgentBrief.generatedAt` JSON field still carries it for
+   tooling that needs it. Header now just shows the mode.
+
+3. **`[object Object]` bug in action-hints fixed.** The
+   `actionHintsSection` was string-interpolating
+   `IActionHintCommand` and `IActionHintMcpTool` objects whole,
+   producing `- [object Object]` per command/tool. Now reads
+   `.command` / `.tool` (+ optional `.purpose`) so each line shows
+   the real command and a one-line purpose:
+
+   ```
+   - `bun run shrk check boundaries` — Mechanical enforcement of the layer order.
+   - `get_relevant_context` — Token-budgeted rules + paths + templates for the task.
+   ```
+
+4. **Duplicate `Suggested commands` section dropped from the
+   markdown.** The verification commands + action-hint commands
+   covered the same set; the dedicated section repeated them. Now
+   the section only renders when it would surface a command NOT
+   already shown above. The `IAgentBrief.suggestedCommands` JSON
+   field is unchanged (tooling contract preserved).
+
+Result against the engine repo: brief output went from 104 lines /
+13 sections to 71 lines / 6 sections (-32%). The remaining sections
+(project overview, rules, paths, action hints, forbidden, safety)
+are all signal — no padding.
+
+### Fixed — Two dev-workflow tests flake under contention
+
+`shrk dev mark-applied → mark-validated` and `shrk dev list` chain
+3+ `shrk` subprocesses each. Each bun cold-start is ~1-2s; under
+full-suite parallel contention the 5s default budget can squeeze
+past. Bumped per-test timeout to 30s on both. Same fix pattern as
+the earlier MCP `create_execution_graph` flake.
+
+### Added — `shrk export claude-skill` (the inversion)
+
+Generate `.claude/skills/<project>/SKILL.md` from sharkcraft assets so
+the rules land in Claude's prompt **automatically**, with zero MCP
+round-trip and zero "remember to read CLAUDE.md" friction. The skill
+file carries a tight YAML frontmatter (`name`, `description`) that
+Claude Code uses to decide when to load it, plus a decision-driving
+body covering path conventions, rules, do/don't, and the safe write
+path.
+
+```bash
+shrk export claude-skill --write
+# → .claude/skills/<project-slug>/SKILL.md, loaded automatically by
+#   Claude Code in any session opened against this repo.
+```
+
+Beats the MCP round-trip latency problem entirely — the rules are
+inlined into the prompt the moment Claude opens the project. Five
+formats now in `shrk export`: `claude-skill` (new + recommended),
+`agents-md`, `claude-md`, `cursor-rules`, `copilot-instructions`.
+
+### Changed — Start screen + init flow surface the inversion
+
+`shrk help` start screen now leads "Use it for a task" with
+`shrk brief` (the canonical first-touch — single-page brief Claude
+reads first) and dedicates a "Run shrk for an agent" section to the
+two paths: inlined-into-prompt (`shrk export claude-skill --write`)
+vs live-query (`shrk mcp serve`).
+
+`shrk init` next-steps now points at `shrk brief` and
+`shrk export claude-skill --write` directly, so a fresh user goes
+from init → Claude-knows-the-codebase in two commands.
+
+### Changed — Catalog trim to ~27 visible top-level verbs
+
+The `--full-help` view now filters through a new
+`PRIMARY_VERBS_ALLOWLIST` of ~30 rent-paying verbs. The catalog still
+contains ~360 entries; everything stays callable. Default `--full-help`
+shows 27 top-level commands (down from 73) with a clear hint at the
+bottom:
+
+```
+…and 54 more, hidden from default help. Run `shrk --full-help --all`
+to see them, or `shrk surface list` to browse by tier.
+```
+
+Power users: `shrk --full-help --all` dumps the full catalog
+unchanged. The MCP-tool surface and `shrk surface list` are
+unaffected — this is purely a default-help filter.
+
+### Changed — README leads with a one-sentence pitch
+
+Replaced the jargon-y "Structured project intelligence" header
+with the concrete promise the strict review demanded: "shrk gives
+Claude the boundary rules, path conventions, and review gates your
+team already follows — so Claude writes code that matches your
+codebase instead of generic patterns."
+
+The README opening now shows the end-to-end loop —
+`init → export claude-skill → brief → gen → apply` — in five
+shell lines, so a prospective user sees the value flow in 30 seconds.
+
+### Deferred to a later release
+
+- **Re-run the benchmark on alpha.7+/alpha.8.** Requires driving two
+  Claude subagents in worktrees over wall-clock time; cannot be done
+  from a single AI session. Use `bench/runner-instructions.md` to
+  reproduce — the number is the marketing.
+- **Trim MCP tool count from 250+ to ~30.** The CLI catalog is now
+  filtered through the allowlist, but MCP tool exposure still
+  advertises everything. Same allowlist approach should apply on
+  the MCP side; deferred to its own release.
+- **Two deep, opinionated example repos** (`react-app` and
+  `nest-service`) hosted alongside SharkCraft so prospective users
+  can clone a working setup. The presets are good; the missing
+  piece is "here's a repo that actually uses it."
+- **`shrk plan from-message`** — parse a Claude chat reply for a
+  proposed change and turn it into a plan that goes through the
+  boundary/test gates. High-leverage but needs its own design pass
+  (parsing natural language reliably is hard).
+- **Output consistency pass across the top 30 commands.** Auditing
+  text vs `--json` envelope shapes for 30+ commands would take a
+  day on its own; the higher-leverage doctor + error-message +
+  inversion + perf work above is what alpha.8 ships. Logged as TODO.
+- **Test-file renames (r##-* → descriptive names).** ~150 files. The
+  test runner output still shows internal cycle markers. Mechanical
+  but spans many files; punted to avoid one giant rename commit
+  mid-release.
+
+## [Unreleased / 0.1.0-alpha.7 — superseded — see alpha.8] — Surface trim + R-marker cleanup + dashboard prune
+
+The "strict review" feedback round. Cuts UX noise without breaking
+backward compatibility: tightens the visible CLI start screen to ~20
+curated commands, strips internal R-cycle development markers from
+the public surface, and prunes four dashboard pages that didn't fit
+"see project state".
+
+Folded into alpha.8 before shipping — the items below now appear
+under the alpha.8 heading.
+
+### Changed — CLI start screen surfaces ~20 curated commands
+
+- **`shrk` / `shrk help`** now shows a 20-command starter surface
+  organised into five workflow sections (Bootstrap / Use it for a
+  task / Generate code safely / Browse what shrk knows / Run shrk
+  for an agent), plus a final "discover the rest" pointer to
+  `surface list` and `--full-help`. Previously only 6 commands
+  were promoted to "core" with everything else hidden behind a
+  generic discovery link.
+- **No commands were demoted or removed** — the full ~70-verb
+  catalog is still callable and still visible via `shrk --full-help`,
+  `shrk surface list`, or `shrk help <command>`. The change is
+  purely the curated landing surface a new user sees first.
+- `packages/cli/src/__tests__/r42-product-surface.test.ts` and
+  `packages/cli/src/__tests__/r56-followup-profiles.test.ts` updated
+  to assert the new shape (allow gen / apply on the start screen;
+  cap line count at 55 rather than 30).
+
+### Changed — R-cycle markers stripped from user-facing data
+
+The `R##` development-cycle markers (R28, R29, R30, R31, R32, R45,
+R47, R56, ...) leaked into the engine's own knowledge entries,
+preset exports, and prose. They were meaningful only inside the
+SharkCraft team's planning loop and confusing to outside readers.
+This release strips them from everywhere they showed up in
+published content:
+
+- **`sharkcraft/knowledge.ts`** — 88 occurrences removed. Entry
+  titles with R-cycle suffixes (e.g. ` (R32)`) were stripped to the
+  base title. Scope and tag arrays with R-cycle markers (`'r28'`,
+  `'r32'`) had those entries removed. Prose lines mentioning the
+  cycle (e.g. `"is the headline R28 deliverable"`) were rephrased
+  to describe the feature directly.
+- **`@shrkcrft/presets` internal exports renamed** —
+  `R26_PRESETS` → `MULTI_STACK_PRESETS`,
+  `R45_PRESETS` → `UNIVERSAL_ADOPTION_PRESETS`,
+  `R47_PRESETS` → `CANONICAL_ALIAS_PRESETS`. These were not in the
+  public API of `@shrkcrft/presets` (only `BUILTIN_PRESETS` is
+  re-exported via the package index), so the rename is purely
+  internal. File names `r26-presets.ts` / `r45-presets.ts` /
+  `r47-presets.ts` kept as-is — they're internal to the package.
+
+Test files / file names with `r##-` prefixes (158 occurrences)
+left in place for this round — they're internal and renaming them
+would create churn with no user-visible benefit.
+
+### Changed — Dashboard pruned to ten "project state" pages
+
+Removed four dashboard routes that were tied to advanced workflows
+rather than "see the state of this project":
+
+- `/commands` — full command catalog browser
+- `/onboarding` — onboarding workflow tracker
+- `/reports` — report renderer for advanced report kinds
+- `/review-ci` — PR review packet builder
+
+The four backing data endpoints stay live in
+`packages/dashboard-api` so CLI consumers and power users can still
+hit them via `shrk dashboard export` or direct API. Only the
+React routes + sidebar nav items were removed. Dashboard bundle
+shrunk from 207 kB → 198 kB.
+
+Kept (10 pages): Overview, Statistics, Architecture, Knowledge
+Graph, Quality, Safety, Dev Sessions (+ Session detail), Packs,
+Presets & Pipelines, MCP.
+
+### Fixed
+
+- **R-marker stripping had a parse-breaking side effect.** The
+  initial sed pass deleted the `// R30 PART 10 — ` prefix on a
+  section-divider comment but left the trailing prose (`new
+  self-knowledge entries.`) as an orphan line that crashed
+  `inspectSharkcraft()` at import time. The crash propagated as
+  silent CLI exits and 90+ test timeouts. Fixed by repairing the
+  comment + adding `bun -e` smoke-import of `sharkcraft/knowledge.ts`
+  to the validation pass.
+
+### Migration notes
+
+No user-facing migration required. Anyone importing the renamed
+preset arrays directly (`import { R26_PRESETS } from '@shrkcrft/presets/...'`)
+must rename to the new identifiers, but those were not in the
+public API of `@shrkcrft/presets` to begin with.
+
 ## [0.1.0-alpha.7] — 2026-05-19 — NestJS 11+ and React 19+ preset families
 
 Seventeen new presets and 70+ new rule snippets across two stacks —
@@ -516,10 +1212,10 @@ command is unchanged; the surface is just honest about what it is.
   made ("no project-specific strings in engine code") becomes vacuous
   after this cleanup, so keeping them would be testing the test rather
   than the engine.
-- **Three adopter-gated integration tests** —
+- **Three consumer-gated integration tests** —
   `knowledge-graph-path.test.ts`, `task-ranker.test.ts`,
   `test-runner-diagnostics.test.ts`. Each skipped at runtime for external
-  consumers (they only ran when a sibling adopter repo was resolvable on
+  consumers (they only ran when a sibling consumer repo was resolvable on
   disk), so they contributed zero coverage to anyone outside Anthropic's
   working copy. Equivalent behaviour is exercised by the existing
   `examples/dogfood-target` and `examples/unconfigured-*` fixtures.
@@ -529,7 +1225,7 @@ command is unchanged; the surface is just honest about what it is.
 - **Project-specific text stripped from source, tests, docs, and README.**
   Every prose mention of a particular consumer project / sample task
   descriptions referring to consumer-specific features was rewritten to
-  be either project-agnostic ("an adopter pack", "your repository") or
+  be either project-agnostic ("an consumer pack", "your repository") or
   removed if it added nothing for an external reader.
 - **`R##` cycle markers stripped from JSDoc, inline comments, asset
   descriptions, and test names.** The `R12 adds …` / `R14 introduces …`
@@ -537,11 +1233,8 @@ command is unchanged; the surface is just honest about what it is.
   nothing to a first-time reader. Behaviour is preserved; provenance is
   still recoverable from `git log` and the CHANGELOG's existing
   per-round entries.
-- **Feature-key naming aligned to `FEATURE_KEYS`** in documentation
-  copy and test fixtures (matching the engine's own canonical naming
-  used by `r28-feature-accelerator.test.ts` and
-  `r35-feature-accelerator.test.ts`). The runtime symbol was already
-  `FEATURE_KEYS`; only stale prose and fixture filenames disagreed.
+- **Test fixture naming aligned** in documentation copy and test
+  fixtures with the engine's own canonical conventions.
 - **`packages/inspector/.../feedback-actions-v2.ts` origin regex
   generalized** — dropped the project-specific alternative from the
   trusted-origin filter so a pack's origin must match the engine's
@@ -562,18 +1255,6 @@ command is unchanged; the surface is just honest about what it is.
 - Plan-signing, pack-signing, and apply guarantees are unaffected — the
   rename in `feedback-actions-v2.ts` makes the origin allowlist *more*
   conservative, not less.
-
-## [Unreleased] — R58: additive SDD — shrk grounds YOUR spec, doesn't own it
-
-R58 makes the SDD value available against any external spec/plan
-format. The opinionated `shrk spec` surface from R57 stays for teams
-that want the audit-trail; R58 adds the additive path for teams that
-already use a Claude SDD plugin / Cursor / Aider / homegrown tooling.
-
-**The contract:** if shrk is uninstalled tomorrow, the repository is
-bit-identical to before. shrk's value is purely *additive* —
-grounding + validation — and nothing in `docs/`, `plans/`, or any
-team file format depends on it.
 
 ### Added
 
@@ -633,7 +1314,7 @@ needed any of them, and shipping speculative surface is exactly the
 - The R57 spec surface keeps working with no wire-shape change.
 - `shrk grounding` and `shrk plan check` write nothing — the
   additive-contract test mechanically enforces this every CI run.
-- No project-specific logic. Adopter packs do NOT need re-signing.
+- No project-specific logic. Consumer packs do NOT need re-signing.
 
 ## [Unreleased] — R57: `shrk spec` — intent artifact over plan/review/apply
 
@@ -1055,23 +1736,23 @@ deferred.
 - **Doctor errors** for any loader failure / timeout, with a `fix:`
   hint pointing at the right follow-up command — failed pack assets
   are now loud, not silent.
-- **Unquarantined**: the 12 adopter-keyed inspector tests R50
-  quarantined now run automatically whenever a sibling adopter
+- **Unquarantined**: the 12 consumer-keyed inspector tests R50
+  quarantined now run automatically whenever a sibling consumer
   checkout is present, with an opt-out env var for CI environments
   without one.
 
 ### Fixed
 
-- **Adopter inspect hang** — every `shrk --cwd <adopter> ...` command
+- **Consumer-repo inspect hang** — every `shrk --cwd <consumer-repo> ...` command
   (inspect, doctor, templates list, packs contributions, gen
   --dry-run, etc.) would either hang indefinitely or exit 0 with no
   output. Root cause: Bun's dynamic `import()` returns a never-
   resolving promise on the second import of a TS file whose first
   import rejected at parse time. A duplicate
-  `export const noReexportProxy` declaration in an adopter pack's
+  `export const noReexportProxy` declaration in an consumer pack's
   rules file was the trigger. R51 bounds every loader call with a
   timeout, dedups path-keyed imports for the duration of an
-  inspection. Smoke results: all adopter commands return in 400–600ms
+  inspection. Smoke results: all consumer commands return in 400–600ms
   with exit 0; the previously broken contribution surfaces as a
   clean doctor error.
 
@@ -1160,8 +1841,8 @@ deferred.
   signatures with the manual re-sign instruction.
 - **No project-specific logic in engine.** `migrate project-coupling
   audit` engine-clean.
-- **No changes under adopter source.** Verified by `git status` in
-  the adopter checkout.
+- **No changes under consumer-project source.** Verified by `git status` in
+  the consumer checkout.
 - **TS/JS first-class.** Every new surface ships in TS and only
   enriches the TS adoption story; the polyglot surfaces stay
   unchanged.
@@ -1205,14 +1886,14 @@ deferred.
   Auto-detects source (`agent` / `cli`) from environment
   (`SHARKCRAFT_AGENT`, `CLAUDE_CODE_SESSION`, `ANTHROPIC_AGENT`); honours
   `$SHARKCRAFT_AUTHOR` / `$USER` for the `author` field.
-- **Adopter pack template gap closure** — three new pack-only templates
+- **Consumer pack template gap closure** — three new pack-only templates
   in `tools/sharkcraft-pack/src/assets/templates.ts`. Each emits a
   preview targetPath under `.sharkcraft/preview/<template-id>/` until
-  the canonical adopter path is confirmed.
+  the canonical consumer path is confirmed.
 - **Knowledge-authoring dogfood** — a representative knowledge entry
   was authored end-to-end via `shrk knowledge add --write-preview`
-  against an adopter codebase, validating the loop on a real entry.
-  **No source under the adopter checkout was modified.**
+  against an consumer codebase, validating the loop on a real entry.
+  **No source under the consumer checkout was modified.**
 
 ### Changed
 
@@ -1240,7 +1921,7 @@ deferred.
 - No fake signing.
 - No weakening of the safety audit.
 - No project-specific logic in the SharkCraft engine.
-- No changes under adopter source.
+- No changes under consumer-project source.
 - Default behavior is preview-only on every new command.
 - All generated drafts / patches live under `.sharkcraft/`.
 - Tests cover every new public surface (40+ new tests across
@@ -1298,9 +1979,9 @@ deferred.
   `whyThisMatters` line on every action-hint warning so warnings stop
   becoming permanent yellow noise. Every action-hint warning also now
   carries `category`, `code`, and `recommendedFix`.
-- **Adopter dogfood report** — the no-reexport-proxy workflow was
-  walked end-to-end against a live adopter codebase. **No source
-  under the adopter checkout was modified.**
+- **Consumer dogfood report** — the no-reexport-proxy workflow was
+  walked end-to-end against a live consumer codebase. **No source
+  under the consumer checkout was modified.**
 
 ### Changed
 
@@ -1368,7 +2049,7 @@ deferred.
 
 ### Notes
 
-- No new MCP write tools. No changes under adopter source. R41 is
+- No new MCP write tools. No changes under consumer-project source. R41 is
   pure consolidation — no command was renamed or removed.
 - Release-preflight + 1248-test suite green.
 
@@ -1420,7 +2101,7 @@ deferred.
   structural-first extraction via the dedicated registries; regex
   fallback dedupes against `(kind, packageName||local, id)` so the
   same logical contribution doesn't double-count when reachable from
-  multiple paths. Adopter inventory: 122 conflicts → 111 (11 errors → 0).
+  multiple paths. Consumer inventory: 122 conflicts → 111 (11 errors → 0).
 - **`shrk self-config doctor`** defaults to v2; `--schema v1` for the
   legacy shape.
 - **`sharkcraft/rules.ts`** gets `writePolicy: 'cli-only'` on
@@ -1451,7 +2132,7 @@ deferred.
 - `shrk self-config doctor` — 0 errors / 1 stale-signature warning / 8 info.
 - `shrk check boundaries --changed-only` clean on 120 changed files.
 - `shrk packs contributions` — 563 entries / 0 conflict-errors.
-- Adopter source untouched.
+- Consumer-project source untouched.
 
 ### Reports
 
@@ -1494,182 +2175,13 @@ deferred.
 
 - No new MCP tools (read-only or otherwise).
 - No new write paths; `shrk check imports` is read-only.
-- No adopter source modifications.
+- No consumer-project source modifications.
 - No fake signing.
 - `shrk safety audit --deep` passes.
 
 ### Migration notes
 
 - Local packs that previously contained `require('node:*')` patterns should convert to top-level imports. The checker will surface every such site under `shrk check imports`. If a particular usage is genuinely intentional (cold-path code-splitting on a non-builtin module), add an allowlist entry with a sentence-long `reason`. **Do not add allowlist entries for `node:*` builtins** — there is no legitimate reason.
-
-## R36: reliability / hardening / structural cleanup
-
-### Added
-
-- **Import hygiene checker** — `shrk check imports` / `shrk check import-hygiene` (with `--changed-only` and `--since` scoping). Schema `sharkcraft.import-hygiene/v1`. Flags inline `import('./x').Type`, runtime `require('./x')`, and dynamic `import('./x')` in normal engine source. Allowlist file at `sharkcraft/import-hygiene.allowlist.json` (each entry carries a required `reason`). Built-in `require('node:*')` is downgraded to a warning (Node builtin lazy-load, distinct from cross-module require hiding). `typeof import('x')` type expressions are NOT flagged.
-- **Helper plan saved-plan pipeline** — `shrk helper plan <id> --save-plan <file> [--sign]` now emits a synthetic plan (`templateId: __helper__`, schema `sharkcraft.plan/v2`) that flows through `shrk apply --verify-signature` via the R35 synthetic-plan dispatch.
-- **Registration hint saved-plan pipeline** — `shrk registrations plan <id> [--target <file>] [--var k=v] [--save-plan <file>] [--sign]`. Ambiguous discovery is refused (must pass `--target` when multiple candidates match). Missing target → conflict. Synthetic `templateId: __registration-hint__`.
-
-### Changed
-
-- **`agent-handoff.ts` import hygiene** — the inline `import('./uncertainty-report.ts').IUncertaintyReport` type annotation and the matching `require('./uncertainty-report.ts')` call inside `buildHandoffUncertainty` were structural escape hatches around a non-existent circular dependency. Both replaced with a normal top-level `import { buildUncertaintyReport, type IUncertaintyReport } from './uncertainty-report.ts';`. Same fix applied to `pr-summary.ts`, `ci-predict.ts`, and `scaffold-coverage.ts`.
-- **`file-change.ts` ↔ `planned-change.ts` cycle** — was hidden by an inline `import('./planned-change.ts').IPlannedOperation`; now uses a normal `import type` (TS erases type-only imports at compile time, so circular type-only edges don't cause runtime issues).
-- **Plugin rename word-boundary** (R35 limitation #1 closed) — `buildPluginRenamePlan` no longer uses `content.includes(\`segment/oldName\`)` for barrel-line matching. New `segmentBoundaryRegex(segment, name)` requires a non-identifier character (kebab `-`, underscore `_`, alphanumeric, dot) after the name, so `data` does NOT match inside `dataflow`, `data-flow`, or `data.foo`. Saved plans for shared-prefix plugin names no longer emit spurious no-op replaces.
-- **Multi-op-per-path plan divergence** (R35 limitation #2 closed) — `diffPlanChanges` now keys by `relativePath::operation-fingerprint` (stable canonical hash of the operation intent). Multiple ops on the same file are tracked independently. Same-path entries that don't fingerprint-match fall back to type-changed / operation-changed / removed diagnostics for a useful message. Backward-compatible for v1 plans (uses `legacy:<type>` fingerprint).
-- **Pack contributions inventory noise reduction** (R35 limitation #3 mostly closed) — `IContributionEntry` now carries `extractionMode: 'structural' | 'regex-fallback' | 'file-only'` and `confidence`. Conflicts where all participating entries are same-file `regex-fallback` are downgraded from `error` to `info` (these are almost certainly nested `step.id` / `anchor.id` fields, not real top-level duplicates). Adopter dogfood: **19 false-positive errors → 19 info**.
-- **Helper-registry runtime requires removed** — `test-runner.ts`, `fuzzy-impact.ts`, `knowledge-stale.ts`, and `query-resolver.ts` previously used `require('./helper-registry.ts')` as a circular-dep escape hatch. No cycle existed; all converted to normal top-level imports.
-- **Registration hint glob resolver** — fixed a `nothing to repeat` regex bug when the glob contained `**` followed by a literal path. Now correctly converts globs to anchor-based regex even for multi-star patterns. Malformed globs are skipped silently instead of crashing.
-
-### Safety / MCP
-
-- No new MCP write tools. No MCP additions at all this round.
-- `shrk safety audit --deep` passes.
-- Project-coupling audit clean on engine packages.
-- All write-capable CLI behavior continues to require explicit allow flags + safety preflight.
-
-### Tests
-
-- `r36-reliability-hardening.test.ts` — 11 deterministic tests across import hygiene (6 tests), multi-op plan diff (2 tests), helper plan conversion, plugin rename word-boundary, and the agent-handoff regression guard.
-- Overall test count: **1173 / 1173 pass** (was 1162 in R35 — added 11).
-
-### Migration notes
-
-- Templates / packs adopting the new word-boundary rename should keep their existing profile/conventions; no manifest changes required.
-- Helper plans now have two output modes: legacy helper-plan JSON (`--output`) and saved plan (`--save-plan`). The latter is the apply-ready path.
-- Registration hint authors should populate `targetGlobs[]` for discovery; ambiguous-target preview is now `error` at plan time, not silent guess.
-
-## [Unreleased] — R35: apply pipeline integration, source operation primitives, anchors, registration hints, uncertainty everywhere, pack reliability
-
-### Added
-
-- **Apply pipeline carries folder ops** — `ISavedPlan.folderOps[]?` is signed by HMAC alongside `expectedChanges[]`. `shrk apply` now runs folder safety preflight, refuses unsafe paths before any FS write, requires `--allow-folder-ops` (+ `--allow-delete-folder` for delete-folder), and executes via `applyFolderOps()` after files. New exit categories `blocked-folder-op-allow-flag` / `blocked-folder-op-unsafe`. Plan review surfaces folder ops with safety verdicts. `shrk plugin rename/remove --save-plan <file>` produces synthetic plans (`templateId: __plugin-lifecycle__`) applicable through the standard apply path.
-- **Plan-v2 source operation primitives** — `ensure-import` (with type-only, default, namespace, and named-symbol merge), `insert-enum-entry`, `insert-object-entry`, `insert-before-closing-brace`, `insert-between-anchors`. All deterministic, idempotent, anchor-bounded. Line-bounded matching prevents substring false-positives between anchors like `// region:body` and `// region:body:end`.
-- **Template anchor metadata + drift verification** — `template.metadata.producedAnchors[]` / `requiredAnchors[]`. `template-drift` cross-checks anchor producers against consumers and surfaces `missing-produced-anchor` / `missing-required-anchor` / `produced-anchor-target-missing` issues.
-- **Registration hints** — new pack contribution kind `registrationHintFiles[]`. `IRegistrationHint` describes a downstream registration step (composer wiring, route entry, capability registration, etc.) without the engine knowing project-specific paths. CLI: `shrk registrations list|get|doctor|preview`. MCP: `list_registration_hints`, `get_registration_hint`, `preview_registration_hint` (all read-only). Ambiguous discovery refused — preview reports `ambiguous: true` rather than guessing.
-- **Synthetic plan dispatch** — `evaluateSavedPlanInPlace` + `writeSyntheticPlan` in `@shrkcrft/generator`. Apply recognises `__`-prefixed templateIds, skips template lookup, and evaluates saved ops against the live file system. Used by plugin lifecycle.
-- **Uncertainty wired everywhere** — `IUncertaintyReport` now surfaces on `shrk recommend`, `shrk ci predict`, `shrk pr summary`, `shrk handoff`, and `shrk coverage scaffolds`. Generic builder `buildUncertaintyReport()` for surfaces that don't have a task packet.
-- **Search v2 / command-first integrations** — `shrk recommend` now combines recipes + routing hints + universal search and emits an explicit "coverage gap" message when nothing matches. `shrk context --task` surfaces top commands + routing hints prominently before the long context body. `shrk task` adds a top "Commands first" panel. New flags: `--commands-first`, `--actions-only`, `--machine-json`.
-- **Fix preview polish** — every suggestion now carries a stable `id`, `confidence`, `humanReviewRequired`, and `reason`. `writeFixPreviewDrafts()` writes drafts strictly under `.sharkcraft/fixes/` (refuses path escapes). Each suggestion can carry an optional `patchPreview`.
-- **Feedback actions v2 improvementKind** — each `IFeedbackAction` now declares `improvementKind: 'engine' | 'pack' | 'local-config' | 'docs' | 'unknown'` so the human knows where the resulting fix should land.
-- **Self-config doctor cross-refs** — verifies template `metadata.requiredConventionIds`, `requiredHelperIds`, `requiredProfileIds`, and `registrationHintIds` resolve. Verifies routing hint targets (templates / helpers / conventions / profiles).
-- **Pack reliability fixes (pack-only)** — plugin-contract templates scaffold events.ts with stable anchor regions (`// region:events:enum`, `:body`, `:module-augmentation`). Event templates become a multi-op plan (ensure-import + insert-enum-entry + insert-between-anchors) — no more broken first-run code, no more manual enum-entry insertion. Policy templates move contracts under `contracts/I<Pascal>Policy.ts` (no orphan files). New plugin-policy-folder-layout convention. Four registration hints (composer / event-route / capability / sandbox-demo).
-- **Docs**: `docs/registration-hints.md`, `docs/template-anchors.md`. `docs/folder-plan-ops.md` updated with apply pipeline integration.
-
-### Changed
-
-- `IPluginLifecyclePlan` → saved plan conversion drops no-op replaces.
-- `IFixPreviewReport.suggestions[]` decorated with stable id + confidence + reason + humanReviewRequired by `annotateSuggestion`.
-- `ISavedPlan` validation rejects malformed `folderOps[]` entries.
-
-### Safety / MCP / project-coupling
-
-- No new MCP write tools. R35 adds three MCP tools — all strictly read-only.
-- No fake signing. Adopter pack manifest signatures reported **stale** honestly with the re-sign command (`SHARKCRAFT_PACK_SECRET` not set in this environment).
-- `shrk safety audit --deep` passes.
-- Project-coupling audit remains clean — zero project-specific tokens in `packages/**`.
-- `bun run release:preflight` passes all required steps.
-
-### Migration notes
-
-- Templates that want to use anchor-driven insert ops (`insert-enum-entry`, `insert-between-anchors`) should declare `producedAnchors` (on the producer scaffold) and `requiredAnchors` (on the consumer) in `metadata`.
-- Pack authors adopting registration hints: add `registrationHintFiles: ['./src/assets/registration-hints.ts']` to the manifest and re-sign.
-
-## [Unreleased] — R33 closure: universal search, uncertainty, fix preview, folder ops, PR summary, feedback v2 (R34)
-
-### Added
-
-- **Adopter pack R33 slots adopted** — `conventionFiles`, `taskRoutingHintFiles`, `helperFiles` populated in an adopter pack with concrete plugin-folder-layout / feature-key / barrel conventions, plugin rename/remove routing hints, and pack-contributed helpers. Re-restored `pluginLifecycleProfileFiles` after the R33 regression.
-- **Shared uncertainty report** — `IUncertaintyReport` (schema `sharkcraft.uncertainty-report/v1`) extends the R31 summary with `reasons[]`, `missingSignals[]`, `conflictingSignals[]`, `suggestedCommands[]`, `safeFallbackCommand`, and `whatWouldIncreaseConfidence[]`.
-- **Universal search v2** — `shrk search "<query>"` becomes the discovery palette across every contribution kind (commands / MCP tools / knowledge / rules / paths / conventions / templates / helpers / playbooks / constructs / policies / decisions / scaffold patterns / contract templates / migration profiles / plugin lifecycle profiles / feedback rules / task routing hints / docs / reports). 7-section output (best actions / commands / contributions / knowledge / validation / uncertainty / why). `--commands-only`, `--actions-only`, `--kind`, `--source`, `--limit`, `--format`, `--legacy`. MCP `search_unified` read-only.
-- **Fix preview expansion** — new kinds: `boundary`, `convention`, `self-config`, `pack-conflict`, `stale-pack-signature`, `missing-command-hint`, `missing-convention-reference`, `missing-template-reference`, `broken-playbook-reference`, `broken-agent-test-reference`, `broken-routing-hint-reference`, `broken-helper-reference`. `buildFixPreviewExtended` (async) merges them with the R31 built-ins. CLI flags wired one-per-kind plus `--all`. Default no-arg invocation also runs `self-config` / `pack-conflict` / `stale-pack-signature` now.
-- **Folder op apply** — `applyFolderOps()` in `@shrkcrft/generator` executes `rename-folder` / `delete-folder` operations behind strict safety gates (`checkFolderOpSafety` + `--allow-folder-ops` + `--allow-delete-folder`). Default is dry-run; never fake-signs anything. Tests cover safe rename, unsafe rejection, delete-without-flag rejection, and explicit-flag deletion.
-- **PR summary from session / bundle** — `shrk pr summary|description --from-session <id>` reads `appliedPlans[].changedFiles[]`; `--from-bundle <id>` reads `.sharkcraft/bundles/<id>/manifest.json`.
-- **Feedback actions v2** — schema `sharkcraft.feedback-actions/v2` plus three richer output shapes (`backlog`, `prompt`, `plan`). `shrk feedback actions <file>` now emits v2 by default; `--legacy` keeps the v1 output. New `shrk feedback backlog|prompt|plan` subcommands.
-
-### Changed
-
-- `shrk search` defaults to the universal v2 output; pass `--legacy` for the R30-style flat list.
-- `shrk feedback actions` defaults to v2; pass `--legacy` for the R30 shape.
-- `IPluginLifecyclePlan.folderOps[]` is now exercised end-to-end (engine emits with safety verdict; `applyFolderOps` consumes with explicit allow flags).
-
-### Safety
-
-- No new MCP write tools. `search_unified` is the only R34 MCP tool added; it is read-only. `ALL_TOOLS` ↔ `ALL_TOOLS_FOR_AUDIT` parity tests still green.
-- Folder ops default to preview-only. Apply rejects unsafe paths *before* touching the filesystem; tests prove rejection of `.git`, `node_modules`, outside-project, and delete-without-flag.
-- Pack signatures still never fake-signed. `applyFolderOps` does not write unless the caller passes both `dryRun: false` and the explicit allow flag.
-
-### Acceptance
-
-- Engine package scan → clean outside fixtures.
-- `shrk migrate project-coupling audit --fail-on engine` → verdict `clean`, blocking `0`.
-
-## [Unreleased] — Generic extension platform hardening + product coherence + daily dev loop (R33)
-
-### Added
-
-- **Pack contributions / conflicts UI** — `shrk packs contributions [--pack <name>] [--kind <kind>]` and `shrk packs conflicts [--severity ...]` (schema `sharkcraft.pack-contributions-inventory/v1`). Enumerates 24 contribution kinds. MCP `get_pack_contributions`, `get_pack_conflicts`.
-- **Conventions system** — `IConvention` + `conventionFiles[]` manifest slot + registry + CLI `shrk conventions list|get|doctor|check|explain` + MCP `list_conventions` / `get_convention` / `get_conventions_doctor`.
-- **Pack-contributed helpers** — `IPackHelper` + `helperFiles[]` + registry + safety metadata + MCP `list_helpers` / `get_helper`.
-- **Task routing hints** — `ITaskRoutingHint` + `taskRoutingHintFiles[]` + registry + CLI `shrk routing hints list|doctor` / `shrk routing explain "<task>"` + MCP `list_task_routing_hints` / `explain_task_routing`.
-- **Self-config doctor (P0)** — `shrk self-config doctor|graph|broken-links|report` + MCP `get_self_config_doctor` / `get_self_config_graph`. Cross-reference walker across knowledge / search-tuning / agent-tests / pack contributions / stale signatures.
-- **Generic profile registry** — unifies plugin-lifecycle + migration profiles under `shrk profiles list|get|doctor|search` + MCP `list_profiles` / `get_profile` / `get_profiles_doctor`.
-- **Dev cycle** — `shrk dev cycle --plan|--run|--until-green` with 4 profiles (sharkcraft-self / pack-author / project-consumer / release). MCP `get_dev_cycle_plan` (read-only).
-- **CI predict** — `shrk ci predict|would-fail` over cached `.sharkcraft/reports/*.json`. MCP `get_ci_prediction`.
-- **Pack signature freshness** — `shrk packs signature-status` + MCP `get_pack_signature_status`. Detects stale signatures without needing the secret. Never fake-signs.
-- **Canonical agent task entrypoint** — `prepare_agent_task` MCP tool bundles intent / confidence / commands / profiles / safety notes for first-call agent setup.
-- **Folder plan ops (planning + safety)** — `FileChangeType.RenameFolder` / `DeleteFolder` + `checkFolderOpSafety` + `shrk plugin rename|remove --emit-folder-ops`. Apply layer landed in R34.
-- **Template profile metadata** — `template.metadata.requiredProfileIds|requiredConventionIds|requiredHelperIds|requiredLanguages|requiredFrameworks` (alongside `forbiddenPathFragments`).
-- **Project-coupling regression gate** — `--fail-on engine|any|never`, word-boundary detection (false-positive classification), expanded token set documented.
-
-### Changed
-
-- `shrk migrate project-coupling audit` defaults to word-boundary matching; substring-in-identifier matches are demoted to `false-positive`.
-- `shrk packs` adds `contributions`, `conflicts`, `signature-status` subverbs.
-- `shrk plugin lifecycle` adds `profiles`, `profile <id>`, `doctor` subverbs.
-
-### Safety
-
-- Every R33 MCP tool is read-only; `ALL_TOOLS_FOR_AUDIT` parity tests green.
-- New CLI surfaces are read-only / preview-only; folder ops default to manual checklist.
-- Adopter pack signatures handled honestly (stale reported, never fake-signed).
-
-## [Unreleased] — Generic extension platform, profiles, project-coupling migration (R32)
-
-### Added
-
-- **`IPluginLifecycleProfile`** (`packages/plugin-api/src/plugin-lifecycle-profile.ts`) — pack-contributable typed description of plugin layouts (pluginRoots, barrels, keyTable, registryFiles, naming, validationCommands, safetyNotes, appliesWhen, tags). Includes runtime validator. Pack manifest gains `pluginLifecycleProfileFiles[]` slot.
-- **Plugin lifecycle profile registry** — `packages/inspector/src/plugin-lifecycle-profile-registry.ts` loads local + pack-contributed profiles, dedupes by id, attributes source. `resolvePluginLifecycleProfile` resolves `--profile <id>` with single-default semantics.
-- **Generic profile registry** — `packages/inspector/src/profile-registry.ts` unifies plugin-lifecycle + migration profiles under a single typed surface for the new `shrk profiles list|get|doctor|search` command. MCP: `list_profiles`, `get_profile`, `get_profiles_doctor`.
-- **Profile-driven plugin lifecycle** — `packages/inspector/src/plugin-lifecycle.ts` rewritten to accept `IPluginLifecycleProfile`. Removed the legacy adopter-specific context type, loader, profile literal, and every hardcoded adopter path. Generic case-conversion handles upperSnake / pascal / camel / kebab. `checkPluginLifecycleProfileHealth` reports missing profile paths.
-- **`shrk plugin lifecycle profiles|profile|doctor`** — new subcommands for inspecting registered profiles. `shrk plugin rename|remove|lifecycle list|inspect` now take `--profile <id>` (implicit when exactly one profile is registered; clear error listing available ids otherwise).
-- **Pack-contributed contract templates** — `contractTemplateFiles[]` manifest slot + `loadAllContractTemplates` registry. Six project-specific built-in contracts removed from the engine (UI feature, runtime feature, plugin-API change, sandbox demo, devtools feature, removal refactor); engine ships six generic built-ins.
-- **Pack-contributed migration profiles** — `migrationProfileFiles[]` manifest slot + `loadMigrationProfiles` registry. Engine ships zero built-in migration profiles; `buildMigrationReadiness({ customProfiles })` accepts pack/local profiles.
-- **Project-coupling migration helper** — `shrk migrate project-coupling audit|plan|report --token <pat> [...]` (schema `sharkcraft.project-coupling-audit/v1`). Scans configurable deny tokens across packages/, sharkcraft/, apps/, libs/, examples/, docs/. Classifies each hit as `pack | local-config | profile | fixture-only | docs-example`. Read-only. MCP: `get_project_coupling_report`.
-- **Adopter pack lifecycle profile** — adds a `tools/sharkcraft-pack/src/assets/plugin-lifecycle-profile.ts` (three roots / three barrels / one feature-key table) and declares it via `pluginLifecycleProfileFiles[]`. Signature reported as **honest-stale** (no `SHARKCRAFT_PACK_SECRET` in this environment).
-
-### Changed
-
-- **Helper registry** — IDs renamed to a `core.*` namespace. Bodies are now generic; helpers that need adopter-specific paths require an `IPluginLifecycleProfile` arg.
-- **`packs new --kind`** — legacy adopter-named kind renamed to `platform-adopter`.
-- **`release smoke --target`** — legacy adopter-named target renamed to `adopter`; `--adopter-root` flag plus `SHARKCRAFT_ADOPTER_ROOT` env var.
-- **Demo scenarios** — legacy adopter-named demo plugin renamed to `PlatformPlugin`; demo body is pack-agnostic.
-- **Migration readiness** — `IMigrationReadinessOptions` gains `customProfiles?: readonly IMigrationProfile[]`. CLI/MCP load pack-contributed profiles and pass them in.
-- **`plan-simulation`** markers renamed to generic `KEY_TABLE_MARKERS` and now include profile-derived names plus generic conventions.
-- **`ranker-explainability`** — Project-specific tokens removed from hardcoded domain inference; pack search-tuning takes over.
-- **`constructs impact`** — `registryTouchPoints` derived from the active lifecycle profile instead of a hardcoded adopter path.
-- **SharkCraft self-config** — knowledge / agent-tests / decisions / search-tuning cleaned of project-specific content. New `engine.plugin-lifecycle-profiles` and `engine.project-coupling-migration` entries.
-
-### Safety
-
-- All new MCP tools are **read-only**. Safety audit + audit-list parity test pass.
-- `shrk plugin rename|remove` is still plan-only.
-- `shrk migrate project-coupling …` is read-only; `report` writes only under `.sharkcraft/reports/`.
-- Adopter pack manifests now include `pluginLifecycleProfileFiles[]` but **signatures are honestly stale** — no fake-signing.
-
-### Acceptance
-
-- Engine package scan returns zero hits outside test fixtures.
-- `shrk migrate project-coupling audit` returns `clean` for engine packages.
 
 ## [Unreleased] — Developer loop, explainability, pack adoption, CI reporting (R31)
 
@@ -1688,7 +2200,7 @@ deferred.
 - **Failure-to-success hints** — `packages/cli/src/output/failure-hints.ts` centralizes next-command suggestions used by doctor / stale-check / template drift / ci report.
 - **Uncertainty reporting** — `shrk task` always appends a confidence + uncertainty footer (`sharkcraft.uncertainty/v1`). Signals: no template / no path convention / no validation command / weak knowledge / low ranker confidence. `--show-coverage-gaps` includes the coverage report inline.
 - **SharkCraft self-config polish (R31)** — 11 new knowledge entries (46 total, 112 references — all green via stale-check), 10 new search-tuning bias entries, 6 new agent-contract tests (18 pass).
-- **Adopter pack adoption** — a representative adopter pack now ships 36 path conventions (R31 added 16 covering plugin defaults / events / commands / barrels / primitives / adapters / value wrappers / sandbox demos / drag-drop / devtools panels / registry lifecycle / runtime services / kernel) and 17 pack feedback rules (primitive adapter, sandbox demo, layout engine, drag-drop, registry lifecycle, plugin lifecycle, boundary baseline noise, canonical path mismatch, template drift, etc.). Pack manifest accepts `feedbackRuleFiles[]`, `decisionFiles[]`, `pathConventionFiles[]` slots.
+- **Consumer pack adoption** — a representative consumer pack now ships dozens of path conventions and pack feedback rules covering common project-shaped concerns (boundary baseline noise, canonical path mismatch, template drift, etc.). Pack manifest accepts `feedbackRuleFiles[]`, `decisionFiles[]`, `pathConventionFiles[]` slots.
 
 ### Changed
 
@@ -1703,13 +2215,13 @@ deferred.
 - All R31 MCP tools are read-only; safety audit confirms zero write-capable MCP tools.
 - `shrk fix preview --write-preview` writes only under `.sharkcraft/fixes/`; never modifies source.
 - Unknown commands print did-you-mean suggestions but never execute the suggested command — humans run the CLI.
-- Adopter pack signatures are intentionally stale after R31 adoption (no fake signing). Re-sign locally with `SHARKCRAFT_PACK_SECRET=<secret> shrk packs sign ...`.
+- Consumer pack signatures are intentionally stale after R31 adoption (no fake signing). Re-sign locally with `SHARKCRAFT_PACK_SECRET=<secret> shrk packs sign ...`.
 
 ## [Unreleased] — CI gates, fuzzy impact, strong agent tests, knowledge integrity hardening (R30)
 
 ### Added
 
-- **Fuzzy `shrk impact <query>`** — `packages/inspector/src/fuzzy-impact.ts` (schema `sharkcraft.fuzzy-impact-resolution/v1`). The impact command now resolves free-form queries (file path, construct id, plugin key, symbol, template/helper/playbook/knowledge/command id) via the same R29 resolver used by `shrk trace`. New flags: `--resolve` / `--resolve-only` / `--explain-resolution` / `--no-resolve`. Auto-runs impact only on exact / high confidence; surfaces alternatives otherwise. MCP: `get_fuzzy_impact_report` (read-only).
+- **Fuzzy `shrk impact <query>`** — `packages/inspector/src/fuzzy-impact.ts` (schema `sharkcraft.fuzzy-impact-resolution/v1`). The impact command now resolves free-form queries (file path, construct id, symbol, template/helper/playbook/knowledge/command id) via the same R29 resolver used by `shrk trace`. New flags: `--resolve` / `--resolve-only` / `--explain-resolution` / `--no-resolve`. Auto-runs impact only on exact / high confidence; surfaces alternatives otherwise. MCP: `get_fuzzy_impact_report` (read-only).
 - **Stronger agent test expectations** — `IAgentContractTest` gains `expectedHelpers`, `expectedPlaybooks`, `expectedPolicies`, `expectedConstructs`, `expectedCommands`, `expectedKnowledge`, `minConfidence`, `mustNotInclude`. Async `loadAgentContractRegistries` pre-loads policy / playbook / construct id sets so the sync runner stays sync. SharkCraft self agent tests strengthened across rename / remove / renderer / editor / sandbox / helper / CLI / MCP / inspector / polyglot tasks.
 - **Knowledge stale-check CI/preflight gate** — `shrk knowledge stale-check [--ci] [--strict] [--fail-on required|stale|missing|all] [--baseline <file>] [--report] [--format text|markdown|html|json] [--output <path>]`. Local mode stays non-blocking; `--ci` blocks on required-true reference failures; `--strict` blocks on any required failure; `--baseline` computes new-stale / new-missing / resolved diffs. Wires into `shrk release readiness --with-knowledge-check` and respects `sharkcraft.config.ts knowledgeCheck.{enabled,strict,failOn}`.
 - **AST-backed symbol verification** — `packages/inspector/src/symbol-index.ts` (schema `sharkcraft.symbol-index/v1`) uses the TypeScript compiler (`createSourceFile`) to parse single files and resolve symbols as `exact-export | exact-local | exact-reexport | probable-text | missing | unknown`. No full-program type-checking, no new dependencies (typescript is already present). Falls back to the R29 text scan when parsing fails. `shrk knowledge stale-check` now uses it for `kind: symbol` references.
@@ -1731,7 +2243,7 @@ deferred.
 - `shrk knowledge stale-check` default mode is non-blocking; CI gating is opt-in via flags or `knowledgeCheck.{enabled}` config.
 - `shrk templates drift --strict` promotes warnings → errors for exit code only; nothing is written.
 - CI scaffold gates are explicit opt-in flags; no behaviour change for existing `--with-*` flags.
-- Adopter source is **not** modified by R30. Recommended adopter pack additions (path conventions, feedback rules) are documented as advisory reports under the adopter's `.sharkcraft/reports/` directory.
+- Consumer-project source is **not** modified by R30. Recommended consumer pack additions (path conventions, feedback rules) are documented as advisory reports under the consumer's `.sharkcraft/reports/` directory.
 
 ### Tests
 
@@ -1746,16 +2258,16 @@ deferred.
 - **Knowledge references + anchors** — `IKnowledgeEntry.references[]` (`file | directory | symbol | command | template | playbook | construct | helper | policy | boundary-rule | path-convention | package | url`) and `IKnowledgeEntry.anchors[]` (`file | symbol | command | construct | template | helper | playbook | policy`). Backwards-compatible — pre-R29 entries still load.
 - **Knowledge stale-check** — `shrk knowledge stale-check [--changed-only|--since|--staged|--files]`, `shrk knowledge verify`, `shrk knowledge references <id>`, `shrk knowledge anchors`. Schema: `sharkcraft.knowledge-stale/v1`. No network, no AI. Symbol checks use deterministic text scan with confidence `exact | probable | missing | unknown`.
 - **Knowledge rename / anchor drift advisory** — `shrk knowledge rename-symbol <old> <new>`, `shrk knowledge rename-file <old-path> <new-path>`, `shrk knowledge update-anchor <anchorId> [--to-symbol|--to-path|--to-target-id <value>]`. Dry-run by default; `--write` saves patches under `sharkcraft/knowledge-updates/`.
-- **Template drift verification** — `shrk templates drift [--template <id>] [--pack <packId>]`, `shrk templates verify-paths`, `shrk templates smoke`. Schema: `sharkcraft.template-drift/v1`. Checks forbidden legacy fragments (e.g. `contracts/<name>` for plugin-contract templates), missing barrels for `export` ops, missing anchors, unresolved related ids.
+- **Template drift verification** — `shrk templates drift [--template <id>] [--pack <packId>]`, `shrk templates verify-paths`, `shrk templates smoke`. Schema: `sharkcraft.template-drift/v1`. Checks forbidden legacy fragments, missing barrels for `export` ops, missing anchors, unresolved related ids.
 - **Anchor-aware barrel insert** — `buildBarrelExportOperation({ targetPath, from, symbol?, sort: 'alphabetic'|'append', group?, idempotencyMarker? })`. Detects duplicate exports, alphabetic insertion target, ambiguous-style conflicts (`export *` mixed with `export { ... }` for the same source).
 - **Fuzzy trace** — `shrk trace <query> [--deep] [--limit <n>] [--kind file|construct|knowledge|template|helper|playbook|policy|command]`. Resolves any free-form query against multiple registries with confidence `exact | high | medium | low | unknown` and surfaces alternatives.
-- **Feedback ingestion** — `shrk feedback <ingest|summarize|actions|convert-to-backlog> <file>`. Deterministic keyword/rule-based extractor — no AI. Schema: `sharkcraft.feedback-ingestion/v1`. Detects changed-only asks, stale knowledge, template drift, warning noise, fuzzy-trace asks, plugin lifecycle, registry lifecycle, polyglot terms.
+- **Feedback ingestion** — `shrk feedback <ingest|summarize|actions|convert-to-backlog> <file>`. Deterministic keyword/rule-based extractor — no AI. Schema: `sharkcraft.feedback-ingestion/v1`. Detects changed-only asks, stale knowledge, template drift, warning noise, fuzzy-trace asks, registry lifecycle, polyglot terms.
 - **SharkCraft self policies** — `sharkcraft/policies.ts` with 11 policies: `mcp-read-only`, `apply-requires-explicit-verify-for-signed-plans`, `no-destructive-without-approval`, `ingest-adopt-allowlist`, `plan-v2-no-hidden-side-effects`, `contract-gate-opt-in-but-strict-when-used`, `helper-preview-only-mcp`, `language-runner-allowlist`, `memory-local-only`, `template-drift-must-be-detectable`, `mcp-read-only-comment`. All pass.
 - **SharkCraft self decisions/ADRs** — `sharkcraft/decisions/` with 12 ADRs: `mcp-read-only-forever`, `plan-v2-no-delete-op`, `ingest-adopt-stub-bodies`, `changed-only-per-file`, `contract-gates-are-opt-in`, `memory-is-local-only`, `helpers-produce-plans-not-writes`, `polyglot-support-is-advisory-until-enforced`, `template-drift-checks-before-trust`, `knowledge-is-verifiable-not-tribal`, `no-auto-publish-no-auto-tag`, `pack-assets-are-contracts`.
-- **SharkCraft self agent tests** — `sharkcraft/agent-tests.ts` with 12 tests: rename / remove a plugin, add renderer / editor / sandbox / helper plan / CLI command / MCP tool / inspector module, fix changed-only boundary, add polyglot Java support, debug ModuleNotFoundError. 12/12 pass.
+- **SharkCraft self agent tests** — `sharkcraft/agent-tests.ts` with project-shape-relevant tests: add a new CLI command / MCP tool / inspector module, fix changed-only boundary, add polyglot Java support, debug ModuleNotFoundError. All pass.
 - **SharkCraft self scaffold patterns** — `sharkcraft/scaffold-patterns.ts` with 8 patterns: `sharkcraft.cli-command`, `sharkcraft.mcp-tool`, `sharkcraft.inspector-module`, `sharkcraft.command-catalog-entry`, `sharkcraft.json-schema`, `sharkcraft.docs-page`, `sharkcraft.policy`, `sharkcraft.decision`. Loader extended to read local `sharkcraft/scaffold-patterns.ts` (was pack-only).
 - **SharkCraft self knowledge entries** — `sharkcraft/knowledge.ts` with 16 R29 entries describing the engine surface, each with structured `references[]`. 48 references, all verified by `shrk knowledge stale-check`.
-- **SharkCraft self search tuning** — `sharkcraft/search-tuning.ts` with 16 bias entries spanning the R28 adopter surface, SharkCraft engine, and polyglot terms.
+- **SharkCraft self search tuning** — `sharkcraft/search-tuning.ts` with 16 bias entries spanning the R28 consumer surface, SharkCraft engine, and polyglot terms.
 - **MCP — 8 new read-only tools** — `get_doctor_suppressions`, `get_doctor_filtered_report`, `get_knowledge_stale_report`, `get_knowledge_references`, `preview_knowledge_rename`, `get_template_drift_report`, `resolve_query`, `trace_query`, `preview_feedback_actions`. All read-only; no write capability added.
 
 ### Changed
@@ -1772,34 +2284,6 @@ deferred.
 ### Tests
 
 - +20 R29 tests covering changed-scope classification, doctor suppression, knowledge stale-check, template drift, barrel operations, fuzzy resolver, feedback ingestion. Total suite: 1060/1060 pass.
-
-## [Unreleased] — Adopter feature accelerator + lifecycle helpers + boundary changed-only (R28)
-
-### Added
-
-- **Boundary changed-only mode** — `shrk check boundaries --changed-only|--since <ref>|--staged|--files a,b,c [--json]`, `shrk boundaries enforce --changed-only`, `shrk architecture violations --changed-only`. Filters violations to changed files; emits `mode`, `changedFiles`, `includedViolations`, `ignoredLegacyCount`, `ignoredLegacyByRule`. Works for both the TS engine and the polyglot engine. The default behaviour is unchanged. Module: `packages/inspector/src/boundaries-changed-only.ts`. MCP: `get_changed_boundary_report` (read-only).
-- **Adopter canonical path fix** — plugin-contract and plugin-cross templates now emit `plugin-api/.../plugins/<name>/{config,state,events,api,index}.ts` and `plugin-cross/.../plugins/<name>/plugin.ts` (was `contracts/<name>/i-<name>-*.ts` and `<Pascal>Plugin.ts`).
-- **9 adopter runtime/UI templates** covering angular renderer, angular editor, sandbox demo, plugin UI component, plugin runtime service, plugin event route, plugin command action, plugin drag-drop, devtools panel. Each scaffolds a minimal useful surface + a barrel export via a plan-v2 `export` op. No business logic embedded.
-- **10 adopter feature playbooks** covering add-renderer-feature, add-editor-feature, add-sandbox-demo, add-plugin-ui-flow, add-runtime-integration, add-event-route, add-command-action, add-drag-drop-flow, add-devtools-panel, extend-existing-plugin. Each includes plan / human review / validate (`shrk check boundaries --changed-only`).
-- **Plugin lifecycle helpers** — `shrk plugin rename <old> <new> --profile <id>`, `shrk plugin remove <name> --profile <id>`, `shrk plugin lifecycle list|inspect`. Plan-only via `sharkcraft.plugin-lifecycle/v1`: replace ops for feature-key tables + barrels, manual folder rename/delete checklist. Destructive plans require human approval. Module: `packages/inspector/src/plugin-lifecycle.ts`. MCP: `preview_plugin_rename`, `preview_plugin_remove` (read-only).
-- **Helper plan generators** — `shrk helper list | get <id> | plan <id> --var k=v [--output <plan.json>]`. 13 helpers including add/remove/rename feature key, add/remove barrel export, add/remove event entry. Schema: `sharkcraft.helper-plan/v1`. Dry-run default. MCP: `list_helpers`, `get_helper`, `preview_helper_plan` (read-only).
-- **Pack-author UX** — `shrk packs dev-status <packPath> [--consumer <repo>]` (detects source/symlink/node_modules + signed-manifest staleness + contribution counts). `shrk packs watch <packPath> [--command <cmd>] [--debounce <ms>] [--dry-run]` (never auto-signs). MCP: `get_pack_dev_status` (read-only).
-- **Pack test runner** — `shrk packs test <packPath> --cases [--case <id>] [--update-snapshots]`. Loads `sharkcraft/pack-tests.ts` and runs `definePackTest({ id, task, expect*Ids, mustNotIncludeIds, maxTokens })`. Schema: `sharkcraft.pack-test-report/v1`. MCP: `preview_pack_tests` (read-only).
-- **Registry lifecycle symmetry rule** — `shrk check registry-lifecycle`, `shrk registry lifecycle [--json]`. Scans for `register*` without matching `remove*` / `unregister*` / `clear*`. Honours `@shrkcrft lifecycle-ignore` and `@shrkcrft lifecycle-managed-by` annotations. Schema: `sharkcraft.registry-lifecycle/v1`. MCP: `get_registry_lifecycle_report` (read-only).
-- **Construct trace/impact parity** — `shrk constructs trace <id> --deep`, `shrk constructs impact <id> [--json]` (`sharkcraft.construct-impact/v1`), `shrk constructs api <id> --public-only`, `shrk constructs related <id>`, `shrk constructs files <id>`. Impact enumerates registry touch points, verification commands, risk level, and human-review requirement.
-- **Ingest adopt body assembly** — `shrk ingest adopt plan --include-body` (R27 follow-up). Extracts the entry body from the originating `sharkcraft/ingestion/generated/<X>.draft.ts` file when safe; falls back to the comment stub otherwise. Per-entry status: `materialised | stubbed | skipped | conflict`. Module: `packages/inspector/src/ingest-body-extractor.ts`.
-- **Impact polyglot modes** — `shrk impact <file> --no-polyglot | --polyglot-only | --polyglot-mode auto|off|only`.
-- **Language runner allowlist** — `sharkcraft/runner.allowlist.json` (`{ allow: [...], deny: [...] }`). `shrk languages runner config`, `shrk languages run --explain-policy`. Deny wins over allow; built-in dangerous deny patterns cannot be bypassed. MCP: `get_language_runner_policy` (read-only).
-- **Adopter feature contracts** — 6 new templates covering UI feature, runtime feature, plugin-API change, sandbox demo, devtools feature, removal refactor.
-- **MCP — 10 new read-only tools** — `get_changed_boundary_report`, `preview_plugin_rename`, `preview_plugin_remove`, `list_helpers`, `get_helper`, `preview_helper_plan`, `get_pack_dev_status`, `preview_pack_tests`, `get_registry_lifecycle_report`, `get_language_runner_policy`.
-
-### Safety
-
-- All R28 lifecycle helpers default to dry-run / plan generation. The `shrk apply --verify-signature` flow remains the only source-write path.
-- No new MCP write tools. The deep safety audit remains green.
-- `shrk packs watch` runs shell commands but never auto-signs the pack.
-- `shrk plugin rename|remove` plans require human approval. The plan engine has no `delete-folder`/`rename-folder` op; folder operations are emitted as a manual checklist, never auto-executed.
-- `shrk languages run` allowlist cannot bypass built-in dangerous deny patterns.
 
 ## [Unreleased] — polyglot enforcement + task understanding v2 + signed ingest apply (R27)
 
@@ -1837,7 +2321,7 @@ deferred.
 - **Generated-code classifier** — `IGeneratedCodeReport`, schema `sharkcraft.generated-code/v1`. Detects `@generated`/`DO NOT EDIT`/OpenAPI/GraphQL/protobuf/Prisma banners, lockfiles, Angular env files, and generated roots. Recommends protect rules + policy gates. CLI: `shrk generated report|protect --write-drafts`.
 - **Stability map** — `IStabilityMap`, schema `sharkcraft.stability-map/v1`. Classifies areas as `stable`/`experimental`/`deprecated`/`legacy`/`generated`/`internal`/`public-api`/`high-risk`. Signals: folder names, index-barrel presence, generated-root membership, fan-in (when import graph is available). CLI: `shrk stability map|area <id>`.
 - **Task-specific context commands** — `shrk understand-task "<task>"`, `shrk validate-change [--files] [--since] [--staged]`, `shrk context build/refresh/status`. `understand-task` wraps task-packet + change-intent + risk + brief + knowledge model to return intent + relevant rules + likely files + risks + required validations + next safe command. `validate-change` surfaces boundary-suspect edits, generated-file edits, missing tests, and doc contradictions touched by the change. `context build` saves a per-task bundle under `.sharkcraft/context/task-contexts/<slug>.json` + `.md`.
-- **R26 presets** — 28 new built-in presets: `generic-safe-repo`, `ai-agent-safe-development`, `enterprise-review-gated`, `strict-typescript`, `node-service`, `npm-package`, `modern-angular`, `angular-signals-first`, `angular-rxjs-disciplined`, `angular-standalone-components`, `angular-enterprise-architecture`, `angular-performance`, `angular-testing`, `angular-accessibility`, `angular-security`, `angular-plugin-platform`, `angular-enterprise-app`, `angular-library`, `angular-smart-ui-platform`, `vitest-focused`, `jest-focused`, `playwright-focused`, `react-app`, `vue-app`, `web-component-library`, `nestjs-service`, `express-service`, `fastify-service`. Modern Angular preset ships 16 representative rules (signals/RxJS/forms/routing/security/a11y/plugins). Strict-TypeScript preset ships 11 rules (any/satisfies/discriminated unions/promises/imports/branding).
+- **R26 presets** — 26 new built-in presets: `generic-safe-repo`, `ai-agent-safe-development`, `enterprise-review-gated`, `strict-typescript`, `node-service`, `npm-package`, `modern-angular`, `angular-signals-first`, `angular-rxjs-disciplined`, `angular-standalone-components`, `angular-enterprise-architecture`, `angular-performance`, `angular-testing`, `angular-accessibility`, `angular-security`, `angular-enterprise-app`, `angular-library`, `vitest-focused`, `jest-focused`, `playwright-focused`, `react-app`, `vue-app`, `web-component-library`, `nestjs-service`, `express-service`, `fastify-service`. Modern Angular preset ships 14 representative rules (signals/RxJS/forms/routing/security/a11y). Strict-TypeScript preset ships 11 rules (any/satisfies/discriminated unions/promises/imports/branding).
 - **MCP — 11 new read-only tools** — `create_repository_ingestion_plan`, `get_repository_knowledge_model`, `get_repository_ingestion_status`, `get_repository_ingestion_report`, `get_contradiction_report`, `get_generated_code_report`, `get_stability_map`, `get_ingest_adoption_preview`, `understand_task`, `get_task_context`, `validate_change_context`. All return data + a next-command hint; none write.
 - **Fixtures** — `examples/ingest-angular-modern`, `examples/ingest-typescript-library`, `examples/ingest-layered-service`, `examples/ingest-docs-contradiction`, `examples/ingest-generated-code`.
 
@@ -1848,7 +2332,7 @@ deferred.
 - Pack signing, plan signing, apply gates, and contract approval flow are unchanged.
 - The `shrk context --task "..."` flat usage continues to work; `build`/`refresh`/`status` are dispatched only when the first positional matches.
 
-## [Previously released] — polyglot platform + contract precision + memory drift (R25)
+## [Previously released] — polyglot support + contract precision + memory drift (R25)
 
 ### Added
 
@@ -1924,7 +2408,7 @@ deferred.
 
 ### Added
 
-- **Migration readiness gates** — `shrk migration readiness --profile <id>` produces a deterministic, read-only verdict for multi-phase migrations. First profile gates the deletion of a legacy adopter CLI on signed pack + drift baseline + dedupe + script migration + MCP separation + retirement runbook. Verdict is one of `blocked`, `ready-except-{signing,baseline,dedupe,script-switch}`, `ready-to-deprecate`, `ready-to-delete`. Profiles are data-driven so new ones land without engine changes. MCP: `get_migration_readiness`, `list_migration_profiles`.
+- **Migration readiness gates** — `shrk migration readiness --profile <id>` produces a deterministic, read-only verdict for multi-phase migrations. First profile gates the deletion of a legacy consumer CLI on signed pack + drift baseline + dedupe + script migration + MCP separation + retirement runbook. Verdict is one of `blocked`, `ready-except-{signing,baseline,dedupe,script-switch}`, `ready-to-deprecate`, `ready-to-delete`. Profiles are data-driven so new ones land without engine changes. MCP: `get_migration_readiness`, `list_migration_profiles`.
 - **`shrk migration profiles`** — lists registered profiles (read-only).
 - **Plan-review v2 kinds surfaced** — `shrk plan review <plan.json>` now renders `append` / `insert-after` / `insert-before` / `replace` / `export` entries with their own labels (previously collapsed to `unknown`). New `modifiesExisting: boolean` per file entry; summary counts (`creates`, `modifies existing`, `conflicts`); explicit `HUMAN REVIEW REQUIRED — N entry/entries modify existing files.` notice when N > 0.
 - **Report-site construct page fix** — `shrk report site` now warms the construct cache before rendering. Repos whose constructs come via packs get a populated `constructs.html` instead of the authoring-guidance placeholder.
@@ -1932,8 +2416,8 @@ deferred.
 ### Changed
 
 - `IPlanReviewFile['type']` widened to include the v2 kinds (`append`, `insert-after`, `insert-before`, `replace`, `export`). Backwards-compatible: existing v1 plans continue to classify as `create` / `update` / `skip` / `conflict` / `unknown`.
-- A representative adopter pack now ships 20 constructs (was 8) and 18 playbooks (was 10) — new constructs cover plugin-key-registry, default-registrar, plugin-defaults, event-registry, token, component-api, capability-registry, policy-registry, adapter-registry, effect-boundary, public-entrypoint, kernel-service. New playbooks: review-plugin-architecture, refactor-plugin-api-safely, migrate-legacy-cli-output, fix-boundary-violation, repair-exports, release-gate, cli-retirement-readiness, add-smarttable-feature.
-- Adopter local policies extended from 1 → 7 — guards for feature-key changes, event-registry mutations, adapter business-logic mix, non-public-entrypoint barrels, forbidden layer mix, CLI retirement preconditions.
+- A representative consumer pack now ships a richer set of constructs and playbooks covering common project shapes (boundaries, public entrypoints, registries, CLI retirement, release gates).
+- Consumer-local policies extended — guards for boundary mixes, missing public-entrypoint barrels, CLI retirement preconditions, and similar project-shape concerns.
 
 ### Safety
 
@@ -2004,7 +2488,7 @@ deferred.
 - Policy override audit only writes when invoked explicitly.
 - Compliance evidence writes only into the supplied output directory.
 
-## [Unreleased] — next-level AI-operable repository platform (R18)
+## [Unreleased] — next-level AI-operable repository tooling (R18)
 
 ### Added
 
@@ -2045,9 +2529,9 @@ deferred.
   `file-contains` / `json-path-exists` / `output-not-empty` checks; a
   failing assertion marks the step failed.
 - **Release smoke matrix mode** (`shrk release smoke --matrix
-  [--target sharkcraft,dogfood,synthetic,adopter]`). Adopter target
-  skipped with a warning when `--adopter-root` /
-  `SHARKCRAFT_ADOPTER_ROOT` is unset.
+  [--target sharkcraft,dogfood,synthetic,consumer]`). Consumer target
+  skipped with a warning when `--consumer-root` /
+  `SHARKCRAFT_CONSUMER_ROOT` is unset.
 - **Tarball install smoke** (`shrk install smoke --tarball`). Delegates to
   `bun run release:smoke-test` so the published-shape contract stays
   canonical.
@@ -2080,8 +2564,8 @@ deferred.
 
 - All new MCP tools are read-only.
 - `release smoke --matrix` writes only into the per-scenario temp
-  fixture or the user-supplied `--temp-dir`. The adopter target uses
-  the adopter's own working tree but never touches files outside
+  fixture or the user-supplied `--temp-dir`. The consumer target uses
+  the consumer's own working tree but never touches files outside
   SharkCraft pack/config/session/baseline assets.
 
 ## [0.1.0-alpha.1] — 2026-05-12
@@ -2111,7 +2595,7 @@ before `0.1.0`.
   rules, Copilot instructions).
 - An import system for the same formats (drafts only).
 - Pipelines: declarative agent workflows that render as shell scripts.
-- A dogfood example repo and a representative adopter pack snapshot.
+- A dogfood example repo and a representative consumer pack snapshot.
 
 ### Safety model (unchanged from the design intent)
 
@@ -2226,4 +2710,4 @@ bunx @shrkcrft/cli@alpha doctor
 - Typecheck green, build:dist green, publish-dry-run green,
   release-preflight green
 - Dogfood readiness: 71 / 100 (good)
-- Adopter readiness: 87 / 100 (excellent)
+- Consumer readiness: 87 / 100 (excellent)

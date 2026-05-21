@@ -194,7 +194,7 @@ function checkReadmeRequiredSections(projectRoot: string): IReleaseReadinessChec
       'readme-required-sections',
       'README required sections',
       `README.md is missing section keywords: ${missing.join(', ')}`,
-      'Add a "Quick demo" and "Onboard" section so adopters land on something runnable.',
+      'Add a "Quick demo" and "Onboard" section so consumers land on something runnable.',
     );
   }
   return pass('readme-required-sections', 'README required sections', 'README.md has the expected sections.');
@@ -443,7 +443,7 @@ export async function buildReleaseReadiness(
         'public-alpha-limitations',
         'Public alpha limitations doc',
         'Missing docs/public-alpha-limitations.md',
-        'List the known limitations adopters should be aware of.',
+        'List the known limitations consumers should be aware of.',
       ),
     );
   } else {
@@ -455,7 +455,7 @@ export async function buildReleaseReadiness(
         'external-quickstart',
         'External repo quickstart',
         'Missing docs/external-repo-quickstart.md',
-        'Add a 5-minute external-adopter quickstart.',
+        'Add a 5-minute external-consumer quickstart.',
       ),
     );
   } else {

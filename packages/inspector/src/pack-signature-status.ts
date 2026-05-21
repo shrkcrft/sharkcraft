@@ -83,7 +83,6 @@ const CONTRIB_SLOTS = [
   'mcpToolFiles',
   'aiProviderFiles',
   'docsFiles',
-  'pluginLifecycleProfileFiles',
   'contractTemplateFiles',
   'migrationProfileFiles',
   'conventionFiles',

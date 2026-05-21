@@ -10,14 +10,13 @@ import {
 import { asJson, header, kv } from '../output/format-output.ts';
 import { importModuleViaLoader } from '@shrkcrft/core';
 
-export type PackKind = 'generic' | 'framework' | 'architecture' | 'enterprise' | 'platform-adopter';
+export type PackKind = 'generic' | 'framework' | 'architecture' | 'enterprise';
 
 const VALID_KINDS = new Set<PackKind>([
   'generic',
   'framework',
   'architecture',
   'enterprise',
-  'platform-adopter',
 ]);
 
 interface IScaffoldFile {
@@ -135,12 +134,6 @@ export function planPackScaffold(input: IScaffoldPackInput): IScaffoldPackResult
     files.push({
       relativePath: 'src/assets/boundaries.ts',
       body: renderBoundariesAsset(),
-    });
-  }
-  if (input.kind === 'platform-adopter' || input.withExamples) {
-    files.push({
-      relativePath: 'src/assets/contracts/plugin-contract.example.ts',
-      body: renderPluginContractExample(),
     });
   }
   if (input.kind === 'enterprise') {
@@ -270,12 +263,6 @@ function renderKnowledgeAsset(input: IScaffoldPackInput): string {
   if (input.kind === 'framework') {
     return knowledgeBody([
       ['framework.overview', 'Framework overview', 'High', 'What this framework is for.'],
-    ]);
-  }
-  if (input.kind === 'platform-adopter') {
-    return knowledgeBody([
-      ['platform.policy', 'Policy capability', 'Medium', 'Describe the policy/capability model your platform exposes.'],
-      ['platform.adapter', 'Adapter contract', 'Medium', 'Describe the adapter contract your platform expects.'],
     ]);
   }
   return knowledgeBody([
@@ -411,18 +398,6 @@ function renderBoundariesAsset(): string {
   ].join('\n');
 }
 
-function renderPluginContractExample(): string {
-  return [
-    `// Example: an adapter-style plugin contract.`,
-    `// Replace with the actual interface your platform expects.`,
-    `export interface IPluginCapability {`,
-    `  id: string;`,
-    `  invoke(input: unknown): Promise<unknown>;`,
-    `}`,
-    ``,
-  ].join('\n');
-}
-
 function renderEnterpriseReviewDocs(): string {
   return [
     `# Review workflow`,
@@ -475,12 +450,12 @@ export const packsNewCommand: ICommandHandler = {
   description:
     'Scaffold a new SharkCraft pack package (rules / paths / templates / pipelines / presets / boundaries). Dry-run by default — pass --write to materialize. No install, no publish, no overwrite without --force.',
   usage:
-    'shrk [--cwd <dir>] packs new <name> [--scope @org] [--preset <id>] [--kind generic|framework|architecture|enterprise|platform-adopter] [--with-examples] [--write] [--force] [--json]',
+    'shrk [--cwd <dir>] packs new <name> [--scope @org] [--preset <id>] [--kind generic|framework|architecture|enterprise] [--with-examples] [--write] [--force] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const name = args.positional[0];
     if (!name) {
       process.stderr.write(
-        'Usage: shrk packs new <name> [--scope @org] [--preset <id>] [--kind generic|framework|architecture|enterprise|platform-adopter] [--with-examples] [--write]\n',
+        'Usage: shrk packs new <name> [--scope @org] [--preset <id>] [--kind generic|framework|architecture|enterprise] [--with-examples] [--write]\n',
       );
       return 2;
     }

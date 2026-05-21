@@ -1,37 +1,31 @@
 import {
-  flagBool,
-  flagNumber,
-  flagString,
   type CommandRegistry,
+  flagBool,
+  flagString,
   type ICommandHandler,
-  type ParsedArgs,
+  type ParsedArgs
 } from '../command-registry.ts';
 import { asJson, header } from '../output/format-output.ts';
 import {
+  buildCommandSafetyMatrix,
   COMMAND_CATALOG,
   CommandLifecycle,
-  CommandSurface,
-  R46_OVERLAY,
-  SafetyLevel,
-  buildCommandSafetyMatrix,
-  commandAudience,
   commandLifecycle,
+  CommandSurface,
   commandSurface,
   commandTaskRole,
-  commandUseWhen,
   defaultShowInHelp,
-  renderCommandSafetyMatrixMarkdown,
   type ICommandCatalogEntry,
+  R46_OVERLAY,
+  renderCommandSafetyMatrixMarkdown,
+  SafetyLevel
 } from './command-catalog.ts';
 import {
   buildCommandTaxonomy,
   buildPrimaryCommandsReport,
-  explainCommand,
   renderCommandTaxonomyMarkdown,
   renderCommandTaxonomyText,
-  renderPrimaryCommandsText,
-  suggestCommands,
-  type ICommandEntryLike,
+  renderPrimaryCommandsText
 } from '@shrkcrft/inspector';
 
 export function makeCommandsCommand(registry: CommandRegistry): ICommandHandler {
@@ -707,7 +701,7 @@ export function buildCommandsUxReport(): ICommandsUxReport {
   // issue is clearly structural (none of these currently rise to error).
   for (const e of COMMAND_CATALOG) {
     const surface = commandSurface(e);
-    // (a) primary commands should declare an audience (so adopters can see
+    // (a) primary commands should declare an audience (so consumers can see
     // who the command is for at a glance).
     if (surface === CommandSurface.Primary && (!e.intendedAudience || e.intendedAudience.length === 0)) {
       issues.push({

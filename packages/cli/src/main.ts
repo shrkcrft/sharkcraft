@@ -128,6 +128,7 @@ import {
 import { taskCommand } from './commands/task.command.ts';
 import { preflightCommand } from './commands/preflight.command.ts';
 import { checkCommand } from './commands/check.command.ts';
+import { diffCheckCommand } from './commands/diff-check.command.ts';
 import { driftCommand } from './commands/drift.command.ts';
 import { graphCommand } from './commands/graph.command.ts';
 import { coverageCommand } from './commands/coverage.command.ts';
@@ -202,7 +203,6 @@ import { biomeCommand } from './commands/biome.command.ts';
 import { ideCommand } from './commands/ide.command.ts';
 import { makeCommandsCommand } from './commands/commands.command.ts';
 import { safetyCommand } from './commands/safety.command.ts';
-import { pluginCommand } from './commands/plugin.command.ts';
 import { profilesCommand } from './commands/profiles.command.ts';
 import { auditProjectCouplingCommand } from './commands/audit.command.ts';
 import { conventionsCommand } from './commands/conventions.command.ts';
@@ -391,6 +391,7 @@ export function buildRegistry(): CommandRegistry {
   registry.register(taskCommand);
   registry.register(explainCommand);
   registry.register(checkCommand);
+  registry.register(diffCheckCommand);
   // changed-only preflight orchestrator.
   registry.register(preflightCommand);
   registry.register(driftCommand);
@@ -421,7 +422,6 @@ export function buildRegistry(): CommandRegistry {
   registry.register(eslintCommand);
   registry.register(biomeCommand);
   registry.register(ideCommand);
-  registry.register(pluginCommand);
   registry.register(profilesCommand);
   registry.registerSubcommand('audit', auditProjectCouplingCommand);
   registry.register(conventionsCommand);
@@ -762,7 +762,12 @@ async function runCliInner(argv: readonly string[]): Promise<number> {
     return registry.get('help')!.run(parseArgs([], { globalCwd }));
   }
   if (first === '--full-help') {
-    return registry.get('help')!.run(parseArgs(['--full'], { globalCwd }));
+    // Pass through `--all` (catalog dump) and `--verbose` if the user
+    // included them after `--full-help`.
+    const extra: string[] = [];
+    if (argv.includes('--all')) extra.push('--all');
+    if (argv.includes('--verbose') || argv.includes('-v')) extra.push('--verbose');
+    return registry.get('help')!.run(parseArgs(['--full', ...extra], { globalCwd }));
   }
   if (first === '--version' || first === '-v') {
     return registry.get('version')!.run(parseArgs([], { globalCwd }));
@@ -813,7 +818,7 @@ async function runCliInner(argv: readonly string[]): Promise<number> {
     return 2;
   }
   const attempted = probe.slice(0, 2).join(' ');
-  process.stderr.write(`Unknown command: ${attempted}\n`);
+  process.stderr.write(`shrk doesn't have a \`${attempted}\` command.\n`);
   printDidYouMean(attempted);
   return 2;
 }
@@ -925,22 +930,116 @@ async function checkSurfaceGate(
   }
 }
 
+// Score thresholds for did-you-mean output. Picked from observed
+// scoring: 1-char-off typos score 8+ on plain commands; 3-4-char-off
+// near-misses score ~5; loose / token-overlap matches score 1-3.
+// Junk matches (frobnicate → bundle diff) can score 8 too because of
+// token overlap, so we sharpen by also requiring the suggestion's
+// command name to be reasonably close in length to the attempt.
+const SUGGEST_CONFIDENT_SCORE = 7;
+const SUGGEST_VISIBLE_SCORE = 3;
+
+function reorderCandidates<T extends { command: string; score: number }>(
+  attempted: string,
+  candidates: readonly T[],
+): T[] {
+  // Stable sort: higher score first, then shorter command (more likely
+  // canonical), then lexicographic. The base suggester returns ties in
+  // arbitrary order — this makes the top suggestion more predictable.
+  const ranked = [...candidates];
+  ranked.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (a.command.length !== b.command.length) {
+      return a.command.length - b.command.length;
+    }
+    return a.command < b.command ? -1 : a.command > b.command ? 1 : 0;
+  });
+  return ranked;
+}
+
+/** Edit distance (Levenshtein). Used to gate did-you-mean confidence. */
+function editDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp: number[] = new Array(n + 1);
+  for (let j = 0; j <= n; j += 1) dp[j] = j;
+  for (let i = 1; i <= m; i += 1) {
+    let prev = dp[0]!;
+    dp[0] = i;
+    for (let j = 1; j <= n; j += 1) {
+      const tmp = dp[j]!;
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[j] = Math.min(dp[j]! + 1, dp[j - 1]! + 1, prev + cost);
+      prev = tmp;
+    }
+  }
+  return dp[n]!;
+}
+
+/**
+ * Suggestion is "confident" when the candidate's top token is close
+ * to the attempt in edit-distance terms — `doctorz`→`doctor` (1 edit)
+ * or `inspct`→`inspect` (1 edit) qualify; `frobnicate`→`bundle` (10
+ * edits) does not, even when the suggester scores them similarly
+ * because of incidental token overlap in descriptions.
+ *
+ * Threshold: edit distance ≤ max(1, attempt.length / 4) AND raw score
+ * meets `SUGGEST_VISIBLE_SCORE`. This catches typical fingers-on-keys
+ * typos while rejecting "you typed something totally different."
+ */
+function isConfidentMatch(attempted: string, suggestion: { command: string; score: number }): boolean {
+  if (suggestion.score < SUGGEST_VISIBLE_SCORE) return false;
+  const lower = attempted.toLowerCase();
+  const head = (suggestion.command.split(/\s+/)[0] ?? suggestion.command).toLowerCase();
+  const dist = editDistance(lower, head);
+  const tolerance = Math.max(1, Math.floor(lower.length / 4));
+  return dist <= tolerance;
+}
+
 function printDidYouMean(attempted: string): void {
-  const candidates = suggestDidYouMean(COMMAND_CATALOG, [attempted], 3);
-  if (candidates.length === 0) {
+  const rawCandidates = suggestDidYouMean(COMMAND_CATALOG, [attempted], 5);
+  const reordered = reorderCandidates(attempted, rawCandidates).filter(
+    (c) => c.score >= SUGGEST_VISIBLE_SCORE,
+  );
+
+  if (reordered.length === 0) {
     process.stderr.write(
-      "Tip: run `shrk commands suggest \"<partial>\"` or `shrk help` to discover commands.\n",
+      'Run `shrk help` to see the curated commands, or `shrk --full-help` for the full catalog.\n',
     );
     const footer = errorFooterFor('unknown-command', { task: attempted });
     if (footer) process.stderr.write(renderErrorFooter(footer));
     return;
   }
-  process.stderr.write('Did you mean:\n');
-  for (const c of candidates) {
+
+  // Confident single-match path: surface ONE suggestion clearly.
+  const top = reordered[0]!;
+  if (isConfidentMatch(attempted, top)) {
+    process.stderr.write(`Did you mean \`shrk ${top.command}\`?\n`);
+    process.stderr.write(`  ${top.description}\n`);
+    // Second-tier suggestions only if they're also strong.
+    const others = reordered.slice(1, 3).filter((c) => isConfidentMatch(attempted, c));
+    if (others.length > 0) {
+      process.stderr.write('Other close matches:\n');
+      for (const c of others) {
+        process.stderr.write(`  shrk ${c.command} — ${c.description}\n`);
+      }
+    }
+    const footer = errorFooterFor('unknown-command', { task: attempted });
+    if (footer) process.stderr.write(renderErrorFooter(footer));
+    return;
+  }
+
+  // Low-confidence: show up to 3 as "closest matches", honest about
+  // not knowing which is right.
+  process.stderr.write('Closest matches in the catalog:\n');
+  for (const c of reordered.slice(0, 3)) {
     process.stderr.write(`  shrk ${c.command} — ${c.description}\n`);
   }
-  // append the standardised next-command footer so the user
-  // always has a deterministic exit route.
+  process.stderr.write(
+    "If none of those look right, run `shrk help` or `shrk \"<task>\"` to route as a free-form task.\n",
+  );
   const footer = errorFooterFor('unknown-command', { task: attempted });
   if (footer) process.stderr.write(renderErrorFooter(footer));
 }

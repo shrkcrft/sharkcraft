@@ -79,7 +79,7 @@ export const TURBOREPO_PRESET: IPreset = definePreset({
   id: 'turborepo',
   title: 'Turborepo monorepo',
   description:
-    'Conventions for Turborepo workspaces: package layer order, public entry points, no relative cross-package imports, run via the affected task graph.',
+    'Conventions for Turborepo workspaces: public entry points, no relative cross-package imports, run via the affected task graph.',
   tags: ['turborepo', 'monorepo'],
   appliesTo: [WorkspaceProfile.HasTurborepo, WorkspaceProfile.IsMonorepo],
   weight: 8,
@@ -219,7 +219,7 @@ export const CLEAN_ARCHITECTURE_TS_PRESET: IPreset = definePreset({
   ],
 });
 
-export const R45_PRESETS: readonly IPreset[] = Object.freeze([
+export const UNIVERSAL_ADOPTION_PRESETS: readonly IPreset[] = Object.freeze([
   NEXT_APP_PRESET,
   TURBOREPO_PRESET,
   PACKAGE_WORKSPACE_PRESET,

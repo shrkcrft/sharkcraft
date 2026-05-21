@@ -1,28 +1,84 @@
 import { KnowledgeType, hasActionHints } from '@shrkcrft/knowledge';
+import { WorkspaceProfile } from '@shrkcrft/workspace';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { diagnoseActionHints } from './action-hint-diagnostics.ts';
 import { runDoctor } from './sharkcraft-inspector.ts';
+
+/**
+ * Per-dimension applies-to status.
+ *
+ *   - `core` — dimension applies to this workspace shape; counted in the
+ *     aggregate score.
+ *   - `advisory` — dimension applies but is not load-bearing for the
+ *     shape; shown in output, NOT counted in the aggregate, and does NOT
+ *     produce a recommendation. Lets the user see "you could add this"
+ *     without dragging the score down for a perfectly-shaped repo.
+ *   - `n/a-for-shape` — dimension is irrelevant to this workspace shape
+ *     (e.g. "templates" for a CLI library that doesn't scaffold
+ *     anything). Hidden from default output, NOT counted, NO
+ *     recommendation. Surfaced with `--show-na`.
+ */
+export type DimensionAppliesTo = 'core' | 'advisory' | 'n/a-for-shape';
 
 export interface IReadinessDimension {
   id: string;
   title: string;
   /** 0–10 score. */
   score: number;
-  /** Weight applied to the score in the final aggregate. */
+  /** Weight applied to the score in the final aggregate (only used when applies === 'core'). */
   weight: number;
   /** Free-form note explaining the score. */
   note: string;
+  /** Does this dimension apply to the detected workspace shape? */
+  applies: DimensionAppliesTo;
+  /** When applies !== 'core', a one-line reason the dimension was skipped. */
+  appliesReason?: string;
 }
 
 export type ReadinessGrade = 'excellent' | 'good' | 'partial' | 'poor';
 
+/**
+ * One of four binary verdicts surfaced in the doctor output. Replaces
+ * the older "look at the 0-100 score" UX with a clear yes/no for the
+ * two questions users actually want answered.
+ */
+export interface IReadinessVerdicts {
+  /** Can an AI agent rely on shrk to apply changes safely? */
+  readyForAgentWrites: boolean;
+  /** Can an AI agent use shrk's read-only surface (context / task)? */
+  readyForAgentReads: boolean;
+  /** Concrete things blocking `readyForAgentWrites`. */
+  blockers: readonly string[];
+}
+
 export interface IReadinessReport {
-  /** 0..100 weighted score. */
+  /** 0..100 weighted score, counting only `core` dimensions. */
   score: number;
   grade: ReadinessGrade;
   dimensions: IReadinessDimension[];
-  /** Up to 5 prioritized actions to improve the score. */
+  /** Up to 5 prioritized actions to improve the score (only from core dims). */
   topRecommendations: string[];
+  /** Honest binary verdicts that don't depend on softcap scoring. */
+  verdicts: IReadinessVerdicts;
+  /** Detected workspace shape — drives which dimensions count as core. */
+  workspaceShape: IWorkspaceShape;
+}
+
+/**
+ * Coarse classification of the workspace, used to decide which readiness
+ * dimensions are load-bearing. Derived from `WorkspaceProfile[]`.
+ */
+export interface IWorkspaceShape {
+  /** Best-effort one-line description of the shape. */
+  label: string;
+  /** True if the workspace publishes a library (no user-facing scaffolding). */
+  isLibrary: boolean;
+  /** True if the workspace runs a service (HTTP / queue / daemon). */
+  isService: boolean;
+  /** True if the workspace is a monorepo (Nx / Turborepo / pnpm-workspaces). */
+  isMonorepo: boolean;
+  /** True if the workspace owns end-user code (Angular app / Next.js app / Nest service / generic frontend / backend). */
+  isApplication: boolean;
 }
 
 function gradeOf(score: number): ReadinessGrade {
@@ -59,18 +115,96 @@ function isCriticalOrHighWorkflow(entry: { type: unknown; priority: unknown }): 
 }
 
 /**
- * Deterministic 0..100 AI-readiness score. Penalties are explicit:
- *  - Quantity-only "stuff a registry full of entries" is capped via softCap.
- *  - Duplicate-id warnings reduce data-quality dimension.
- *  - Placeholder docs (TODO / TBD / "fill in") reduce docs dimension.
- *  - Critical/high workflow entries missing actionHints reduce safety dim.
- *  - Doctor health stays a hard gate.
+ * Classify the workspace from its profile flags. Used to mark dimensions
+ * core / advisory / n/a so the aggregate score reflects what actually
+ * matters for this repo.
+ */
+function classifyShape(profiles: readonly string[]): IWorkspaceShape {
+  const has = (p: WorkspaceProfile): boolean => profiles.includes(p);
+  const isLibrary = has(WorkspaceProfile.IsLibrary);
+  const isService = has(WorkspaceProfile.IsService);
+  const isMonorepo =
+    has(WorkspaceProfile.IsMonorepo) ||
+    has(WorkspaceProfile.HasNx) ||
+    has(WorkspaceProfile.HasTurborepo) ||
+    has(WorkspaceProfile.HasPackageWorkspaces);
+  const isApplication =
+    !isLibrary &&
+    (has(WorkspaceProfile.IsFrontend) ||
+      has(WorkspaceProfile.IsBackend) ||
+      isService);
+  let label: string;
+  if (isMonorepo) {
+    label = isLibrary ? 'library monorepo' : 'monorepo';
+  } else if (isLibrary) {
+    label = 'library';
+  } else if (isService) {
+    label = 'service';
+  } else if (has(WorkspaceProfile.IsFrontend)) {
+    label = 'frontend app';
+  } else if (has(WorkspaceProfile.IsBackend)) {
+    label = 'backend app';
+  } else if (has(WorkspaceProfile.HasTypeScript)) {
+    label = 'TypeScript project';
+  } else {
+    label = 'unclassified';
+  }
+  return { label, isLibrary, isService, isMonorepo, isApplication };
+}
+
+/**
+ * Deterministic AI-readiness report.
+ *
+ * Replaces the original "single 0-100 score" UX with a shape-aware
+ * report. Each dimension is classified as:
+ *
+ *   - `core` — counts in the aggregate score; produces a recommendation
+ *     when below threshold.
+ *   - `advisory` — shown but doesn't drag the score down; no
+ *     recommendation. Used for dimensions that are nice-to-have but
+ *     not load-bearing for the detected workspace shape (e.g. docs in
+ *     a CLI library).
+ *   - `n/a-for-shape` — irrelevant to this workspace; hidden by
+ *     default. Lets a CLI library skip "add templates" without
+ *     manually suppressing every release.
+ *
+ * Two binary verdicts ride alongside the score:
+ *   - `readyForAgentWrites` — every gate an autonomous agent would need
+ *     before issuing `shrk apply` (config + cli-only safety + clean
+ *     doctor).
+ *   - `readyForAgentReads` — every gate a read-only agent (e.g. an MCP
+ *     context lookup) would need (knowledge entries loaded + doctor
+ *     clean).
+ *
+ * Numerical penalties stay explicit:
+ *   - Quantity-only "stuff a registry full of entries" is capped via softCap.
+ *   - Duplicate-id warnings reduce data-quality dimension.
+ *   - Placeholder docs (TODO / TBD / "fill in") reduce docs dimension.
+ *   - Critical/high workflow entries missing actionHints reduce safety dim.
+ *   - Doctor health stays a hard gate.
  */
 export function buildAiReadinessReport(inspection: ISharkcraftInspection): IReadinessReport {
   const dims: IReadinessDimension[] = [];
   const recs: string[] = [];
+  const shape = classifyShape(inspection.workspace.profiles);
 
-  // 1) Config present
+  // Reusable applies-to predicates.
+  const templatesApply: DimensionAppliesTo = shape.isLibrary && !shape.isMonorepo
+    ? 'n/a-for-shape'
+    : shape.isApplication
+      ? 'core'
+      : 'advisory';
+  const pipelinesApply: DimensionAppliesTo = shape.isLibrary && !shape.isMonorepo
+    ? 'n/a-for-shape'
+    : 'advisory';
+  const pathsApply: DimensionAppliesTo = shape.isMonorepo || shape.isApplication
+    ? 'core'
+    : 'advisory';
+  const docsApply: DimensionAppliesTo = shape.isApplication || shape.isMonorepo
+    ? 'core'
+    : 'advisory';
+
+  // 1) Config present — always core (this is the "did you opt in?" signal).
   dims.push({
     id: 'config',
     title: 'sharkcraft.config.ts present',
@@ -79,6 +213,7 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     note: inspection.configFile
       ? `loaded from ${inspection.configFile}`
       : 'missing — using defaults',
+    applies: 'core',
   });
   if (!inspection.configFile) {
     recs.push('Create sharkcraft/sharkcraft.config.ts to opt in to project-specific config.');
@@ -92,6 +227,7 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     weight: 1.0,
     score: softCapScore(k, 15),
     note: `${k} entries (softcap 15, full at 22)`,
+    applies: 'core',
   });
   if (k < 10) recs.push('Add more structured knowledge entries (target: 10+).');
 
@@ -103,10 +239,11 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     weight: 1.0,
     score: softCapScore(rules.length, 8),
     note: `${rules.length} rules (softcap 8)`,
+    applies: 'core',
   });
   if (rules.length < 5) recs.push('Add at least 5 rules describing coding/architecture conventions.');
 
-  // 4) Path conventions — softcap at 6.
+  // 4) Path conventions — core for monorepos / applications, advisory otherwise.
   const paths = inspection.pathService.list();
   dims.push({
     id: 'paths',
@@ -114,10 +251,18 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     weight: 0.8,
     score: softCapScore(paths.length, 6),
     note: `${paths.length} path conventions (softcap 6)`,
+    applies: pathsApply,
+    appliesReason:
+      pathsApply === 'advisory'
+        ? 'Path conventions matter most for monorepos and applications with explicit src/ layouts.'
+        : undefined,
   });
-  if (paths.length < 4) recs.push('Add path conventions for src/, services/, utils/, tests/ etc.');
+  if (pathsApply === 'core' && paths.length < 4) {
+    recs.push('Add path conventions for src/, services/, utils/, tests/ etc.');
+  }
 
-  // 5) Templates — softcap at 4.
+  // 5) Templates — n/a for pure libraries; core for applications;
+  //    advisory for monorepos (often useful but not load-bearing).
   const t = inspection.templates.length;
   dims.push({
     id: 'templates',
@@ -125,10 +270,20 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     weight: 0.8,
     score: softCapScore(t, 4),
     note: `${t} templates (softcap 4)`,
+    applies: templatesApply,
+    appliesReason:
+      templatesApply === 'n/a-for-shape'
+        ? 'Libraries don\'t scaffold downstream code — templates are not load-bearing here.'
+        : templatesApply === 'advisory'
+          ? 'Templates help generate consistent constructs, but the repo can be agent-ready without them.'
+          : undefined,
   });
-  if (t < 3) recs.push('Define templates for the constructs you generate most often.');
+  if (templatesApply === 'core' && t < 3) {
+    recs.push('Define templates for the constructs you generate most often.');
+  }
 
-  // 6) Pipelines — softcap at 3.
+  // 6) Pipelines — n/a for pure libraries; advisory for everything else.
+  //    Pipelines are nice but rarely block agent workflows.
   const p = inspection.pipelines.length;
   dims.push({
     id: 'pipelines',
@@ -136,8 +291,14 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     weight: 0.8,
     score: softCapScore(p, 3),
     note: `${p} pipelines (softcap 3)`,
+    applies: pipelinesApply,
+    appliesReason:
+      pipelinesApply === 'n/a-for-shape'
+        ? 'Libraries don\'t orchestrate feature pipelines — this dimension does not apply.'
+        : 'Pipelines describe preferred flows; a repo can be agent-ready with just rules + path conventions.',
   });
-  if (p < 2) recs.push('Add at least one feature-dev or safe-generation pipeline.');
+  // No recommendation when pipelines is advisory — the old "add a pipeline"
+  // exhortation fired on libraries it shouldn't have.
 
   // 7) Action-hint coverage — fraction of entries that carry hints.
   const withHints = inspection.knowledgeEntries.filter((e) => hasActionHints(e)).length;
@@ -149,6 +310,7 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     weight: 1.2,
     score: hintsScore,
     note: `${withHints} of ${k} entries carry actionHints`,
+    applies: 'core',
   });
   if (hintsScore < 7) recs.push('Add actionHints to high-priority rules (commands, mcpTools, forbiddenActions).');
 
@@ -162,6 +324,7 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     weight: 0.6,
     score: haveVerify ? 10 : 0,
     note: haveVerify ? 'at least one entry lists verification commands' : 'no entry lists verification commands',
+    applies: 'core',
   });
   if (!haveVerify) recs.push('Add verificationCommands to safety/generation rules (e.g. typecheck + tests).');
 
@@ -175,10 +338,11 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     weight: 0.6,
     score: haveForbidden ? 10 : 0,
     note: haveForbidden ? 'at least one entry lists forbiddenActions' : 'no entry lists forbiddenActions',
+    applies: 'core',
   });
   if (!haveForbidden) recs.push('Add forbiddenActions to clarify what agents must NOT do.');
 
-  // 10) Docs — softcap at 4. Penalize placeholder docs.
+  // 10) Docs — softcap at 4. Penalize placeholder docs. Advisory for libraries.
   const docFiles = inspection.sourceFiles.filter((s) => s.endsWith('.md'));
   let placeholderDocCount = 0;
   for (const entry of inspection.knowledgeEntries) {
@@ -198,24 +362,20 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
       placeholderDocCount > 0
         ? `${docFiles.length} markdown files (-${docsPenalty} for ${placeholderDocCount} placeholder markers)`
         : `${docFiles.length} markdown files`,
+    applies: docsApply,
+    appliesReason:
+      docsApply === 'advisory'
+        ? 'Standalone libraries communicate via README + API docs more than per-task markdown.'
+        : undefined,
   });
   if (placeholderDocCount > 0) {
-    recs.push(
-      `Replace TODO/placeholder markers in ${placeholderDocCount} doc/task file(s).`,
-    );
+    recs.push(`Replace TODO/placeholder markers in ${placeholderDocCount} doc/task file(s).`);
   }
 
   // 11) Doctor health — passes is a near-required gate.
-  //
-  // Action-hint quality warnings are also surfaced by the doctor, but the
-  // dedicated `hint-quality` dimension below already scores them. Counting
-  // them here too would punish the same warning twice and crush the score
-  // once a repo crosses ten hint warnings. Exclude them from this dimension.
   const doctor = runDoctor(inspection);
   const structuralWarnings = doctor.checks.filter(
-    (c) =>
-      c.severity === 'warning' &&
-      !c.id.startsWith('actionhints-'),
+    (c) => c.severity === 'warning' && !c.id.startsWith('actionhints-'),
   ).length;
   const doctorScore = doctor.passed ? Math.max(0, 10 - structuralWarnings) : 0;
   dims.push({
@@ -226,14 +386,18 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     note: doctor.passed
       ? `passed (${structuralWarnings} structural warnings, ${doctor.summary.warnings} total)`
       : `${doctor.summary.errors} errors`,
+    applies: 'core',
   });
   if (!doctor.passed) recs.push('Fix doctor errors before relying on agent workflows.');
 
-  // 12) Pack discovery health
+  // 12) Pack discovery health — n/a when no packs are installed (don't
+  //     reward inaction with a neutral 5).
   const packs = inspection.packs;
+  const packsApply: DimensionAppliesTo =
+    packs.discoveredPacks.length === 0 ? 'n/a-for-shape' : 'core';
   const packsScore =
     packs.discoveredPacks.length === 0
-      ? 5 // neutral when no packs are installed
+      ? 0 // would-be neutral 5 was masking how often this dim doesn't apply
       : packs.invalidPacks.length === 0
         ? 10
         : 4;
@@ -246,8 +410,13 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
       packs.discoveredPacks.length === 0
         ? 'no packs discovered'
         : `${packs.validPacks.length}/${packs.discoveredPacks.length} packs valid`,
+    applies: packsApply,
+    appliesReason:
+      packsApply === 'n/a-for-shape'
+        ? 'No SharkCraft packs installed — pack-discovery health does not apply.'
+        : undefined,
   });
-  if (packs.invalidPacks.length > 0) {
+  if (packsApply === 'core' && packs.invalidPacks.length > 0) {
     recs.push('Fix invalid pack manifests (see `shrk packs doctor`).');
   }
 
@@ -257,7 +426,6 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
       e.actionHints?.writePolicy === 'cli-only' ||
       (e.actionHints?.forbiddenActions ?? []).some((f) => /write through mcp/i.test(f)),
   );
-  // Additionally penalize when any critical/high workflow entry lacks hints.
   const workflowMissingHints = inspection.knowledgeEntries.filter(
     (e) => isCriticalOrHighWorkflow(e) && !hasActionHints(e),
   ).length;
@@ -275,6 +443,7 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
         ? `cli-only write policy present, but ${workflowMissingHints} critical/high workflow entry/entries lack actionHints`
         : 'cli-only write policy + forbidden-actions present'
       : 'no entry declares cli-only write policy',
+    applies: 'core',
   });
   if (!hasDryRunDefault) {
     recs.push('Add a critical safety rule with writePolicy:"cli-only" and "do not write through MCP".');
@@ -299,6 +468,7 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     weight: 0.6,
     score: hintIssueScore,
     note: `${hintReport.issues.length} quality warnings across ${hintReport.evaluatedEntryCount} relevant entries`,
+    applies: 'core',
   });
 
   // 15) Data quality — duplicate ids surface as warnings.
@@ -313,18 +483,35 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
       dupCount === 0
         ? 'no duplicate knowledge ids'
         : `${dupCount} duplicate id(s) — first occurrence kept`,
+    applies: 'core',
   });
   if (dupCount > 0) recs.push(`Resolve ${dupCount} duplicate knowledge id(s).`);
 
-  // Aggregate.
-  const totalWeight = dims.reduce((sum, d) => sum + d.weight, 0);
-  const weightedSum = dims.reduce((sum, d) => sum + d.score * d.weight, 0);
-  const score = Math.round((weightedSum / totalWeight) * 10);
+  // Aggregate over `core` dimensions only — advisory + n/a do not count.
+  const coreDims = dims.filter((d) => d.applies === 'core');
+  const totalWeight = coreDims.reduce((sum, d) => sum + d.weight, 0);
+  const weightedSum = coreDims.reduce((sum, d) => sum + d.score * d.weight, 0);
+  const score = totalWeight > 0 ? Math.round((weightedSum / totalWeight) * 10) : 0;
+
+  // Binary verdicts — honest yes/no rather than a fuzzy score.
+  const blockers: string[] = [];
+  if (!doctor.passed) blockers.push('doctor reports errors');
+  if (!inspection.configFile) blockers.push('sharkcraft.config.ts missing');
+  if (!hasDryRunDefault) blockers.push('no cli-only write policy rule');
+  if (k === 0) blockers.push('no knowledge entries loaded');
+  const readyForAgentWrites = blockers.length === 0;
+  const readyForAgentReads = doctor.passed && k > 0;
 
   return {
     score,
     grade: gradeOf(score),
     dimensions: dims,
     topRecommendations: recs.slice(0, 5),
+    verdicts: {
+      readyForAgentWrites,
+      readyForAgentReads,
+      blockers,
+    },
+    workspaceShape: shape,
   };
 }

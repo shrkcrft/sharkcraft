@@ -148,7 +148,7 @@ interface IInsertEnumEntryOperation {
 
 interface IInsertObjectEntryOperation {
   kind: 'insert-object-entry';
-  /** Object identifier, e.g. `FEATURE_KEYS`. */
+  /** Object identifier, e.g. `ROUTE_KEYS`. */
   objectName: string;
   /** Key to add. */
   entryKey: string;

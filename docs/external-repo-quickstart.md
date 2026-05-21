@@ -1,6 +1,6 @@
 # External repo quickstart
 
-A five-minute walk-through for an adopter pointing SharkCraft at their
+A five-minute walk-through for an consumer pointing SharkCraft at their
 own repository. Everything below is read-only or writes only into
 draft / session / report directories.
 
@@ -58,7 +58,7 @@ shrk --cwd ./your-repo release readiness --strict --html --report
 ```
 
 Strict mode warns on missing release notes, limitations, external
-quickstart, and CHANGELOG. Adopters typically run lenient until they
+quickstart, and CHANGELOG. Consumers typically run lenient until they
 ship a release.
 
 ## 6. (Optional) Build the demo package

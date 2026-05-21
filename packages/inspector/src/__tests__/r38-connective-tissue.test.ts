@@ -221,14 +221,6 @@ describe('apply dispatch trace', () => {
     expect(trace.handler).toContain('helper-registry');
   });
 
-  it('classifies __plugin-lifecycle__ as plugin-lifecycle dispatch', () => {
-    const trace = buildApplyDispatchTrace({
-      plan: syntheticPlan('__plugin-lifecycle__rename'),
-      inspection: stubInspection,
-    });
-    expect(trace.dispatchKind).toBe(DispatchKind.PluginLifecycle);
-  });
-
   it('classifies __registration-hint__ as registration-hint dispatch', () => {
     const trace = buildApplyDispatchTrace({
       plan: syntheticPlan('__registration-hint__route'),

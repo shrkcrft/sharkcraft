@@ -1,4 +1,4 @@
-# Template profile metadata (R33)
+# Template profile metadata
 
 Templates can declare optional `metadata` fields used by
 `shrk templates drift`, `shrk coverage scaffolds`, `shrk context`,
@@ -8,8 +8,8 @@ and `prepare_agent_task` — never by the renderer itself.
 
 - `forbiddenPathFragments?: readonly string[]` — paths the rendered
   template must not produce.
-- `requiredProfileIds?: readonly string[]` — plugin lifecycle profile
-  ids the template depends on.
+- `requiredProfileIds?: readonly string[]` — profile ids the template
+  depends on.
 - `requiredConventionIds?: readonly string[]` — convention ids the
   template's outputs are expected to satisfy.
 - `requiredHelperIds?: readonly string[]` — helper ids that complete

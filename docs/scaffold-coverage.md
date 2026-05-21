@@ -11,8 +11,8 @@ shrk coverage scaffolds --domain <domain> [--json]
 shrk task "<task>" --show-coverage-gaps
 ```
 
-`--domain` accepts free-form labels (e.g. `angular`, `plugin`,
-`primitive`, `polyglot`, `runtime`, `devtools`).
+`--domain` accepts free-form labels (e.g. `angular`, `service`,
+`polyglot`, `runtime`).
 
 ## Axes
 

@@ -9,9 +9,9 @@ never run code on the engine's behalf.
 `buildPackContributionsInventoryAsync(inspection)` does
 **structural-first** extraction via the dedicated per-kind registries
 (knowledge / rules / paths / templates / pipelines / playbooks /
-plugin-lifecycle profiles / conventions / helpers / routing hints /
-contract templates / migration profiles). For kinds without a
-dedicated loader, regex extraction stays in place but is tagged
+conventions / helpers / routing hints / contract templates /
+migration profiles). For kinds without a dedicated loader, regex
+extraction stays in place but is tagged
 `extractionMode: 'regex-fallback'` with `confidence: 'medium'`. The
 regex fallback also dedupes against `(kind, packageName||local, id)`
 so the same logical pack contribution doesn't double-count when
@@ -42,9 +42,8 @@ surfaces.
 | `searchTuningFiles` | `ISearchTuning[]` | search-tuning loader |
 | `feedbackRuleFiles` (R30+) | `IFeedbackRule[]` | feedback loader |
 | `decisionFiles` (R30+) | `IDecision[]` | decisions loader |
-| `pathConventionFiles` (R31) | `IPathConvention[]` | paths loader |
-| `pluginLifecycleProfileFiles` (R32) | `IPluginLifecycleProfile[]` | `loadPluginLifecycleProfiles` |
-| `contractTemplateFiles` (R32) | `IAgentContractTemplate[]` | `loadAllContractTemplates` |
+| `pathConventionFiles` | `IPathConvention[]` | paths loader |
+| `contractTemplateFiles` | `IAgentContractTemplate[]` | `loadAllContractTemplates` |
 | `migrationProfileFiles` (R32) | `IMigrationProfile[]` | `loadMigrationProfiles` |
 | `conventionFiles` (R32) | `IConvention[]` (reserved) | — |
 

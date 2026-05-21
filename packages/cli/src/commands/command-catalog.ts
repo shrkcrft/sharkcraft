@@ -375,6 +375,15 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     taskRole: CommandTaskRole.Validate,
   }),
   entry({
+    command: 'diff-check',
+    description: 'Self-check current git diff against boundary + import-hygiene rules. Single-call composite for agents to validate edits before declaring done. Read-only.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
     command: 'review',
     description: 'PR-review packet — changed files, affected rules, missing tests heuristic.',
     category: 'review',
@@ -720,6 +729,11 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'task-context',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
+    // Overlaps with `shrk task` (machine packet) and `shrk recommend`
+    // (human routing). Pointing at `task` as canonical so users who
+    // hit this via tab-complete see the canonical machine-pipe form.
+    overlapsWith: ['task', 'recommend'],
+    preferredCommand: 'shrk task "<task>"',
   }),
   entry({
     command: 'validate-change',
@@ -1097,7 +1111,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   entry({
     command: 'profiles',
     description:
-      'List / inspect pack-contributed profiles (plugin-lifecycle, migration, conventions, …). Subcommands: list, get, doctor, search.',
+      'List / inspect pack-contributed profiles (migration, conventions, …). Subcommands: list, get, doctor, search.',
     category: 'core',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
@@ -2409,7 +2423,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   }),
   entry({
     command: 'release smoke --matrix',
-    description: 'Run smoke scenarios across multiple repo targets (sharkcraft/dogfood/synthetic/adopter).',
+    description: 'Run smoke scenarios across multiple repo targets (sharkcraft/dogfood/synthetic/consumer).',
     category: 'release',
     safetyLevel: SafetyLevel.WritesDraftsOnly,
     writesFiles: true,
@@ -2807,34 +2821,6 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'boundaries',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
-  }),
-  entry({
-    command: 'plugin rename',
-    description: 'Plan-only plugin rename (profile-driven) — emits replace ops + manual folder rename checklist.',
-    category: 'lifecycle',
-    safetyLevel: SafetyLevel.WritesDraftsOnly,
-    mcpAvailable: true,
-  }),
-  entry({
-    command: 'plugin remove',
-    description: 'Plan-only destructive plugin remove (profile-driven) — destructive; requires human approval.',
-    category: 'lifecycle',
-    safetyLevel: SafetyLevel.WritesDraftsOnly,
-    mcpAvailable: true,
-  }),
-  entry({
-    command: 'plugin lifecycle list',
-    description: 'List plugins detected under the active profile roots and key-table. Read-only.',
-    category: 'lifecycle',
-    safetyLevel: SafetyLevel.ReadOnly,
-    mcpAvailable: false,
-  }),
-  entry({
-    command: 'plugin lifecycle inspect',
-    description: 'Inspect references to a plugin across the profile layers + key-table. Read-only.',
-    category: 'lifecycle',
-    safetyLevel: SafetyLevel.ReadOnly,
-    mcpAvailable: false,
   }),
   entry({
     command: 'helper list',
@@ -3287,11 +3273,97 @@ export function commandLifecycle(e: ICommandCatalogEntry): CommandLifecycle {
 }
 
 /**
+ * The "Primary verbs" allowlist — top-level commands that pay rent in
+ * the default help surface. Everything else stays callable but is
+ * hidden from `--full-help` and from MCP tool advertising; users find
+ * them via `shrk surface list`, `shrk help <cmd>`, or `--full-help`.
+ *
+ * Picked to cover the canonical agent-flow journeys:
+ *   - bootstrap a repo, verify it
+ *   - get a brief / context / task packet for an agent
+ *   - generate safely (plan → apply → check)
+ *   - browse what shrk knows (rules / paths / templates / presets)
+ *   - inline the rules into the agent's prompt (export, mcp, dashboard)
+ *   - daily operations (review, impact, search, explain, why, surface)
+ *
+ * Anything not in this set falls back to the legacy
+ * surface-tier-based visibility, with deprecated / retired / aliased
+ * commands hidden regardless. Adding a verb here is the explicit
+ * "this is rent-paying" decision.
+ */
+const PRIMARY_VERBS_ALLOWLIST: ReadonlySet<string> = new Set([
+  // Bootstrap
+  'init',
+  'doctor',
+  'inspect',
+  'onboard',
+  'version',
+  'help',
+  'preflight',
+  'self-config',
+  // Per-task
+  'brief',
+  'recommend',
+  'context',
+  'task',
+  'coverage',
+  'explain',
+  'why',
+  'search',
+  'impact',
+  'graph',
+  // Generate code safely
+  'gen',
+  'apply',
+  'check',
+  'quality',
+  'plan',
+  'fix',
+  // Browse / inline
+  'knowledge',
+  'rules',
+  'templates',
+  'paths',
+  'import',
+  'export',
+  // Architecture & quality gates
+  'drift',
+  'safety',
+  // Run for an agent
+  'mcp',
+  'dashboard',
+  // Ops
+  'surface',
+  'presets',
+  'review',
+  'packs',
+  'ci',
+  'commands',
+]);
+
+function topLevelVerb(command: string): string {
+  // Strip leading `--cwd <dir>` / `--<flag>` tokens and angle-bracket
+  // placeholders; the canonical first verb is whatever leads.
+  const tokens = command.split(/\s+/);
+  for (const t of tokens) {
+    if (!t) continue;
+    if (t.startsWith('--') || t.startsWith('-')) continue;
+    if (t.startsWith('<') || t.startsWith('"')) continue;
+    return t;
+  }
+  return command;
+}
+
+/**
  * Default-help visibility rule. Honors an explicit
  * {@link ICommandCatalogEntry.showInDefaultHelp} when set; otherwise
- * primary + common are visible and advanced / machine / internal / legacy
- * are hidden. Deprecated and retired commands are always hidden by
- * default regardless of surface.
+ * the {@link PRIMARY_VERBS_ALLOWLIST} gates membership in the visible
+ * surface (primary + common entries whose top-level verb pays rent
+ * make the cut; everything else is hidden from `--full-help`).
+ *
+ * Deprecated, retired, aliased commands and anything in the
+ * {@link R46_OVERLAY} are always hidden regardless of allowlist
+ * membership.
  */
 export function defaultShowInHelp(e: ICommandCatalogEntry): boolean {
   if (e.showInDefaultHelp !== undefined) return e.showInDefaultHelp;
@@ -3300,6 +3372,11 @@ export function defaultShowInHelp(e: ICommandCatalogEntry): boolean {
   const lc = commandLifecycle(e);
   if (lc === CommandLifecycle.Deprecated || lc === CommandLifecycle.Retired) return false;
   if (lc === CommandLifecycle.Alias) return false;
+  // Allowlist gate — the top-level verb must be one of the ~30
+  // rent-paying verbs. Subcommands of an allowlisted verb inherit
+  // visibility (so `check boundaries` shows under `check`).
+  const verb = topLevelVerb(e.command);
+  if (!PRIMARY_VERBS_ALLOWLIST.has(verb)) return false;
   const surface = commandSurface(e);
   return surface === CommandSurface.Primary || surface === CommandSurface.Common;
 }
