@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/dashboard",
-  "version": "0.1.0-alpha.10",
+  "version": "0.1.0-alpha.11",
   "description": "SharkCraft local read-only dashboard (React + Vite). Browser bundle that consumes @shrkcrft/dashboard-api over the local dashboard server.",
   "license": "MIT",
   "author": "SharkCraft contributors",

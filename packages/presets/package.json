@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/presets",
-  "version": "0.1.0-alpha.10",
+  "version": "0.1.0-alpha.11",
   "description": "SharkCraft presets: reusable project setups (knowledge/rules/paths/templates/pipelines/docs) that can be applied to a target repo through the CLI.",
   "license": "MIT",
   "author": "SharkCraft contributors",

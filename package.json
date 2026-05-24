@@ -52,6 +52,7 @@
     "compat:node:mcp": "bun run scripts/compat-node.ts --runtime --mcp",
     "compat:node:runtime": "bun run scripts/compat-node.ts --runtime --build",
     "dashboard:dev": "cd packages/dashboard && bun x vite",
+    "dashboard:dev:full": "bun run scripts/dashboard-dev.ts",
     "dashboard:build": "cd packages/dashboard && bun x vite build",
     "dashboard:preview": "cd packages/dashboard && bun x vite preview",
     "test:e2e": "bun x playwright test",

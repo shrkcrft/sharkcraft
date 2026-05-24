@@ -343,6 +343,13 @@ async function handle(
     return serveStatic(res, opts.staticDir, path);
   }
 
+  // Non-API request with no static UI installed. Common when @shrkcrft/cli
+  // is consumed without @shrkcrft/dashboard present. Return a helpful page
+  // instead of falling through to the cryptic "Unknown route: /".
+  if (!path.startsWith('/api/') && !opts.staticDir) {
+    return serveNoUiHint(res, path);
+  }
+
   // Session live events (SSE). Subscribe via EventSource on the session detail page.
   const sseMatch = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
   if (sseMatch) {
@@ -642,6 +649,26 @@ function serveSessionReportHtml(
     return;
   }
   res.end(html);
+}
+
+function serveNoUiHint(res: http.ServerResponse, urlPath: string): void {
+  const accept = (res.req?.headers['accept'] ?? '') as string;
+  const wantsHtml = accept.includes('text/html');
+  if (wantsHtml) {
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>SharkCraft dashboard — UI not installed</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;max-width:680px;margin:48px auto;padding:0 16px;color:#1f2937;line-height:1.55}code,pre{background:#f3f4f6;padding:2px 6px;border-radius:4px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}pre{padding:12px;overflow:auto}h1{font-size:20px;margin-top:0}a{color:#2563eb}</style></head><body><h1>SharkCraft dashboard</h1><p>The API is running, but the web UI bundle (<code>@shrkcrft/dashboard</code>) was not found next to <code>@shrkcrft/cli</code>.</p><p>Install or upgrade it alongside the CLI:</p><pre>npm i -D @shrkcrft/dashboard@alpha</pre><p>Or point the server at a local build:</p><pre>shrk dashboard --dev-assets path/to/dashboard/dist</pre><p>The API itself is available — try <a href="/api/health">/api/health</a> or <a href="/api/overview">/api/overview</a>.</p></body></html>`;
+    res.statusCode = 200;
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    res.setHeader('cache-control', 'no-store');
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.setHeader('referrer-policy', 'no-referrer');
+    if ((res.req?.method ?? 'GET') === 'HEAD') {
+      res.end();
+      return;
+    }
+    res.end(html);
+    return;
+  }
+  respondError(res, 404, 'not-found', `No UI assets installed; ${urlPath} cannot be served. Install @shrkcrft/dashboard or pass --dev-assets.`);
 }
 
 function serveStatic(res: http.ServerResponse, staticDir: string, urlPath: string): void {
