@@ -88,7 +88,37 @@ export interface IBuildTaskPacketOptions {
   scope?: readonly string[];
   /** When true, include per-kind ranking reasons in the packet. */
   explainRanking?: boolean;
+  /**
+   * When true (default), apply tight caps to the packet — top-5 rules /
+   * templates / paths and per-field caps on actionHints aggregates.
+   *
+   * When false, returns the full ranking + aggregated hints (older behavior).
+   * Use this when an agent explicitly asks for an exhaustive packet via
+   * `shrk task --full`.
+   *
+   * Tightening exists because the original benchmark called out token
+   * overhead as half of why shrk was net-negative; the default packet should
+   * be lean unless the caller opts in.
+   */
+  compact?: boolean;
 }
+
+/**
+ * Per-field caps applied to the packet when `compact: true`.
+ * Keeps the JSON small while still covering the highest-signal hits.
+ */
+const COMPACT_CAPS = {
+  rules: 5,
+  paths: 5,
+  templates: 3,
+  commands: 5,
+  mcpTools: 5,
+  forbiddenActions: 5,
+  verificationCommands: 5,
+  safetyNotes: 5,
+  relatedTemplates: 5,
+  relatedPathConventions: 5,
+} as const;
 
 function findPipelinesByTags(
   pipelines: readonly IPipelineDefinition[],
@@ -147,6 +177,7 @@ export function buildTaskPacket(
   options: IBuildTaskPacketOptions = {},
 ): ITaskPacket {
   const maxTokens = options.maxTokens ?? 3500;
+  const compact = options.compact !== false;
   const overview = buildProjectOverview(inspection.workspace, inspection.config?.projectName);
   const overviewText = renderOverviewText(overview);
 
@@ -158,10 +189,18 @@ export function buildTaskPacket(
   });
 
   // ── Deterministic ranker — replaces the old substring search ─────────
-  const ranking = rankAll(inspection, task, 10);
-  const relevantRules = ranking.rules.map((r) => r.item);
-  const relevantPaths = ranking.paths.map((r) => r.item);
-  const relevantTemplates = ranking.templates.map((r) => r.item);
+  // Compact mode requests top-5; full mode requests top-10 (the original).
+  const rankN = compact ? 8 : 10;
+  const ranking = rankAll(inspection, task, rankN);
+  const relevantRules = compact
+    ? ranking.rules.slice(0, COMPACT_CAPS.rules).map((r) => r.item)
+    : ranking.rules.map((r) => r.item);
+  const relevantPaths = compact
+    ? ranking.paths.slice(0, COMPACT_CAPS.paths).map((r) => r.item)
+    : ranking.paths.map((r) => r.item);
+  const relevantTemplates = compact
+    ? ranking.templates.slice(0, COMPACT_CAPS.templates).map((r) => r.item)
+    : ranking.templates.map((r) => r.item);
 
   // Aggregate hints from the *ranked* knowledge so unrelated entries don't
   // leak into the action-hints surface.
@@ -171,7 +210,23 @@ export function buildTaskPacket(
       (e) => e.priority === 'critical' || e.priority === 'high',
     ),
   ];
-  const actionHints = aggregateActionHints(hintCorpus);
+  const actionHintsRaw = aggregateActionHints(hintCorpus);
+  // Cap each per-field aggregate when compact. Aggregator already
+  // priority-sorts entries, so the top-N kept here is the highest-signal
+  // slice of each field. `requiresHumanReview` / `writePolicy` /
+  // `preferredFlow` / `contributingEntries` are unchanged.
+  const actionHints = compact
+    ? {
+        ...actionHintsRaw,
+        commands: actionHintsRaw.commands.slice(0, COMPACT_CAPS.commands),
+        mcpTools: actionHintsRaw.mcpTools.slice(0, COMPACT_CAPS.mcpTools),
+        forbiddenActions: actionHintsRaw.forbiddenActions.slice(0, COMPACT_CAPS.forbiddenActions),
+        verificationCommands: actionHintsRaw.verificationCommands.slice(0, COMPACT_CAPS.verificationCommands),
+        safetyNotes: actionHintsRaw.safetyNotes.slice(0, COMPACT_CAPS.safetyNotes),
+        relatedTemplates: actionHintsRaw.relatedTemplates.slice(0, COMPACT_CAPS.relatedTemplates),
+        relatedPathConventions: actionHintsRaw.relatedPathConventions.slice(0, COMPACT_CAPS.relatedPathConventions),
+      }
+    : actionHintsRaw;
 
   // Pipelines: prefer ranker output, then verb fallback for context-only.
   const rankedPipelines = ranking.pipelines.slice(0, 3).map((p) => ({

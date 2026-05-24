@@ -16,6 +16,17 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import {
+  runGraphCallers,
+  runGraphContext,
+  runGraphCycles,
+  runGraphDeps,
+  runGraphImpact,
+  runGraphIndex,
+  runGraphSearch,
+  runGraphStatus,
+  runGraphUnresolved,
+} from './graph-code-subverbs.ts';
 
 const KNOWN_KINDS: GraphNodeKind[] = [
   'knowledge',
@@ -36,6 +47,19 @@ export const graphCommand: ICommandHandler = {
   usage:
     'shrk [--cwd <dir>] graph [<id>] [--type <kind>] [--format text|json|dot|mermaid] [--output <file>] [--json] | shrk graph export --format dot|mermaid --output <file>',
   async run(args: ParsedArgs): Promise<number> {
+    // Code-intelligence subverbs (R65) don't need the knowledge graph —
+    // dispatch them before the expensive inspection so they stay fast.
+    const earlySub = args.positional[0];
+    if (earlySub === 'index') return runGraphIndex(args);
+    if (earlySub === 'status') return runGraphStatus(args);
+    if (earlySub === 'search') return runGraphSearch(args);
+    if (earlySub === 'context') return runGraphContext(args);
+    if (earlySub === 'impact') return runGraphImpact(args);
+    if (earlySub === 'callers') return runGraphCallers(args);
+    if (earlySub === 'cycles') return runGraphCycles(args);
+    if (earlySub === 'unresolved') return runGraphUnresolved(args);
+    if (earlySub === 'deps') return runGraphDeps({ ...args, positional: args.positional.slice(1) });
+
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const graph = buildKnowledgeGraph(inspection);
     const sub = args.positional[0];

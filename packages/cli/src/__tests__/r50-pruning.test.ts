@@ -135,7 +135,11 @@ describe('surface lockdown holds', () => {
     // .sharkcraft/reports/r58-feedback-gap-audit.md. R59 restores
     // dashboard (+ export, + diff) and adds `shrk stats` (+4 entries
     // total), raising the ceiling to 365.
-    expect(COMMAND_CATALOG.length).toBeLessThan(365);
+    // Code-intelligence layer migration adds 8 top-level commands:
+    // rule-graph, search-structural, plan-context, arch, framework,
+    // api-diff, gate, migrate. Each is a one-line entry, raising the
+    // ceiling to 374.
+    expect(COMMAND_CATALOG.length).toBeLessThan(374);
     // Sanity: not absurdly small.
     expect(COMMAND_CATALOG.length).toBeGreaterThan(250);
   });

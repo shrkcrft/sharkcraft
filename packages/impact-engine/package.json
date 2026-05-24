@@ -1,0 +1,49 @@
+{
+  "name": "@shrkcrft/impact-engine",
+  "version": "0.1.0-alpha.10",
+  "description": "SharkCraft impact engine: graph-backed change analysis. Combines code graph + rule-graph + symbol-reference edges into a v3 impact payload (affected files, symbols, rules, templates, tests, risk).",
+  "license": "MIT",
+  "author": "SharkCraft contributors",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sharkcraft/sharkcraft.git",
+    "directory": "packages/impact-engine"
+  },
+  "homepage": "https://github.com/sharkcraft/sharkcraft",
+  "bugs": {
+    "url": "https://github.com/sharkcraft/sharkcraft/issues"
+  },
+  "keywords": [
+    "sharkcraft",
+    "impact-engine",
+    "graph",
+    "code-intelligence",
+    "blast-radius"
+  ],
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@shrkcrft/core": "workspace:*",
+    "@shrkcrft/graph": "workspace:*",
+    "@shrkcrft/rule-graph": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

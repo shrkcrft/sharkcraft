@@ -255,7 +255,10 @@ export function runAgentContractTest(
   test: IAgentContractTest,
   registries?: IAgentContractRegistries,
 ): IAgentContractTestResult {
-  const packet = buildTaskPacket(inspection, test.task, { maxTokens: 3500 });
+  // Self-tests assert specific rules/templates appear for a task — they
+  // test semantics, not packet size. Opt out of the compact cap so the
+  // assertions see the full ranking.
+  const packet = buildTaskPacket(inspection, test.task, { maxTokens: 3500, compact: false });
   const actualPipelines = packet.recommendedPipelines.map((p) => p.pipelineId);
   const missingTemplates = (test.expectedTemplates ?? []).filter(
     (id) => !packet.relevantTemplates.some((t) => t.id === id),

@@ -78,6 +78,15 @@ export interface ISharkCraftPackContributions {
   taskRoutingHintFiles?: readonly string[];
   /** Pack-contributed registration hints. Files default-export `readonly IRegistrationHint[]`. */
   registrationHintFiles?: readonly string[];
+  /**
+   * Pack-contributed framework extractors for `@shrkcrft/framework-scanners`.
+   * Each file default-exports an `IFrameworkExtractor` OR an array thereof.
+   * The framework name in the extractor must be unique across the merged
+   * registry — collisions with built-in extractors (nestjs / react /
+   * express / nextjs / angular) are reported as load diagnostics and the
+   * pack's extractor is skipped.
+   */
+  frameworkExtractorFiles?: readonly string[];
 }
 
 export interface ISharkCraftPackSignature {
@@ -187,6 +196,7 @@ export function validatePackManifest(value: unknown): IPackManifestValidationRes
       'helperFiles',
       'taskRoutingHintFiles',
       'registrationHintFiles',
+      'frameworkExtractorFiles',
     ] as const) {
       const v = contributions[key];
       if (v === undefined) continue;

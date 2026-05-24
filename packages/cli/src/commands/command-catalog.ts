@@ -346,6 +346,96 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     taskRole: CommandTaskRole.Inspect,
   }),
   entry({
+    command: 'rule-graph',
+    description:
+      'Bridge the code graph to asset registries (boundary rules, path conventions, templates). Sub-verbs: index, status, for <file>.',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSessionOnly,
+    mcpAvailable: true,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'search-structural',
+    description:
+      'Declarative AST pattern search over the project. Read-only; no rewrites in this round.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'plan-context',
+    description:
+      'Produce a deterministic, token-budgeted context pack (`sharkcraft.context-pack/v1`) for an AI coding agent.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Context,
+  }),
+  entry({
+    command: 'arch',
+    description:
+      'Architecture-guard checks (public-API misuse, barrel risks, cycle severity, project contracts).',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'framework',
+    description:
+      'Framework-aware extractors: NestJS controllers/modules/providers/routes, React components/hook usages. Sub-verbs: index, status, list, routes.',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSessionOnly,
+    mcpAvailable: true,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'api-diff',
+    description:
+      'Compare the current public API surface to a baseline. Reports added / removed / kind-changed / moved symbols with breaking-change severity.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'gate',
+    description:
+      'Aggregator quality-gate: graph freshness + architecture + impact-since-ref → one pass/fail. The pre-merge gate for AI-agent-authored changes.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'migrate',
+    description:
+      'Run a multi-step migration: structural rewrites + shell + checks orchestrated as one replayable plan.',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSource,
+    mcpAvailable: false,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Generate,
+  }),
+  entry({
+    command: 'code-intel',
+    description:
+      'One-shot view of code-intelligence doctor checks (graph, rule-graph, api-surface, quality-gate, migrations, architecture, impact, framework, structural-search, context-planner). Read-only.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Diagnose,
+  }),
+  entry({
     command: 'check',
     description: 'Run validation checks across registries / packs / boundaries.',
     category: 'core',
@@ -1039,6 +1129,14 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   entry({
     command: 'version',
     description: 'Print the CLI version.',
+    category: 'meta',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Common,
+  }),
+  entry({
+    command: 'completion',
+    description:
+      'Print a sourcable shell-completion script for the `shrk` CLI (bash | zsh | fish). Pipe into your shell rc.',
     category: 'meta',
     safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Common,

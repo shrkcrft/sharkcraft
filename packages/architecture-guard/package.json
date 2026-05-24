@@ -1,0 +1,48 @@
+{
+  "name": "@shrkcrft/architecture-guard",
+  "version": "0.1.0-alpha.10",
+  "description": "SharkCraft architecture guard: semantic architecture checks on top of the code graph — public-API misuse, barrel risks, cycle severity, project-specific architecture contracts.",
+  "license": "MIT",
+  "author": "SharkCraft contributors",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sharkcraft/sharkcraft.git",
+    "directory": "packages/architecture-guard"
+  },
+  "homepage": "https://github.com/sharkcraft/sharkcraft",
+  "bugs": {
+    "url": "https://github.com/sharkcraft/sharkcraft/issues"
+  },
+  "keywords": [
+    "sharkcraft",
+    "architecture-guard",
+    "boundaries",
+    "code-intelligence"
+  ],
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@shrkcrft/core": "workspace:*",
+    "@shrkcrft/boundaries": "workspace:*",
+    "@shrkcrft/graph": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

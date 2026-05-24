@@ -34,6 +34,14 @@ export type {
   IDashboardStatsResponse,
   IDashboardStatsLanguage,
   IDashboardStatsTopFile,
+  IDashboardCodeIntelligenceResponse,
+  IDashboardRoutesResponse,
+  IDashboardRouteRow,
+  IDashboardMigrationsResponse,
+  IDashboardMigrationRow,
+  IDashboardMigrationStep,
+  IDashboardQualityGatesResponse,
+  IDashboardQualityGate,
 } from '@shrkcrft/dashboard-api';
 
 export interface IDashboardApiError {

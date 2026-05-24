@@ -26,6 +26,10 @@ import type {
   IDashboardSessionDetailResponse,
   IDashboardSessionsResponse,
   IDashboardStatsResponse,
+  IDashboardCodeIntelligenceResponse,
+  IDashboardRoutesResponse,
+  IDashboardMigrationsResponse,
+  IDashboardQualityGatesResponse,
 } from './types.ts';
 import { apiGet, type IRawApiResponse } from './client.ts';
 
@@ -100,3 +104,19 @@ export const getStats = (
   if (opts?.language) params['language'] = opts.language;
   return apiGet('/api/stats', params, signal);
 };
+export const getCodeIntelligence = (
+  signal?: AbortSignal,
+): Promise<IRawApiResponse<IDashboardCodeIntelligenceResponse>> =>
+  apiGet('/api/code-intelligence', undefined, signal);
+export const getRoutes = (
+  signal?: AbortSignal,
+): Promise<IRawApiResponse<IDashboardRoutesResponse>> =>
+  apiGet('/api/routes', undefined, signal);
+export const getMigrations = (
+  signal?: AbortSignal,
+): Promise<IRawApiResponse<IDashboardMigrationsResponse>> =>
+  apiGet('/api/migrations', undefined, signal);
+export const getQualityGates = (
+  signal?: AbortSignal,
+): Promise<IRawApiResponse<IDashboardQualityGatesResponse>> =>
+  apiGet('/api/quality-gates', undefined, signal);

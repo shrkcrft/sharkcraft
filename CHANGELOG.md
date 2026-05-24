@@ -5,6 +5,525 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [Unreleased — staged after 0.1.0-alpha.8] — One-shot code-intel view, round 8
+
+After rounds 1–7 built and exposed every doctor check, gate signal,
+and starter helper, this round adds a single concise surface that
+collapses the 14 code-intelligence checks into one read — for the
+inner loop, the dashboard, and any downstream tool that wants just
+the code-intelligence section without `shrk doctor`'s wider output.
+
+### Added — `shrk code-intel` top-level command
+
+A focused alternative to `shrk doctor` that returns only the
+`category: 'code-intelligence'` findings:
+
+- Text mode (default) groups by severity with `✓ ℹ ⚠ ✗` icons,
+  one line per finding plus its fix / `whyThisMatters`.
+- `--json` emits `sharkcraft.code-intelligence-state/v1` with the
+  summary counts + full check list.
+- `--markdown` produces PR-ready output with summary table + per-
+  check sections (counterpart to `shrk gate --markdown`).
+- Filters: `--only ok,warning,error,info` and `--check <id>`.
+- `--stale-days N` overrides the default freshness threshold (7).
+- Exits 1 on any structural error; advisory warnings never fail
+  (same contract as `shrk doctor`).
+
+### Added — `get_code_intelligence_state` MCP tool
+
+Read-only mirror of `shrk code-intel`. Returns the 14-check payload
+under the same schema. Same `only` + `checkId` filter shape as the
+CLI so agents have a single point of read for the entire code-
+intelligence state.
+
+### Why this round
+
+`shrk doctor` reports everything — config, knowledge, templates,
+pipelines, packs, code-intelligence, all in one frame. Inner-loop
+callers usually want just the code-intelligence slice (especially
+after a `shrk graph index --watch` tick). Adding a dedicated
+command + MCP tool removes the parsing step that downstream tools
+were doing anyway and locks in a stable schema for what "the
+code-intelligence section" means.
+
+## [Unreleased — staged after 0.1.0-alpha.8] — DX polish, round 7
+
+After rounds 1–6 built out the code-intelligence layer end-to-end,
+this round focuses on the **inner loop** an AI agent (or human) lives
+in: live re-indexing, pre-commit gating, and tab-completion.
+
+### Added — `shrk graph index --watch`
+
+The graph indexer can now run in a watch loop. The first tick runs a
+full or incremental index as normal; every subsequent tick forces
+`--changed`, so a 5-file edit takes < 100 ms via the existing
+incremental updater. Reuses the existing `maybeRunInWatchMode`
+infrastructure for debounce + `--paths` filtering, so `--once` /
+`--debounce N` work out of the box.
+
+```bash
+# Default: watch the entire project root.
+shrk graph index --watch
+
+# Narrow: only re-index when packages/cli or packages/inspector change.
+shrk graph index --watch --paths packages/cli,packages/inspector --debounce 250
+```
+
+### Added — `shrk gate scaffold-hook`
+
+Pre-commit hook scaffold for projects that want a faster feedback
+loop than CI. Two flavours:
+
+- `--provider husky` (default) writes `.husky/pre-commit` running
+  `shrk graph index --changed && shrk gate --strict`. chmod 755.
+- `--provider raw` writes `scripts/pre-commit` (chmod 755) and
+  prints the `ln -s` activation hint. No husky dependency.
+
+Refuses to overwrite without `--force`. Pairs with the round-6
+`scaffold-ci` so a project can adopt both in two commands.
+
+### Added — `shrk completion <bash|zsh|fish>`
+
+Sourcable shell-completion scripts. Top-level verbs are pulled from
+the runtime `COMMAND_CATALOG` so completion can't drift from what
+the CLI actually accepts. Subverbs for the high-traffic groups
+(`graph`, `arch`, `impact`, `gate`, `context`, `search-structural`,
+`doctor`) are hand-curated.
+
+```bash
+# Bash:
+eval "$(shrk completion bash)"
+
+# Zsh:
+eval "$(shrk completion zsh)"
+
+# Fish (write once, lasts forever):
+shrk completion fish > ~/.config/fish/completions/shrk.fish
+```
+
+JSON mode (`--json`) emits the verbs + subverb map under schema
+`sharkcraft.cli-completion/v1` for editor / IDE integrations.
+
+### Why this round
+
+The new code-intelligence surfaces from rounds 1–6 only pay off in
+the inner loop if they're cheap to invoke. `--watch` makes the
+graph free; `scaffold-hook` makes the gate free; `completion` makes
+the surface discoverable without reading docs. None of these add
+schemas or new state files — they're pure DX.
+
+## [Unreleased — staged after 0.1.0-alpha.8] — Code-intelligence doctor surface, round 6
+
+Closes the read-only agent surface: every new state file introduced
+across rounds 1–5 now has a matching MCP tool. Adds PR-comment-ready
+markdown output for `shrk gate` and a one-shot CI workflow scaffold
+so teams can adopt the gate in a single command.
+
+### Added — 4 new MCP tools
+
+- `get_graph_deps` — read-only mirror of `shrk graph deps <package>`;
+  returns inbound + outbound `package-depends-on` edges. Structured
+  `graph-missing` / `not-found` errors with `nextCommand` hints.
+- `get_impact_baseline` — read-only mirror of `shrk impact baseline
+  show`. States: `present` (baseline + last + delta), `missing-both`,
+  `missing-baseline`, `missing-last` — each with `nextCommands`.
+- `get_pattern_registry` — read-only mirror of `shrk search-structural
+  registry list`. Reports `present: true|false` so the agent can
+  detect a never-seeded registry.
+- `get_intent_benchmark_run` — read-only mirror of `shrk context
+  benchmark`. States: `present` (run + fixture case count),
+  `fixture-only` (run yet to be persisted), `missing`.
+
+All four are registered in `ALL_TOOLS`, advertise read-only intent
+in their descriptions, and accept the standard MCP context. Sibling
+pattern of the existing graph tools.
+
+### Added — `shrk gate --markdown` (+ `--output <path>`)
+
+`@shrkcrft/quality-gates` gains `renderGateReportMarkdown(report)`
+that produces a PR-comment-ready markdown rendering:
+
+- Header line with overall-status badge (✅ / ⚠️ / ❌ / ⏭️).
+- Counts table.
+- Per-gate section with status icon, label, duration, message,
+  and a fenced bash code block of next commands when present.
+- Diagnostics section appended only when non-empty.
+
+`shrk gate --markdown` writes to stdout; `--output <path>` writes
+to a file. Exit code mirrors the existing pass/warn/fail semantics.
+
+### Added — `shrk gate scaffold-ci [--provider github|generic]`
+
+One-shot CI runner generator:
+
+- `--provider github` (default) → writes
+  `.github/workflows/shrk-gate.yml` with `actions/checkout@v4` +
+  `oven-sh/setup-bun@v2` + `shrk graph index` + `shrk gate
+  --markdown --output gate-report.md` + an `actions/github-script`
+  step that posts the markdown report as a PR comment.
+- `--provider generic` → writes `scripts/shrk-gate.sh` (chmod 755)
+  that any CI provider can invoke. Defaults to `--strict`.
+- Refuses to overwrite without `--force`.
+
+### Roadmap
+
+The agent surface (CLI + MCP) is now feature-complete for every
+code-intelligence state file shipped through rounds 1–6. The
+remaining items on the roadmap are dashboard polish + framework
+extractor additions — both demand-driven.
+
+## [Unreleased — staged after 0.1.0-alpha.8] — Code-intelligence doctor surface, round 5
+
+After rounds 1–4 closed every §5.5 doctor gap, this round wires the
+new signals into the canonical CI gate (`shrk gate`), ships an
+authoritative reference document, and adds zero-config starter
+content so projects can adopt the new surfaces with a single command.
+
+### Added — 5 new gates in `shrk gate`
+
+`@shrkcrft/quality-gates` gains five new gate functions that read
+the same on-disk state files as the doctor surfaces. Each is part
+of the default gate set, configurable via the `runQualityGates`
+options, and skippable via `disable`:
+
+- `graph-cycles` — surfaces `largestCycleSize ≥ 3` OR
+  `cycleCount ≥ 5`. Warn by default; `failOnLarge: true` escalates.
+- `graph-unresolved` — surfaces any `unresolved:*` edges (count,
+  affected files, sample specifiers). Warn by default; `failOnAny`
+  escalates to fail.
+- `impact-baseline` — diffs `last.json` against `baseline.json`,
+  warns when dependents / packages / risk worsened. Skipped when
+  either side is missing. `failOnWorsened` escalates.
+- `structural-patterns` — re-validates the pattern registry; warns
+  on any invalid entry. Skipped when no registry exists.
+  `failOnInvalid` escalates.
+- `intent-classifier` — runs the benchmark fixture in-process and
+  gates on accuracy (default fail < 60%, warn < 95%). Skipped when
+  no fixture exists.
+
+All five are exported from `@shrkcrft/quality-gates` and registered
+in `runQualityGates`. Existing CI runs see them via the next
+`shrk gate` call; legacy behaviour is preserved when each is added
+to the `disable` list.
+
+### Added — `docs/doctor-code-intelligence.md`
+
+Authoritative reference for all 14 code-intelligence doctor check
+ids. Documents source file, trigger conditions, default severity,
+fix commands and `whyThisMatters` rationale for every check.
+Cross-linked from §5.5 of the roadmap. Closes the §5.7 docs
+discipline promise for the code-intelligence layer.
+
+### Added — Starter content (`registry seed` + `benchmark seed`)
+
+Zero-config adoption helpers for the two opt-in features shipped in
+round 4:
+
+- `shrk search-structural registry seed` writes 7 curated starter
+  patterns (`no-console-log`, `no-debugger`, `bare @Controller()`,
+  `@Injectable()` finder, `eval()` smell, dynamic `require()`,
+  cross-package `/internal/` imports) into the registry. Refuses
+  to overwrite an existing non-empty registry without `--force`.
+- `shrk context benchmark seed` writes a 21-case starter fixture
+  to `sharkcraft/intent-benchmark.json` covering all six intent
+  labels. The starter set achieves ≥ 90% accuracy on the current
+  classifier (verified by tests).
+- New public APIs: `STARTER_PATTERNS` from
+  `@shrkcrft/structural-search` and `STARTER_INTENT_BENCHMARK`
+  from `@shrkcrft/context-planner`.
+
+### Roadmap
+
+§5.5 is now "all-shipped + gated". Every doctor check has a
+matching gate where shippability matters; every opt-in surface has
+a starter; every check is documented in
+`docs/doctor-code-intelligence.md`.
+
+## [Unreleased — staged after 0.1.0-alpha.8] — Code-intelligence doctor surface, round 4
+
+Closes the last two §5.5 doctor gaps (`@shrkcrft/structural-search` and
+`@shrkcrft/context-planner`) plus adds a symmetric impact baseline,
+two new MCP tools and one new CLI subverb. After this round the
+roadmap §5.5 table reads "shipped" for every code-intelligence
+package.
+
+### Added — Pattern registry + structural-search doctor surface
+
+`@shrkcrft/structural-search` gains a persistent registry of reusable
+AST-shape patterns:
+
+- `PatternRegistryStore` exported from `@shrkcrft/structural-search`.
+  Reads/writes `.sharkcraft/structural/patterns.json` (schema
+  `sharkcraft.structural-pattern-registry/v1`).
+- `validatePatternEnvelope(envelope)` — light-weight envelope check
+  (schema field, `pattern.kind` in `KNOWN_PATTERN_KINDS`, regex
+  fields compile). Runs at registration time AND in `validateAll()`.
+- CLI: `shrk search-structural registry <list|add|remove|validate|clear>`.
+  `add --id <id> (--pattern <json> | --pattern-file <path>)` registers
+  a reusable pattern; `validate` walks every entry and stamps
+  `lastValidatedAt` / `lastValidationError`.
+- Doctor surface `code-intelligence-structural-search`: `Warning` on
+  any entry with `lastValidationError`; advisory `Info` for empty
+  registry or unvalidated entries; OK when every entry is fresh.
+- New schema in `EXPECTED_SCHEMAS` (so the cross-store
+  schema-mismatch check covers the registry too).
+
+### Added — Intent classifier benchmark + context-planner doctor surface
+
+`@shrkcrft/context-planner` gains a labelled benchmark for the
+keyword-based intent classifier:
+
+- Schema `sharkcraft.intent-benchmark/v1` — author-checked-in
+  fixture at `sharkcraft/intent-benchmark.json` (NOT under
+  `.sharkcraft/`, which is derived). `cases: [{ task, expected, notes? }]`.
+- `loadIntentBenchmark / runIntentBenchmark / writeBenchmarkRun /
+  readBenchmarkRun` exported from `@shrkcrft/context-planner/intent/benchmark.ts`.
+- CLI: `shrk context benchmark` runs the fixture and persists the
+  result at `.sharkcraft/context-planner/intent-benchmark.json`.
+  Exits 1 when any case fails; `--no-persist` opts out of the write.
+- Doctor surface `code-intelligence-context-planner`: OK on 100%
+  accuracy, `Warning` on any miss (with sample `expected → actual`
+  failures). Advisory threshold at ≥80% — below that, the warning
+  is non-advisory because the ranker is materially miscalibrated.
+
+### Added — Symmetric impact baseline + delta
+
+Mirrors the round-2 architecture baseline pattern:
+
+- `ImpactReportStore.{readBaseline,writeBaseline,clearBaseline}` +
+  `diffImpactReports(baseline, last) → { dependentDelta,
+  packageDelta, riskDrift?, worsened }`.
+- `shrk impact baseline <write|show|clear>` — `write` freezes the
+  current `last.json` snapshot to `.sharkcraft/impact/baseline.json`;
+  `show` prints the baseline + delta vs `last.json`; `clear` removes
+  the baseline file.
+- Doctor surface `code-intelligence-impact-baseline`: OK when last is
+  within baseline; `Warning` when *any* of dependents / packages /
+  risk worsened (with the explicit drift in the message).
+- New schema in `EXPECTED_SCHEMAS` for the baseline file.
+
+### Added — `get_graph_unresolved` MCP tool
+
+Read-only MCP mirror of `shrk graph unresolved`. Groups every
+unresolved import edge by source file, sorted by count desc.
+Same safety contract as the existing graph tools (structured
+`graph-missing` error with `nextCommand`). Registered in
+`ALL_TOOLS`; sibling pattern of `get_graph_cycles`.
+
+### Added — `shrk graph deps <package>` CLI
+
+Package-level dependency view: lists inbound (packages that depend
+on `<package>`) and outbound (packages `<package>` depends on)
+edges from the persisted graph's `package-depends-on` relations.
+Both text and JSON output. Useful counterpart to `shrk graph
+importers` / `importsFrom` which operate at file granularity.
+
+### Roadmap
+
+`docs/roadmap-code-intelligence.md` §5.5 is now **all-shipped**: 14
+check ids covering every code-intelligence package. Status snapshot
+row updated to reflect the new surfaces (pattern registry, intent
+benchmark, impact baseline, MCP unresolved, graph deps).
+
+## [Unreleased — staged after 0.1.0-alpha.8] — Code-intelligence doctor surface, round 3
+
+Continues the work in the round below. The earlier round added the
+first five code-intelligence doctor checks (`-graph`, `-rule-graph`,
+`-api-surface`, `-quality-gate`, `-migrations`) plus the
+`-architecture` + `-rule-coverage` + `-graph-cycles` follow-ups in
+the round after. This round closes most of the remaining §5.5 gaps:
+unresolved-imports surface, persisted impact-run snapshot,
+per-framework health, schema-version compatibility, and a public
+`IGraphQueryApi.cycles()` + CLI subverb.
+
+### Added — `IGraphQueryApi.cycles()` + `shrk graph cycles` CLI
+
+The roadmap (§3.1) long-promised a query-time `cycles()` method on
+the graph query API. Today, with `summarizeCycles` already used by
+the indexer, the missing piece was the surface that returns the
+*full* SCC list (not just a counter):
+
+- `findFileCycles(nodes, edges, pathById?)` exported from
+  `@shrkcrft/graph/query/cycle-detection.ts`. Iterative Tarjan SCC
+  (stack-safe), sorted by size DESC then id ASC so callers get a
+  stable "worst first" ordering. `summarizeCycles` is now a thin
+  roll-up over this primitive.
+- `GraphQueryApi.cycles(): readonly IFileCycle[]` recomputes from
+  the in-memory snapshot and fills `paths` from the file nodes.
+- `shrk graph cycles [--limit N] [--min-size N] [--json]` — text
+  mode prints `#1 (size 4):\n  pkg/a.ts\n  pkg/b.ts\n  → pkg/a.ts\n…`,
+  JSON returns `{ ok, total, truncated, cycles: [{size, paths}] }`.
+
+### Added — Unresolved-import tracking in graph manifest + doctor
+
+The indexer already created `unresolved:<specifier>` sentinel edges
+when a relative / alias / workspace import couldn't be resolved on
+disk — but nothing surfaced the count. Now:
+
+- `IGraphManifest` carries optional `unresolvedImportCount`,
+  `filesWithUnresolvedImports`, `unresolvedImportSamples` (≤10
+  distinct specifiers).
+- Both `buildFullIndex` and `updateChanged` populate via the new
+  `summarizeUnresolvedImports(edges, sampleLimit?)` helper.
+- `shrk graph index` and `shrk graph status` print
+  `unresolved imports: N across M file(s)` when non-zero; JSON
+  status adds the three fields.
+- Doctor surface `code-intelligence-graph-unresolved` (regular
+  `Warning`, not advisory) with first 3 sample specifiers + DX fix
+  hint. Catches typos, deleted-but-still-imported modules, and
+  alias renames the importer never followed.
+
+### Added — Persisted impact runs (`sharkcraft.impact-run/v1`)
+
+`shrk impact --via-graph` now writes a compact snapshot to
+`.sharkcraft/impact/last.json` (overridable with `--no-persist`) so
+the doctor / dashboard / CI can answer "what was the last impact
+analysis" without re-running it.
+
+- `ImpactReportStore` + `snapshotImpactAnalysis(analysis, summary)`
+  exported from `@shrkcrft/impact-engine`. Snapshot keeps the
+  counts, risk, validation scope, and a short `inputSummary`
+  string — the full per-file lists stay out of the persisted file.
+- Doctor surface `code-intelligence-impact`:
+  - `risk = high|critical` → regular `Warning` listing direct +
+    transitive counts, packages, recommended tests, public-API
+    touch indicator.
+  - Stale (`> 7d`) downgrades the warning to advisory.
+  - `low|medium` → OK with same summary one-liner.
+
+### Added — Per-framework health doctor surface
+
+`code-intelligence-framework` reads `.sharkcraft/framework/meta.json`
+(written by the framework-scanner pipeline) and surfaces a
+per-framework breakdown (`nestjs=12, react=47, …`) in the doctor
+message. OK on fresh; advisory `Warning` on stale; advisory `Info`
+when the scan ran but found no entities (often a misconfigured
+extractor); structural `Warning` on corrupt JSON.
+
+### Added — `shrk graph unresolved` CLI subverb
+
+Counterpart to `shrk graph cycles`: enumerates every `unresolved:*`
+edge in the graph, grouped by source file and sorted by count desc.
+Text mode prints one file per group with a bullet list of broken
+specifiers; `--json` returns `{ totalEdges, totalFiles, truncated,
+files: [{ path, unresolved: string[] }] }`. Closes the natural
+counterpart to the new `code-intelligence-graph-unresolved` doctor
+finding — the doctor flags that there are N broken imports, this
+subverb tells you exactly where.
+
+### Added — `get_graph_cycles` MCP tool
+
+Read-only MCP mirror of `shrk graph cycles`. Returns the full SCC
+list (sorted by size DESC) for agents that need "show me every
+import cycle in this repo" in a single tool call. Same safety
+contract as the other graph tools: structured `graph-missing` error
+with `nextCommand: 'shrk graph index'` when the index isn't built
+yet. Registered in `ALL_TOOLS`; sibling pattern of
+`get_graph_callers`.
+
+### Added — Cross-store schema-version compatibility check
+
+`code-intelligence-schema-mismatch` aggregates every stored payload
+whose top-level `schema` field doesn't match the inspector-side
+`EXPECTED_SCHEMAS` table. Covers graph, bridge, api-surface cache,
+quality-gate report, framework manifest, architecture baseline/last,
+impact run, and migration state files. Single `Warning` with the
+first three mismatches + a regenerate fix hint per affected store.
+Closes the §5.1 roadmap promise that doctor validates compatibility
+on every start.
+
+### Roadmap
+
+`docs/roadmap-code-intelligence.md` §5.5 table refreshed: only
+`@shrkcrft/structural-search` and `@shrkcrft/context-planner` remain
+without doctor surfaces (both need persistence layers that don't
+exist yet — pattern registry / intent-classifier benchmark).
+
+## [Unreleased — staged after 0.1.0-alpha.8] — Code-intelligence doctor surface
+
+The roadmap (`docs/roadmap-code-intelligence.md` §5.5) promised that
+each new code-intelligence package would contribute one or more
+`shrk doctor` checks. That promise was unimplemented — the doctor
+surface ended at the existing inspector checks and never told you
+that your code graph was stale, your arch baseline had drifted, or
+that a migration checkpoint was still on disk. This round wires
+those checks in end-to-end.
+
+### Added — Code-intelligence doctor checks (§5.5)
+
+`runDoctor` now appends a `category: 'code-intelligence'` section
+built by `buildCodeIntelligenceChecks(projectRoot)` in
+`packages/inspector/src/code-intelligence-doctor.ts`. Each finding
+reads a stable on-disk state file under `.sharkcraft/` and stays
+silent when the corresponding feature has not been opted into:
+
+| Finding id | Source file | Behaviour |
+|---|---|---|
+| `code-intelligence-graph` | `.sharkcraft/graph/meta.json` | OK on fresh; advisory `Warning` past `staleThresholdDays` (default 7); structural `Warning` on corrupt JSON; `Info` ("no index yet") when missing. Surfaces `files / nodes / edges` and cycle count when known. |
+| `code-intelligence-graph-cycles` | same | Advisory `Warning` when `largestCycleSize ≥ 3` or `cycleCount ≥ 5`. Points at `shrk arch check` for the breakdown. |
+| `code-intelligence-rule-graph` | `.sharkcraft/bridge/meta.json` | Same freshness model as graph; silent when no bridge exists (it builds alongside `shrk graph index`). |
+| `code-intelligence-rule-coverage` | same | Advisory `Warning` when `filesUncoveredByRules / filesTotal > 50%`; backed by the new `filesTotal`/`filesCoveredByRules`/`filesUncoveredByRules` counters on `IBridgeManifest`. |
+| `code-intelligence-api-surface` | `.sharkcraft/api-surface/signatures.json` | OK on fresh; advisory `Warning` past staleness. |
+| `code-intelligence-quality-gate` | `.sharkcraft/quality-gates/last.json` | OK on `overall=pass`; `Warning` on `overall=fail` (lists failing gate ids); `Info+advisory` on `warn|skipped|unknown`. |
+| `code-intelligence-migrations` | `.sharkcraft/migrations/*.state.json` | Regular `Warning` on any `overall=fail` checkpoint with `shrk migrate resume <id>` fix (or `prune --include-failed` to discard). |
+| `code-intelligence-architecture` | `.sharkcraft/architecture/{baseline,last}.json` | `Warning` on new violations since baseline (with first 3 sample ids); `Info` when one of last/baseline is missing; OK on `delta ≤ 0`. |
+
+Design contract: `@shrkcrft/inspector` deliberately does NOT depend on
+any of the new code-intelligence packages. Each check reads the
+relevant state file directly with locally-redeclared minimal JSON
+shapes, so an uninstalled add-on stays silent rather than breaking
+doctor.
+
+### Added — `shrk arch baseline <write|show|clear>`
+
+`@shrkcrft/architecture-guard` now persists a compact snapshot of the
+last arch run and an explicit baseline so the doctor can answer
+"what new arch violations appeared since we accepted this set?".
+
+- `shrk arch check` writes `.sharkcraft/architecture/last.json` after
+  every run (`--no-persist` opts out).
+- `shrk arch baseline write` runs a check + writes
+  `.sharkcraft/architecture/baseline.json` (schema
+  `sharkcraft.architecture-snapshot/v1`). Snapshot keeps counts +
+  a sorted, stable violation-id list (`<kind>|<file>[:line]|<target>`)
+  so deltas are computed without re-running the full check.
+- `shrk arch baseline show` — prints baseline + delta vs `last.json`.
+- `shrk arch baseline clear` — removes the baseline file.
+
+New public API in `@shrkcrft/architecture-guard`:
+`ArchReportStore`, `ARCH_SNAPSHOT_SCHEMA`, `snapshotFromReport`,
+`violationId`, `diffSnapshots`.
+
+### Added — Graph cycle counters at index time
+
+`IGraphManifest` now carries `cycleCount`, `largestCycleSize`,
+`filesInCycles` (all optional for forward-compat with manifests
+written before 2026-05). Both the full indexer and the incremental
+updater call the new `summarizeCycles(nodes, edges)` from
+`@shrkcrft/graph/query/cycle-detection.ts`, which runs iterative
+Tarjan SCC over the `imports-file` subgraph (stack-safe on long
+import chains).
+
+`shrk graph index` and `shrk graph status` now report
+`cycles: N (largest M)` inline. `shrk graph status --json` adds the
+three fields to its payload.
+
+### Added — Bridge rule-coverage counters
+
+`IBridgeManifest` (`sharkcraft.rule-graph/v1`) now carries
+`filesTotal`, `filesCoveredByRules`, `filesUncoveredByRules` (all
+optional for forward-compat). The bridge builder tracks the set of
+file ids with at least one `applies-rule` edge (boundary OR
+knowledge-rule sources; `matches-path` / `covered-by-template` are
+deliberately excluded — they signal location / generation, not
+policy). Doctor surfaces the coverage ratio.
+
+### Roadmap
+
+`docs/roadmap-code-intelligence.md` status table gains a "Doctor
+integration" row and §5.5 is rewritten with a per-package table
+showing shipped checks vs deferred items.
+
 ## [Unreleased / 0.1.0-alpha.8 — staged, not yet published] — Cleaner shrk: honest doctor, polished errors, pack-discovery cache
 
 A focused round of "make shrk genuinely cleaner and more useful

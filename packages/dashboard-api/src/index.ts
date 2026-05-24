@@ -48,4 +48,12 @@ export type {
   IDashboardStatsResponse,
   IDashboardStatsLanguage,
   IDashboardStatsTopFile,
+  IDashboardCodeIntelligenceResponse,
+  IDashboardRoutesResponse,
+  IDashboardRouteRow,
+  IDashboardMigrationsResponse,
+  IDashboardMigrationRow,
+  IDashboardMigrationStep,
+  IDashboardQualityGatesResponse,
+  IDashboardQualityGate,
 } from './responses.ts';

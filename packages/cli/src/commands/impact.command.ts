@@ -29,7 +29,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
-import { asJson, header } from '../output/format-output.ts';
+import { asJson, header, kv } from '../output/format-output.ts';
 
 function collectFiles(
   args: ParsedArgs,
@@ -294,6 +294,85 @@ async function emitCodemodPlan(opts: {
   return 0;
 }
 
+/**
+ * --via-graph adapter: takes the same input flags as `shrk impact` and
+ * routes through `@shrkcrft/impact-engine` for the v3 graph-backed
+ * payload. Defers to that engine; emits a clean error when the graph
+ * isn't indexed yet.
+ */
+async function runViaGraph(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json') || flagString(args, 'format') === 'json';
+  const positional = args.positional[0];
+  const files = flagList(args, 'files');
+  const since = flagString(args, 'since');
+  const symbol = flagString(args, 'symbol');
+  const fileFlag = flagString(args, 'file');
+  const limit = flagNumber(args, 'limit') ?? 200;
+  const maxDepth = flagNumber(args, 'max-depth') ?? 5;
+  const target = positional ?? fileFlag;
+
+  const inputs = files.length > 0
+    ? { kind: 'files' as const, files }
+    : symbol
+      ? { kind: 'symbol' as const, symbolId: symbol }
+      : since
+        ? { kind: 'gitref' as const, ref: since }
+        : target
+          ? { kind: 'files' as const, files: [target] }
+          : undefined;
+  if (!inputs) {
+    process.stderr.write('Usage: shrk impact --via-graph <fileOrQuery> | --symbol <name> | --files a,b | --since <ref>\n');
+    return 2;
+  }
+  const { analyzeGraphImpact, ImpactReportStore, snapshotImpactAnalysis } = await import(
+    '@shrkcrft/impact-engine'
+  );
+  const analysis = analyzeGraphImpact(inputs, { projectRoot: cwd, limit, maxDepth });
+  // Persist a compact snapshot for the doctor + dashboard to read.
+  // `--no-persist` opts out (useful when scripting against many trees
+  // or when stdout is the only sink the caller cares about).
+  const noPersist = flagBool(args, 'no-persist');
+  if (!noPersist) {
+    try {
+      const summary =
+        inputs.kind === 'files'
+          ? inputs.files.slice(0, 3).join(', ') + (inputs.files.length > 3 ? '…' : '')
+          : inputs.kind === 'symbol'
+            ? `symbol:${inputs.symbolId}`
+            : `gitref:${inputs.ref}`;
+      new ImpactReportStore(cwd).write(snapshotImpactAnalysis(analysis, summary));
+    } catch {
+      // best-effort — never fail the command on a persistence error
+    }
+  }
+  if (wantJson) {
+    process.stdout.write(asJson(analysis) + '\n');
+    return 0;
+  }
+  process.stdout.write(header(`Impact (graph): ${target ?? symbol ?? files.join(',') ?? since}`));
+  process.stdout.write(`  risk: ${analysis.risk}\n`);
+  process.stdout.write(`  direct dependents: ${analysis.directDependents.length}\n`);
+  process.stdout.write(`  transitive dependents: ${analysis.transitiveDependents.length}\n`);
+  process.stdout.write(`  affected symbols: ${analysis.affectedSymbols.length}\n`);
+  process.stdout.write(`  caller files: ${analysis.affectedCallerFiles.length}\n`);
+  process.stdout.write(`  affected packages: ${analysis.affectedPackages.length}\n`);
+  process.stdout.write(`  affected rules: ${analysis.affectedRules.length}\n`);
+  process.stdout.write(`  affected templates: ${analysis.affectedTemplates.length}\n`);
+  process.stdout.write(`  likely tests: ${analysis.likelyTests.length}\n`);
+  process.stdout.write(`  public API touched: ${analysis.publicApiTouched ? 'yes' : 'no'}\n`);
+  if (analysis.riskReasons.length > 0) {
+    process.stdout.write('\nRisk reasons:\n');
+    for (const r of analysis.riskReasons) process.stdout.write(`  • ${r}\n`);
+  }
+  if (analysis.validationScope.length > 0) {
+    process.stdout.write('\nRun before merging:\n');
+    for (const c of analysis.validationScope) process.stdout.write(`  $ ${c}\n`);
+  }
+  for (const d of analysis.diagnostics.slice(0, 5)) process.stdout.write(`! ${d}\n`);
+  return 0;
+}
+
 export const impactCommand: ICommandHandler = {
   name: 'impact',
   description:
@@ -306,6 +385,16 @@ export const impactCommand: ICommandHandler = {
     }
     if (args.positional[0] === 'graph') {
       return runImpactGraph({ ...args, positional: args.positional.slice(1) });
+    }
+    if (args.positional[0] === 'baseline') {
+      return runImpactBaseline({ ...args, positional: args.positional.slice(1) });
+    }
+    // --via-graph: route through @shrkcrft/impact-engine for the v3
+    // graph-backed payload (sharkcraft.graph-impact-analysis/v3). Keeps
+    // the legacy v2 inspector path as the default so existing
+    // consumers don't shift.
+    if (flagBool(args, 'via-graph')) {
+      return runViaGraph(args);
     }
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
@@ -919,3 +1008,98 @@ function renderResolutionMd(r: IFuzzyImpactResolution): string {
 
 // Sentinel — keep `QueryMatchKind` import alive for tooling. Used inside fuzzy-impact.ts.
 void QueryMatchKind;
+
+async function runImpactBaseline(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json');
+  const verb = args.positional[0] ?? 'show';
+  const { ImpactReportStore, diffImpactReports } = await import('@shrkcrft/impact-engine');
+  const store = new ImpactReportStore(cwd);
+
+  if (verb === 'write') {
+    const last = store.read();
+    if (!last) {
+      const msg = `No recent impact run at ${store.absPath}. Run \`shrk impact --via-graph <target>\` first.\n`;
+      if (wantJson) {
+        process.stdout.write(asJson({ ok: false, error: 'no-last-run' }) + '\n');
+        return 1;
+      }
+      process.stderr.write(msg);
+      return 1;
+    }
+    store.writeBaseline(last);
+    if (wantJson) {
+      process.stdout.write(asJson({ wrote: store.baselinePath, baseline: last }) + '\n');
+      return 0;
+    }
+    process.stdout.write(`Impact baseline written → ${store.baselinePath}\n`);
+    process.stdout.write(
+      `  Input: ${last.inputSummary}\n` +
+        `  Risk:  ${last.risk}\n` +
+        `  Dependents: ${last.directDependentCount} direct, ${last.transitiveDependentCount} transitive\n` +
+        `  Packages:   ${last.affectedPackageCount}\n`,
+    );
+    return 0;
+  }
+  if (verb === 'show') {
+    const baseline = store.readBaseline();
+    if (!baseline) {
+      const msg = `No baseline at ${store.baselinePath}. Run \`shrk impact baseline write\` to freeze the current run.\n`;
+      if (wantJson) {
+        process.stdout.write(asJson({ baseline: null, path: store.baselinePath }) + '\n');
+        return 1;
+      }
+      process.stderr.write(msg);
+      return 1;
+    }
+    const last = store.read();
+    if (wantJson) {
+      process.stdout.write(
+        asJson({
+          path: store.baselinePath,
+          baseline,
+          ...(last ? { last, delta: diffImpactReports(baseline, last) } : {}),
+        }) + '\n',
+      );
+      return 0;
+    }
+    process.stdout.write(header('Impact baseline'));
+    process.stdout.write(kv('path', store.baselinePath) + '\n');
+    process.stdout.write(kv('input', baseline.inputSummary) + '\n');
+    process.stdout.write(kv('risk', baseline.risk) + '\n');
+    process.stdout.write(
+      kv(
+        'dependents',
+        `${baseline.directDependentCount} direct, ${baseline.transitiveDependentCount} transitive`,
+      ) + '\n',
+    );
+    process.stdout.write(kv('packages', String(baseline.affectedPackageCount)) + '\n');
+    if (last) {
+      const d = diffImpactReports(baseline, last);
+      process.stdout.write(
+        '\nDelta (last − baseline): ' +
+          `dependents ${d.dependentDelta >= 0 ? '+' : ''}${d.dependentDelta}, ` +
+          `packages ${d.packageDelta >= 0 ? '+' : ''}${d.packageDelta}` +
+          (d.riskDrift ? `, risk ${d.riskDrift}` : '') +
+          (d.worsened ? '  ✗ worsened' : '  ✓ within baseline') +
+          '\n',
+      );
+    } else {
+      process.stdout.write('\n(no recent `last.json` — run `shrk impact --via-graph` to populate it.)\n');
+    }
+    return 0;
+  }
+  if (verb === 'clear') {
+    const removed = store.clearBaseline();
+    if (wantJson) {
+      process.stdout.write(asJson({ removed, path: store.baselinePath }) + '\n');
+      return 0;
+    }
+    process.stdout.write(
+      removed ? `Baseline removed: ${store.baselinePath}\n` : 'No baseline to remove.\n',
+    );
+    return 0;
+  }
+  process.stderr.write('Usage: shrk impact baseline <write|show|clear> [--json]\n');
+  return 2;
+}

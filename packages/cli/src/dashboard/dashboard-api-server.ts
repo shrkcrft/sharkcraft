@@ -49,6 +49,12 @@ import {
   type ISharkcraftInspection,
 } from '@shrkcrft/inspector';
 import { COMMAND_CATALOG } from '../commands/command-catalog.ts';
+import {
+  buildDashboardCodeIntelligence,
+  buildDashboardMigrations,
+  buildDashboardQualityGates,
+  buildDashboardRoutes,
+} from './code-intelligence-data.ts';
 
 const SCHEMA_ID = 'sharkcraft.dashboard-api/v1';
 
@@ -81,6 +87,19 @@ interface ISessionHub {
   debounceTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * Global SSE hub for project-wide store changes. Watches the
+ * top-level `.sharkcraft/` directories that back the code-intelligence
+ * stores so the dashboard auto-refreshes when an indexer runs.
+ */
+interface IGlobalHub {
+  subscribers: Set<(line: string) => void>;
+  watchers: Array<{ close(): void }>;
+  version: number;
+  debounceTimer: ReturnType<typeof setTimeout> | null;
+  lastEvent: string | null;
+}
+
 export async function startDashboardApiServer(opts: IServerOptions): Promise<IServerHandle> {
   const host = opts.host ?? '127.0.0.1';
   const port = opts.port ?? 0;
@@ -91,7 +110,7 @@ export async function startDashboardApiServer(opts: IServerOptions): Promise<ISe
   }
   const startedAt = Date.now();
   const sessionHubs = new Map<string, ISessionHub>();
-  const ctx: IServerContext = { opts, startedAt, sessionHubs };
+  const ctx: IServerContext = { opts, startedAt, sessionHubs, globalHub: null };
   const server = http.createServer(async (req, res) => {
     try {
       await handle(req, res, ctx);
@@ -111,6 +130,10 @@ export async function startDashboardApiServer(opts: IServerOptions): Promise<ISe
         // Tear down every active SSE hub first.
         for (const hub of sessionHubs.values()) closeHub(hub);
         sessionHubs.clear();
+        if (ctx.globalHub) {
+          closeGlobalHub(ctx.globalHub);
+          ctx.globalHub = null;
+        }
         server.close(() => resolve());
       }),
   };
@@ -120,6 +143,7 @@ interface IServerContext {
   opts: IServerOptions;
   startedAt: number;
   sessionHubs: Map<string, ISessionHub>;
+  globalHub: IGlobalHub | null;
 }
 
 function closeHub(hub: ISessionHub): void {
@@ -184,6 +208,121 @@ function ensureSessionHub(
   return hub;
 }
 
+/**
+ * Watched subdirectories under `.sharkcraft/` for the global hub.
+ * Order matters only for diagnostics — the event emitted is `change:<name>`.
+ *
+ *   - `graph/`: the code-graph store; fires after `shrk graph index`.
+ *   - `bridge/`: the rule-graph bridge.
+ *   - `framework/`: framework-scanner outputs.
+ *   - `migrations/`: migrate run state (one file per migration).
+ *   - `api-surface/`: api-surface-diff caches.
+ *   - `quality-gates/`: persisted gate reports.
+ */
+const GLOBAL_WATCH_DIRS = [
+  'graph',
+  'bridge',
+  'framework',
+  'migrations',
+  'api-surface',
+  'quality-gates',
+] as const;
+
+function closeGlobalHub(hub: IGlobalHub): void {
+  if (hub.debounceTimer) {
+    clearTimeout(hub.debounceTimer);
+    hub.debounceTimer = null;
+  }
+  for (const w of hub.watchers) {
+    try {
+      w.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  hub.watchers = [];
+  hub.subscribers.clear();
+}
+
+function ensureGlobalHub(ctx: IServerContext): IGlobalHub {
+  if (ctx.globalHub) return ctx.globalHub;
+  const hub: IGlobalHub = {
+    subscribers: new Set(),
+    watchers: [],
+    version: 0,
+    debounceTimer: null,
+    lastEvent: null,
+  };
+  const broadcast = (name: string): void => {
+    if (hub.debounceTimer) clearTimeout(hub.debounceTimer);
+    hub.debounceTimer = setTimeout(() => {
+      hub.version += 1;
+      hub.lastEvent = name;
+      const line = `event: change\ndata: ${name}\nid: ${hub.version}\n\n`;
+      for (const send of [...hub.subscribers]) {
+        try {
+          send(line);
+        } catch {
+          hub.subscribers.delete(send);
+        }
+      }
+    }, 200);
+  };
+  for (const dir of GLOBAL_WATCH_DIRS) {
+    const target = nodePath.join(ctx.opts.cwd, '.sharkcraft', dir);
+    if (!fs.existsSync(target)) continue;
+    try {
+      const w = fs.watch(target, { recursive: true }, () => broadcast(dir));
+      hub.watchers.push(w);
+    } catch {
+      try {
+        const w = fs.watch(target, () => broadcast(dir));
+        hub.watchers.push(w);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  ctx.globalHub = hub;
+  return hub;
+}
+
+function serveGlobalEvents(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  ctx: IServerContext,
+): void {
+  const hub = ensureGlobalHub(ctx);
+  res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    connection: 'keep-alive',
+  });
+  const send = (line: string): void => {
+    res.write(line);
+  };
+  hub.subscribers.add(send);
+  send(`event: hello\ndata: ${hub.lastEvent ?? 'ready'}\nid: ${hub.version}\n\n`);
+  const ping = setInterval(() => {
+    try {
+      res.write(`: ping\n\n`);
+    } catch {
+      /* ignore */
+    }
+  }, 15000);
+  const close = (): void => {
+    clearInterval(ping);
+    hub.subscribers.delete(send);
+    if (hub.subscribers.size === 0) {
+      closeGlobalHub(hub);
+      ctx.globalHub = null;
+    }
+  };
+  req.on('close', close);
+  req.on('end', close);
+}
+
 async function handle(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -208,6 +347,10 @@ async function handle(
   const sseMatch = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
   if (sseMatch) {
     return serveSessionEvents(req, res, ctx, decodeURIComponent(sseMatch[1]!));
+  }
+  // Global live events (SSE). Subscribers refetch on every change.
+  if (path === '/api/events') {
+    return serveGlobalEvents(req, res, ctx);
   }
 
   // Rendered HTML report for the session (or any report on disk under the
@@ -248,6 +391,18 @@ async function handle(
       ...(language ? { language } : {}),
     });
     return respond(res, buildEnvelope(projectRoot, stats));
+  }
+  if (path === '/api/code-intelligence') {
+    return respond(res, buildEnvelope(projectRoot, buildDashboardCodeIntelligence(projectRoot)));
+  }
+  if (path === '/api/routes') {
+    return respond(res, buildEnvelope(projectRoot, buildDashboardRoutes(projectRoot)));
+  }
+  if (path === '/api/migrations') {
+    return respond(res, buildEnvelope(projectRoot, buildDashboardMigrations(projectRoot)));
+  }
+  if (path === '/api/quality-gates') {
+    return respond(res, buildEnvelope(projectRoot, buildDashboardQualityGates(projectRoot)));
   }
 
   // For data routes that need inspection, load once per request.

@@ -24,6 +24,7 @@ import { BUILTIN_PRESETS, loadPresetsFromFile, PresetRegistry } from '@shrkcrft/
 import { BoundaryRegistry, loadBoundaryRulesFromFile } from '@shrkcrft/boundaries';
 import { DoctorSeverity, type IDoctorCheck, type IDoctorResult } from './doctor-result.ts';
 import { diagnoseActionHints } from './action-hint-diagnostics.ts';
+import { buildCodeIntelligenceChecks } from './code-intelligence-doctor.ts';
 import {
   computeFileFingerprint,
   createInspectorCache,
@@ -829,6 +830,14 @@ export function runDoctor(inspection: ISharkcraftInspection): IDoctorResult {
         whyThisMatters: actionHintWhyThisMatters(i.code),
       });
     }
+  }
+
+  // Code-intelligence package health (graph, rule-graph, api-surface,
+  // quality-gates, migrations). Each finding reads a stable on-disk
+  // state file under `.sharkcraft/` and stays silent when the user has
+  // not opted into the relevant feature.
+  for (const c of buildCodeIntelligenceChecks(inspection.projectRoot)) {
+    checks.push(c);
   }
 
   const summary: {

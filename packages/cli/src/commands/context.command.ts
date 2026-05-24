@@ -1,6 +1,14 @@
 import { entrypointBanner, inspectSharkcraft } from '@shrkcrft/inspector';
 import { buildContext } from '@shrkcrft/context';
 import {
+  loadIntentBenchmark,
+  runIntentBenchmark,
+  STARTER_INTENT_BENCHMARK,
+  writeBenchmarkRun,
+} from '@shrkcrft/context-planner';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import * as nodePath from 'node:path';
+import {
   buildUniversalSearch,
   explainTaskRouting,
   recommendCommands,
@@ -31,6 +39,10 @@ export const contextCommand: ICommandHandler = {
       if (sub === 'build') return contextBuildCommand.run(sliced);
       if (sub === 'refresh') return contextRefreshCommand.run(sliced);
       return contextStatusCommand.run(sliced);
+    }
+    if (sub === 'benchmark') {
+      const sliced = { ...args, positional: args.positional.slice(1) };
+      return runContextBenchmark(sliced);
     }
     const task = flagString(args, 'task');
     if (!task) {
@@ -144,3 +156,94 @@ export const contextCommand: ICommandHandler = {
     return 0;
   },
 };
+
+async function runContextBenchmark(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json');
+  // `shrk context benchmark seed` writes a starter fixture to
+  // sharkcraft/intent-benchmark.json. Useful first step for adopting
+  // the surface — fixture is opinionated but small and easy to prune.
+  if (args.positional[0] === 'seed') {
+    return runContextBenchmarkSeed(cwd, args);
+  }
+  const noPersist = flagBool(args, 'no-persist');
+  const benchmark = loadIntentBenchmark(cwd);
+  if (!benchmark) {
+    const msg = `No benchmark at sharkcraft/intent-benchmark.json. Create one with schema "sharkcraft.intent-benchmark/v1" and a "cases" array of { task, expected } entries.\n`;
+    if (wantJson) {
+      process.stdout.write(asJson({ ok: false, error: 'benchmark-missing' }) + '\n');
+      return 1;
+    }
+    process.stderr.write(msg);
+    return 1;
+  }
+  const run = runIntentBenchmark(benchmark);
+  if (!noPersist) {
+    try {
+      writeBenchmarkRun(cwd, run);
+    } catch {
+      // best-effort
+    }
+  }
+  if (wantJson) {
+    process.stdout.write(asJson(run) + '\n');
+    return run.failed === 0 ? 0 : 1;
+  }
+  process.stdout.write(header('Intent classifier benchmark'));
+  process.stdout.write(`  total       ${run.total}\n`);
+  process.stdout.write(`  passed      ${run.passed}\n`);
+  process.stdout.write(`  failed      ${run.failed}\n`);
+  process.stdout.write(`  accuracy    ${Math.round(run.accuracy * 1000) / 10}%\n`);
+  const failures = run.cases.filter((c) => !c.passed);
+  if (failures.length > 0) {
+    process.stdout.write('\nFailures:\n');
+    for (const c of failures.slice(0, 20)) {
+      process.stdout.write(
+        `  ✗ task="${truncateTask(c.task)}"  expected=${c.expected}  actual=${c.actual}\n`,
+      );
+    }
+    if (failures.length > 20) {
+      process.stdout.write(`  … (${failures.length - 20} more)\n`);
+    }
+  }
+  return run.failed === 0 ? 0 : 1;
+}
+
+function truncateTask(s: string): string {
+  if (s.length <= 60) return s;
+  return s.slice(0, 57) + '…';
+}
+
+function runContextBenchmarkSeed(cwd: string, args: ParsedArgs): number {
+  const wantJson = flagBool(args, 'json');
+  const force = flagBool(args, 'force');
+  const target = nodePath.join(cwd, 'sharkcraft', 'intent-benchmark.json');
+  if (existsSync(target) && !force) {
+    const msg = `${target} already exists. Use --force to overwrite.\n`;
+    if (wantJson) {
+      process.stdout.write(
+        asJson({ ok: false, error: 'exists', path: target }) + '\n',
+      );
+      return 1;
+    }
+    process.stderr.write(msg);
+    return 1;
+  }
+  mkdirSync(nodePath.dirname(target), { recursive: true });
+  writeFileSync(target, JSON.stringify(STARTER_INTENT_BENCHMARK, null, 2), 'utf8');
+  if (wantJson) {
+    process.stdout.write(
+      asJson({
+        ok: true,
+        wrote: target,
+        cases: STARTER_INTENT_BENCHMARK.cases.length,
+      }) + '\n',
+    );
+    return 0;
+  }
+  process.stdout.write(
+    `Seeded ${STARTER_INTENT_BENCHMARK.cases.length} starter intent case(s) → ${target}\n`,
+  );
+  process.stdout.write('Run `shrk context benchmark` to record accuracy.\n');
+  return 0;
+}

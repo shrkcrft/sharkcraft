@@ -1,4 +1,5 @@
 export * from './doctor-result.ts';
+export * from './code-intelligence-doctor.ts';
 export * from './project-overview.ts';
 export * from './sharkcraft-inspector.ts';
 export * from './inspector-cache.ts';

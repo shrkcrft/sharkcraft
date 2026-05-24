@@ -1,0 +1,41 @@
+{
+  "extends": "../../tsconfig.publish.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "baseUrl": ".",
+    "paths": {
+      "@shrkcrft/core": [
+        "../core/dist/index.d.ts"
+      ],
+      "@shrkcrft/graph": [
+        "../graph/dist/index.d.ts"
+      ],
+      "@shrkcrft/architecture-guard": [
+        "../architecture-guard/dist/index.d.ts"
+      ],
+      "@shrkcrft/impact-engine": [
+        "../impact-engine/dist/index.d.ts"
+      ],
+      "@shrkcrft/api-surface-diff": [
+        "../api-surface-diff/dist/index.d.ts"
+      ],
+      "@shrkcrft/boundaries": [
+        "../boundaries/dist/index.d.ts"
+      ],
+      "@shrkcrft/structural-search": [
+        "../structural-search/dist/index.d.ts"
+      ],
+      "@shrkcrft/context-planner": [
+        "../context-planner/dist/index.d.ts"
+      ]
+    },
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/__tests__/**/*"
+  ]
+}

@@ -60,3 +60,29 @@ export function usePollingApi<T>(fetcher: ApiFetcher<T>, intervalMs = 5000, enab
   }, [intervalMs, enabled, base.refetch]);
   return base;
 }
+
+/**
+ * Like `useApi`, but refetches whenever the live-events `version`
+ * counter advances. Pair with `useLiveEvents` in pages that want to
+ * mirror on-disk store changes without polling.
+ *
+ * Pass an optional `eventFilter` to scope refetches to specific
+ * `.sharkcraft/<subdir>/` writes — e.g. the Migrations page only
+ * cares about `migrations`, so an event for `graph` shouldn't trigger
+ * a refetch.
+ */
+export function useLiveApi<T>(
+  fetcher: ApiFetcher<T>,
+  live: { version: number; lastEventName: string | null },
+  eventFilter?: readonly string[],
+): IUseApiResult<T> {
+  const base = useApi(fetcher);
+  useEffect(() => {
+    // Skip the initial render — useApi already fired its first fetch.
+    if (live.version === 0) return;
+    if (eventFilter && live.lastEventName && !eventFilter.includes(live.lastEventName)) return;
+    base.refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live.version, base.refetch]);
+  return base;
+}

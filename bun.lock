@@ -174,50 +174,78 @@
     },
     "packages/ai": {
       "name": "@shrkcrft/ai",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/context": "workspace:*",
         "@shrkcrft/core": "workspace:*",
       },
     },
+    "packages/api-surface-diff": {
+      "name": "@shrkcrft/api-surface-diff",
+      "version": "0.1.0-alpha.10",
+      "dependencies": {
+        "@shrkcrft/core": "workspace:*",
+        "@shrkcrft/graph": "workspace:*",
+        "typescript": "^5.5.0",
+      },
+    },
+    "packages/architecture-guard": {
+      "name": "@shrkcrft/architecture-guard",
+      "version": "0.1.0-alpha.10",
+      "dependencies": {
+        "@shrkcrft/boundaries": "workspace:*",
+        "@shrkcrft/core": "workspace:*",
+        "@shrkcrft/graph": "workspace:*",
+      },
+    },
     "packages/boundaries": {
       "name": "@shrkcrft/boundaries",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/cli": {
       "name": "@shrkcrft/cli",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "bin": {
         "shrk": "./dist/main.js",
       },
       "dependencies": {
         "@shrkcrft/ai": "workspace:*",
+        "@shrkcrft/api-surface-diff": "workspace:*",
+        "@shrkcrft/architecture-guard": "workspace:*",
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/config": "workspace:*",
         "@shrkcrft/context": "workspace:*",
+        "@shrkcrft/context-planner": "workspace:*",
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/dashboard-api": "workspace:*",
+        "@shrkcrft/framework-scanners": "workspace:*",
         "@shrkcrft/generator": "workspace:*",
+        "@shrkcrft/graph": "workspace:*",
+        "@shrkcrft/impact-engine": "workspace:*",
         "@shrkcrft/importer": "workspace:*",
         "@shrkcrft/inspector": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
         "@shrkcrft/mcp-server": "workspace:*",
+        "@shrkcrft/migrate": "workspace:*",
         "@shrkcrft/paths": "workspace:*",
         "@shrkcrft/pipelines": "workspace:*",
         "@shrkcrft/plugin-api": "workspace:*",
         "@shrkcrft/presets": "workspace:*",
+        "@shrkcrft/quality-gates": "workspace:*",
+        "@shrkcrft/rule-graph": "workspace:*",
         "@shrkcrft/rules": "workspace:*",
         "@shrkcrft/shared": "workspace:*",
+        "@shrkcrft/structural-search": "workspace:*",
         "@shrkcrft/templates": "workspace:*",
         "@shrkcrft/workspace": "workspace:*",
       },
     },
     "packages/config": {
       "name": "@shrkcrft/config",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "zod": "^3.25.0 || ^4.0.0",
@@ -225,7 +253,7 @@
     },
     "packages/context": {
       "name": "@shrkcrft/context",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -234,16 +262,25 @@
         "@shrkcrft/templates": "workspace:*",
       },
     },
+    "packages/context-planner": {
+      "name": "@shrkcrft/context-planner",
+      "version": "0.1.0-alpha.10",
+      "dependencies": {
+        "@shrkcrft/core": "workspace:*",
+        "@shrkcrft/graph": "workspace:*",
+        "@shrkcrft/rule-graph": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@shrkcrft/core",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "jiti": "^2.7.0",
       },
     },
     "packages/dashboard": {
       "name": "@shrkcrft/dashboard",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/dashboard-api": "workspace:*",
         "react": "^18.3.0",
@@ -258,11 +295,21 @@
     },
     "packages/dashboard-api": {
       "name": "@shrkcrft/dashboard-api",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
+    },
+    "packages/framework-scanners": {
+      "name": "@shrkcrft/framework-scanners",
+      "version": "0.1.0-alpha.10",
+      "dependencies": {
+        "@shrkcrft/core": "workspace:*",
+        "@shrkcrft/graph": "workspace:*",
+        "@shrkcrft/packs": "workspace:*",
+        "typescript": "^5.5.0",
+      },
     },
     "packages/generator": {
       "name": "@shrkcrft/generator",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/paths": "workspace:*",
@@ -270,9 +317,27 @@
         "@shrkcrft/templates": "workspace:*",
       },
     },
+    "packages/graph": {
+      "name": "@shrkcrft/graph",
+      "version": "0.1.0-alpha.10",
+      "dependencies": {
+        "@shrkcrft/boundaries": "workspace:*",
+        "@shrkcrft/core": "workspace:*",
+        "@shrkcrft/inspector": "workspace:*",
+      },
+    },
+    "packages/impact-engine": {
+      "name": "@shrkcrft/impact-engine",
+      "version": "0.1.0-alpha.10",
+      "dependencies": {
+        "@shrkcrft/core": "workspace:*",
+        "@shrkcrft/graph": "workspace:*",
+        "@shrkcrft/rule-graph": "workspace:*",
+      },
+    },
     "packages/importer": {
       "name": "@shrkcrft/importer",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -280,7 +345,7 @@
     },
     "packages/inspector": {
       "name": "@shrkcrft/inspector",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/config": "workspace:*",
@@ -303,36 +368,54 @@
     },
     "packages/knowledge": {
       "name": "@shrkcrft/knowledge",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/mcp-server": {
       "name": "@shrkcrft/mcp-server",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.0.0",
+        "@shrkcrft/api-surface-diff": "workspace:*",
+        "@shrkcrft/architecture-guard": "workspace:*",
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/config": "workspace:*",
         "@shrkcrft/context": "workspace:*",
+        "@shrkcrft/context-planner": "workspace:*",
         "@shrkcrft/core": "workspace:*",
+        "@shrkcrft/framework-scanners": "workspace:*",
         "@shrkcrft/generator": "workspace:*",
+        "@shrkcrft/graph": "workspace:*",
+        "@shrkcrft/impact-engine": "workspace:*",
         "@shrkcrft/inspector": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
+        "@shrkcrft/migrate": "workspace:*",
         "@shrkcrft/packs": "workspace:*",
         "@shrkcrft/paths": "workspace:*",
         "@shrkcrft/pipelines": "workspace:*",
         "@shrkcrft/presets": "workspace:*",
+        "@shrkcrft/quality-gates": "workspace:*",
+        "@shrkcrft/rule-graph": "workspace:*",
         "@shrkcrft/rules": "workspace:*",
+        "@shrkcrft/structural-search": "workspace:*",
         "@shrkcrft/templates": "workspace:*",
         "@shrkcrft/workspace": "workspace:*",
         "zod": "^3.25.0 || ^4.0.0",
       },
     },
+    "packages/migrate": {
+      "name": "@shrkcrft/migrate",
+      "version": "0.1.0-alpha.10",
+      "dependencies": {
+        "@shrkcrft/core": "workspace:*",
+        "@shrkcrft/structural-search": "workspace:*",
+      },
+    },
     "packages/packs": {
       "name": "@shrkcrft/packs",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/plugin-api": "workspace:*",
@@ -340,7 +423,7 @@
     },
     "packages/paths": {
       "name": "@shrkcrft/paths",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -348,30 +431,54 @@
     },
     "packages/pipelines": {
       "name": "@shrkcrft/pipelines",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/plugin-api": {
       "name": "@shrkcrft/plugin-api",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/presets": {
       "name": "@shrkcrft/presets",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
         "@shrkcrft/workspace": "workspace:*",
       },
     },
+    "packages/quality-gates": {
+      "name": "@shrkcrft/quality-gates",
+      "version": "0.1.0-alpha.10",
+      "dependencies": {
+        "@shrkcrft/api-surface-diff": "workspace:*",
+        "@shrkcrft/architecture-guard": "workspace:*",
+        "@shrkcrft/boundaries": "workspace:*",
+        "@shrkcrft/context-planner": "workspace:*",
+        "@shrkcrft/core": "workspace:*",
+        "@shrkcrft/graph": "workspace:*",
+        "@shrkcrft/impact-engine": "workspace:*",
+        "@shrkcrft/structural-search": "workspace:*",
+      },
+    },
+    "packages/rule-graph": {
+      "name": "@shrkcrft/rule-graph",
+      "version": "0.1.0-alpha.10",
+      "dependencies": {
+        "@shrkcrft/boundaries": "workspace:*",
+        "@shrkcrft/core": "workspace:*",
+        "@shrkcrft/graph": "workspace:*",
+        "@shrkcrft/inspector": "workspace:*",
+      },
+    },
     "packages/rules": {
       "name": "@shrkcrft/rules",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -379,18 +486,26 @@
     },
     "packages/shared": {
       "name": "@shrkcrft/shared",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
+    },
+    "packages/structural-search": {
+      "name": "@shrkcrft/structural-search",
+      "version": "0.1.0-alpha.10",
+      "dependencies": {
+        "@shrkcrft/core": "workspace:*",
+        "typescript": "^5.5.0",
+      },
     },
     "packages/templates": {
       "name": "@shrkcrft/templates",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/workspace": {
       "name": "@shrkcrft/workspace",
-      "version": "0.1.0-alpha.7",
+      "version": "0.1.0-alpha.10",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
@@ -729,6 +844,10 @@
 
     "@shrkcrft/ai": ["@shrkcrft/ai@workspace:packages/ai"],
 
+    "@shrkcrft/api-surface-diff": ["@shrkcrft/api-surface-diff@workspace:packages/api-surface-diff"],
+
+    "@shrkcrft/architecture-guard": ["@shrkcrft/architecture-guard@workspace:packages/architecture-guard"],
+
     "@shrkcrft/boundaries": ["@shrkcrft/boundaries@workspace:packages/boundaries"],
 
     "@shrkcrft/cli": ["@shrkcrft/cli@workspace:packages/cli"],
@@ -737,13 +856,21 @@
 
     "@shrkcrft/context": ["@shrkcrft/context@workspace:packages/context"],
 
+    "@shrkcrft/context-planner": ["@shrkcrft/context-planner@workspace:packages/context-planner"],
+
     "@shrkcrft/core": ["@shrkcrft/core@workspace:packages/core"],
 
     "@shrkcrft/dashboard": ["@shrkcrft/dashboard@workspace:packages/dashboard"],
 
     "@shrkcrft/dashboard-api": ["@shrkcrft/dashboard-api@workspace:packages/dashboard-api"],
 
+    "@shrkcrft/framework-scanners": ["@shrkcrft/framework-scanners@workspace:packages/framework-scanners"],
+
     "@shrkcrft/generator": ["@shrkcrft/generator@workspace:packages/generator"],
+
+    "@shrkcrft/graph": ["@shrkcrft/graph@workspace:packages/graph"],
+
+    "@shrkcrft/impact-engine": ["@shrkcrft/impact-engine@workspace:packages/impact-engine"],
 
     "@shrkcrft/importer": ["@shrkcrft/importer@workspace:packages/importer"],
 
@@ -752,6 +879,8 @@
     "@shrkcrft/knowledge": ["@shrkcrft/knowledge@workspace:packages/knowledge"],
 
     "@shrkcrft/mcp-server": ["@shrkcrft/mcp-server@workspace:packages/mcp-server"],
+
+    "@shrkcrft/migrate": ["@shrkcrft/migrate@workspace:packages/migrate"],
 
     "@shrkcrft/packs": ["@shrkcrft/packs@workspace:packages/packs"],
 
@@ -763,9 +892,15 @@
 
     "@shrkcrft/presets": ["@shrkcrft/presets@workspace:packages/presets"],
 
+    "@shrkcrft/quality-gates": ["@shrkcrft/quality-gates@workspace:packages/quality-gates"],
+
+    "@shrkcrft/rule-graph": ["@shrkcrft/rule-graph@workspace:packages/rule-graph"],
+
     "@shrkcrft/rules": ["@shrkcrft/rules@workspace:packages/rules"],
 
     "@shrkcrft/shared": ["@shrkcrft/shared@workspace:packages/shared"],
+
+    "@shrkcrft/structural-search": ["@shrkcrft/structural-search@workspace:packages/structural-search"],
 
     "@shrkcrft/templates": ["@shrkcrft/templates@workspace:packages/templates"],
 

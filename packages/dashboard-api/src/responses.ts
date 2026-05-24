@@ -415,6 +415,137 @@ export interface IDashboardStatsResponse {
   readonly commandHints: readonly IDashboardCommandHint[];
 }
 
+/**
+ * Code intelligence overview: aggregated counts across the on-disk
+ * stores plus the architecture-guard checks. Surfaces the new code-
+ * intelligence layer in the dashboard without requiring a deep dive
+ * into each store.
+ */
+export interface IDashboardCodeIntelligenceResponse {
+  readonly schema: 'sharkcraft.dashboard-code-intelligence/v1';
+  readonly available: boolean;
+  readonly graph: {
+    readonly available: boolean;
+    readonly fileCount?: number;
+    readonly nodeCount?: number;
+    readonly edgeCount?: number;
+    readonly workspacePackages?: number;
+    readonly lastIndexedAt?: string;
+    readonly nodesByKind?: Readonly<Record<string, number>>;
+    readonly edgesByKind?: Readonly<Record<string, number>>;
+    readonly hint?: string;
+  };
+  readonly bridge: {
+    readonly available: boolean;
+    readonly lastBuiltAt?: string;
+    readonly nodesByKind?: Readonly<Record<string, number>>;
+    readonly edgesByKind?: Readonly<Record<string, number>>;
+    readonly sourceCounts?: Readonly<Record<string, number>>;
+    readonly hint?: string;
+  };
+  readonly framework: {
+    readonly available: boolean;
+    readonly lastBuiltAt?: string;
+    readonly frameworks?: readonly string[];
+    readonly countsByFramework?: Readonly<Record<string, number>>;
+    readonly countsBySubtype?: Readonly<Record<string, number>>;
+    readonly hint?: string;
+  };
+  readonly architecture: {
+    readonly available: boolean;
+    readonly errors: number;
+    readonly warnings: number;
+    readonly violationsByKind?: Readonly<Record<string, number>>;
+    readonly hint?: string;
+  };
+  readonly commandHints: readonly IDashboardCommandHint[];
+}
+
+/**
+ * Flattened cross-framework route table. Aggregates HTTP routes
+ * detected by every framework extractor (NestJS, Express, Fastify,
+ * FastAPI, Flask, Next.js, Astro). One row per (method, path, handler,
+ * file) tuple. Lets the dashboard answer "where is my service exposed?"
+ * in one panel.
+ */
+export interface IDashboardRouteRow {
+  readonly framework: string;
+  readonly method: string;
+  readonly path: string;
+  readonly handler: string;
+  readonly file: string;
+}
+
+export interface IDashboardRoutesResponse {
+  readonly schema: 'sharkcraft.dashboard-routes/v1';
+  readonly available: boolean;
+  readonly total: number;
+  readonly byFramework: Readonly<Record<string, number>>;
+  readonly routes: readonly IDashboardRouteRow[];
+  readonly commandHints: readonly IDashboardCommandHint[];
+  readonly hint?: string;
+}
+
+/**
+ * Migration run state as persisted by `@shrkcrft/migrate` at
+ * `.sharkcraft/migrations/<id>.state.json`. One row per saved
+ * migration; the runner writes a fresh checkpoint after every step,
+ * so the dashboard always reflects the latest known progress even if
+ * a runner crashed mid-flow.
+ */
+export interface IDashboardMigrationStep {
+  readonly index: number;
+  readonly id: string;
+  readonly kind: 'structural-rewrite' | 'shell' | 'check';
+  readonly status: 'pending' | 'planned' | 'applied' | 'failed' | 'skipped';
+  readonly message: string;
+  readonly durationMs: number;
+}
+
+export interface IDashboardMigrationRow {
+  readonly id: string;
+  readonly title: string;
+  readonly overall: 'pass' | 'fail' | 'skipped';
+  readonly dryRun: boolean;
+  readonly startedAt: string;
+  readonly totalDurationMs: number;
+  readonly steps: readonly IDashboardMigrationStep[];
+  /** Step index where `resumeMigration` would pick up; undefined when complete. */
+  readonly resumePoint?: number;
+}
+
+export interface IDashboardMigrationsResponse {
+  readonly schema: 'sharkcraft.dashboard-migrations/v1';
+  readonly available: boolean;
+  readonly total: number;
+  readonly migrations: readonly IDashboardMigrationRow[];
+  readonly commandHints: readonly IDashboardCommandHint[];
+  readonly hint?: string;
+}
+
+/**
+ * Quality-gate report shaped for the dashboard. Computed on request
+ * by running `runQualityGates` against the current project.
+ */
+export interface IDashboardQualityGate {
+  readonly id: string;
+  readonly label: string;
+  readonly status: 'pass' | 'fail' | 'warn' | 'skipped';
+  readonly message: string;
+  readonly durationMs: number;
+  readonly nextCommands?: readonly string[];
+}
+
+export interface IDashboardQualityGatesResponse {
+  readonly schema: 'sharkcraft.dashboard-quality-gates/v1';
+  readonly overall: 'pass' | 'fail' | 'warn' | 'skipped';
+  readonly totalDurationMs: number;
+  readonly startedAt: string;
+  readonly counts: Readonly<Record<'pass' | 'fail' | 'warn' | 'skipped', number>>;
+  readonly gates: readonly IDashboardQualityGate[];
+  readonly commandHints: readonly IDashboardCommandHint[];
+}
+
 export interface IDashboardErrorResponse {
   readonly error: string;
   readonly code:

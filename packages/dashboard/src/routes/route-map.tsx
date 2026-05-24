@@ -9,6 +9,10 @@ import { GraphPage } from './graph.page.tsx';
 import { PacksPage } from './packs.page.tsx';
 import { PresetsPipelinesPage } from './presets-pipelines.page.tsx';
 import { McpPage } from './mcp.page.tsx';
+import { CodeIntelligencePage } from './code-intelligence.page.tsx';
+import { RoutesPage } from './routes.page.tsx';
+import { MigrationsPage } from './migrations.page.tsx';
+import { QualityGatesPage } from './quality-gates.page.tsx';
 import { matchSegment } from '../utils/routing.ts';
 
 export interface IResolvedRoute {
@@ -35,6 +39,10 @@ export function resolveRoute(path: string): IResolvedRoute {
   if (path === '/packs') return { title: 'Packs', node: <PacksPage /> };
   if (path === '/presets-pipelines') return { title: 'Presets & Pipelines', node: <PresetsPipelinesPage /> };
   if (path === '/mcp') return { title: 'MCP', node: <McpPage /> };
+  if (path === '/code-intelligence') return { title: 'Code Intelligence', node: <CodeIntelligencePage /> };
+  if (path === '/routes') return { title: 'Routes', node: <RoutesPage /> };
+  if (path === '/migrations') return { title: 'Migrations', node: <MigrationsPage /> };
+  if (path === '/quality-gates') return { title: 'Quality Gates', node: <QualityGatesPage /> };
   return {
     title: 'Not found',
     node: (

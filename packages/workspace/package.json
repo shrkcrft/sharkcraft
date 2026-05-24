@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/workspace",
-  "version": "0.1.0-alpha.8",
+  "version": "0.1.0-alpha.10",
   "description": "SharkCraft workspace inspector: project root, package.json, package manager, frameworks, tsconfig.",
   "license": "MIT",
   "author": "SharkCraft contributors",

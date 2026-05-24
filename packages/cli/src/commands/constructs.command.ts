@@ -126,7 +126,7 @@ export const constructsGetCommand: ICommandHandler = {
 
 export const constructsTraceCommand: ICommandHandler = {
   name: 'trace',
-  description: 'Trace all files / publicApi / events / tokens belonging to a construct. --deep adds related/sandbox/test pointers when present.',
+  description: 'Trace all files / publicApi / events / tokens belonging to a construct. --deep adds related / test pointers when present.',
   usage: 'shrk constructs trace <id> [--deep] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const id = args.positional[0];
@@ -153,7 +153,7 @@ export const constructsTraceCommand: ICommandHandler = {
       ? {
           related: relatedAll,
           tags: c.tags ?? [],
-          registryHints: c.tags?.filter((t) => /(registry|composer|defaults|sandbox|demo|barrel)/i.test(t)) ?? [],
+          registryHints: c.tags?.filter((t) => /(registry|barrel)/i.test(t)) ?? [],
         }
       : undefined;
     if (flagBool(args, 'json')) {

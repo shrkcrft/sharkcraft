@@ -1,0 +1,48 @@
+{
+  "name": "@shrkcrft/structural-search",
+  "version": "0.1.0-alpha.10",
+  "description": "SharkCraft structural search: declarative AST patterns for TypeScript codebases. Find call sites, decorators, classes, imports — preview-only by default; rewrite mode lands in Wave 8.",
+  "license": "MIT",
+  "author": "SharkCraft contributors",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sharkcraft/sharkcraft.git",
+    "directory": "packages/structural-search"
+  },
+  "homepage": "https://github.com/sharkcraft/sharkcraft",
+  "bugs": {
+    "url": "https://github.com/sharkcraft/sharkcraft/issues"
+  },
+  "keywords": [
+    "sharkcraft",
+    "structural-search",
+    "ast",
+    "typescript",
+    "codemod"
+  ],
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@shrkcrft/core": "workspace:*",
+    "typescript": "^5.5.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -84,9 +84,9 @@ function minimalTaskPacket(p: ITaskPacket): Record<string, unknown> {
 export const taskCommand: ICommandHandler = {
   name: 'task',
   description:
-    'Build an AI-ready task packet: relevant context, action hints, recommended pipeline, templates, paths, verification commands. Pass `--next` to skip the packet and survey the workspace for the highest-leverage next action.',
+    'Build an AI-ready task packet: relevant context, action hints, recommended pipeline, templates, paths, verification commands. Defaults to a compact packet (top-5 rules / top-3 templates / 5 hints per field) to keep agent token cost low. Pass `--full` to get the unrestricted packet, or `--next` to skip the packet and survey the workspace for the highest-leverage next action.',
   usage:
-    'shrk [--cwd <dir>] task "<task>" [--max-tokens 4000] [--scope x,y] [--explain-ranking] [--json] [--compact]   OR   shrk task --next [--json]',
+    'shrk [--cwd <dir>] task "<task>" [--max-tokens 4000] [--scope x,y] [--explain-ranking] [--full] [--json]   OR   shrk task --next [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const positional = args.positional;
     // `--next` short-circuits the packet build. Survey doctor / lint /
@@ -168,10 +168,16 @@ export const taskCommand: ICommandHandler = {
     const maxTokens = flagNumber(args, 'max-tokens') ?? 3500;
     const scope = flagList(args, 'scope');
     const explainRanking = flagBool(args, 'explain-ranking') || flagBool(args, 'json');
+    // `--full` (or `--verbose`, which already affects text rendering) opts
+    // out of the compact packet — pass it when an agent genuinely needs
+    // the full ranking + uncapped action-hint aggregates. Default is the
+    // tight packet (5 rules / 3 templates / 5 hints per field).
+    const compact = !flagBool(args, 'full') && !flagBool(args, 'verbose');
     const packet = buildTaskPacket(inspection, task, {
       maxTokens,
       ...(scope.length ? { scope } : {}),
       explainRanking,
+      compact,
     });
 
     // Uncertainty summary always computed; coverage gaps when requested.

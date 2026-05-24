@@ -43,6 +43,28 @@ import { checkBoundariesTool } from './check-boundaries.tool.ts';
 import { listBoundaryRulesTool } from './list-boundary-rules.tool.ts';
 import { getBoundaryRuleTool } from './get-boundary-rule.tool.ts';
 import { getImportGraphSummaryTool } from './get-import-graph-summary.tool.ts';
+import { getGraphStatusTool } from './get-graph-status.tool.ts';
+import { getGraphSearchTool } from './get-graph-search.tool.ts';
+import { getGraphContextTool } from './get-graph-context.tool.ts';
+import { getGraphImpactTool } from './get-graph-impact.tool.ts';
+import { getGraphCallersTool } from './get-graph-callers.tool.ts';
+import { getGraphCyclesTool } from './get-graph-cycles.tool.ts';
+import { getGraphUnresolvedTool } from './get-graph-unresolved.tool.ts';
+import { getGraphDepsTool } from './get-graph-deps.tool.ts';
+import { getImpactBaselineTool } from './get-impact-baseline.tool.ts';
+import { getPatternRegistryTool } from './get-pattern-registry.tool.ts';
+import { getIntentBenchmarkRunTool } from './get-intent-benchmark-run.tool.ts';
+import { getCodeIntelligenceStateTool } from './get-code-intelligence-state.tool.ts';
+import { getRulesForFileTool } from './get-rules-for-file.tool.ts';
+import { getStructuralSearchTool } from './get-structural-search.tool.ts';
+import { getStructuralRewritePlanTool } from './get-structural-rewrite-plan.tool.ts';
+import { getGraphImpactAnalysisTool } from './get-graph-impact-analysis.tool.ts';
+import { getContextPackTool } from './get-context-pack.tool.ts';
+import { getArchViolationsTool } from './get-arch-violations.tool.ts';
+import { getFrameworkEntitiesTool } from './get-framework-entities.tool.ts';
+import { getApiSurfaceDiffTool } from './get-api-surface-diff.tool.ts';
+import { getQualityGateTool } from './get-quality-gate.tool.ts';
+import { getMigrationsTool } from './get-migrations.tool.ts';
 import { getDriftReportTool } from './get-drift-report.tool.ts';
 import { getKnowledgeGraphTool } from './get-knowledge-graph.tool.ts';
 import { getGraphNodeTool } from './get-graph-node.tool.ts';
@@ -348,6 +370,28 @@ export const ALL_TOOLS: readonly IToolDefinition[] = Object.freeze([
   listBoundaryRulesTool,
   getBoundaryRuleTool,
   getImportGraphSummaryTool,
+  getGraphStatusTool,
+  getGraphSearchTool,
+  getGraphContextTool,
+  getGraphImpactTool,
+  getGraphCallersTool,
+  getGraphCyclesTool,
+  getGraphUnresolvedTool,
+  getGraphDepsTool,
+  getImpactBaselineTool,
+  getPatternRegistryTool,
+  getIntentBenchmarkRunTool,
+  getCodeIntelligenceStateTool,
+  getRulesForFileTool,
+  getStructuralSearchTool,
+  getStructuralRewritePlanTool,
+  getGraphImpactAnalysisTool,
+  getContextPackTool,
+  getArchViolationsTool,
+  getFrameworkEntitiesTool,
+  getApiSurfaceDiffTool,
+  getQualityGateTool,
+  getMigrationsTool,
   getDriftReportTool,
   getKnowledgeGraphTool,
   getGraphNodeTool,

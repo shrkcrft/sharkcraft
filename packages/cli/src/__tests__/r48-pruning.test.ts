@@ -210,7 +210,7 @@ describe('default help shape', () => {
     }
   });
 
-  test('default-visible command count is bounded (≤ 54)', () => {
+  test('default-visible command count is bounded (≤ 62)', () => {
     // set the visible ceiling at 50. feedback3 adds `shrk why <file>`
     // as a user-facing onboarding verb (closes the dangling
     // ide.command.ts:112 suggestion). It's intentionally Common (not
@@ -220,8 +220,12 @@ describe('default help shape', () => {
     // R59 restores `shrk dashboard` (Primary) and adds `shrk stats`
     // (Primary). Both are spine verbs (one new user surface, one
     // restored), so the ceiling moves from 52 to 54.
+    // Code-intelligence layer adds 8 Common spine verbs: rule-graph,
+    // search-structural, plan-context, arch, framework, api-diff,
+    // gate, migrate. Each is documented in
+    // docs/roadmap-code-intelligence.md. Ceiling 54 → 62.
     const visible = COMMAND_CATALOG.filter((e) => defaultShowInHelp(e));
-    expect(visible.length).toBeLessThanOrEqual(54);
+    expect(visible.length).toBeLessThanOrEqual(62);
   });
 
   test('default-visible count is dramatically smaller than catalog size', () => {
