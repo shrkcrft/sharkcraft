@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
@@ -55,6 +55,34 @@ import {
 } from '../schemas/json-schemas.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { printError } from '../output/print-error.ts';
+import {
+  buildTemplateAudit,
+  type ITemplateAuditReport,
+} from '../audit/templates-audit.ts';
+import { enrichAuditWithLlm } from '../audit/templates-audit-llm.ts';
+import {
+  buildFixPlan,
+  type ITemplateFixPlan,
+} from '../audit/templates-fix-plan.ts';
+import { enrichFixPlanWithLlm } from '../audit/templates-fix-plan-llm.ts';
+import { buildAiBlock, renderAiBlockMarkdown } from '@shrkcrft/ai';
+import {
+  buildKnowledgeAudit,
+  type IKnowledgeAuditReport,
+} from '../audit/knowledge-audit.ts';
+import { enrichKnowledgeAuditWithLlm } from '../audit/knowledge-audit-llm.ts';
+import {
+  buildKnowledgeFixPlan,
+  type IKnowledgeFixPlan,
+} from '../audit/knowledge-fix-plan.ts';
+import { enrichKnowledgeFixPlanWithLlm } from '../audit/knowledge-fix-plan-llm.ts';
+import {
+  buildPipelineAudit,
+  buildPipelineFixPlan,
+  type IPipelineAuditReport,
+  type IPipelineFixPlan,
+} from '../audit/pipeline-audit.ts';
+import { enrichPipelineAuditWithLlm } from '../audit/pipeline-audit-llm.ts';
 
 const SMART_CONTEXT_DIR = nodePath.join('.sharkcraft', 'smart-context');
 
@@ -386,6 +414,861 @@ export const smartContextShowCommand: ICommandHandler = {
   },
 };
 
+/**
+ * `shrk smart-context audit-templates` — local-LLM template audit.
+ *
+ * Orchestrates the existing deterministic template inspectors
+ * (`templates lint` + `templates drift`), dedupes their overlap by
+ * (category + message), and — when a local provider is reachable —
+ * runs an LLM critique pass per template. Always report-only: no edits
+ * to template sources, no plan emission. See
+ * docs/smart-context-audit-templates.md for the report contract.
+ */
+export const smartContextAuditTemplatesCommand: ICommandHandler = {
+  name: 'audit-templates',
+  description:
+    'Audit user templates with the deterministic inspectors and (when reachable) a local LLM critique pass. Report-only — no edits. `--fix-plan` adds a Claude-targetable fix plan derived from the report.',
+  usage:
+    'shrk smart-context audit-templates [--id <templateId>] [--no-enhance] [--provider auto|ollama|llamacpp] [--model <id>] [--save] [--json] [--fix-plan] [--only-plan]',
+  async run(args: ParsedArgs): Promise<number> {
+    const cwd = resolveCwd(args);
+    const json = flagBool(args, 'json');
+    const save = flagBool(args, 'save');
+    const noEnhance = flagBool(args, 'no-enhance');
+    const templateId = flagString(args, 'id');
+    const providerKind = flagString(args, 'provider');
+    const model = flagString(args, 'model');
+    const wantFixPlan = flagBool(args, 'fix-plan') || flagBool(args, 'only-plan');
+    const onlyPlan = flagBool(args, 'only-plan');
+
+    const inspection = await inspectSharkcraft({ cwd });
+    let report = buildTemplateAudit(
+      inspection,
+      templateId ? { templateId } : {},
+    );
+
+    if (report.templates.length === 0) {
+      if (json) {
+        process.stdout.write(asJson(report) + '\n');
+      } else {
+        process.stdout.write(
+          templateId
+            ? `No user template with id "${templateId}".\n`
+            : 'No user templates registered.\n',
+        );
+      }
+      return templateId ? 1 : 0;
+    }
+
+    const selection = noEnhance ? null : selectAiProvider(providerKind);
+    if (selection?.provider) {
+      if (model) selection.provider.configure({ model });
+      if (!json) {
+        process.stderr.write(
+          `[audit-templates] enriching with provider ${selection.provider.id}…\n`,
+        );
+      }
+      report = await enrichAuditWithLlm(report, {
+        provider: selection.provider,
+        inspection,
+        onPerTemplateError: (id, err) => {
+          if (!json) {
+            process.stderr.write(
+              `[audit-templates] LLM pass failed for ${id}: ${err.message.slice(0, 120)} — keeping deterministic findings only.\n`,
+            );
+          }
+        },
+      });
+    } else if (!noEnhance && !json) {
+      process.stderr.write(
+        '[audit-templates] no local LLM reachable — running deterministic-only audit. See `ai.hints` in the output for setup steps.\n',
+      );
+    }
+
+    report = { ...report, ai: buildAiBlock({ selection, userOptedOut: noEnhance }) };
+
+    let fixPlan = wantFixPlan ? buildFixPlan(report) : null;
+    if (fixPlan && selection?.provider) {
+      if (!json) {
+        process.stderr.write('[audit-templates] sharpening fix plan with LLM suggestions…\n');
+      }
+      fixPlan = await enrichFixPlanWithLlm(fixPlan, {
+        provider: selection.provider,
+        inspection,
+        onPerTemplateError: (id, err) => {
+          if (!json) {
+            process.stderr.write(
+              `[audit-templates] LLM fix-plan pass failed for ${id}: ${err.message.slice(0, 120)} — keeping deterministic prompts.\n`,
+            );
+          }
+        },
+      });
+    }
+
+    if (save) {
+      const saved = saveAuditReport(cwd, report, fixPlan);
+      if (json) {
+        process.stdout.write(asJson({ saved, report, ...(fixPlan ? { fixPlan } : {}) }) + '\n');
+      } else {
+        process.stdout.write(`Audit saved → ${saved.mdPath}\n`);
+        process.stdout.write(`           → ${saved.jsonPath}\n`);
+        if (saved.planMdPath && saved.planJsonPath) {
+          process.stdout.write(`Plan  saved → ${saved.planMdPath}\n`);
+          process.stdout.write(`           → ${saved.planJsonPath}\n`);
+        }
+      }
+      return exitCodeForAudit(report);
+    }
+
+    if (json) {
+      if (onlyPlan && fixPlan) {
+        process.stdout.write(asJson(fixPlan) + '\n');
+      } else if (fixPlan) {
+        process.stdout.write(asJson({ report, fixPlan }) + '\n');
+      } else {
+        process.stdout.write(asJson(report) + '\n');
+      }
+      return exitCodeForAudit(report);
+    }
+    if (!onlyPlan) {
+      process.stdout.write(renderAuditMarkdown(report));
+    }
+    if (fixPlan) {
+      if (!onlyPlan) process.stdout.write('\n');
+      process.stdout.write(renderFixPlanMarkdown(fixPlan));
+    }
+    return exitCodeForAudit(report);
+  },
+};
+
+function exitCodeForAudit(report: ITemplateAuditReport): number {
+  if (report.summary.broken > 0) return 1;
+  return 0;
+}
+
+interface ISavedAuditFiles {
+  slug: string;
+  mdPath: string;
+  jsonPath: string;
+  planMdPath?: string;
+  planJsonPath?: string;
+}
+
+function saveAuditReport(
+  cwd: string,
+  report: ITemplateAuditReport,
+  fixPlan: ITemplateFixPlan | null,
+): ISavedAuditFiles {
+  const dir = nodePath.join(cwd, SMART_CONTEXT_DIR);
+  mkdirSync(dir, { recursive: true });
+  const slug = report.auditId;
+  const mdPath = nodePath.join(dir, `${slug}.md`);
+  const jsonPath = nodePath.join(dir, `${slug}.json`);
+  writeFileSync(jsonPath, JSON.stringify(report, null, 2), 'utf8');
+  writeFileSync(mdPath, renderAuditMarkdown(report), 'utf8');
+  if (!fixPlan) return { slug, mdPath, jsonPath };
+  const planSlug = fixPlan.fixPlanId;
+  const planMdPath = nodePath.join(dir, `${planSlug}.md`);
+  const planJsonPath = nodePath.join(dir, `${planSlug}.json`);
+  writeFileSync(planJsonPath, JSON.stringify(fixPlan, null, 2), 'utf8');
+  writeFileSync(planMdPath, renderFixPlanMarkdown(fixPlan), 'utf8');
+  return { slug, mdPath, jsonPath, planMdPath, planJsonPath };
+}
+
+function renderAuditMarkdown(report: ITemplateAuditReport): string {
+  const out: string[] = [];
+  out.push(`# Template audit — ${report.auditId}`);
+  out.push('');
+  out.push(`- generated: ${report.generatedAt}`);
+  out.push(
+    `- llm enriched: ${report.llmEnriched ? `yes (${report.llmProviderId ?? 'unknown'})` : 'no — deterministic only'}`,
+  );
+  out.push(
+    `- summary: ok=${report.summary.ok}, minor=${report.summary.minor}, stale=${report.summary.stale}, broken=${report.summary.broken} (total ${report.summary.total})`,
+  );
+  if (report.skipped.length > 0) {
+    out.push(`- skipped: ${report.skipped.length} (${report.skipped.map((s) => s.templateId).join(', ')})`);
+  }
+  out.push('');
+
+  const order: Array<'broken' | 'stale' | 'minor' | 'ok'> = ['broken', 'stale', 'minor', 'ok'];
+  for (const verdict of order) {
+    const inGroup = report.templates.filter((t) => t.verdict === verdict);
+    if (inGroup.length === 0) continue;
+    out.push(`## ${verdict.toUpperCase()} (${inGroup.length})`);
+    out.push('');
+    for (const entry of inGroup) {
+      out.push(`### \`${entry.templateId}\` — ${entry.templateName}`);
+      out.push(`usage: ${entry.usage}`);
+      if (entry.deterministicFindings.length === 0 && entry.llmFindings.length === 0) {
+        out.push('No findings.');
+        out.push('');
+        continue;
+      }
+      if (entry.deterministicFindings.length > 0) {
+        out.push('');
+        out.push('Findings:');
+        for (const f of entry.deterministicFindings) {
+          out.push(
+            `- **[deterministic]** ${f.severity} \`${f.category}\` — ${f.message} _(sources: ${f.sources.join(', ')})_`,
+          );
+          if (f.suggestion) out.push(`  - ↳ ${f.suggestion}`);
+        }
+      }
+      if (entry.llmFindings.length > 0) {
+        out.push('');
+        out.push('LLM-flagged (advisory):');
+        for (const f of entry.llmFindings) {
+          out.push(
+            `- **[llm]** ${f.severity} \`${f.category}\` (confidence ${f.confidence.toFixed(2)}) — ${f.message}`,
+          );
+        }
+      }
+      if (entry.suggestedActions.length > 0) {
+        out.push('');
+        out.push('Suggested actions:');
+        for (const a of entry.suggestedActions) {
+          out.push(`- \`${a.kind}\` ${a.target} — ${a.note}`);
+        }
+      }
+      out.push('');
+    }
+  }
+  if (report.ai) {
+    out.push(renderAiBlockMarkdown(report.ai));
+  }
+  return out.join('\n') + '\n';
+}
+
+function renderFixPlanMarkdown(plan: ITemplateFixPlan): string {
+  const out: string[] = [];
+  out.push(`# Template fix plan — ${plan.fixPlanId}`);
+  out.push('');
+  out.push(`- generated: ${plan.generatedAt}`);
+  out.push(`- derived from audit: ${plan.auditId}`);
+  out.push(`- source files Claude will edit: ${plan.sourceFiles.join(', ')}`);
+  out.push(
+    `- summary: ${plan.summary.fixCount} fix(es) — high=${plan.summary.highConfidence}, medium=${plan.summary.mediumConfidence}, low=${plan.summary.lowConfidence}; skipped=${plan.summary.skipped}`,
+  );
+  out.push('');
+  if (plan.fixes.length === 0) {
+    out.push('No fix instructions emitted.');
+    out.push('');
+  } else {
+    const order: Array<'high' | 'medium' | 'low'> = ['high', 'medium', 'low'];
+    for (const confidence of order) {
+      const inGroup = plan.fixes.filter((f) => f.confidence === confidence);
+      if (inGroup.length === 0) continue;
+      out.push(`## Confidence: ${confidence.toUpperCase()} (${inGroup.length})`);
+      out.push('');
+      for (const fix of inGroup) {
+        out.push(
+          `### \`${fix.templateId}\` — \`${fix.findingCategory}\` _(${fix.source}, ${fix.severity})_`,
+        );
+        out.push(`**Intent.** ${fix.intent}`);
+        out.push('');
+        out.push(`Original finding: ${fix.finding}`);
+        out.push('');
+        out.push('Agent prompt:');
+        out.push('```');
+        out.push(fix.agentPrompt);
+        out.push('```');
+        if (fix.llmSuggestion) {
+          out.push('');
+          out.push('LLM suggestion (advisory):');
+          out.push('> ' + fix.llmSuggestion.split('\n').join('\n> '));
+        }
+        out.push('');
+      }
+    }
+  }
+  if (plan.skipped.length > 0) {
+    out.push(`## Skipped (${plan.skipped.length})`);
+    out.push('');
+    for (const s of plan.skipped) {
+      out.push(`- \`${s.templateId}\` / \`${s.findingCategory}\` — ${s.reason}`);
+      out.push(`  - finding: ${s.finding}`);
+    }
+    out.push('');
+  }
+  return out.join('\n') + '\n';
+}
+
+/**
+ * `shrk smart-context audit-knowledge` — local-LLM knowledge audit.
+ *
+ * Wraps `lintKnowledge` + `buildKnowledgeStaleReport` from `@shrkcrft/inspector`,
+ * then layers LLM critique (when a provider is reachable) and emits a
+ * Claude-targetable fix plan. Report-only — no writes to knowledge sources.
+ * See docs/smart-context-audit-templates.md for the shared report contract.
+ */
+export const smartContextAuditKnowledgeCommand: ICommandHandler = {
+  name: 'audit-knowledge',
+  description:
+    'Audit user knowledge entries with the deterministic inspectors (lint + stale-reference check) and (when reachable) a local LLM critique pass. Report-only — no edits.',
+  usage:
+    'shrk smart-context audit-knowledge [--id <entryId>] [--no-enhance] [--no-stale-check] [--provider auto|ollama|llamacpp] [--model <id>] [--save] [--json] [--fix-plan] [--only-plan]',
+  async run(args: ParsedArgs): Promise<number> {
+    const cwd = resolveCwd(args);
+    const json = flagBool(args, 'json');
+    const save = flagBool(args, 'save');
+    const noEnhance = flagBool(args, 'no-enhance');
+    const noStaleCheck = flagBool(args, 'no-stale-check');
+    const entryId = flagString(args, 'id');
+    const providerKind = flagString(args, 'provider');
+    const model = flagString(args, 'model');
+    const wantFixPlan = flagBool(args, 'fix-plan') || flagBool(args, 'only-plan');
+    const onlyPlan = flagBool(args, 'only-plan');
+
+    const inspection = await inspectSharkcraft({ cwd });
+    let report = buildKnowledgeAudit(inspection, {
+      ...(entryId ? { entryId } : {}),
+      ...(noStaleCheck ? { skipStaleCheck: true } : {}),
+    });
+
+    if (report.entries.length === 0) {
+      if (json) {
+        process.stdout.write(asJson(report) + '\n');
+      } else {
+        process.stdout.write(
+          entryId
+            ? `No user knowledge entry with id "${entryId}".\n`
+            : 'No user knowledge entries registered.\n',
+        );
+      }
+      return entryId ? 1 : 0;
+    }
+
+    const selection = noEnhance ? null : selectAiProvider(providerKind);
+    if (selection?.provider) {
+      if (model) selection.provider.configure({ model });
+      if (!json) {
+        process.stderr.write(
+          `[audit-knowledge] enriching with provider ${selection.provider.id}…\n`,
+        );
+      }
+      report = await enrichKnowledgeAuditWithLlm(report, {
+        provider: selection.provider,
+        inspection,
+        onPerEntryError: (id, err) => {
+          if (!json) {
+            process.stderr.write(
+              `[audit-knowledge] LLM pass failed for ${id}: ${err.message.slice(0, 120)} — keeping deterministic findings only.\n`,
+            );
+          }
+        },
+      });
+    } else if (!noEnhance && !json) {
+      process.stderr.write(
+        '[audit-knowledge] no local LLM reachable — running deterministic-only audit. See `ai.hints` in the output for setup steps.\n',
+      );
+    }
+
+    report = { ...report, ai: buildAiBlock({ selection, userOptedOut: noEnhance }) };
+
+    let fixPlan = wantFixPlan ? buildKnowledgeFixPlan(report) : null;
+    if (fixPlan && selection?.provider) {
+      if (!json) {
+        process.stderr.write('[audit-knowledge] sharpening fix plan with LLM suggestions…\n');
+      }
+      fixPlan = await enrichKnowledgeFixPlanWithLlm(fixPlan, {
+        provider: selection.provider,
+        inspection,
+        onPerEntryError: (id, err) => {
+          if (!json) {
+            process.stderr.write(
+              `[audit-knowledge] LLM fix-plan pass failed for ${id}: ${err.message.slice(0, 120)} — keeping deterministic prompts.\n`,
+            );
+          }
+        },
+      });
+    }
+
+    if (save) {
+      const saved = saveKnowledgeAuditReport(cwd, report, fixPlan);
+      if (json) {
+        process.stdout.write(asJson({ saved, report, ...(fixPlan ? { fixPlan } : {}) }) + '\n');
+      } else {
+        process.stdout.write(`Audit saved → ${saved.mdPath}\n`);
+        process.stdout.write(`           → ${saved.jsonPath}\n`);
+        if (saved.planMdPath && saved.planJsonPath) {
+          process.stdout.write(`Plan  saved → ${saved.planMdPath}\n`);
+          process.stdout.write(`           → ${saved.planJsonPath}\n`);
+        }
+      }
+      return exitCodeForKnowledgeAudit(report);
+    }
+
+    if (json) {
+      if (onlyPlan && fixPlan) {
+        process.stdout.write(asJson(fixPlan) + '\n');
+      } else if (fixPlan) {
+        process.stdout.write(asJson({ report, fixPlan }) + '\n');
+      } else {
+        process.stdout.write(asJson(report) + '\n');
+      }
+      return exitCodeForKnowledgeAudit(report);
+    }
+    if (!onlyPlan) {
+      process.stdout.write(renderKnowledgeAuditMarkdown(report));
+    }
+    if (fixPlan) {
+      if (!onlyPlan) process.stdout.write('\n');
+      process.stdout.write(renderKnowledgeFixPlanMarkdown(fixPlan));
+    }
+    return exitCodeForKnowledgeAudit(report);
+  },
+};
+
+function exitCodeForKnowledgeAudit(report: IKnowledgeAuditReport): number {
+  if (report.summary.broken > 0) return 1;
+  return 0;
+}
+
+interface ISavedKnowledgeAuditFiles {
+  slug: string;
+  mdPath: string;
+  jsonPath: string;
+  planMdPath?: string;
+  planJsonPath?: string;
+}
+
+function saveKnowledgeAuditReport(
+  cwd: string,
+  report: IKnowledgeAuditReport,
+  fixPlan: IKnowledgeFixPlan | null,
+): ISavedKnowledgeAuditFiles {
+  const dir = nodePath.join(cwd, SMART_CONTEXT_DIR);
+  mkdirSync(dir, { recursive: true });
+  const slug = `knowledge-${report.auditId}`;
+  const mdPath = nodePath.join(dir, `${slug}.md`);
+  const jsonPath = nodePath.join(dir, `${slug}.json`);
+  writeFileSync(jsonPath, JSON.stringify(report, null, 2), 'utf8');
+  writeFileSync(mdPath, renderKnowledgeAuditMarkdown(report), 'utf8');
+  if (!fixPlan) return { slug, mdPath, jsonPath };
+  const planSlug = `knowledge-${fixPlan.fixPlanId}`;
+  const planMdPath = nodePath.join(dir, `${planSlug}.md`);
+  const planJsonPath = nodePath.join(dir, `${planSlug}.json`);
+  writeFileSync(planJsonPath, JSON.stringify(fixPlan, null, 2), 'utf8');
+  writeFileSync(planMdPath, renderKnowledgeFixPlanMarkdown(fixPlan), 'utf8');
+  return { slug, mdPath, jsonPath, planMdPath, planJsonPath };
+}
+
+function renderKnowledgeAuditMarkdown(report: IKnowledgeAuditReport): string {
+  const out: string[] = [];
+  out.push(`# Knowledge audit — ${report.auditId}`);
+  out.push('');
+  out.push(`- generated: ${report.generatedAt}`);
+  out.push(
+    `- llm enriched: ${report.llmEnriched ? `yes (${report.llmProviderId ?? 'unknown'})` : 'no — deterministic only'}`,
+  );
+  out.push(
+    `- summary: ok=${report.summary.ok}, minor=${report.summary.minor}, stale=${report.summary.stale}, broken=${report.summary.broken} (total ${report.summary.total})`,
+  );
+  if (report.skipped.length > 0) {
+    out.push(`- skipped: ${report.skipped.length} (pack-contributed)`);
+  }
+  out.push('');
+
+  const order: Array<'broken' | 'stale' | 'minor' | 'ok'> = ['broken', 'stale', 'minor', 'ok'];
+  for (const verdict of order) {
+    const inGroup = report.entries.filter((t) => t.verdict === verdict);
+    if (inGroup.length === 0) continue;
+    out.push(`## ${verdict.toUpperCase()} (${inGroup.length})`);
+    out.push('');
+    for (const entry of inGroup) {
+      out.push(`### \`${entry.entryId}\` (${entry.entryType}) — ${entry.title}`);
+      if (entry.deterministicFindings.length === 0 && entry.llmFindings.length === 0) {
+        out.push('No findings.');
+        out.push('');
+        continue;
+      }
+      if (entry.deterministicFindings.length > 0) {
+        out.push('');
+        out.push('Findings:');
+        for (const f of entry.deterministicFindings) {
+          out.push(
+            `- **[deterministic]** ${f.severity} \`${f.category}\` (${f.field}) — ${f.message} _(sources: ${f.sources.join(', ')})_`,
+          );
+          if (f.fixSuggestion) out.push(`  - ↳ ${f.fixSuggestion}`);
+          if (f.stubSuggestion) out.push(`  - stub: ${f.stubSuggestion}`);
+        }
+      }
+      if (entry.llmFindings.length > 0) {
+        out.push('');
+        out.push('LLM-flagged (advisory):');
+        for (const f of entry.llmFindings) {
+          out.push(
+            `- **[llm]** ${f.severity} \`${f.category}\` (confidence ${f.confidence.toFixed(2)}) — ${f.message}`,
+          );
+        }
+      }
+      if (entry.suggestedActions.length > 0) {
+        out.push('');
+        out.push('Suggested actions:');
+        for (const a of entry.suggestedActions) {
+          out.push(`- \`${a.kind}\` ${a.target} — ${a.note}`);
+        }
+      }
+      out.push('');
+    }
+  }
+  if (report.ai) {
+    out.push(renderAiBlockMarkdown(report.ai));
+  }
+  return out.join('\n') + '\n';
+}
+
+function renderKnowledgeFixPlanMarkdown(plan: IKnowledgeFixPlan): string {
+  const out: string[] = [];
+  out.push(`# Knowledge fix plan — ${plan.fixPlanId}`);
+  out.push('');
+  out.push(`- generated: ${plan.generatedAt}`);
+  out.push(`- derived from audit: ${plan.auditId}`);
+  out.push(`- source hint: ${plan.sourceHint}`);
+  out.push(
+    `- summary: ${plan.summary.fixCount} fix(es) — high=${plan.summary.highConfidence}, medium=${plan.summary.mediumConfidence}, low=${plan.summary.lowConfidence}; skipped=${plan.summary.skipped}`,
+  );
+  out.push('');
+  if (plan.fixes.length === 0) {
+    out.push('No fix instructions emitted.');
+    out.push('');
+  } else {
+    const order: Array<'high' | 'medium' | 'low'> = ['high', 'medium', 'low'];
+    for (const confidence of order) {
+      const inGroup = plan.fixes.filter((f) => f.confidence === confidence);
+      if (inGroup.length === 0) continue;
+      out.push(`## Confidence: ${confidence.toUpperCase()} (${inGroup.length})`);
+      out.push('');
+      for (const fix of inGroup) {
+        out.push(
+          `### \`${fix.entryId}\` — \`${fix.findingCategory}\` _(${fix.source}, ${fix.severity})_`,
+        );
+        out.push(`**Intent.** ${fix.intent}`);
+        out.push('');
+        out.push(`Original finding: ${fix.finding}`);
+        out.push('');
+        out.push('Agent prompt:');
+        out.push('```');
+        out.push(fix.agentPrompt);
+        out.push('```');
+        if (fix.llmSuggestion) {
+          out.push('');
+          out.push('LLM suggestion (advisory):');
+          out.push('> ' + fix.llmSuggestion.split('\n').join('\n> '));
+        }
+        out.push('');
+      }
+    }
+  }
+  if (plan.skipped.length > 0) {
+    out.push(`## Skipped (${plan.skipped.length})`);
+    out.push('');
+    for (const s of plan.skipped) {
+      out.push(`- \`${s.entryId}\` / \`${s.findingCategory}\` — ${s.reason}`);
+      out.push(`  - finding: ${s.finding}`);
+    }
+    out.push('');
+  }
+  return out.join('\n') + '\n';
+}
+
+/**
+ * `shrk smart-context audit-pipelines` — local-LLM pipeline audit.
+ *
+ * Wraps `lintPipelines` from `@shrkcrft/inspector`, optionally layers
+ * LLM critique, and emits a Claude-targetable fix plan. Same report-only
+ * contract as audit-templates / audit-knowledge.
+ */
+export const smartContextAuditPipelinesCommand: ICommandHandler = {
+  name: 'audit-pipelines',
+  description:
+    'Audit registered pipelines with the deterministic inspector and (when reachable) a local LLM critique pass. Report-only — no edits.',
+  usage:
+    'shrk smart-context audit-pipelines [--id <pipelineId>] [--no-enhance] [--provider auto|ollama|llamacpp] [--model <id>] [--save] [--json] [--fix-plan] [--only-plan]',
+  async run(args: ParsedArgs): Promise<number> {
+    const cwd = resolveCwd(args);
+    const json = flagBool(args, 'json');
+    const save = flagBool(args, 'save');
+    const noEnhance = flagBool(args, 'no-enhance');
+    const pipelineId = flagString(args, 'id');
+    const providerKind = flagString(args, 'provider');
+    const model = flagString(args, 'model');
+    const wantFixPlan = flagBool(args, 'fix-plan') || flagBool(args, 'only-plan');
+    const onlyPlan = flagBool(args, 'only-plan');
+
+    const inspection = await inspectSharkcraft({ cwd });
+    let report = buildPipelineAudit(inspection, pipelineId ? { pipelineId } : {});
+
+    if (report.pipelines.length === 0) {
+      if (json) {
+        process.stdout.write(asJson(report) + '\n');
+      } else {
+        process.stdout.write(
+          pipelineId
+            ? `No pipeline with id "${pipelineId}".\n`
+            : 'No pipelines registered.\n',
+        );
+      }
+      return pipelineId ? 1 : 0;
+    }
+
+    const selection = noEnhance ? null : selectAiProvider(providerKind);
+    if (selection?.provider) {
+      if (model) selection.provider.configure({ model });
+      if (!json) {
+        process.stderr.write(
+          `[audit-pipelines] enriching with provider ${selection.provider.id}…\n`,
+        );
+      }
+      report = await enrichPipelineAuditWithLlm(report, {
+        provider: selection.provider,
+        inspection,
+        onPerPipelineError: (id, err) => {
+          if (!json) {
+            process.stderr.write(
+              `[audit-pipelines] LLM pass failed for ${id}: ${err.message.slice(0, 120)} — keeping deterministic findings only.\n`,
+            );
+          }
+        },
+      });
+    } else if (!noEnhance && !json) {
+      process.stderr.write(
+        '[audit-pipelines] no local LLM reachable — running deterministic-only audit. See `ai.hints` in the output for setup steps.\n',
+      );
+    }
+
+    report = { ...report, ai: buildAiBlock({ selection, userOptedOut: noEnhance }) };
+
+    const fixPlan = wantFixPlan ? buildPipelineFixPlan(report) : null;
+
+    if (save) {
+      const saved = savePipelineAuditReport(cwd, report, fixPlan);
+      if (json) {
+        process.stdout.write(asJson({ saved, report, ...(fixPlan ? { fixPlan } : {}) }) + '\n');
+      } else {
+        process.stdout.write(`Audit saved → ${saved.mdPath}\n`);
+        process.stdout.write(`           → ${saved.jsonPath}\n`);
+        if (saved.planMdPath && saved.planJsonPath) {
+          process.stdout.write(`Plan  saved → ${saved.planMdPath}\n`);
+          process.stdout.write(`           → ${saved.planJsonPath}\n`);
+        }
+      }
+      return exitCodeForPipelineAudit(report);
+    }
+
+    if (json) {
+      if (onlyPlan && fixPlan) {
+        process.stdout.write(asJson(fixPlan) + '\n');
+      } else if (fixPlan) {
+        process.stdout.write(asJson({ report, fixPlan }) + '\n');
+      } else {
+        process.stdout.write(asJson(report) + '\n');
+      }
+      return exitCodeForPipelineAudit(report);
+    }
+    if (!onlyPlan) {
+      process.stdout.write(renderPipelineAuditMarkdown(report));
+    }
+    if (fixPlan) {
+      if (!onlyPlan) process.stdout.write('\n');
+      process.stdout.write(renderPipelineFixPlanMarkdown(fixPlan));
+    }
+    return exitCodeForPipelineAudit(report);
+  },
+};
+
+function exitCodeForPipelineAudit(report: IPipelineAuditReport): number {
+  if (report.summary.broken > 0) return 1;
+  return 0;
+}
+
+interface ISavedPipelineAuditFiles {
+  slug: string;
+  mdPath: string;
+  jsonPath: string;
+  planMdPath?: string;
+  planJsonPath?: string;
+}
+
+function savePipelineAuditReport(
+  cwd: string,
+  report: IPipelineAuditReport,
+  fixPlan: IPipelineFixPlan | null,
+): ISavedPipelineAuditFiles {
+  const dir = nodePath.join(cwd, SMART_CONTEXT_DIR);
+  mkdirSync(dir, { recursive: true });
+  const slug = `pipelines-${report.auditId}`;
+  const mdPath = nodePath.join(dir, `${slug}.md`);
+  const jsonPath = nodePath.join(dir, `${slug}.json`);
+  writeFileSync(jsonPath, JSON.stringify(report, null, 2), 'utf8');
+  writeFileSync(mdPath, renderPipelineAuditMarkdown(report), 'utf8');
+  if (!fixPlan) return { slug, mdPath, jsonPath };
+  const planSlug = `pipelines-${fixPlan.fixPlanId}`;
+  const planMdPath = nodePath.join(dir, `${planSlug}.md`);
+  const planJsonPath = nodePath.join(dir, `${planSlug}.json`);
+  writeFileSync(planJsonPath, JSON.stringify(fixPlan, null, 2), 'utf8');
+  writeFileSync(planMdPath, renderPipelineFixPlanMarkdown(fixPlan), 'utf8');
+  return { slug, mdPath, jsonPath, planMdPath, planJsonPath };
+}
+
+function renderPipelineAuditMarkdown(report: IPipelineAuditReport): string {
+  const out: string[] = [];
+  out.push(`# Pipeline audit — ${report.auditId}`);
+  out.push('');
+  out.push(`- generated: ${report.generatedAt}`);
+  out.push(
+    `- llm enriched: ${report.llmEnriched ? `yes (${report.llmProviderId ?? 'unknown'})` : 'no — deterministic only'}`,
+  );
+  out.push(
+    `- summary: ok=${report.summary.ok}, minor=${report.summary.minor}, stale=${report.summary.stale}, broken=${report.summary.broken} (total ${report.summary.total})`,
+  );
+  out.push('');
+  const order: Array<'broken' | 'stale' | 'minor' | 'ok'> = ['broken', 'stale', 'minor', 'ok'];
+  for (const verdict of order) {
+    const inGroup = report.pipelines.filter((p) => p.verdict === verdict);
+    if (inGroup.length === 0) continue;
+    out.push(`## ${verdict.toUpperCase()} (${inGroup.length})`);
+    out.push('');
+    for (const entry of inGroup) {
+      out.push(`### \`${entry.pipelineId}\``);
+      if (entry.deterministicFindings.length === 0 && entry.llmFindings.length === 0) {
+        out.push('No findings.');
+        out.push('');
+        continue;
+      }
+      if (entry.deterministicFindings.length > 0) {
+        out.push('');
+        out.push('Findings:');
+        for (const f of entry.deterministicFindings) {
+          out.push(
+            `- **[deterministic]** ${f.severity} \`${f.category}\`${f.stepId ? ` (step "${f.stepId}")` : ''} — ${f.message} _(sources: ${f.sources.join(', ')})_`,
+          );
+        }
+      }
+      if (entry.llmFindings.length > 0) {
+        out.push('');
+        out.push('LLM-flagged (advisory):');
+        for (const f of entry.llmFindings) {
+          out.push(
+            `- **[llm]** ${f.severity} \`${f.category}\` (confidence ${f.confidence.toFixed(2)}) — ${f.message}`,
+          );
+        }
+      }
+      out.push('');
+    }
+  }
+  if (report.ai) {
+    out.push(renderAiBlockMarkdown(report.ai));
+  }
+  return out.join('\n') + '\n';
+}
+
+function renderPipelineFixPlanMarkdown(plan: IPipelineFixPlan): string {
+  const out: string[] = [];
+  out.push(`# Pipeline fix plan — ${plan.fixPlanId}`);
+  out.push('');
+  out.push(`- generated: ${plan.generatedAt}`);
+  out.push(`- derived from audit: ${plan.auditId}`);
+  out.push(`- source hint: ${plan.sourceHint}`);
+  out.push(
+    `- summary: ${plan.summary.fixCount} fix(es) — high=${plan.summary.highConfidence}, medium=${plan.summary.mediumConfidence}, low=${plan.summary.lowConfidence}`,
+  );
+  out.push('');
+  if (plan.fixes.length === 0) {
+    out.push('No fix instructions emitted.');
+    out.push('');
+    return out.join('\n') + '\n';
+  }
+  const order: Array<'high' | 'medium' | 'low'> = ['high', 'medium', 'low'];
+  for (const confidence of order) {
+    const inGroup = plan.fixes.filter((f) => f.confidence === confidence);
+    if (inGroup.length === 0) continue;
+    out.push(`## Confidence: ${confidence.toUpperCase()} (${inGroup.length})`);
+    out.push('');
+    for (const fix of inGroup) {
+      out.push(
+        `### \`${fix.pipelineId}\` — \`${fix.findingCategory}\` _(${fix.source}, ${fix.severity})_`,
+      );
+      out.push(`**Intent.** ${fix.intent}`);
+      out.push('');
+      out.push(`Original finding: ${fix.finding}`);
+      out.push('');
+      out.push('Agent prompt:');
+      out.push('```');
+      out.push(fix.agentPrompt);
+      out.push('```');
+      out.push('');
+    }
+  }
+  return out.join('\n') + '\n';
+}
+
+// Patterns matching ONNX worker-thread teardown noise that surfaces
+// AFTER a successful embeddings-build. `pipeline.dispose()` returns
+// cleanly but `onnxruntime-node`'s worker pool isn't actually joined;
+// when the main thread exits, the workers briefly outlive it and hit a
+// pthread mutex teardown race. The libc++abi message is the user-visible
+// symptom. Filtered here so the child's exit doesn't pollute the user's
+// terminal — exit code is preserved.
+const EMBEDDINGS_NOISE_PATTERNS: ReadonlyArray<RegExp> = [
+  /^libc\+\+abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed/,
+];
+
+function isEmbeddingsCleanupNoise(line: string): boolean {
+  return EMBEDDINGS_NOISE_PATTERNS.some((p) => p.test(line));
+}
+
+/**
+ * Run `embeddings-build` in an isolated child process and filter
+ * known cleanup noise from its stderr. See EMBEDDINGS_NOISE_PATTERNS
+ * for the rationale.
+ *
+ * Implementation: re-exec the same CLI binary (`process.execPath` +
+ * `process.argv.slice(1)`) with `SHRK_EMBEDDINGS_WORKER=1` in the env.
+ * The child sees the env flag, skips this wrapper, and runs the
+ * indexing inline. The parent pipes child stdout through unchanged
+ * (so JSON output + result line flow as-is) and filters child stderr
+ * line-by-line before forwarding.
+ *
+ * Trust model: the child's exit code is the source of truth. Even if
+ * the child aborts during cleanup, `reallyExit(code)` in main.ts has
+ * already set the kernel-visible exit code before the abort. We
+ * surface that code verbatim.
+ */
+function runEmbeddingsBuildInChild(): Promise<number> {
+  return new Promise<number>((resolve) => {
+    const child = spawn(process.execPath, process.argv.slice(1), {
+      env: { ...process.env, SHRK_EMBEDDINGS_WORKER: '1' },
+      stdio: ['inherit', 'pipe', 'pipe'],
+    });
+    child.stdout.pipe(process.stdout);
+    let stderrBuf = '';
+    const flushLine = (line: string): void => {
+      if (isEmbeddingsCleanupNoise(line)) return;
+      process.stderr.write(line + '\n');
+    };
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrBuf += chunk.toString('utf8');
+      let idx: number;
+      while ((idx = stderrBuf.indexOf('\n')) !== -1) {
+        flushLine(stderrBuf.slice(0, idx));
+        stderrBuf = stderrBuf.slice(idx + 1);
+      }
+    });
+    child.on('error', (err) => {
+      process.stderr.write(`Failed to spawn embeddings worker: ${err.message}\n`);
+      resolve(1);
+    });
+    child.on('close', (code) => {
+      if (stderrBuf.length > 0 && !isEmbeddingsCleanupNoise(stderrBuf)) {
+        process.stderr.write(stderrBuf);
+      }
+      resolve(typeof code === 'number' ? code : 1);
+    });
+  });
+}
+
 /** `shrk smart-context embeddings build` — (re)build the semantic index. */
 export const smartContextEmbeddingsBuildCommand: ICommandHandler = {
   name: 'embeddings-build',
@@ -394,6 +1277,13 @@ export const smartContextEmbeddingsBuildCommand: ICommandHandler = {
   usage:
     'shrk smart-context embeddings-build [--model <hf-id>] [--root <dir>]... [--max-files N] [--rebuild] [--json]',
   async run(args: ParsedArgs): Promise<number> {
+    // Top-level: if we're the parent, re-exec ourselves in worker mode
+    // and filter the resulting cleanup noise. The child path (env flag
+    // set) runs the original code below inline.
+    if (process.env.SHRK_EMBEDDINGS_WORKER !== '1') {
+      return runEmbeddingsBuildInChild();
+    }
+
     const cwd = resolveCwd(args);
     const model = flagString(args, 'model');
     const maxFiles = flagNumber(args, 'max-files') ?? 5000;

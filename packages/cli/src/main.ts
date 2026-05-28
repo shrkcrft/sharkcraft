@@ -202,7 +202,11 @@ import {
 } from './commands/dashboard-export.command.ts';
 import { importCommand } from './commands/import.command.ts';
 import { askCommand } from './commands/ask.command.ts';
+import { aiStatusCommand } from './commands/ai-status.command.ts';
 import {
+  smartContextAuditKnowledgeCommand,
+  smartContextAuditPipelinesCommand,
+  smartContextAuditTemplatesCommand,
   smartContextCommand,
   smartContextEmbeddingsBuildCommand,
   smartContextEmbeddingsStatusCommand,
@@ -378,6 +382,7 @@ export function buildRegistry(): CommandRegistry {
   registry.register(initCommand);
   registry.register(inspectCommand);
   registry.register(doctorCommand);
+  registry.register(aiStatusCommand);
   registry.registerSubcommand('doctor', doctorSuppressCommand);
   registry.registerSubcommand('doctor', doctorSuppressionsCommand);
   // Acknowledgements with required reason + expiry.
@@ -453,6 +458,9 @@ export function buildRegistry(): CommandRegistry {
   registry.registerSubcommand('smart-context', smartContextShowCommand);
   registry.registerSubcommand('smart-context', smartContextEmbeddingsBuildCommand);
   registry.registerSubcommand('smart-context', smartContextEmbeddingsStatusCommand);
+  registry.registerSubcommand('smart-context', smartContextAuditTemplatesCommand);
+  registry.registerSubcommand('smart-context', smartContextAuditKnowledgeCommand);
+  registry.registerSubcommand('smart-context', smartContextAuditPipelinesCommand);
   registry.register(spikeCommand);
   registry.register(depsAuditCommand);
   registry.register(scaffoldValidateCommand);
@@ -1149,26 +1157,45 @@ if (
     } catch {
       // ignore flush failures
     }
-    // Prefer `_exit` over `exit` on Node. Even after our explicit
-    // disposes above, node-llama-cpp's libggml-metal destructor
-    // still aborts in `__cxa_finalize_ranges` because the Metal
-    // device list isn't drained by the current dispose API
-    // (`GGML_ASSERT([rsets->data count] == 0)` fires from
-    // `ggml_metal_device_free`, surfacing as `zsh: abort` AFTER
-    // the user's result has already printed). `process._exit`
-    // skips the libc++ static-destructor pass entirely, which is
-    // safe here because we have already torn down the runtimes
-    // we care about above and the OS will reclaim the rest.
+    // Prefer a low-level exit over `process.exit` on Node. Without
+    // this, libc++ static destructors run during `process.exit`, and
+    // native bindings still resident in memory abort with libc++abi
+    // errors AFTER the user's result has already printed:
+    //   - node-llama-cpp's libggml-metal hits `GGML_ASSERT([rsets->data
+    //     count] == 0)` in `ggml_metal_device_free` → `zsh: abort`.
+    //   - onnxruntime-node's worker pool aborts with
+    //     `libc++abi: mutex lock failed: Invalid argument` after a
+    //     successful `shrk smart-context embeddings-build`. NOTE:
+    //     `pipeline.dispose()` returns cleanly, but ONNX worker threads
+    //     are not actually joined — they continue running briefly and
+    //     hit the pthread mutex teardown race. There is no JS-layer
+    //     fix for this; upstream onnxruntime-node 1.21 has the bug.
+    //     The low-level exit at least suppresses the destructor pass
+    //     so the failure mode is "noisy stderr, exit code preserved"
+    //     rather than "destructor cascade".
     //
-    // Bun's process object doesn't expose `_exit`, but Bun also
-    // doesn't drive shutdown through libuv + libc++ static
-    // destructors the same way Node does, so the Metal crash
-    // doesn't reproduce there. Fall back to `process.exit` when
-    // `_exit` is unavailable.
-    const lowLevelExit = (process as unknown as {
+    // Node exposes the low-level exit under two names depending on the
+    // version:
+    //   - `process._exit`     — public alias (older Node; removed from
+    //                            the public surface on Node 22+).
+    //   - `process.reallyExit` — Node-internal name; still present on
+    //                            Node 22 even when `_exit` is undefined.
+    // Try both in order. Bun's process object doesn't expose either,
+    // but Bun also doesn't drive shutdown through libuv + libc++ static
+    // destructors the same way Node does, so the crash doesn't
+    // reproduce there. Fall back to `process.exit` when no low-level
+    // hook is available.
+    const proc = process as unknown as {
       _exit?: (code: number) => never;
-    })._exit;
-    if (typeof lowLevelExit === 'function') {
+      reallyExit?: (code: number) => never;
+    };
+    const lowLevelExit =
+      typeof proc._exit === 'function'
+        ? proc._exit
+        : typeof proc.reallyExit === 'function'
+          ? proc.reallyExit
+          : null;
+    if (lowLevelExit !== null) {
       lowLevelExit(code);
     }
     process.exit(code);

@@ -8,3 +8,5 @@ export * from './ollama/ollama-provider.ts';
 export * from './llamacpp/llama-cpp-provider.ts';
 export * from './provider-resolver.ts';
 export * from './pipeline/enhancement-pipeline.ts';
+export * from './llm-hints.ts';
+export * from './llm-recommendations.ts';

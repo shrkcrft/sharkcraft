@@ -35,6 +35,11 @@ import {
 import { asJson, header, kv } from '../output/format-output.ts';
 import { maybeRunInWatchMode } from '../output/watch-loop.ts';
 import { renderFailureHints, templateDriftHints } from '../output/failure-hints.ts';
+import {
+  enrichWithLlmRecommendations,
+  renderRecommendationsMarkdown,
+  type IRecommendationEnvelope,
+} from '@shrkcrft/ai';
 
 export const templatesVarsCommand: ICommandHandler = {
   name: 'vars',
@@ -241,9 +246,9 @@ export const templatesPreviewCommand: ICommandHandler = {
 export const templatesDriftCommand: ICommandHandler = {
   name: 'drift',
   description:
-    'Verify every registered template against the workspace. Severity controls and `--watch [--once] [--debounce N]` supported. Read-only.',
+    'Verify every registered template against the workspace. Severity controls and `--watch [--once] [--debounce N]` supported. `--llm-recommendations` layers a local-LLM-derived list of concrete next-steps on top of the deterministic findings (no-op when no provider reachable). Read-only.',
   usage:
-    'shrk templates drift [--template <id>] [--pack <packId>] [--var key=value ...] [--min-severity error|warning|info] [--hide <code>[,<code>...]] [--strict] [--ci] [--format text|markdown|html|json] [--report] [--output <path>] [--json] [--watch [--once] [--debounce N]]',
+    'shrk templates drift [--template <id>] [--pack <packId>] [--var key=value ...] [--min-severity error|warning|info] [--hide <code>[,<code>...]] [--strict] [--ci] [--format text|markdown|html|json] [--report] [--output <path>] [--json] [--llm-recommendations] [--provider auto|ollama|llamacpp] [--watch [--once] [--debounce N]]',
   async run(args: ParsedArgs): Promise<number> {
     const watchExit = await maybeRunInWatchMode(args, templatesDriftImpl);
     if (watchExit !== null) return watchExit;
@@ -306,6 +311,17 @@ async function templatesDriftImpl(args: ParsedArgs): Promise<number> {
       else if (e.status === TemplateDriftStatus.Warn) filteredWarn++;
       else filteredFail++;
     }
+    const wantLlmRecs = flagBool(args, 'llm-recommendations');
+    const llmEnvelope: IRecommendationEnvelope | null = wantLlmRecs
+      ? await enrichWithLlmRecommendations({
+          surface: 'templates-drift',
+          deterministicSummary: summariseDriftEntries(filteredEntries),
+          providerKind: flagString(args, 'provider') ?? undefined,
+          ask: 'For each FAIL or WARN entry, propose ONE concrete fix the maintainer can apply — name the specific field in `sharkcraft/templates.ts` (or a peer file) to edit. Skip PASS entries unless something is genuinely worth nudging.',
+          maxTokens: 1024,
+        })
+      : null;
+
     const ciPayload = {
       ...report,
       entries: filteredEntries,
@@ -318,6 +334,7 @@ async function templatesDriftImpl(args: ParsedArgs): Promise<number> {
         minSeverity: minSeverityRaw || 'info',
         hideCodes: [...hideCodes],
       },
+      ...(llmEnvelope ? { llmRecommendations: llmEnvelope } : {}),
     };
 
     const exitNonZero = ci
@@ -365,7 +382,34 @@ async function templatesDriftImpl(args: ParsedArgs): Promise<number> {
     if (exitNonZero) {
       process.stdout.write(renderFailureHints(templateDriftHints()));
     }
+    if (llmEnvelope) {
+      process.stdout.write('\n');
+      process.stdout.write(renderRecommendationsMarkdown(llmEnvelope));
+    }
     return exitNonZero ? 1 : 0;
+}
+
+function summariseDriftEntries(entries: ReadonlyArray<{
+  templateId: string;
+  templateName?: string;
+  status: TemplateDriftStatus;
+  issues: ReadonlyArray<{ severity: 'info' | 'warning' | 'error'; code: string; message: string; suggestedFix?: string }>;
+}>): string {
+  const lines: string[] = [];
+  for (const e of entries) {
+    const tag = e.status === TemplateDriftStatus.Pass ? 'PASS' : e.status === TemplateDriftStatus.Warn ? 'WARN' : 'FAIL';
+    lines.push(`## [${tag}] ${e.templateId}${e.templateName ? ` — ${e.templateName}` : ''}`);
+    if (e.issues.length === 0) {
+      lines.push('(no issues)');
+    } else {
+      for (const i of e.issues) {
+        lines.push(`- ${i.severity} \`${i.code}\` — ${i.message}${i.suggestedFix ? ` (suggested: ${i.suggestedFix})` : ''}`);
+      }
+    }
+    lines.push('');
+  }
+  if (lines.length === 0) lines.push('(no templates in this drift report)');
+  return lines.join('\n');
 }
 
 interface ITemplateDriftCiPayload {

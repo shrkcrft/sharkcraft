@@ -13,20 +13,41 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header } from '../output/format-output.ts';
+import {
+  enrichWithLlmRecommendations,
+  renderRecommendationsMarkdown,
+  type IRecommendationEnvelope,
+} from '@shrkcrft/ai';
 
 export const templatesLintCommand: ICommandHandler = {
   name: 'lint',
   description:
-    'Lint registered templates (titles, vars, target safety, placeholders). --fix-preview emits a TODO patch per finding under .sharkcraft/fixes/templates-lint/ (preview only — never mutates source).',
-  usage: 'shrk templates lint [<id>] [--fix-preview] [--json]',
+    'Lint registered templates (titles, vars, target safety, placeholders). --fix-preview emits a TODO patch per finding under .sharkcraft/fixes/templates-lint/ (preview only — never mutates source). --llm-recommendations layers concrete next-steps onto the deterministic findings when a local LLM is reachable.',
+  usage:
+    'shrk templates lint [<id>] [--fix-preview] [--json] [--llm-recommendations] [--provider auto|ollama|llamacpp]',
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
     const ids = args.positional.length > 0 ? args.positional : undefined;
     const report = lintTemplates(inspection, ids);
     const fixPreview = flagBool(args, 'fix-preview');
+    const wantLlm = flagBool(args, 'llm-recommendations');
+    const llmEnvelope: IRecommendationEnvelope | null = wantLlm
+      ? await enrichWithLlmRecommendations({
+          surface: 'templates-lint',
+          deterministicSummary: summariseLintResults(report.results),
+          providerKind: flagString(args, 'provider') ?? undefined,
+          ask: 'For each non-passing template, suggest ONE concrete edit in sharkcraft/templates.ts: name the field (description, variables[i].examples, related[i], etc.) and the literal value or removal. Skip templates with only `info`-level issues unless a clear improvement exists.',
+          maxTokens: 1024,
+        })
+      : null;
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson(report) + '\n');
+      process.stdout.write(
+        asJson({
+          ...report,
+          ...(llmEnvelope ? { llmRecommendations: llmEnvelope } : {}),
+        }) + '\n',
+      );
       if (fixPreview) writeFixPreviewPatches(cwd, report.results);
       return report.summary.errors > 0 ? 1 : 0;
     }
@@ -46,9 +67,36 @@ export const templatesLintCommand: ICommandHandler = {
         process.stdout.write('\nNo fix-preview patches needed.\n');
       }
     }
+    if (llmEnvelope) {
+      process.stdout.write('\n');
+      process.stdout.write(renderRecommendationsMarkdown(llmEnvelope));
+    }
     return report.summary.errors > 0 ? 1 : 0;
   },
 };
+
+function summariseLintResults(
+  results: ReadonlyArray<{
+    templateId: string;
+    passed: boolean;
+    issues: ReadonlyArray<{ severity: 'info' | 'warning' | 'error'; code: string; message: string }>;
+  }>,
+): string {
+  const lines: string[] = [];
+  for (const r of results) {
+    lines.push(`## ${r.passed ? 'OK' : 'FAIL'} ${r.templateId}`);
+    if (r.issues.length === 0) {
+      lines.push('(no issues)');
+    } else {
+      for (const i of r.issues) {
+        lines.push(`- ${i.severity} \`${i.code}\` — ${i.message}`);
+      }
+    }
+    lines.push('');
+  }
+  if (lines.length === 0) lines.push('(no templates registered)');
+  return lines.join('\n');
+}
 
 interface ILintResult {
   templateId: string;

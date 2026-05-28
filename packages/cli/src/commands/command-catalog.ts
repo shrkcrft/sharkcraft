@@ -195,6 +195,17 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     taskRole: CommandTaskRole.Diagnose,
   }),
   entry({
+    command: 'ai-status',
+    description:
+      'Report which AI provider shrk would use right now, with setup or upgrade hints. `--ping` verifies the provider actually responds.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: false,
+    surface: CommandSurface.Common,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent],
+    taskRole: CommandTaskRole.Diagnose,
+  }),
+  entry({
     command: 'context',
     description:
       'Focused context for a task (rules / paths / templates). For "what should I do?" prefer `shrk recommend "<task>"`.',

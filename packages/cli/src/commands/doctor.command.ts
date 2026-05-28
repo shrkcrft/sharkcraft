@@ -37,6 +37,11 @@ import {
   renderFoldedSummary,
   DoctorState,
 } from '../doctor/doctor-tags.ts';
+import {
+  enrichWithLlmRecommendations,
+  renderRecommendationsMarkdown,
+  type IRecommendationEnvelope,
+} from '@shrkcrft/ai';
 
 const SEVERITY_LABEL: Record<DoctorSeverity, string> = {
   [DoctorSeverity.Ok]: 'OK   ',
@@ -263,9 +268,9 @@ function renderSemanticIndexCheck(report: ReturnType<typeof SemanticIndex.freshn
 export const doctorCommand: ICommandHandler = {
   name: 'doctor',
   description:
-    'Validate the local SharkCraft setup (config, knowledge, templates, project). `--focus errors|warnings-new|info`, `--hide <category,...>`, `--quiet-known` filter the headline view using `sharkcraft/doctor.suppressions.json`. `--watch`/`--once`/`--debounce` for live mode. `--explain-quality` shows the per-warning "why this matters" line so warnings stop being permanent yellow noise. `--blockers` shows only must-fix findings (errors + warning-category in {config-invalid, pack-signature-invalid, plan-signature-divergent, asset-load-failed}); exit code is non-zero iff a blocker remains. Subcommands: `suppress`, `suppressions list|check`, `watch`.',
+    'Validate the local SharkCraft setup (config, knowledge, templates, project). `--focus errors|warnings-new|info`, `--hide <category,...>`, `--quiet-known` filter the headline view using `sharkcraft/doctor.suppressions.json`. `--watch`/`--once`/`--debounce` for live mode. `--explain-quality` shows the per-warning "why this matters" line so warnings stop being permanent yellow noise. `--blockers` shows only must-fix findings (errors + warning-category in {config-invalid, pack-signature-invalid, plan-signature-divergent, asset-load-failed}); exit code is non-zero iff a blocker remains. `--llm-recommendations` layers a local-LLM-derived list of concrete next-steps onto the deterministic output (no-op when no provider is reachable). Subcommands: `suppress`, `suppressions list|check`, `watch`.',
   usage:
-    'shrk [--cwd <dir>] doctor [--no-config] [--json] [--strict[=errors|warnings|all]] [--blockers] [--show-advisory] [--min-score <0-100>] [--focus errors,warnings-new,info] [--hide action-hint-quality,...] [--quiet-known] [--explain-quality] [--watch [--once] [--debounce N]]',
+    'shrk [--cwd <dir>] doctor [--no-config] [--json] [--strict[=errors|warnings|all]] [--blockers] [--show-advisory] [--min-score <0-100>] [--focus errors,warnings-new,info] [--hide action-hint-quality,...] [--quiet-known] [--explain-quality] [--llm-recommendations] [--provider auto|ollama|llamacpp] [--watch [--once] [--debounce N]]',
   async run(args: ParsedArgs): Promise<number> {
     const watchExit = await maybeRunInWatchMode(args, runDoctorOnce);
     if (watchExit !== null) return watchExit;
@@ -367,6 +372,20 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
         return !isSharkcraftMissing;
       });
     }
+    // Optional LLM enrichment: never alters the deterministic emission below;
+    // only appended at the end. No-op when the flag is off or no provider is
+    // reachable — keeps the deterministic baseline byte-stable.
+    const wantLlmRecs = flagBool(args, 'llm-recommendations');
+    const llmEnvelope: IRecommendationEnvelope | null = wantLlmRecs
+      ? await enrichWithLlmRecommendations({
+          surface: 'doctor',
+          deterministicSummary: summariseDoctorChecks(visibleChecks),
+          providerKind: flagString(args, 'provider') ?? undefined,
+          ask: 'For each warning or error, propose ONE concrete next-step the user can execute from a shell — name the `shrk` subcommand, file path, or config key. If a finding has no useful next-step, skip it.',
+          maxTokens: 1024,
+        })
+      : null;
+
     const ackExpired = ackSummary.expired.length > 0 && failOnExpiredAcknowledgement;
     // Under --no-config + missing sharkcraft, treat the run as advisory: do not
     // red-fail on the inspector's "no sharkcraft" errors / warnings.
@@ -461,6 +480,7 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
           })),
           ...result,
           ...(filtered ? { filtered } : {}),
+          ...(llmEnvelope ? { llmRecommendations: llmEnvelope } : {}),
         }) + '\n',
       );
       return overallExitCode;
@@ -715,7 +735,37 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
         '\nDraft patch available — run `shrk fix preview` for a preview-only patch under `.sharkcraft/fixes/`.\n',
       );
     }
+    if (llmEnvelope) {
+      process.stdout.write('\n');
+      process.stdout.write(renderRecommendationsMarkdown(llmEnvelope));
+    }
     return overallExitCode;
+}
+
+function summariseDoctorChecks(checks: ReadonlyArray<{
+  id: string;
+  title: string;
+  severity: DoctorSeverity;
+  message: string;
+  fix?: string;
+  recommendedFix?: string;
+  category?: string;
+}>): string {
+  const lines: string[] = [];
+  const order: DoctorSeverity[] = [DoctorSeverity.Error, DoctorSeverity.Warning, DoctorSeverity.Info, DoctorSeverity.Ok];
+  for (const sev of order) {
+    const grouped = checks.filter((c) => c.severity === sev);
+    if (grouped.length === 0) continue;
+    const label = SEVERITY_LABEL[sev].trim();
+    lines.push(`## ${label} (${grouped.length})`);
+    for (const c of grouped) {
+      const fix = c.recommendedFix ?? c.fix;
+      lines.push(`- **${c.title}**${c.category ? ` (${c.category})` : ''}: ${c.message}${fix ? ` — suggested fix: ${fix}` : ''}`);
+    }
+    lines.push('');
+  }
+  if (lines.length === 0) lines.push('(no findings — all checks passed)');
+  return lines.join('\n');
 }
 
 export const doctorSuppressCommand: ICommandHandler = {

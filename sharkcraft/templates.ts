@@ -28,6 +28,7 @@ export default [
         name: 'name',
         required: true,
         description: 'kebab-case command name (e.g. "list-rules"). Used as the on-disk filename and the user-typed verb.',
+        examples: ['list-rules'],
       },
       {
         name: 'camel',
@@ -39,6 +40,7 @@ export default [
         name: 'description',
         required: true,
         description: 'One-line user-facing description shown by `shrk --help`.',
+        examples: ['List configured engine rules.'],
       },
     ],
     targetPath: ({ name }) => `packages/cli/src/commands/${name}.command.ts`,
@@ -80,7 +82,6 @@ export const ${camel}Command: ICommandHandler = {
     related: [
       'repo.discovery.read-examples-first',
       'repo.architecture.respect-layer-order',
-      'typescript.files.one-export',
     ],
   },
   {
@@ -96,6 +97,7 @@ export const ${camel}Command: ICommandHandler = {
         name: 'name',
         required: true,
         description: 'kebab-case tool filename (e.g. "list-rules"). Used as the on-disk filename only.',
+        examples: ['list-rules'],
       },
       {
         name: 'toolName',
@@ -113,6 +115,7 @@ export const ${camel}Command: ICommandHandler = {
         name: 'description',
         required: true,
         description: 'One-line description shown to MCP clients. End with "Read-only." to make the contract explicit.',
+        examples: ['List configured engine rules. Read-only.'],
       },
     ],
     targetPath: ({ name }) => `packages/mcp-server/src/tools/${name}.tool.ts`,
