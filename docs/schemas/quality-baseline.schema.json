@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/quality-baseline.json",
+  "$id": "urn:sharkcraft:schemas:quality-baseline",
   "title": "SharkCraft Quality Baseline",
   "type": "object",
   "required": [

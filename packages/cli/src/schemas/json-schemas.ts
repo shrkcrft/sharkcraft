@@ -7,7 +7,7 @@
 
 export const PackManifestSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/pack-manifest.json',
+  $id: 'urn:sharkcraft:schemas:pack-manifest',
   title: 'SharkCraft Pack Manifest',
   type: 'object',
   additionalProperties: true,
@@ -43,7 +43,7 @@ export const PackManifestSchema = {
 
 export const SavedPlanSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/saved-plan.json',
+  $id: 'urn:sharkcraft:schemas:saved-plan',
   title: 'SharkCraft Saved Plan',
   type: 'object',
   additionalProperties: false,
@@ -85,7 +85,7 @@ export const SavedPlanSchema = {
 
 export const ActionHintsSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/action-hints.json',
+  $id: 'urn:sharkcraft:schemas:action-hints',
   title: 'SharkCraft Action Hints',
   type: 'object',
   additionalProperties: false,
@@ -130,7 +130,7 @@ export const ActionHintsSchema = {
 
 export const PipelineDefinitionSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/pipeline-definition.json',
+  $id: 'urn:sharkcraft:schemas:pipeline-definition',
   title: 'SharkCraft Pipeline Definition',
   type: 'object',
   required: ['id', 'title', 'description', 'steps'],
@@ -183,7 +183,7 @@ export const PipelineDefinitionSchema = {
 
 export const KnowledgeEntrySchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/knowledge-entry.json',
+  $id: 'urn:sharkcraft:schemas:knowledge-entry',
   title: 'SharkCraft Knowledge Entry',
   type: 'object',
   required: ['id', 'title', 'type', 'priority', 'content'],
@@ -209,7 +209,7 @@ export const KnowledgeEntrySchema = {
 
 export const AdoptionStateSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/adoption-state.json',
+  $id: 'urn:sharkcraft:schemas:adoption-state',
   title: 'SharkCraft Adoption State',
   type: 'object',
   required: ['schema', 'projectRoot', 'createdAt', 'updatedAt', 'patchPath'],
@@ -260,9 +260,222 @@ export const AdoptionStateSchema = {
   },
 } as const;
 
+export const SmartContextExpansionRequestSchema = {
+  $schema: 'https://json-schema.org/draft-07/schema',
+  $id: 'urn:sharkcraft:schemas:smart-context-expansion-request',
+  title: 'Smart Context Expansion Request',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    summary: { type: 'string' },
+    filesToRead: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['target', 'why'],
+        properties: {
+          target: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    similarPatterns: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['target', 'why'],
+        properties: {
+          target: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    publicApiFiles: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['target', 'why'],
+        properties: {
+          target: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    testsToInspect: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['target', 'why'],
+        properties: {
+          target: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    architectureRules: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'why'],
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    riskyAreas: { type: 'array', items: { type: 'string' } },
+    missingInformation: { type: 'array', items: { type: 'string' } },
+  },
+} as const;
+
+export const SmartContextDetailedPlanSchema = {
+  $schema: 'https://json-schema.org/draft-07/schema',
+  $id: 'urn:sharkcraft:schemas:smart-context-detailed-plan',
+  title: 'Smart Context Detailed Development Plan',
+  type: 'object',
+  additionalProperties: false,
+  required: ['summary', 'taskUnderstanding', 'likelyTechnicalApproach', 'handoffSummary'],
+  properties: {
+    summary: { type: 'string', minLength: 1 },
+    taskUnderstanding: { type: 'string', minLength: 1 },
+    likelyTechnicalApproach: { type: 'string', minLength: 1 },
+    existingPatternsToFollow: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'why'],
+        properties: {
+          path: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    filesToRead: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'why'],
+        properties: {
+          path: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    likelyFilesToModify: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'why'],
+        properties: {
+          path: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    filesToAvoid: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'why'],
+        properties: {
+          path: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    publicApiFiles: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'why'],
+        properties: {
+          path: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    testsToInspect: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'why'],
+        properties: {
+          path: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    architectureConstraints: { type: 'array', items: { type: 'string' } },
+    relatedRules: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'title', 'applyWhen'],
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          title: { type: 'string', minLength: 1 },
+          applyWhen: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    relatedTemplates: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'useFor'],
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          useFor: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    firstCommands: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['command', 'why'],
+        properties: {
+          command: { type: 'string', minLength: 1 },
+          why: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    implementationSteps: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['step', 'details'],
+        properties: {
+          step: { type: 'string', minLength: 1 },
+          details: { type: 'string', minLength: 1 },
+        },
+      },
+    },
+    risks: { type: 'array', items: { type: 'string' } },
+    unknowns: { type: 'array', items: { type: 'string' } },
+    validationCommands: { type: 'array', items: { type: 'string' } },
+    handoffSummary: { type: 'string', minLength: 1 },
+  },
+} as const;
+
 export const AdoptionSummarySchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/adoption-summary.json',
+  $id: 'urn:sharkcraft:schemas:adoption-summary',
   title: 'SharkCraft Adoption Summary',
   type: 'object',
   required: ['confidence', 'summary', 'items', 'format', 'targets'],
@@ -277,7 +490,7 @@ export const AdoptionSummarySchema = {
 
 export const ScaffoldPatternSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/scaffold-pattern.json',
+  $id: 'urn:sharkcraft:schemas:scaffold-pattern',
   title: 'SharkCraft Scaffold Pattern',
   type: 'object',
   required: ['id', 'title', 'description', 'matchPaths', 'templateId', 'variables', 'appliesWhen', 'confidence'],
@@ -310,7 +523,7 @@ export const ScaffoldPatternSchema = {
 
 export const InferredTemplateCandidateV2Schema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/inferred-template-candidate-v2.json',
+  $id: 'urn:sharkcraft:schemas:inferred-template-candidate-v2',
   title: 'SharkCraft Inferred Template Candidate v2',
   type: 'object',
   required: ['schema', 'sample'],
@@ -335,7 +548,7 @@ export const InferredTemplateCandidateV2Schema = {
 
 export const QualityReportSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/quality-report.json',
+  $id: 'urn:sharkcraft:schemas:quality-report',
   title: 'SharkCraft Quality Report',
   type: 'object',
   required: ['overall', 'gates', 'score'],
@@ -354,7 +567,7 @@ export const QualityReportSchema = {
 
 export const SafetyAuditSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/safety-audit.json',
+  $id: 'urn:sharkcraft:schemas:safety-audit',
   title: 'SharkCraft Safety Audit',
   type: 'object',
   required: ['mcp', 'commands'],
@@ -376,7 +589,7 @@ export const SafetyAuditSchema = {
 
 export const DevSessionStateSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/dev-session-state.json',
+  $id: 'urn:sharkcraft:schemas:dev-session-state',
   title: 'SharkCraft Dev Session State',
   type: 'object',
   required: ['schema', 'id', 'task', 'phase'],
@@ -401,7 +614,7 @@ export const DevSessionStateSchema = {
 
 export const DashboardApiEnvelopeSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/dashboard-api-envelope.json',
+  $id: 'urn:sharkcraft:schemas:dashboard-api-envelope',
   title: 'SharkCraft Dashboard API Envelope',
   type: 'object',
   required: ['schema', 'generatedAt', 'projectRoot', 'data'],
@@ -419,7 +632,7 @@ export const DashboardApiEnvelopeSchema = {
 
 export const DashboardOverviewResponseSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/dashboard-overview-response.json',
+  $id: 'urn:sharkcraft:schemas:dashboard-overview-response',
   title: 'SharkCraft Dashboard Overview Response',
   type: 'object',
   required: ['readiness', 'sharkcraftPresent', 'configPresent', 'summary', 'topRecommendations', 'featureAvailability'],
@@ -451,7 +664,7 @@ export const DashboardOverviewResponseSchema = {
 
 export const DashboardAdoptionResponseSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/dashboard-adoption-response.json',
+  $id: 'urn:sharkcraft:schemas:dashboard-adoption-response',
   title: 'SharkCraft Dashboard Adoption Response',
   type: 'object',
   required: ['available', 'nextCommands', 'artifacts'],
@@ -465,7 +678,7 @@ export const DashboardAdoptionResponseSchema = {
 
 export const DashboardSessionResponseSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/dashboard-session-response.json',
+  $id: 'urn:sharkcraft:schemas:dashboard-session-response',
   title: 'SharkCraft Dashboard Session Response',
   type: 'object',
   required: ['available', 'sessionId', 'artifacts', 'commandHints'],
@@ -485,7 +698,7 @@ export const DashboardSessionResponseSchema = {
 
 export const AdoptionMergePreviewSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/adoption-merge-preview.json',
+  $id: 'urn:sharkcraft:schemas:adoption-merge-preview',
   title: 'SharkCraft Adoption Merge Preview',
   type: 'object',
   required: ['schema', 'targets', 'safeBlocks', 'manualReview', 'lowConfidenceSkipped'],
@@ -504,7 +717,7 @@ export const AdoptionMergePreviewSchema = {
 
 export const AdoptionReportSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/adoption-report.json',
+  $id: 'urn:sharkcraft:schemas:adoption-report',
   title: 'SharkCraft Adoption Report',
   type: 'object',
   required: ['schema'],
@@ -525,7 +738,7 @@ export const AdoptionReportSchema = {
 
 export const FeatureBundleSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/feature-bundle.json',
+  $id: 'urn:sharkcraft:schemas:feature-bundle',
   title: 'SharkCraft Feature Workflow Bundle',
   type: 'object',
   additionalProperties: true,
@@ -548,7 +761,7 @@ export const FeatureBundleSchema = {
 
 export const PlanDependencyGraphSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/plan-dependency-graph.json',
+  $id: 'urn:sharkcraft:schemas:plan-dependency-graph',
   title: 'SharkCraft Plan Dependency Graph',
   type: 'object',
   required: ['schema', 'bundleId', 'nodes', 'edges'],
@@ -563,7 +776,7 @@ export const PlanDependencyGraphSchema = {
 
 export const AreaMapSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/area-map.json',
+  $id: 'urn:sharkcraft:schemas:area-map',
   title: 'SharkCraft Repository Area Map',
   type: 'object',
   required: ['schema', 'projectRoot', 'areas'],
@@ -577,7 +790,7 @@ export const AreaMapSchema = {
 
 export const ImpactAnalysisSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/impact-analysis.json',
+  $id: 'urn:sharkcraft:schemas:impact-analysis',
   title: 'SharkCraft Impact Analysis',
   type: 'object',
   required: ['schema', 'task'],
@@ -592,7 +805,7 @@ export const ImpactAnalysisSchema = {
 
 export const TestImpactSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/test-impact.json',
+  $id: 'urn:sharkcraft:schemas:test-impact',
   title: 'SharkCraft Test Impact',
   type: 'object',
   required: ['schema'],
@@ -606,7 +819,7 @@ export const TestImpactSchema = {
 
 export const OwnershipRuleSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/ownership-rule.json',
+  $id: 'urn:sharkcraft:schemas:ownership-rule',
   title: 'SharkCraft Ownership Rule',
   type: 'object',
   required: ['id', 'title', 'paths', 'owners'],
@@ -622,7 +835,7 @@ export const OwnershipRuleSchema = {
 
 export const PolicyReportSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/policy-report.json',
+  $id: 'urn:sharkcraft:schemas:policy-report',
   title: 'SharkCraft Policy Report',
   type: 'object',
   required: ['schema', 'checks', 'summary'],
@@ -635,7 +848,7 @@ export const PolicyReportSchema = {
 
 export const QualityBaselineSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/quality-baseline.json',
+  $id: 'urn:sharkcraft:schemas:quality-baseline',
   title: 'SharkCraft Quality Baseline',
   type: 'object',
   required: ['schema', 'createdAt', 'qualityScore'],
@@ -651,7 +864,7 @@ export const QualityBaselineSchema = {
 
 export const DriftBaselineSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/drift-baseline.json',
+  $id: 'urn:sharkcraft:schemas:drift-baseline',
   title: 'SharkCraft Drift Baseline',
   type: 'object',
   required: ['schema', 'findings'],
@@ -663,7 +876,7 @@ export const DriftBaselineSchema = {
 
 export const ReviewPacketV2Schema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/review-packet-v2.json',
+  $id: 'urn:sharkcraft:schemas:review-packet-v2',
   title: 'SharkCraft Review Packet v2',
   type: 'object',
   required: ['schema', 'base', 'impact'],
@@ -680,7 +893,7 @@ export const ReviewPacketV2Schema = {
 
 export const PackCompatibilitySchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/pack-compatibility.json',
+  $id: 'urn:sharkcraft:schemas:pack-compatibility',
   title: 'SharkCraft Pack Compatibility',
   type: 'object',
   required: ['schema', 'packageName', 'overall'],
@@ -694,7 +907,7 @@ export const PackCompatibilitySchema = {
 
 export const PackQualityScoreSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/pack-quality-score.json',
+  $id: 'urn:sharkcraft:schemas:pack-quality-score',
   title: 'SharkCraft Pack Quality Score',
   type: 'object',
   required: ['schema', 'packageName', 'overall'],
@@ -708,7 +921,7 @@ export const PackQualityScoreSchema = {
 
 export const ImportGraphAnalysisSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/import-graph-analysis.json',
+  $id: 'urn:sharkcraft:schemas:import-graph-analysis',
   title: 'SharkCraft Import Graph Analysis',
   type: 'object',
   required: ['schema'],
@@ -723,7 +936,7 @@ export const ImportGraphAnalysisSchema = {
 
 export const AgentContractSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/agent-contract.json',
+  $id: 'urn:sharkcraft:schemas:agent-contract',
   title: 'SharkCraft Agent Contract',
   type: 'object',
   required: ['schema', 'task', 'role', 'mode'],
@@ -747,7 +960,7 @@ export const AgentContractSchema = {
 
 export const PlanSimulationSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/plan-simulation.json',
+  $id: 'urn:sharkcraft:schemas:plan-simulation',
   title: 'SharkCraft Plan Simulation Report',
   type: 'object',
   required: ['schema', 'source', 'planSchema', 'applyReadiness', 'files'],
@@ -765,7 +978,7 @@ export const PlanSimulationSchema = {
 
 export const RepoMemorySchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/repo-memory.json',
+  $id: 'urn:sharkcraft:schemas:repo-memory',
   title: 'SharkCraft Repository Memory Index',
   type: 'object',
   required: ['schema', 'projectRoot', 'sourceCount'],
@@ -780,7 +993,7 @@ export const RepoMemorySchema = {
 
 export const HealingPlanSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/healing-plan.json',
+  $id: 'urn:sharkcraft:schemas:healing-plan',
   title: 'SharkCraft Healing Plan',
   type: 'object',
   required: ['schema', 'inputKind', 'confidence', 'recommendedCommands'],
@@ -796,7 +1009,7 @@ export const HealingPlanSchema = {
 
 export const ExecutionGraphSchema = {
   $schema: 'https://json-schema.org/draft-07/schema',
-  $id: 'https://shrkcrft.dev/schemas/execution-graph.json',
+  $id: 'urn:sharkcraft:schemas:execution-graph',
   title: 'SharkCraft Task Execution Graph',
   type: 'object',
   required: ['schema', 'task', 'nodes', 'edges'],

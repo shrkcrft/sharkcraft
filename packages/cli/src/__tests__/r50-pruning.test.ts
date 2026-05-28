@@ -138,8 +138,15 @@ describe('surface lockdown holds', () => {
     // Code-intelligence layer migration adds 8 top-level commands:
     // rule-graph, search-structural, plan-context, arch, framework,
     // api-diff, gate, migrate. Each is a one-line entry, raising the
-    // ceiling to 374.
-    expect(COMMAND_CATALOG.length).toBeLessThan(374);
+    // ceiling to 374. Smart-context embeddings layer adds three more
+    // (smart-context embeddings-build, embeddings-status, and the new
+    // top-level `spike` command that scaffolds saved focused-plan
+    // first-spikes) — ceiling 378. `shrk watch` adds one more to
+    // complete the parallel-agent feed loop — ceiling 379. Daemon
+    // management (`watch list/stop/prune`) + `deps-audit` add four
+    // more — ceiling 384. `scaffold-validate` + `move-plan` round
+    // out the delegatable-task surface — ceiling 386.
+    expect(COMMAND_CATALOG.length).toBeLessThan(386);
     // Sanity: not absurdly small.
     expect(COMMAND_CATALOG.length).toBeGreaterThan(250);
   });

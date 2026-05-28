@@ -1,6 +1,6 @@
 {
   "name": "sharkcraft",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.12",
   "private": true,
   "description": "SharkCraft — universal AI-ready developer intelligence system (Bun-native).",
   "license": "MIT",

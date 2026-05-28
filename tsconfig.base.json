@@ -35,6 +35,7 @@
       "@shrkcrft/generator": ["./packages/generator/src/index.ts"],
       "@shrkcrft/inspector": ["./packages/inspector/src/index.ts"],
       "@shrkcrft/ai": ["./packages/ai/src/index.ts"],
+      "@shrkcrft/embeddings": ["./packages/embeddings/src/index.ts"],
       "@shrkcrft/pipelines": ["./packages/pipelines/src/index.ts"],
       "@shrkcrft/packs": ["./packages/packs/src/index.ts"],
       "@shrkcrft/importer": ["./packages/importer/src/index.ts"],

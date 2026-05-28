@@ -76,6 +76,9 @@
       ],
       "@shrkcrft/inspector": [
         "../inspector/dist/index.d.ts"
+      ],
+      "@shrkcrft/embeddings": [
+        "../embeddings/dist/index.d.ts"
       ]
     },
     "tsBuildInfoFile": "./dist/.tsbuildinfo"

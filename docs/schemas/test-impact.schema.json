@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/test-impact.json",
+  "$id": "urn:sharkcraft:schemas:test-impact",
   "title": "SharkCraft Test Impact",
   "type": "object",
   "required": [

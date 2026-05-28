@@ -1,1 +1,0 @@
-{"version":3,"file":"knowledge-search-result.d.ts","sourceRoot":"","sources":["knowledge-search-result.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,sBAAsB,CAAC;AAE5D,MAAM,WAAW,qBAAqB;IACpC,KAAK,EAAE,MAAM,CAAC;IACd,KAAK,EAAE,MAAM,CAAC;CACf;AAED,MAAM,WAAW,sBAAsB;IACrC,KAAK,EAAE,eAAe,CAAC;IACvB,KAAK,EAAE,MAAM,CAAC;IACd,OAAO,EAAE,SAAS,qBAAqB,EAAE,CAAC;CAC3C"}

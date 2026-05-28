@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/adoption-merge-preview.json",
+  "$id": "urn:sharkcraft:schemas:adoption-merge-preview",
   "title": "SharkCraft Adoption Merge Preview",
   "type": "object",
   "required": [

@@ -1,1 +1,0 @@
-{"version":3,"file":"project-config-resolver.d.ts","sourceRoot":"","sources":["project-config-resolver.ts"],"names":[],"mappings":"AAYA,MAAM,WAAW,eAAe;IAC9B,IAAI,EAAE,MAAM,CAAC;IACb,OAAO,EAAE,MAAM,EAAE,CAAC;CACnB;AAED,wBAAgB,iBAAiB,CAAC,QAAQ,EAAE,MAAM,GAAG,eAAe,CAYnE;AAED,wBAAgB,iBAAiB,CAAC,WAAW,EAAE,MAAM,EAAE,aAAa,SAAe,GAAG,MAAM,GAAG,IAAI,CAUlG"}

@@ -1,1 +1,0 @@
-{"version":3,"file":"path-selector.d.ts","sourceRoot":"","sources":["path-selector.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,sBAAsB,CAAC;AAE5D,MAAM,WAAW,cAAc;IAC7B,UAAU,EAAE,eAAe,CAAC;IAC5B,MAAM,EAAE,MAAM,CAAC;IACf,KAAK,EAAE,MAAM,CAAC;CACf;AAED,wBAAgB,cAAc,CAC5B,UAAU,EAAE,SAAS,eAAe,EAAE,EACtC,IAAI,EAAE,MAAM,GACX,cAAc,GAAG,IAAI,CAkCvB"}

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/repo-memory.json",
+  "$id": "urn:sharkcraft:schemas:repo-memory",
   "title": "SharkCraft Repository Memory Index",
   "type": "object",
   "required": [

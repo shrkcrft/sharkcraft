@@ -100,6 +100,7 @@ describe('lifecycle metadata', () => {
     expect(defaultShowInHelp(entryFor('task'))).toBe(false); // machine surface
     expect(defaultShowInHelp(entryFor('recommend'))).toBe(true);
     expect(defaultShowInHelp(entryFor('doctor'))).toBe(true);
+    expect(defaultShowInHelp(entryFor('code-intel'))).toBe(true);
   });
 
   test('primary commands cannot be machine-only', () => {
@@ -147,6 +148,8 @@ describe('bare shrk start screen', () => {
     expect(out).toContain('shrk doctor');
     expect(out).toContain('shrk init');
     expect(out).toContain('shrk context');
+    expect(out).toContain('shrk code-intel');
+    expect(out).toContain('shrk graph status');
     expect(out).toContain('shrk gen');
     expect(out).toContain('shrk apply');
     expect(out).toContain('shrk dashboard');
@@ -319,4 +322,3 @@ describe('MCP taxonomy guidance', () => {
     expect(mentions).toBeGreaterThanOrEqual(3);
   });
 });
-

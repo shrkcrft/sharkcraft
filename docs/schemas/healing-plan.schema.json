@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/healing-plan.json",
+  "$id": "urn:sharkcraft:schemas:healing-plan",
   "title": "SharkCraft Healing Plan",
   "type": "object",
   "required": [

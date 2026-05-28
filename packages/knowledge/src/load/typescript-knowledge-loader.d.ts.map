@@ -1,1 +1,0 @@
-{"version":3,"file":"typescript-knowledge-loader.d.ts","sourceRoot":"","sources":["typescript-knowledge-loader.ts"],"names":[],"mappings":"AAIA,OAAO,KAAK,EAAE,gBAAgB,EAAE,gBAAgB,EAAE,MAAM,uBAAuB,CAAC;AAiChF,qBAAa,yBAA0B,YAAW,gBAAgB;IAChE,OAAO,CAAC,QAAQ,EAAE,MAAM,GAAG,OAAO;IAI5B,IAAI,CAAC,QAAQ,EAAE,MAAM,GAAG,OAAO,CAAC,gBAAgB,CAAC;CAgCxD"}

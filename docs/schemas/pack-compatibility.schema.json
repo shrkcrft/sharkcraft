@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/pack-compatibility.json",
+  "$id": "urn:sharkcraft:schemas:pack-compatibility",
   "title": "SharkCraft Pack Compatibility",
   "type": "object",
   "required": [

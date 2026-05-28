@@ -31,6 +31,28 @@ function fixture(): string {
   return root;
 }
 
+function symbolFixture(): string {
+  const root = mkdtempSync(join(tmpdir(), 'shrk-graph-cli-symbol-'));
+  writeFileSync(
+    join(root, 'package.json'),
+    JSON.stringify({ name: 'demo', workspaces: ['packages/*'] }, null, 2),
+  );
+  mkdirSync(join(root, 'packages', 'p', 'src'), { recursive: true });
+  writeFileSync(
+    join(root, 'packages', 'p', 'package.json'),
+    JSON.stringify({ name: '@demo/p', main: 'src/index.ts' }, null, 2),
+  );
+  writeFileSync(
+    join(root, 'packages', 'p', 'src', 'index.ts'),
+    "export function hello() { return 'world'; }\n",
+  );
+  writeFileSync(
+    join(root, 'packages', 'p', 'src', 'consumer.ts'),
+    "import { hello } from './index';\nexport const value = hello();\n",
+  );
+  return root;
+}
+
 function makeArgs(positional: string[]): {
   positional: string[];
   flags: Map<string, string | boolean>;
@@ -147,6 +169,25 @@ describe('graph code-intelligence CLI subverbs', () => {
     }
   });
 
+  test('runGraphContext enriches symbol targets with declaring file and references', async () => {
+    const root = symbolFixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const cap = capture();
+      const code = await runGraphContext(withCwd(makeArgs(['context', 'hello']), root));
+      const out = cap.restore();
+      expect(code).toBe(0);
+      const json = JSON.parse(out);
+      expect(json.anchor.kind).toBe('symbol');
+      expect(json.declaredIn.path).toBe('packages/p/src/index.ts');
+      expect(json.referencedBy.some((r: { path?: string }) => r.path === 'packages/p/src/consumer.ts')).toBe(true);
+      expect(json.calledBy.some((r: { path?: string }) => r.path === 'packages/p/src/consumer.ts')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('runGraphImpact returns dependents (zero on a leaf file)', async () => {
     const root = fixture();
     try {
@@ -161,6 +202,23 @@ describe('graph code-intelligence CLI subverbs', () => {
       const json = JSON.parse(out);
       expect(json.schema).toBe('sharkcraft.graph-impact/v1');
       expect(json.directDependents).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphImpact returns dependents for a referenced symbol', async () => {
+    const root = symbolFixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const cap = capture();
+      const code = await runGraphImpact(withCwd(makeArgs(['impact', 'hello']), root));
+      const out = cap.restore();
+      expect(code).toBe(0);
+      const json = JSON.parse(out);
+      expect(json.schema).toBe('sharkcraft.graph-impact/v1');
+      expect(json.directDependents.some((d: { path?: string }) => d.path === 'packages/p/src/consumer.ts')).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

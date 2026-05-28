@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/review-packet-v2.json",
+  "$id": "urn:sharkcraft:schemas:review-packet-v2",
   "title": "SharkCraft Review Packet v2",
   "type": "object",
   "required": [

@@ -43,9 +43,10 @@ const KNOWN_KINDS: GraphNodeKind[] = [
 export const graphCommand: ICommandHandler = {
   name: 'graph',
   description:
-    'Show the SharkCraft knowledge graph: nodes (knowledge/rules/paths/templates/pipelines/presets/packs/boundaries) and edges (related-template, preset-references, pipeline-step-references, …). Supports text|json|dot|mermaid output and an `export` subcommand for writing to file.',
+    'Show the SharkCraft knowledge graph and the code-intelligence graph surface. Use `shrk graph <id>` for asset-graph nodes and `shrk graph index|status|search|context|impact|callers|cycles|unresolved|deps|why|export` for code-graph workflows.',
   usage:
-    'shrk [--cwd <dir>] graph [<id>] [--type <kind>] [--format text|json|dot|mermaid] [--output <file>] [--json] | shrk graph export --format dot|mermaid --output <file>',
+    'shrk [--cwd <dir>] graph [<id>] [--type <kind>] [--format text|json|dot|mermaid] [--output <file>] [--json]\n' +
+    'shrk graph index|status|search|context|impact|callers|cycles|unresolved|deps|why|export ...',
   async run(args: ParsedArgs): Promise<number> {
     // Code-intelligence subverbs (R65) don't need the knowledge graph —
     // dispatch them before the expensive inspection so they stay fast.

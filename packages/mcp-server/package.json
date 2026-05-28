@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/mcp-server",
-  "version": "0.1.0-alpha.11",
+  "version": "0.1.0-alpha.12",
   "description": "SharkCraft MCP server: 25 tools over @modelcontextprotocol/sdk's stdio transport.",
   "license": "MIT",
   "author": "SharkCraft contributors",
@@ -68,6 +68,7 @@
     "@shrkcrft/packs": "workspace:*",
     "@shrkcrft/generator": "workspace:*",
     "@shrkcrft/inspector": "workspace:*",
+    "@shrkcrft/embeddings": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.25.0 || ^4.0.0"
   },

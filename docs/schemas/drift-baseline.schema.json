@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/drift-baseline.json",
+  "$id": "urn:sharkcraft:schemas:drift-baseline",
   "title": "SharkCraft Drift Baseline",
   "type": "object",
   "required": [

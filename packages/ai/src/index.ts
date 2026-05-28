@@ -3,3 +3,8 @@ export * from './ai-request.ts';
 export * from './prompt/prompt-builder.ts';
 export * from './claude/claude-provider.ts';
 export * from './claude/claude-cli-adapter.ts';
+export * from './gemini/gemini-provider.ts';
+export * from './ollama/ollama-provider.ts';
+export * from './llamacpp/llama-cpp-provider.ts';
+export * from './provider-resolver.ts';
+export * from './pipeline/enhancement-pipeline.ts';

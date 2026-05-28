@@ -100,6 +100,25 @@ export class GraphQueryApi {
     for (const n of this.fileByPath.values()) yield n;
   }
 
+  /**
+   * Files that have at least one `unresolved:<spec>` import edge.
+   * Useful for `shrk graph search --kind file --has-unresolved-imports`.
+   * Iterates outgoing edges per file; cheap in-memory walk.
+   */
+  filesWithUnresolvedImports(): readonly INode[] {
+    const out: INode[] = [];
+    for (const node of this.fileByPath.values()) {
+      const edges = this.outByFrom.get(node.id) ?? [];
+      for (const e of edges) {
+        if (e.kind !== EdgeKind.ImportsFile) continue;
+        if (!e.to.startsWith('unresolved:')) continue;
+        out.push(node);
+        break;
+      }
+    }
+    return out;
+  }
+
   /** Iterate every package node in the snapshot. */
   *allPackages(): IterableIterator<INode> {
     for (const n of this.snap.nodes.values()) {
@@ -193,6 +212,18 @@ export class GraphQueryApi {
     for (const e of edges) {
       if (e.kind !== EdgeKind.PackageDependsOn) continue;
       const n = this.snap.nodes.get(e.to);
+      if (n) out.push(n);
+    }
+    return out;
+  }
+
+  /** Packages that depend on this package (reverse PackageDependsOn). */
+  packageDependents(packageName: string): readonly INode[] {
+    const edges = this.inByTo.get(`package:${packageName}`) ?? [];
+    const out: INode[] = [];
+    for (const e of edges) {
+      if (e.kind !== EdgeKind.PackageDependsOn) continue;
+      const n = this.snap.nodes.get(e.from);
       if (n) out.push(n);
     }
     return out;

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/adoption-state.json",
+  "$id": "urn:sharkcraft:schemas:adoption-state",
   "title": "SharkCraft Adoption State",
   "type": "object",
   "required": [

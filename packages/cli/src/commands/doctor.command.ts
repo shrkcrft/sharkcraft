@@ -28,6 +28,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { SemanticIndex, listIndexableFiles } from '@shrkcrft/embeddings';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { maybeRunInWatchMode } from '../output/watch-loop.ts';
 import { doctorHints, renderFailureHints } from '../output/failure-hints.ts';
@@ -181,6 +182,84 @@ async function runDoctorOnce(args: ParsedArgs): Promise<number> {
   return doctorCommandImpl(args);
 }
 
+interface IDoctorResultLike {
+  passed: boolean;
+  checks: ReadonlyArray<{
+    id: string;
+    title: string;
+    severity: DoctorSeverity;
+    message: string;
+    fix?: string;
+    category?: string;
+  }>;
+  summary: { ok: number; info: number; warnings: number; errors: number; advisoryCount?: number };
+}
+
+function augmentWithSemanticIndexCheck<R extends IDoctorResultLike>(result: R, cwd: string): R {
+  const current = listIndexableFiles(cwd, 5000);
+  const report = SemanticIndex.freshnessReport(cwd, current);
+  const check = renderSemanticIndexCheck(report);
+  const checks = [...result.checks, check];
+  const summary = { ...result.summary };
+  if (check.severity === DoctorSeverity.Ok) summary.ok = (summary.ok ?? 0) + 1;
+  else if (check.severity === DoctorSeverity.Info) summary.info = (summary.info ?? 0) + 1;
+  else if (check.severity === DoctorSeverity.Warning) summary.warnings = (summary.warnings ?? 0) + 1;
+  else if (check.severity === DoctorSeverity.Error) summary.errors = (summary.errors ?? 0) + 1;
+  return { ...result, checks, summary } as R;
+}
+
+function renderSemanticIndexCheck(report: ReturnType<typeof SemanticIndex.freshnessReport>): {
+  id: string;
+  title: string;
+  severity: DoctorSeverity;
+  message: string;
+  fix?: string;
+  category: string;
+} {
+  if (!report.hasIndex) {
+    return {
+      id: 'semantic-index-missing',
+      title: 'Semantic embedding index',
+      severity: DoctorSeverity.Info,
+      message:
+        `No semantic index found — ${report.untracked} indexable files on disk. ` +
+        'Run `shrk smart-context embeddings-build` to enable embedding-backed retrieval in smart-context.',
+      category: 'semantic-index',
+    };
+  }
+  if (report.corrupt) {
+    return {
+      id: 'semantic-index-corrupt',
+      title: 'Semantic embedding index',
+      severity: DoctorSeverity.Error,
+      message: 'Semantic index meta is corrupt.',
+      fix: 'shrk smart-context embeddings-build --rebuild',
+      category: 'semantic-index',
+    };
+  }
+  const driftCount = report.stale + report.missing + report.untracked;
+  const driftPct = report.indexed > 0 ? (driftCount * 100) / report.indexed : 0;
+  if (driftCount === 0) {
+    return {
+      id: 'semantic-index-fresh',
+      title: 'Semantic embedding index',
+      severity: DoctorSeverity.Ok,
+      message: `Index fresh — ${report.indexed} files (model ${report.model}).`,
+      category: 'semantic-index',
+    };
+  }
+  const severity = driftPct >= 10 ? DoctorSeverity.Warning : DoctorSeverity.Info;
+  return {
+    id: 'semantic-index-stale',
+    title: 'Semantic embedding index',
+    severity,
+    message:
+      `${report.indexed} indexed; ${report.stale} stale, ${report.missing} deleted, ${report.untracked} new on disk (≈ ${Math.round(driftPct)}% drift).`,
+    fix: 'shrk smart-context embeddings-build',
+    category: 'semantic-index',
+  };
+}
+
 export const doctorCommand: ICommandHandler = {
   name: 'doctor',
   description:
@@ -207,7 +286,7 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
       inspectOpts.loaderTimeoutMs = loaderTimeout;
     }
     const inspection = await inspectSharkcraft(inspectOpts);
-    const result = runDoctor(inspection);
+    const result = augmentWithSemanticIndexCheck(runDoctor(inspection), cwd);
     const report = buildAiReadinessReport(inspection);
     if (debug) {
       process.stderr.write(`[debug] inspection elapsed ${inspection.inspectionElapsedMs}ms cache=${inspection.cacheEnabled ? 'on' : 'off'} loaders=${inspection.loaderDiagnostics.length}\n`);

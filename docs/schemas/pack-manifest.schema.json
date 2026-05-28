@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/pack-manifest.json",
+  "$id": "urn:sharkcraft:schemas:pack-manifest",
   "title": "SharkCraft Pack Manifest",
   "type": "object",
   "additionalProperties": true,

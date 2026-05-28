@@ -115,4 +115,39 @@ describe('GraphStore round-trip', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('writeSnapshot dedupes duplicate node and edge ids before persisting counts', () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-graph-dedupe-'));
+    try {
+      const store = new GraphStore(root);
+      const written = store.writeSnapshot(
+        [
+          { id: 'file:src/a.ts', kind: NodeKind.File, label: 'a.ts', path: 'src/a.ts' },
+          { id: 'file:src/a.ts', kind: NodeKind.File, label: 'a.ts', path: 'src/a.ts', data: { updated: true } },
+        ],
+        [
+          { id: 'edge-1', from: 'file:src/a.ts', to: 'package:demo', kind: EdgeKind.BelongsToPackage, source: 'test@v1' },
+          { id: 'edge-1', from: 'file:src/a.ts', to: 'package:demo', kind: EdgeKind.BelongsToPackage, source: 'test@v1' },
+        ],
+        [],
+        {
+          projectRoot: root,
+          lastIndexedAt: 'now',
+          lastIndexDurationMs: 0,
+          filesIndexed: 1,
+          nodesByKind: {},
+          edgesByKind: {},
+          workspacePackages: [],
+        },
+      );
+      expect(written.nodesByKind['file']).toBe(1);
+      expect(written.edgesByKind['belongs-to-package']).toBe(1);
+      const loaded = store.loadSnapshot();
+      expect(loaded.nodes.size).toBe(1);
+      expect(loaded.edges.size).toBe(1);
+      expect(loaded.nodes.get('file:src/a.ts')?.data).toEqual({ updated: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

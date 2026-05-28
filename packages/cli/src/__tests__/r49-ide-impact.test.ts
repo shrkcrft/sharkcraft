@@ -7,6 +7,10 @@
  * just data-model unit tests.
  */
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildFullIndex } from '@shrkcrft/graph';
 import { ideProjectCommand, ideSymbolCommand } from '../commands/ide.command.ts';
 import { impactCommand } from '../commands/impact.command.ts';
 
@@ -140,5 +144,51 @@ describe('shrk impact --plan-format', () => {
     const parsed = JSON.parse(out);
     expect(parsed.format).toBe('ts-morph');
     expect(parsed.codemodStarterMetadata.dialect).toBe('ts-morph');
+  });
+
+  test('via-graph accepts a path consumed as the flag value by parseArgs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-impact-via-graph-'));
+    try {
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'demo-root', workspaces: ['packages/*'] }, null, 2),
+      );
+      mkdirSync(join(root, 'packages', 'alpha', 'src'), { recursive: true });
+      mkdirSync(join(root, 'packages', 'beta', 'src'), { recursive: true });
+      writeFileSync(
+        join(root, 'packages', 'alpha', 'package.json'),
+        JSON.stringify({ name: '@demo/alpha', main: 'src/index.ts' }, null, 2),
+      );
+      writeFileSync(
+        join(root, 'packages', 'beta', 'package.json'),
+        JSON.stringify({ name: '@demo/beta', main: 'src/index.ts' }, null, 2),
+      );
+      writeFileSync(
+        join(root, 'packages', 'alpha', 'src', 'index.ts'),
+        "export function alpha() { return 1; }\n",
+      );
+      writeFileSync(
+        join(root, 'packages', 'beta', 'src', 'index.ts'),
+        "import { alpha } from '@demo/alpha';\nexport const value = alpha();\n",
+      );
+      buildFullIndex({ projectRoot: root });
+      const { exit, out } = await capture(() =>
+        impactCommand.run({
+          positional: [],
+          flags: new Map<string, string | boolean>([
+            ['cwd', root],
+            ['via-graph', 'packages/alpha/src/index.ts'],
+            ['json', true],
+          ]),
+          multiFlags: new Map(),
+        }),
+      );
+      expect(exit).toBe(0);
+      const parsed = JSON.parse(out);
+      expect(parsed.normalizedTargets).toContain('file:packages/alpha/src/index.ts');
+      expect(parsed.directDependents.some((d: { path?: string }) => d.path === 'packages/beta/src/index.ts')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

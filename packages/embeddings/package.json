@@ -1,0 +1,50 @@
+{
+  "name": "@shrkcrft/embeddings",
+  "version": "0.1.0-alpha.12",
+  "description": "SharkCraft local-first semantic retrieval, plan cache, declaration extractor, and task classifier.",
+  "license": "MIT",
+  "author": "SharkCraft contributors",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shrkcrft/sharkcraft.git",
+    "directory": "packages/embeddings"
+  },
+  "homepage": "https://github.com/shrkcrft/sharkcraft",
+  "bugs": {
+    "url": "https://github.com/shrkcrft/sharkcraft/issues"
+  },
+  "keywords": [
+    "sharkcraft",
+    "embeddings",
+    "semantic-search"
+  ],
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.7.5"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

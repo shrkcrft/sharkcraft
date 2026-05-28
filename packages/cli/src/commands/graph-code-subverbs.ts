@@ -398,13 +398,15 @@ export async function runGraphStatus(args: ParsedArgs): Promise<number> {
   }
   const verify = store.verifyDigest();
   const snap = store.loadSnapshot();
+  const manifestNodeCount = sumValues(snap.manifest.nodesByKind);
+  const manifestEdgeCount = sumValues(snap.manifest.edgesByKind);
   const payload = {
     ok: verify.ok,
     state: verify.ok ? 'fresh' : ('corrupt' as const),
     schema: snap.manifest.schema,
     fileCount: snap.manifest.filesIndexed,
-    nodeCount: snap.nodes.size,
-    edgeCount: snap.edges.size,
+    nodeCount: manifestNodeCount,
+    edgeCount: manifestEdgeCount,
     lastIndexedAt: snap.manifest.lastIndexedAt,
     lastIndexDurationMs: snap.manifest.lastIndexDurationMs,
     workspacePackages: snap.manifest.workspacePackages,
@@ -449,8 +451,12 @@ export async function runGraphSearch(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const wantJson = flagBool(args, 'json');
   const query = args.positional[1];
-  if (!query) {
-    process.stderr.write('Usage: shrk graph search <query> [--kind file|symbol|package] [--limit N]\n');
+  const hasUnresolved = flagBool(args, 'has-unresolved-imports');
+  if (!query && !hasUnresolved) {
+    process.stderr.write(
+      'Usage: shrk graph search <query> [--kind file|symbol|package] [--limit N]\n' +
+        '       shrk graph search --kind file --has-unresolved-imports [--limit N]\n',
+    );
     return 2;
   }
   const kindFlag = flagString(args, 'kind') as 'file' | 'symbol' | 'package' | undefined;
@@ -458,7 +464,16 @@ export async function runGraphSearch(args: ParsedArgs): Promise<number> {
   const api = loadOrFail(cwd, wantJson);
   if (!api) return 1;
 
-  const matches: INode[] = collectSearchMatches(api, query, kindFlag, limit);
+  let matches: INode[];
+  if (hasUnresolved) {
+    const all = api.filesWithUnresolvedImports();
+    matches = (query
+      ? all.filter((n) => (n.path ?? '').toLowerCase().includes(query.toLowerCase()))
+      : [...all]
+    ).slice(0, limit);
+  } else {
+    matches = collectSearchMatches(api, query!, kindFlag, limit);
+  }
 
   if (wantJson) {
     process.stdout.write(asJson({
@@ -470,11 +485,12 @@ export async function runGraphSearch(args: ParsedArgs): Promise<number> {
     }) + '\n');
     return 0;
   }
+  const headerLabel = query ?? (hasUnresolved ? 'files with unresolved imports' : '');
   if (matches.length === 0) {
-    process.stdout.write(`No matches for "${query}".\n`);
+    process.stdout.write(`No matches for "${headerLabel}".\n`);
     return 0;
   }
-  process.stdout.write(header(`Graph search: ${query}`));
+  process.stdout.write(header(`Graph search: ${headerLabel}`));
   for (const m of matches) {
     process.stdout.write(`  ${m.kind.padEnd(8)} ${m.label}${m.path ? '  ' + m.path : ''}${m.line ? ':' + m.line : ''}\n`);
   }
@@ -506,25 +522,32 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
     process.stderr.write(`No graph node matched "${target}".\n`);
     return 1;
   }
-  const neighbours = api.neighbours(anchor.id)!;
+  const anchorFile = anchor.kind === NodeKind.File
+    ? anchor
+    : declaringFileOf(api, anchor.id) ?? (anchor.path ? api.findFile(anchor.path) : undefined);
+  const subjectNodeId = anchorFile?.id ?? anchor.id;
+  const neighbours = api.neighbours(subjectNodeId)!;
   const symbols = anchor.kind === NodeKind.File ? api.symbolsIn(anchor.id) : [];
+  const references = anchor.kind === NodeKind.Symbol ? dedupeNodes(api.referencesOf(anchor.id)) : [];
+  const callers = anchor.kind === NodeKind.Symbol ? dedupeNodes(api.callersOf(anchor.id)) : [];
 
   // Optional bridge enrichment: rules / paths / templates applying to
-  // the anchor file (only meaningful when anchor.kind === File).
+  // the anchor file (or a symbol's containing file).
   const bridgeStore = new BridgeStore(cwd);
-  const bridgeFor = (includeBridge && bridgeStore.exists() && anchor.kind === NodeKind.File && anchor.path)
-    ? RuleGraphQueryApi.fromStores(cwd).forFile(anchor.path)
+  const bridgeFor = (includeBridge && bridgeStore.exists() && anchorFile?.path)
+    ? RuleGraphQueryApi.fromStores(cwd).forFile(anchorFile.path)
     : undefined;
 
   // Optional framework enrichment.
   const frameworkStore = new FrameworkStore(cwd);
-  const frameworkEntities = (includeFramework && frameworkStore.exists() && anchor.kind === NodeKind.File && anchor.path)
-    ? FrameworkQueryApi.fromStore(cwd).forFile(anchor.path)
+  const frameworkEntities = (includeFramework && frameworkStore.exists() && anchorFile?.path)
+    ? FrameworkQueryApi.fromStore(cwd).forFile(anchorFile.path)
     : [];
 
   const payload = {
     schema: 'sharkcraft.graph-context/v1',
     anchor: nodeSummary(anchor),
+    declaredIn: anchor.kind === NodeKind.Symbol && anchorFile ? nodeSummary(anchorFile) : null,
     depth,
     importsFrom: neighbours.out
       .filter((o) => o.edge.kind === 'imports-file')
@@ -535,6 +558,8 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
       .slice(0, 50)
       .map((i) => 'source' in i ? sourceSummary(i.source) : { id: 'unknown', resolved: false }),
     symbols: symbols.slice(0, 50).map(nodeSummary),
+    referencedBy: references.slice(0, 50).map(nodeSummary),
+    calledBy: callers.slice(0, 50).map(nodeSummary),
     bridge: bridgeFor
       ? {
           rules: bridgeFor.rules.map((h) => ({
@@ -563,10 +588,26 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
   }
   process.stdout.write(header(`Graph context: ${anchor.kind}:${anchor.label}`));
   process.stdout.write(kv('path', anchor.path ?? '(none)') + '\n');
+  if (anchor.line) process.stdout.write(kv('line', String(anchor.line)) + '\n');
+  if (payload.declaredIn) {
+    process.stdout.write(kv('declared in', payload.declaredIn.path ?? payload.declaredIn.id) + '\n');
+  }
   if (payload.symbols.length > 0) {
     process.stdout.write(`\nDeclares ${payload.symbols.length} symbols:\n`);
     for (const s of payload.symbols.slice(0, 20)) {
       process.stdout.write(`  ${s.label}${s.line ? ':' + s.line : ''}\n`);
+    }
+  }
+  if (payload.referencedBy.length > 0) {
+    process.stdout.write(`\nReferenced by (${payload.referencedBy.length}):\n`);
+    for (const r of payload.referencedBy.slice(0, 20)) {
+      process.stdout.write(`  ← ${r.path ?? r.id}\n`);
+    }
+  }
+  if (payload.calledBy.length > 0) {
+    process.stdout.write(`\nCalled by (${payload.calledBy.length}):\n`);
+    for (const c of payload.calledBy.slice(0, 20)) {
+      process.stdout.write(`  ← ${c.path ?? c.id}\n`);
     }
   }
   if (payload.importsFrom.length > 0) {
@@ -672,7 +713,7 @@ export async function runGraphImpact(args: ParsedArgs): Promise<number> {
     process.stderr.write(`No graph node matched "${target}".\n`);
     return 1;
   }
-  const closure = reverseClosure(api, anchor.id, maxDepth, limit);
+  const closure = reverseClosure(api, anchor, maxDepth, limit);
   const direct = closure.layer[1] ?? [];
   const transitive = closure.all.filter((id) => id !== anchor.id && !direct.includes(id));
   const payload = {
@@ -806,6 +847,24 @@ function collectSearchMatches(
   if (!kind || kind === 'file') {
     const f = api.findFile(query);
     if (f) out.push(f);
+    // Fuzzy fallback: substring match on path/basename so `shrk graph
+    // search Foo --kind file` finds `libs/x/y/Foo.ts` without forcing the
+    // caller to type the full path. Skips the node if exact match already
+    // included it.
+    if (out.length < limit) {
+      const q = query.toLowerCase();
+      const seen = new Set(out.map((n) => n.id));
+      for (const node of api.allFiles()) {
+        if (seen.has(node.id)) continue;
+        const p = node.path?.toLowerCase() ?? '';
+        const base = p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p;
+        if (base.includes(q) || p.includes(q)) {
+          out.push(node);
+          seen.add(node.id);
+          if (out.length >= limit) break;
+        }
+      }
+    }
   }
   if (!kind || kind === 'symbol') {
     for (const s of api.findSymbol(query, { exact: false, limit })) out.push(s);
@@ -819,23 +878,29 @@ function collectSearchMatches(
 
 function reverseClosure(
   api: GraphQueryApi,
-  startId: string,
+  anchor: INode,
   maxDepth: number,
   limit: number,
 ): { all: string[]; layer: Record<number, string[]>; truncated: boolean } {
-  const seen = new Set<string>([startId]);
+  const seen = new Set<string>([anchor.id]);
   const layer: Record<number, string[]> = {};
-  let frontier: string[] = [startId];
-  let depth = 1;
+  let frontier = directDependentsForAnchor(api, anchor);
   let truncated = false;
-  while (depth <= maxDepth && frontier.length > 0) {
+  frontier = frontier.filter((id) => !seen.has(id));
+  if (frontier.length > limit) {
+    frontier = frontier.slice(0, limit);
+    truncated = true;
+  }
+  for (const id of frontier) seen.add(id);
+  if (frontier.length > 0) layer[1] = frontier;
+  let depth = 2;
+  while (depth <= maxDepth && frontier.length > 0 && !truncated) {
     const next: string[] = [];
     for (const id of frontier) {
-      const importers = api.importersOf(id);
-      for (const imp of importers) {
-        if (seen.has(imp.id)) continue;
-        seen.add(imp.id);
-        next.push(imp.id);
+      for (const dep of nextDependents(api, anchor.kind, id)) {
+        if (seen.has(dep.id)) continue;
+        seen.add(dep.id);
+        next.push(dep.id);
         if (seen.size - 1 >= limit) {
           truncated = true;
           break;
@@ -846,9 +911,47 @@ function reverseClosure(
     if (next.length > 0) layer[depth] = next;
     frontier = next;
     depth += 1;
-    if (truncated) break;
   }
   return { all: [...seen], layer, truncated };
+}
+
+function directDependentsForAnchor(api: GraphQueryApi, anchor: INode): string[] {
+  if (anchor.kind === NodeKind.Symbol) {
+    const owner = declaringFileOf(api, anchor.id);
+    const refs = dedupeNodes([...api.referencesOf(anchor.id), ...api.callersOf(anchor.id)])
+      .filter((n) => n.kind === NodeKind.File && n.id !== owner?.id)
+      .map((n) => n.id);
+    if (refs.length > 0) return refs;
+    return owner ? api.importersOf(owner.id).map((n) => n.id) : [];
+  }
+  if (anchor.kind === NodeKind.Package) {
+    return api.packageDependents(packageNameFor(anchor)).map((n) => n.id);
+  }
+  return api.importersOf(anchor.id).map((n) => n.id);
+}
+
+function nextDependents(api: GraphQueryApi, anchorKind: NodeKind, nodeId: string): readonly INode[] {
+  if (anchorKind === NodeKind.Package) {
+    const node = api.neighbours(nodeId)?.node;
+    if (!node) return [];
+    return api.packageDependents(packageNameFor(node));
+  }
+  return api.importersOf(nodeId);
+}
+
+function declaringFileOf(api: GraphQueryApi, symbolId: string): INode | undefined {
+  const neighbours = api.neighbours(symbolId);
+  if (!neighbours) return undefined;
+  for (const incoming of neighbours.in) {
+    if (incoming.edge.kind !== EdgeKind.DeclaresSymbol) continue;
+    if ('resolved' in incoming.source) continue;
+    if (incoming.source.kind === NodeKind.File) return incoming.source;
+  }
+  return undefined;
+}
+
+function packageNameFor(node: INode): string {
+  return node.id.startsWith('package:') ? node.id.slice('package:'.length) : node.label;
 }
 
 function nodeSummary(n: INode): {
@@ -907,4 +1010,15 @@ function sumValues(record: Readonly<Record<string, number>>): number {
   let n = 0;
   for (const v of Object.values(record)) n += v;
   return n;
+}
+
+function dedupeNodes(nodes: readonly INode[]): readonly INode[] {
+  const seen = new Set<string>();
+  const out: INode[] = [];
+  for (const node of nodes) {
+    if (seen.has(node.id)) continue;
+    seen.add(node.id);
+    out.push(node);
+  }
+  return out;
 }

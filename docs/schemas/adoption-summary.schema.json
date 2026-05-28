@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/adoption-summary.json",
+  "$id": "urn:sharkcraft:schemas:adoption-summary",
   "title": "SharkCraft Adoption Summary",
   "type": "object",
   "required": [

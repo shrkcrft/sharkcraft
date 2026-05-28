@@ -32,6 +32,14 @@ prompts versioned, diffable, and replayable.
 
 Once the file exists, follow the protocol below.
 
+## Sister skill: `shrk-smart-context`
+
+When the user gives you a *list* of upcoming tasks, or asks for a denser,
+AI-synthesised brief than `shrk context` produces, switch to the
+`shrk-smart-context` skill. It covers `shrk smart-context`, `plan-ahead`,
+and the saved-plans workflow. This skill (`sharkcraft-dev`) is for
+executing a single scoped change end-to-end.
+
 ## Protocol
 
 ### 1. Load context (ALWAYS FIRST)

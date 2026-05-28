@@ -74,8 +74,10 @@ export class GraphStore {
     mkdirSync(nodesDir, { recursive: true });
     mkdirSync(edgesDir, { recursive: true });
 
-    const nodesByKind = bucketBy(nodes, (n) => n.kind);
-    const edgesByKind = bucketBy(edges, (e) => e.kind);
+    const uniqueNodes = dedupeById(nodes);
+    const uniqueEdges = dedupeById(edges);
+    const nodesByKind = bucketBy(uniqueNodes, (n) => n.kind);
+    const edgesByKind = bucketBy(uniqueEdges, (e) => e.kind);
 
     const nodeCounts: Record<string, number> = {};
     const edgeCounts: Record<string, number> = {};
@@ -171,6 +173,12 @@ function bucketBy<T>(list: readonly T[], key: (t: T) => string): Record<string, 
     out[k]!.push(item);
   }
   return out;
+}
+
+function dedupeById<T extends { id: string }>(list: readonly T[]): readonly T[] {
+  const byId = new Map<string, T>();
+  for (const item of list) byId.set(item.id, item);
+  return [...byId.values()];
 }
 
 function writeJsonl(path: string, rows: readonly unknown[]): void {

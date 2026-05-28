@@ -55,9 +55,12 @@ See `docs/knowledge-loading.md` for the loader's exact behavior.
 ## 5. No remote sources
 
 The CLI and MCP server never fetch knowledge over the network. The only
-network calls in the project are in `@shrkcrft/ai` (Claude HTTP adapter) and
-they happen only when the user explicitly invokes `shrk ask` (which itself
-requires `ANTHROPIC_API_KEY`).
+network calls in the project are in `@shrkcrft/ai` (local Ollama HTTP
+adapter) and they happen only when the user explicitly invokes
+`shrk ask` or `shrk smart-context`, against an Ollama daemon they
+control (`OLLAMA_HOST`/`OLLAMA_PORT`). When `LLAMACPP_MODEL_PATH` is set
+instead, inference runs in-process and there are zero outbound calls.
+SharkCraft never reaches a hosted LLM API.
 
 ## 6. No automatic shell execution
 

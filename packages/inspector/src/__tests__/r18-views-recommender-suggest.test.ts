@@ -28,6 +28,12 @@ describe('r18 command recommender', () => {
     const r = await recommendCommands(inspection, 'publish alpha');
     expect(r.recommendations.some((x) => /release readiness/.test(x.command))).toBe(true);
   });
+  test('"inspect code graph" routes to code-intel and graph status', async () => {
+    const inspection = await inspectSharkcraft({ cwd: process.cwd() });
+    const r = await recommendCommands(inspection, 'inspect the code graph and code intelligence state');
+    expect(r.recommendations.some((x) => /shrk code-intel/.test(x.command))).toBe(true);
+    expect(r.recommendations.some((x) => /shrk graph status/.test(x.command))).toBe(true);
+  });
   test('unknown query falls back to start-here', async () => {
     const inspection = await inspectSharkcraft({ cwd: process.cwd() });
     const r = await recommendCommands(inspection, 'qwerty zxcvbn');

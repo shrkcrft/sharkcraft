@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/impact-analysis.json",
+  "$id": "urn:sharkcraft:schemas:impact-analysis",
   "title": "SharkCraft Impact Analysis",
   "type": "object",
   "required": [

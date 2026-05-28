@@ -86,6 +86,9 @@
       "@shrkcrft/ai": [
         "../ai/dist/index.d.ts"
       ],
+      "@shrkcrft/embeddings": [
+        "../embeddings/dist/index.d.ts"
+      ],
       "@shrkcrft/shared": [
         "../shared/dist/index.d.ts"
       ],

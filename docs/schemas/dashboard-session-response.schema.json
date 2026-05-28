@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/dashboard-session-response.json",
+  "$id": "urn:sharkcraft:schemas:dashboard-session-response",
   "title": "SharkCraft Dashboard Session Response",
   "type": "object",
   "required": [

@@ -35,3 +35,11 @@ quality.html
 
 # Smoke-test scratch files
 .tmp-*
+
+# Per-package build output that occasionally leaks into src/ alongside the
+# .ts source. Packages publish from `dist/`, so anything compiled into
+# `packages/*/src/` is stale noise (and pollutes greps).
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.d.ts.map

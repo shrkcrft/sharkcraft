@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/feature-bundle.json",
+  "$id": "urn:sharkcraft:schemas:feature-bundle",
   "title": "SharkCraft Feature Workflow Bundle",
   "type": "object",
   "additionalProperties": true,

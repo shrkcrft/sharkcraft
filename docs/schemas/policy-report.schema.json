@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/policy-report.json",
+  "$id": "urn:sharkcraft:schemas:policy-report",
   "title": "SharkCraft Policy Report",
   "type": "object",
   "required": [

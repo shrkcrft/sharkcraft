@@ -1,14 +1,19 @@
 {
   "name": "@shrkcrft/migrate",
-  "version": "0.1.0-alpha.11",
+  "version": "0.1.0-alpha.12",
   "description": "SharkCraft migrations: orchestrate multi-step refactors (structural rewrites + shell + checkpoints) as one replayable migration. The safe path for big cross-cutting refactors.",
   "license": "MIT",
   "author": "SharkCraft contributors",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "files": [
     "dist",

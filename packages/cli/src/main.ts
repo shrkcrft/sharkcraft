@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { loadDotenv } from './env/load-dotenv.ts';
 import {
   CommandRegistry,
   extractGlobalCwd,
@@ -201,6 +202,19 @@ import {
 } from './commands/dashboard-export.command.ts';
 import { importCommand } from './commands/import.command.ts';
 import { askCommand } from './commands/ask.command.ts';
+import {
+  smartContextCommand,
+  smartContextEmbeddingsBuildCommand,
+  smartContextEmbeddingsStatusCommand,
+  smartContextListCommand,
+  smartContextPlanAheadCommand,
+  smartContextShowCommand,
+} from './commands/smart-context.command.ts';
+import { spikeCommand } from './commands/spike.command.ts';
+import { depsAuditCommand } from './commands/deps-audit.command.ts';
+import { scaffoldValidateCommand } from './commands/scaffold-validate.command.ts';
+import { movePlanCommand } from './commands/move-plan.command.ts';
+import { watchCommand, watchListCommand, watchPruneCommand, watchStopCommand } from './commands/watch.command.ts';
 import { mcpCommand } from './commands/mcp.command.ts';
 import { versionCommand } from './commands/version.command.ts';
 import { makeHelpCommand } from './commands/help.command.ts';
@@ -433,6 +447,20 @@ export function buildRegistry(): CommandRegistry {
   registry.register(planParentCommand);
   registry.register(devCommand);
   registry.register(askCommand);
+  registry.register(smartContextCommand);
+  registry.registerSubcommand('smart-context', smartContextPlanAheadCommand);
+  registry.registerSubcommand('smart-context', smartContextListCommand);
+  registry.registerSubcommand('smart-context', smartContextShowCommand);
+  registry.registerSubcommand('smart-context', smartContextEmbeddingsBuildCommand);
+  registry.registerSubcommand('smart-context', smartContextEmbeddingsStatusCommand);
+  registry.register(spikeCommand);
+  registry.register(depsAuditCommand);
+  registry.register(scaffoldValidateCommand);
+  registry.register(movePlanCommand);
+  registry.register(watchCommand);
+  registry.registerSubcommand('watch', watchListCommand);
+  registry.registerSubcommand('watch', watchStopCommand);
+  registry.registerSubcommand('watch', watchPruneCommand);
   registry.register(mcpCommand);
   registry.register(versionCommand);
   registry.register(qualityCommand);
@@ -1081,12 +1109,75 @@ if (
   entryPath.endsWith('shrk.js') ||
   entryPath.endsWith('shrk.cmd')
 ) {
+  loadDotenv(process.cwd());
   const argv = process.argv.slice(2);
+  const cleanShutdown = async (code: number): Promise<void> => {
+    // Best-effort teardown of shared native runtimes. Without this,
+    // commands that loaded native libs (ONNX via embeddings; Metal
+    // via node-llama-cpp) abort during `process.exit` AFTER the
+    // work completed — the user sees their result then `zsh: abort`.
+    // Dynamic imports keep these off the hot path for commands that
+    // never touched them.
+    try {
+      const mod = (await import('@shrkcrft/embeddings')) as {
+        disposeSemanticIndexPipeline?: () => Promise<void>;
+      };
+      if (typeof mod.disposeSemanticIndexPipeline === 'function') {
+        await mod.disposeSemanticIndexPipeline();
+      }
+    } catch {
+      // Best-effort; never block the exit on teardown failure.
+    }
+    try {
+      const mod = (await import('@shrkcrft/ai')) as {
+        disposeLlamaCppRuntime?: () => Promise<void>;
+      };
+      if (typeof mod.disposeLlamaCppRuntime === 'function') {
+        await mod.disposeLlamaCppRuntime();
+      }
+    } catch {
+      // Best-effort.
+    }
+    // Flush stdio synchronously before bypassing C++ destructors.
+    // `_exit` skips all libc finalizers, which is exactly what we
+    // need (see below), but it also doesn't wait for buffered
+    // writes to drain. Two synchronous write callbacks force the
+    // current buffers through.
+    try {
+      await new Promise<void>((resolve) => process.stdout.write('', () => resolve()));
+      await new Promise<void>((resolve) => process.stderr.write('', () => resolve()));
+    } catch {
+      // ignore flush failures
+    }
+    // Prefer `_exit` over `exit` on Node. Even after our explicit
+    // disposes above, node-llama-cpp's libggml-metal destructor
+    // still aborts in `__cxa_finalize_ranges` because the Metal
+    // device list isn't drained by the current dispose API
+    // (`GGML_ASSERT([rsets->data count] == 0)` fires from
+    // `ggml_metal_device_free`, surfacing as `zsh: abort` AFTER
+    // the user's result has already printed). `process._exit`
+    // skips the libc++ static-destructor pass entirely, which is
+    // safe here because we have already torn down the runtimes
+    // we care about above and the OS will reclaim the rest.
+    //
+    // Bun's process object doesn't expose `_exit`, but Bun also
+    // doesn't drive shutdown through libuv + libc++ static
+    // destructors the same way Node does, so the Metal crash
+    // doesn't reproduce there. Fall back to `process.exit` when
+    // `_exit` is unavailable.
+    const lowLevelExit = (process as unknown as {
+      _exit?: (code: number) => never;
+    })._exit;
+    if (typeof lowLevelExit === 'function') {
+      lowLevelExit(code);
+    }
+    process.exit(code);
+  };
   runCli(argv).then(
-    (code) => process.exit(code),
+    (code) => cleanShutdown(code),
     (err) => {
       process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
-      process.exit(1);
+      return cleanShutdown(1);
     },
   );
 }

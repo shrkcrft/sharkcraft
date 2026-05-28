@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/pack-quality-score.json",
+  "$id": "urn:sharkcraft:schemas:pack-quality-score",
   "title": "SharkCraft Pack Quality Score",
   "type": "object",
   "required": [

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/scaffold-pattern.json",
+  "$id": "urn:sharkcraft:schemas:scaffold-pattern",
   "title": "SharkCraft Scaffold Pattern",
   "type": "object",
   "required": [

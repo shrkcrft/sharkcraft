@@ -2,6 +2,23 @@ import type { CommandRegistry } from '../command-registry.ts';
 import { header } from '../output/format-output.ts';
 import { COMMAND_CATALOG, defaultShowInHelp } from './command-catalog.ts';
 
+const EXTRA_HELP_LINES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  graph: [
+    '',
+    'Code-intelligence subverbs:',
+    '  graph index      — build or refresh the code graph',
+    '  graph status     — freshness, counts, and unresolved-import summary',
+    '  graph search     — find files/symbols/packages in the code graph',
+    '  graph context    — inspect one file or symbol with bridge enrichment',
+    '  graph impact     — reverse dependent closure for a file or symbol',
+    '  graph callers    — files that call/reference a symbol',
+    '  graph cycles     — list import cycles',
+    '  graph unresolved — list unresolved imports grouped by file',
+    '  graph deps       — inbound/outbound package dependencies',
+    '  graph why        — shortest-path explanation in the knowledge graph',
+  ],
+});
+
 /**
  * Product start screen for bare `shrk` / `shrk --help`. Shows the
  * curated ~20-command "starter" surface organized by workflow phase.
@@ -30,6 +47,7 @@ export function renderStartScreen(): string {
   lines.push('  $ shrk recommend "<task>"        — what should I do?');
   lines.push('  $ shrk context --task "<task>"   — token-budgeted relevant context');
   lines.push('  $ shrk task "<task>"             — full AI-ready task packet (JSON)');
+  lines.push('  $ shrk code-intel                — one-shot code-intelligence health summary');
   lines.push('  $ shrk coverage                  — what knowledge is missing');
   lines.push('');
   lines.push('Generate code safely:');
@@ -39,6 +57,7 @@ export function renderStartScreen(): string {
   lines.push('  $ shrk quality                   — pre-PR gate (doctor + boundaries + coverage + drift)');
   lines.push('');
   lines.push('Browse what shrk knows:');
+  lines.push('  $ shrk graph status             — current code-graph freshness and health');
   lines.push('  $ shrk knowledge list            — knowledge entries');
   lines.push('  $ shrk rules list                — rules + conventions');
   lines.push('  $ shrk templates list            — generator templates');
@@ -80,10 +99,12 @@ export function makeHelpCommand(registry: CommandRegistry) {
           ? args.positional[0]!.split(/\s+/).filter(Boolean)
           : args.positional.filter(Boolean);
         const { handler, matchedPath, node } = registry.resolve(tokens);
-        if (handler && matchedPath.join(' ') === tokens.join(' ')) {
+        if (handler && matchedPath.join(' ') === tokens.join(' ') && node.children.size === 0) {
           // Exact match on a callable command.
           const canonical = registry.listCommandAliases().get(tokens[0]!);
           process.stdout.write(`${matchedPath.join(' ')} — ${handler.description}\n${handler.usage}\n`);
+          const extra = EXTRA_HELP_LINES[matchedPath.join(' ')];
+          if (extra) process.stdout.write(extra.join('\n') + '\n');
           if (canonical && tokens.length === 1) {
             process.stdout.write(`(alias for: ${canonical})\n`);
           }

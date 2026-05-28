@@ -338,7 +338,8 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   }),
   entry({
     command: 'graph',
-    description: 'Knowledge graph — nodes, edges, and shortest-path explanations.',
+    description:
+      'Knowledge graph plus code-intelligence subverbs (`index`, `status`, `search`, `context`, `impact`, `callers`, `cycles`, `unresolved`, `deps`, `why`, `export`).',
     category: 'core',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
@@ -1283,6 +1284,112 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     description: 'Render a prompt-shaped answer from local knowledge (no AI call).',
     category: 'core',
     safetyLevel: SafetyLevel.ReadOnly,
+  }),
+  entry({
+    command: 'smart-context',
+    description:
+      'Build deterministic context and ask an AI provider to synthesise an enriched brief (default), structured plan (--plan), or two-stage development plan (--ai-plan). Opt-in; defaults to Gemini. CLAUDE.md is auto-included in the seed.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Context,
+  }),
+  entry({
+    command: 'smart-context plan-ahead',
+    description:
+      'Batch-generate AI-backed plans for a queue of upcoming tasks and save each under .sharkcraft/smart-context/.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Context,
+  }),
+  entry({
+    command: 'smart-context list',
+    description: 'List saved smart-context entries under .sharkcraft/smart-context/.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'smart-context show',
+    description: 'Print a saved smart-context entry by slug.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'smart-context embeddings-build',
+    description:
+      'Build or incrementally refresh the semantic file index used by smart-context. Downloads the embedding model on first run.',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSessionOnly,
+    taskRole: CommandTaskRole.Context,
+  }),
+  entry({
+    command: 'smart-context embeddings-status',
+    description: 'Report semantic index freshness without loading the embedding model.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'spike',
+    description:
+      'Scaffold starter files for a saved smart-context plan\'s recommended MVP. Reads .sharkcraft/smart-context/<slug>.plan.json.',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSource,
+    taskRole: CommandTaskRole.Generate,
+  }),
+  entry({
+    command: 'deps-audit',
+    description:
+      'Compare declared package dependencies (package.json) with actually imported specifiers (graph). Reports missing + unused deps. Read-only.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'scaffold-validate',
+    description:
+      'Validate that the files in a saved generation plan exist on disk and look intact (size envelope + type match). Read-only.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'move-plan',
+    description:
+      'Plan a file move: graph-traced importer rewrites, export touch-ups, cross-package warnings, rollback steps. Read-only.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Generate,
+  }),
+  entry({
+    command: 'watch',
+    description:
+      'Emit a focused-context packet on stdout JSONL each time the workspace changes. Designed to feed a parallel Claude agent.',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSessionOnly,
+    taskRole: CommandTaskRole.Context,
+  }),
+  entry({
+    command: 'watch list',
+    description: 'List active shrk-watch daemons (one per task slug).',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'watch stop',
+    description: 'Stop a running shrk-watch daemon by slug.',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSessionOnly,
+    taskRole: CommandTaskRole.Config,
+  }),
+  entry({
+    command: 'watch prune',
+    description: 'Remove stale shrk-watch manifests whose owning processes are no longer alive.',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSessionOnly,
+    taskRole: CommandTaskRole.Config,
   }),
   entry({
     command: 'safety audit',
@@ -3410,6 +3517,7 @@ const PRIMARY_VERBS_ALLOWLIST: ReadonlySet<string> = new Set([
   'search',
   'impact',
   'graph',
+  'code-intel',
   // Generate code safely
   'gen',
   'apply',

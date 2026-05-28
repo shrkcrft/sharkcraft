@@ -121,6 +121,11 @@ import { getImportGraphAnalysisTool } from './import-graph-analysis.tool.ts';
 import { getDashboardSummaryTool } from './dashboard-summary.tool.ts';
 import { searchAllTool } from './search.tool.ts';
 import { createAgentBriefTool } from './agent-brief.tool.ts';
+import { smartContextBundleTool } from './smart-context-bundle.tool.ts';
+import { smartContextFeedTool } from './smart-context-feed.tool.ts';
+import { codeFindUsagesTool } from './code-find-usages.tool.ts';
+import { planQualityReviewTool } from './plan-quality-review.tool.ts';
+import { depsAuditTool } from './deps-audit.tool.ts';
 import {
   getConstructApiTool,
   getConstructTool,
@@ -442,6 +447,11 @@ export const ALL_TOOLS: readonly IToolDefinition[] = Object.freeze([
   getDashboardSummaryTool,
   searchAllTool,
   createAgentBriefTool,
+  smartContextBundleTool,
+  smartContextFeedTool,
+  codeFindUsagesTool,
+  planQualityReviewTool,
+  depsAuditTool,
   listConstructsTool,
   getConstructTool,
   traceConstructTool,

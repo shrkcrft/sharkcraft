@@ -1,7 +1,7 @@
 {
   "name": "@shrkcrft/ai",
-  "version": "0.1.0-alpha.11",
-  "description": "SharkCraft AI provider abstraction: Claude HTTP + Claude CLI adapters.",
+  "version": "0.1.0-alpha.12",
+  "description": "SharkCraft local LLM provider abstraction: Ollama (HTTP) + llama.cpp (in-process) + multi-pass enhancement pipeline.",
   "license": "MIT",
   "author": "SharkCraft contributors",
   "type": "module",
@@ -44,7 +44,8 @@
   },
   "dependencies": {
     "@shrkcrft/core": "workspace:*",
-    "@shrkcrft/context": "workspace:*"
+    "@shrkcrft/context": "workspace:*",
+    "node-llama-cpp": "^3.16.0"
   },
   "publishConfig": {
     "access": "public"

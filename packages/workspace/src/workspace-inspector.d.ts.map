@@ -1,1 +1,0 @@
-{"version":3,"file":"workspace-inspector.d.ts","sourceRoot":"","sources":["workspace-inspector.ts"],"names":[],"mappings":"AAQA,OAAO,KAAK,EAAE,iBAAiB,EAAE,MAAM,wBAAwB,CAAC;AAEhE,MAAM,WAAW,uBAAuB;IACtC,QAAQ,CAAC,EAAE,MAAM,CAAC;IAClB,iBAAiB,CAAC,EAAE,MAAM,CAAC;CAC5B;AAED,wBAAsB,gBAAgB,CACpC,OAAO,GAAE,uBAA4B,GACpC,OAAO,CAAC,iBAAiB,CAAC,CAiC5B"}

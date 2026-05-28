@@ -80,6 +80,17 @@ const RECIPES: readonly IRecipe[] = [
       { command: 'shrk drift', why: 'Drift report.' },
     ],
   },
+  {
+    match: /code[-\s]?intel|code intelligence|code graph|graph status|graph health|import cycle|unresolved import|blast radius|callers|dependents/i,
+    recommendations: [
+      { command: 'shrk code-intel', why: 'One-shot health view across the code graph, bridge, and quality gates.' },
+      { command: 'shrk graph status', why: 'Check whether the code graph is present, fresh, and internally consistent.' },
+      { command: 'shrk graph cycles', why: 'List import cycles that inflate blast-radius calculations.' },
+      { command: 'shrk graph unresolved', why: 'Find unresolved imports that undercut graph accuracy.' },
+      { command: 'shrk graph context <file-or-symbol>', why: 'Inspect one file or symbol with imports, callers, bridge context, and framework hits.' },
+      { command: 'shrk graph impact <file-or-symbol> --full', why: 'Estimate blast radius with graph-backed dependents, caller files, rules, and likely tests.' },
+    ],
+  },
 ];
 
 function safetyLevelFor(command: string): ICommandRecommendation['safetyLevel'] {

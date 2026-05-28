@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/ownership-rule.json",
+  "$id": "urn:sharkcraft:schemas:ownership-rule",
   "title": "SharkCraft Ownership Rule",
   "type": "object",
   "required": [

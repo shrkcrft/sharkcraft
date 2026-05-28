@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
-  "$id": "https://shrkcrft.dev/schemas/plan-simulation.json",
+  "$id": "urn:sharkcraft:schemas:plan-simulation",
   "title": "SharkCraft Plan Simulation Report",
   "type": "object",
   "required": [

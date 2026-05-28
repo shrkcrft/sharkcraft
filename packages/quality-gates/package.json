@@ -1,14 +1,19 @@
 {
   "name": "@shrkcrft/quality-gates",
-  "version": "0.1.0-alpha.11",
+  "version": "0.1.0-alpha.12",
   "description": "SharkCraft quality gates: single aggregator that runs the code-intelligence checks (graph index, boundaries, architecture, impact summary) and emits one pass/fail report. The pre-merge gate for AI-agent-authored changes.",
   "license": "MIT",
   "author": "SharkCraft contributors",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "files": [
     "dist",

@@ -81,7 +81,7 @@ CLI bootstrap commands the agent should know:
 
 ```bash
 shrk doctor                      # config + entry validation
-shrk context --task "<task>"     # focused context for a task
+shrk context --task "<task>"     # focused context for a task (deterministic)
 shrk task "<task>"               # full task packet (rules + templates + pipelines + commands)
 shrk coverage                    # what's still missing
 shrk check boundaries            # boundary enforcement (with tsconfig alias support)
@@ -90,6 +90,34 @@ shrk onboard --dry-run           # onboard an existing repo (advisory)
 shrk stats                       # per-language file counts, LOC, sizes, averages
 shrk dashboard                   # local read-only dashboard (127.0.0.1:4567)
 ```
+
+Opt-in **local-LLM** enrichment (requires a reachable Ollama daemon or a
+local `.gguf` model for llama.cpp — *no hosted API keys*):
+
+```bash
+shrk smart-context "<task>"                        # multi-pass LLM-enhanced brief
+shrk smart-context "<task>" --no-enhance           # single-shot (skip pipeline)
+shrk smart-context "<task>" --enhance-passes 2     # cap pipeline at draft + critique
+shrk smart-context "<task>" --plan --save          # structured plan, persisted
+shrk smart-context plan-ahead "t1" "t2" "t3"       # pre-plan a multi-task queue
+shrk smart-context list                            # list saved entries
+shrk smart-context show <slug>                     # read one back
+```
+
+The engine is deterministic; the LLM only refines its output. Provider
+selection is local-first: `AI_PROVIDER=auto` (default) walks
+`llamacpp → ollama`. Set `OLLAMA_HOST=http://<host>:<port>` (or split as
+`OLLAMA_HOST=<host>` + `OLLAMA_PORT=<port>`) and `OLLAMA_MODEL=<id>` to
+point at a remote box, or `LLAMACPP_MODEL_PATH=/path/to/<model>.gguf` for
+in-process inference. When no LLM is reachable, every command still
+works against the deterministic seed.
+
+In brief mode (the default) the multi-pass **enhancement pipeline**
+runs `draft → critique → refine → polish` so the output is materially
+denser than a single LLM call. `--no-enhance` falls back to single-shot.
+`CLAUDE.md` (this file) is included in the seed; editing it changes
+what the LLM sees. See `docs/smart-context.md` and the
+`shrk-smart-context` skill for the agent workflow.
 
 ---
 

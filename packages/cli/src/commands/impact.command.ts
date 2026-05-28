@@ -304,13 +304,14 @@ async function runViaGraph(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const wantJson = flagBool(args, 'json') || flagString(args, 'format') === 'json';
   const positional = args.positional[0];
+  const viaGraphRaw = args.flags.get('via-graph');
   const files = flagList(args, 'files');
   const since = flagString(args, 'since');
   const symbol = flagString(args, 'symbol');
   const fileFlag = flagString(args, 'file');
   const limit = flagNumber(args, 'limit') ?? 200;
   const maxDepth = flagNumber(args, 'max-depth') ?? 5;
-  const target = positional ?? fileFlag;
+  const target = positional ?? fileFlag ?? (typeof viaGraphRaw === 'string' ? viaGraphRaw : undefined);
 
   const inputs = files.length > 0
     ? { kind: 'files' as const, files }
@@ -393,7 +394,7 @@ export const impactCommand: ICommandHandler = {
     // graph-backed payload (sharkcraft.graph-impact-analysis/v3). Keeps
     // the legacy v2 inspector path as the default so existing
     // consumers don't shift.
-    if (flagBool(args, 'via-graph')) {
+    if (args.flags.has('via-graph')) {
       return runViaGraph(args);
     }
     const cwd = resolveCwd(args);

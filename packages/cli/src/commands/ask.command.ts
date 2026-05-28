@@ -1,6 +1,10 @@
 import { inspectSharkcraft, buildProjectOverview, renderOverviewText } from '@shrkcrft/inspector';
 import { buildContext } from '@shrkcrft/context';
-import { ClaudeProvider, AiMessageRole, buildPromptMessages } from '@shrkcrft/ai';
+import {
+  AiMessageRole,
+  buildPromptMessages,
+  selectAiProvider,
+} from '@shrkcrft/ai';
 import {
   flagBool,
   flagNumber,
@@ -15,8 +19,9 @@ import { printError } from '../output/print-error.ts';
 export const askCommand: ICommandHandler = {
   name: 'ask',
   description:
-    'Ask a question. Builds repository context, sends prompt to Claude (requires ANTHROPIC_API_KEY).',
-  usage: 'shrk ask "<question>" [--max-tokens 3000] [--model claude-sonnet-4-6] [--dry-run]',
+    'Ask a question. Builds repository context, sends prompt to the local LLM (Ollama / llama.cpp).',
+  usage:
+    'shrk ask "<question>" [--max-tokens 3000] [--provider auto|ollama|llamacpp] [--model <id>] [--dry-run]',
   async run(args: ParsedArgs): Promise<number> {
     const question = args.positional.join(' ').trim();
     if (!question) {
@@ -25,6 +30,7 @@ export const askCommand: ICommandHandler = {
     }
     const maxTokens = flagNumber(args, 'max-tokens') ?? 3000;
     const model = flagString(args, 'model');
+    const providerKind = flagString(args, 'provider');
     const dryRun = flagBool(args, 'dry-run');
 
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
@@ -50,16 +56,16 @@ export const askCommand: ICommandHandler = {
       return 0;
     }
 
-    const provider = new ClaudeProvider();
-    if (model) provider.configure({ model });
-    if (!provider.isReady()) {
+    const selection = selectAiProvider(providerKind);
+    if (!selection.provider) {
       process.stderr.write(
-        'ANTHROPIC_API_KEY is not set. Use --dry-run to print the prompt instead.\n',
+        'No local LLM is ready. Start Ollama (`ollama serve`) or set LLAMACPP_MODEL_PATH=/path/to/model.gguf in .env. Use --dry-run to print the prompt instead.\n',
       );
       return 1;
     }
+    if (model) selection.provider.configure({ model });
 
-    const res = await provider.send({
+    const res = await selection.provider.send({
       messages: [...messages, { role: AiMessageRole.User, content: question }],
       maxTokens: 1024,
       model,
