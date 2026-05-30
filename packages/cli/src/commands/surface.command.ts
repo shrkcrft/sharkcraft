@@ -32,13 +32,14 @@ import {
  *   - unhide  <command>     reverse hide
  *   - reset                 clear surface.enabled + surface.hidden
  *   - explain <command>     why this command has its current tier
+ *   - profiles [get <id>]   list surface profiles (or show one)
  */
 export const surfaceCommand: ICommandHandler = {
   name: 'surface',
   description:
     'Inspect or change the adaptive command surface (core / extended / experimental tiers).',
   usage:
-    'shrk surface <list|enable|disable|hide|unhide|reset|explain> [name] [--write] [--json]',
+    'shrk surface <list|enable|disable|hide|unhide|reset|explain|profiles> [name] [--write] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const [verb, ...rest] = args.positional;
     const json = flagBool(args, 'json');
@@ -105,7 +106,7 @@ async function runProfiles(opts: { cwd: string; json: boolean; sub: string | und
     const found = availableProfiles.find((p) => p.id === opts.target);
     if (!found) {
       process.stderr.write(`Unknown profile: ${opts.target}\n`);
-      return 1;
+      return 2;
     }
     if (opts.json) {
       process.stdout.write(asJson(found) + '\n');
@@ -205,10 +206,18 @@ async function runExplain({ cwd, json, target }: IExplainArgs): Promise<number> 
     process.stderr.write('Usage: shrk surface explain <command>\n');
     return 2;
   }
-  const { context, activeProfile } = await loadSurfaceContext({ cwd });
+  const { context, activeProfile, availableProfiles } = await loadSurfaceContext({ cwd });
   const summary = buildSurfaceSummary(context);
   const view = findCommandInSummary(summary, target);
   if (!view) {
+    // A common mix-up: `surface explain <profile>`. `explain` is for commands;
+    // point the user at the profile-aware verb instead of a bare "unknown".
+    if (availableProfiles.some((p) => p.id === target)) {
+      process.stderr.write(
+        `'${target}' is a surface profile, not a command. Try: shrk surface profiles get ${target}\n`,
+      );
+      return 2;
+    }
     process.stderr.write(`Unknown command: ${target}\n`);
     return 2;
   }

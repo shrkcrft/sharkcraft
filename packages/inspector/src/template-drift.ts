@@ -145,6 +145,19 @@ function safeRender(
   return { paths, warnings, ops };
 }
 
+/**
+ * A rendered sample path "matches" a path convention when it IS the
+ * convention's canonical target, or lives directly under it. The trailing
+ * slash guard stops `libs/nge/core` from spuriously matching
+ * `libs/nge/core-extra`.
+ */
+export function samplePathMatchesConvention(
+  samplePath: string,
+  conventionPath: string,
+): boolean {
+  return samplePath === conventionPath || samplePath.startsWith(`${conventionPath}/`);
+}
+
 function checkPathConventions(
   inspection: ISharkcraftInspection,
   paths: readonly string[],
@@ -153,17 +166,21 @@ function checkPathConventions(
   // Path conventions are name patterns; we only flag a path that obviously
   // mismatches every applicable convention. The conservative default: if no
   // convention names match any sample path, emit one info issue per path.
-  const svc = (inspection as { pathService?: { list?: () => readonly { id: string; pattern?: string }[] } }).pathService;
+  const svc = (
+    inspection as {
+      pathService?: { list?: () => readonly { id: string; metadata?: { path?: string } }[] };
+    }
+  ).pathService;
   const conventions = svc && typeof svc.list === 'function' ? svc.list() : [];
   if (conventions.length === 0) return issues;
   for (const p of paths) {
     let matched = false;
     for (const c of conventions) {
-      const pattern = (c as { pattern?: string }).pattern;
-      if (!pattern) continue;
-      // very lightweight substring check — these are heuristics.
-      const cleaned = pattern.replace(/\{.*?\}/g, '').replace(/[.*+?^${}()|[\]\\]/g, '');
-      if (cleaned.length > 4 && p.includes(cleaned)) {
+      // Path conventions carry their canonical path in `metadata.path`
+      // (IPathConvention), NOT a `pattern` field. A sample path matches a
+      // convention when it IS that target or lives under it.
+      const target = c.metadata?.path;
+      if (target && samplePathMatchesConvention(p, target)) {
         matched = true;
         break;
       }

@@ -689,7 +689,14 @@ function buildPackContributionsInventorySync(
         );
         const sourceFiles = new Set(arr.map((e) => e.sourceFile).filter((s): s is string => Boolean(s)));
         const singleSourceFile = sourceFiles.size === 1;
-        const nestedIdFalsePositive = allRegexFallback && singleSourceFile;
+        // Self-acknowledged false positive: when ALL participating entries come
+        // from a SINGLE source file via regex fallback, the "duplicate" is
+        // almost certainly nested `id:` fields (playbook.steps[].id /
+        // pipeline.steps[].id) the regex grabbed, not real top-level duplicate
+        // contribution ids. Don't emit noise for it — a genuine duplicate would
+        // span multiple files or include a non-regex-fallback entry and still
+        // surface as an error below.
+        if (allRegexFallback && singleSourceFile) continue;
         conflicts.push({
           kind: conflictKind,
           contributionKind: kind as ContributionKind,
@@ -702,10 +709,8 @@ function buildPackContributionsInventorySync(
             if (e.sourceFile) src.sourceFile = e.sourceFile;
             return src;
           }),
-          severity: nestedIdFalsePositive ? 'info' : 'error',
-          message: nestedIdFalsePositive
-            ? `${arr.length} "${kind}" entries with id "${id}" extracted from a single source file via regex fallback — likely nested step.id fields, not real top-level duplicates.`
-            : `Duplicate "${kind}" id "${id}" loaded from ${arr.length} sources.`,
+          severity: 'error',
+          message: `Duplicate "${kind}" id "${id}" loaded from ${arr.length} sources.`,
           nextCommand: `shrk packs contributions --json | jq '.entries[] | select(.id=="${id}" and .kind=="${kind}")'`,
         });
       }

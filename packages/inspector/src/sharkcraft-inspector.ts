@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
   createImportContext,
@@ -38,6 +38,74 @@ import {
   type LoaderOrigin,
 } from './loader-diagnostics.ts';
 import { suggestSurfaceProfile } from './surface-profile-detect.ts';
+
+/**
+ * Find SharkCraft packs that live IN the repo but are not discovered (i.e.
+ * not linked into node_modules). Discovery scans node_modules; an unlinked
+ * in-repo pack is invisible to it, which silently disables every pack
+ * contribution. We do a bounded one-level scan of the conventional pack
+ * homes rather than a full recursive walk, so this stays cheap on large
+ * monorepos. A "pack dir" is one that has a `sharkcraft.plugin.*` manifest
+ * (at its root or under `src/`) or a `package.json` with a `sharkcraft`
+ * field. Returns only packs whose package name is NOT already discovered.
+ */
+export function findUnlinkedInRepoPacks(
+  projectRoot: string,
+  discoveredPackNames: ReadonlySet<string>,
+): Array<{ packageName: string; relPath: string }> {
+  const out: Array<{ packageName: string; relPath: string }> = [];
+  const seen = new Set<string>();
+  const manifestRelCandidates = [
+    'sharkcraft.plugin.ts',
+    'sharkcraft.plugin.mjs',
+    'sharkcraft.plugin.js',
+    nodePath.join('src', 'sharkcraft.plugin.ts'),
+    nodePath.join('src', 'sharkcraft.plugin.mjs'),
+    nodePath.join('src', 'sharkcraft.plugin.js'),
+  ];
+  for (const parent of ['tools', 'packages', 'libs', '.']) {
+    const parentAbs = nodePath.resolve(projectRoot, parent);
+    let dirs: string[];
+    try {
+      dirs = readdirSync(parentAbs, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && d.name !== 'node_modules')
+        .map((d) => d.name);
+    } catch {
+      continue;
+    }
+    for (const dir of dirs) {
+      const packRoot = nodePath.join(parentAbs, dir);
+      const hasManifestFile = manifestRelCandidates.some((c) =>
+        existsSync(nodePath.join(packRoot, c)),
+      );
+      let packageName: string | undefined;
+      let hasSharkcraftField = false;
+      const pkgJsonPath = nodePath.join(packRoot, 'package.json');
+      if (existsSync(pkgJsonPath)) {
+        try {
+          const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf8')) as {
+            name?: unknown;
+            sharkcraft?: unknown;
+          };
+          if (typeof pkg.name === 'string') packageName = pkg.name;
+          hasSharkcraftField = pkg.sharkcraft != null;
+        } catch {
+          /* unreadable package.json — ignore */
+        }
+      }
+      if (!hasManifestFile && !hasSharkcraftField) continue;
+      if (!packageName || seen.has(packageName)) continue;
+      seen.add(packageName);
+      if (!discoveredPackNames.has(packageName)) {
+        out.push({
+          packageName,
+          relPath: nodePath.relative(projectRoot, packRoot) || '.',
+        });
+      }
+    }
+  }
+  return out;
+}
 
 export interface ISharkcraftInspection {
   projectRoot: string;
@@ -732,6 +800,29 @@ export function runDoctor(inspection: ISharkcraftInspection): IDoctorResult {
           ? `${v} pack(s) discovered.`
           : `${v} valid, ${i} invalid pack(s). See \`shrk packs doctor\`.`,
     });
+  } else {
+    // Zero packs discovered. The costly silent-failure case: the repo SHIPS
+    // a pack (e.g. tools/sharkcraft-pack) but it is not linked into
+    // node_modules, where discovery scans. When that happens every
+    // contribution — templates, boundaries, knowledge — goes dark and doctor
+    // otherwise collapses to "No templates registered / no boundary rules"
+    // with no hint about the real cause. Detect it and make it actionable.
+    const discoveredNames = new Set(
+      inspection.packs.discoveredPacks.map((p) => p.packageName),
+    );
+    const unlinked = findUnlinkedInRepoPacks(inspection.projectRoot, discoveredNames);
+    const first = unlinked[0];
+    if (first) {
+      const list = unlinked.map((u) => `${u.packageName} (${u.relPath})`).join(', ');
+      const up = first.packageName.startsWith('@') ? '../../' : '../';
+      checks.push({
+        id: 'packs',
+        title: 'packs',
+        severity: DoctorSeverity.Warning,
+        message: `In-repo pack(s) present but NOT discovered: ${list}. shrk discovers packs by scanning node_modules, so an unlinked in-repo pack loads nothing — templates, boundary rules, and knowledge all go dark even though the assets exist on disk.`,
+        fix: `Link it into node_modules so discovery sees it: \`mkdir -p node_modules/$(dirname ${first.packageName}) && ln -sfn ${up}${first.relPath} node_modules/${first.packageName}\` — or add a \`"${first.packageName}": "file:${first.relPath}"\` dependency. Then re-run \`shrk packs list\`.`,
+      });
+    }
   }
 
   if (inspection.pipelines.length === 0) {

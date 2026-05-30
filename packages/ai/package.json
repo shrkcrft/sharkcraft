@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/ai",
-  "version": "0.1.0-alpha.12",
+  "version": "0.1.0-alpha.13",
   "description": "SharkCraft local LLM provider abstraction: Ollama (HTTP) + llama.cpp (in-process) + multi-pass enhancement pipeline.",
   "license": "MIT",
   "author": "SharkCraft contributors",
