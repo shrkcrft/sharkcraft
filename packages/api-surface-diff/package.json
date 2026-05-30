@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/api-surface-diff",
-  "version": "0.1.0-alpha.13",
+  "version": "0.1.0-alpha.14",
   "description": "SharkCraft API surface diff: compare two code-graph snapshots and report added / removed / changed public symbols. Catches accidental API breaks before publish.",
   "license": "MIT",
   "author": "SharkCraft contributors",

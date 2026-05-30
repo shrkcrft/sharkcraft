@@ -39,6 +39,13 @@ export interface ITemplateChange {
         description?: string;
       }
     | {
+        kind: 'insert-array-entry';
+        arrayName: string;
+        entryValue: string;
+        ifMissing?: string;
+        description?: string;
+      }
+    | {
         kind: 'insert-before-closing-brace';
         containerName: string;
         snippet: string;
@@ -82,6 +89,7 @@ export interface ITemplateAnchorDeclaration {
     | 'insert-before-closing-brace'
     | 'insert-enum-entry'
     | 'insert-object-entry'
+    | 'insert-array-entry'
   >;
 }
 

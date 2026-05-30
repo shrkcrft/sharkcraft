@@ -18,6 +18,7 @@ import {
   rmSync,
   statSync,
   writeFileSync,
+  chmodSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -193,6 +194,21 @@ for (const pkg of ordered) {
 
 if (!buildDashboard()) {
   failed += 1;
+}
+
+// `tsc` emit drops the executable bit on bin entrypoints (npm restores it on
+// publish from the `bin` field, but a local dist rebuild does not). Restore
+// +x so the bin runs directly / via `bunx` without EACCES — otherwise bunx
+// falls through to a registry lookup for the non-existent `shrk` package.
+for (const pkg of ordered) {
+  const pkgJsonPath = join(pkg.dir, 'package.json');
+  if (!existsSync(pkgJsonPath)) continue;
+  const bin = readJson<{ bin?: Record<string, string> | string }>(pkgJsonPath).bin;
+  const binPaths = typeof bin === 'string' ? [bin] : bin ? Object.values(bin) : [];
+  for (const rel of binPaths) {
+    const abs = join(pkg.dir, rel);
+    if (existsSync(abs)) chmodSync(abs, 0o755);
+  }
 }
 
 process.stdout.write('\n[build-dist] summary\n---\n');

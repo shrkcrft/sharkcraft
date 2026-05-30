@@ -283,6 +283,110 @@ describe('evaluatePlannedChange — export', () => {
   });
 });
 
+describe('evaluatePlannedChange — insert-array-entry', () => {
+  const arrayFile = [
+    'export function buildEntries() {',
+    '  const entries: IEntry[] = [',
+    '    makeA(),',
+    '    makeB(),',
+    '  ];',
+    '  return entries;',
+    '}',
+    '',
+  ].join('\n');
+
+  test('happy path: appends a new element before the closing bracket', () => {
+    const out = evaluatePlannedChange({
+      change: {
+        targetPath: 'entries.ts',
+        operation: { kind: 'insert-array-entry', arrayName: 'entries', entryValue: 'makeC()' },
+      },
+      absolutePath: '/abs/entries.ts',
+      relativePath: 'entries.ts',
+      existing: arrayFile,
+    });
+    expect(out.type).toBe(FileChangeType.InsertBefore);
+    expect(out.contents).toContain('makeB(),');
+    expect(out.contents).toContain('makeC()');
+    // Inserted inside the array, before the `];` close.
+    expect(out.contents.indexOf('makeC()')).toBeLessThan(out.contents.indexOf('];'));
+    // Indentation of existing members is preserved.
+    expect(out.contents).toContain('    makeC()');
+  });
+
+  test('idempotent: SKIP when the element is already present', () => {
+    const out = evaluatePlannedChange({
+      change: {
+        targetPath: 'entries.ts',
+        operation: { kind: 'insert-array-entry', arrayName: 'entries', entryValue: 'makeB()' },
+      },
+      absolutePath: '/abs/entries.ts',
+      relativePath: 'entries.ts',
+      existing: arrayFile,
+    });
+    expect(out.type).toBe(FileChangeType.Skip);
+  });
+
+  test('ifMissing marker controls idempotency independently of entryValue', () => {
+    const out = evaluatePlannedChange({
+      change: {
+        targetPath: 'entries.ts',
+        operation: {
+          kind: 'insert-array-entry',
+          arrayName: 'entries',
+          entryValue: 'makeC({ scope })',
+          ifMissing: 'makeC(',
+        },
+      },
+      absolutePath: '/abs/entries.ts',
+      relativePath: 'entries.ts',
+      existing: arrayFile.replace('  return entries;', '  // makeC( noted\n  return entries;'),
+    });
+    // marker `makeC(` is outside the array body → still inserts.
+    expect(out.type).toBe(FileChangeType.InsertBefore);
+  });
+
+  test('conflict: array name not found', () => {
+    const out = evaluatePlannedChange({
+      change: {
+        targetPath: 'entries.ts',
+        operation: { kind: 'insert-array-entry', arrayName: 'missing', entryValue: 'makeC()' },
+      },
+      absolutePath: '/abs/entries.ts',
+      relativePath: 'entries.ts',
+      existing: arrayFile,
+    });
+    expect(out.type).toBe(FileChangeType.Conflict);
+  });
+
+  test('conflict: missing target file', () => {
+    const out = evaluatePlannedChange({
+      change: {
+        targetPath: 'entries.ts',
+        operation: { kind: 'insert-array-entry', arrayName: 'entries', entryValue: 'makeC()' },
+      },
+      absolutePath: '/abs/entries.ts',
+      relativePath: 'entries.ts',
+      existing: null,
+    });
+    expect(out.type).toBe(FileChangeType.Conflict);
+  });
+
+  test('handles an empty array literal', () => {
+    const out = evaluatePlannedChange({
+      change: {
+        targetPath: 'entries.ts',
+        operation: { kind: 'insert-array-entry', arrayName: 'list', entryValue: 'first()' },
+      },
+      absolutePath: '/abs/entries.ts',
+      relativePath: 'entries.ts',
+      existing: 'const list: T[] = [];\n',
+    });
+    expect(out.type).toBe(FileChangeType.InsertBefore);
+    expect(out.contents).toContain('first()');
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Template integration — files() + changes() together
 // ─────────────────────────────────────────────────────────────────────────────
@@ -359,6 +463,53 @@ describe('planGeneration with changes()', () => {
     expect(index).toContain("export * from './lib/new-thing';");
     // Existing line was preserved
     expect(index).toContain("export * from './lib/existing';");
+  });
+
+  test('composes MULTIPLE changes to the SAME file via the per-file overlay', () => {
+    const root = makeTmpProject();
+    writeFile(root, 'src/index.ts', "export * from './lib/existing';\n\nimport './side-a';\n");
+
+    const template = defineTemplate({
+      id: 'compose.demo',
+      name: 'Compose v2',
+      description: 'two changes to one file must compose, not clobber',
+      tags: [],
+      scope: [],
+      appliesWhen: [],
+      variables: [],
+      changes: () => [
+        // 1) insert an export block before the first side-effect import
+        {
+          targetPath: 'src/index.ts',
+          operation: {
+            kind: 'insert-before',
+            anchor: "import './side-a';",
+            snippet: "export * from './lib/new-thing';\n",
+            ifMissing: "from './lib/new-thing'",
+          },
+        },
+        // 2) append a second side-effect import to the SAME file
+        {
+          targetPath: 'src/index.ts',
+          operation: { kind: 'append', snippet: "import './side-b';", ifMissing: "import './side-b';" },
+        },
+      ],
+    });
+
+    const result = generate(template, {
+      templateId: template.id,
+      variables: {},
+      projectRoot: root,
+      write: true,
+    });
+    expect(result.ok).toBe(true);
+    const index = readFileSync(join(root, 'src/index.ts'), 'utf8');
+    // BOTH edits must survive. Pre-overlay, the second same-file write
+    // clobbered the first (each was computed against the original bytes).
+    expect(index).toContain("export * from './lib/new-thing';");
+    expect(index).toContain("import './side-b';");
+    expect(index).toContain("export * from './lib/existing';");
+    expect(index).toContain("import './side-a';");
   });
 });
 

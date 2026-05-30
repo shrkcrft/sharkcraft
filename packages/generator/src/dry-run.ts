@@ -53,6 +53,13 @@ export function planGeneration(
   const rendered = renderTemplate(template, validation.resolved);
   const changes: IFileChange[] = [];
 
+  // Per-file content overlay so that MULTIPLE changes (or a files() create
+  // followed by a changes() op) targeting the SAME file COMPOSE. Without
+  // this every change is evaluated against the original on-disk bytes and
+  // the writer's last same-file write clobbers the earlier ones. Keyed by
+  // absolute path → the cumulative content after the prior change(s).
+  const overlay = new Map<string, string>();
+
   // 1) Legacy CREATE-only files() output — unchanged behaviour.
   for (const file of rendered.files) {
     let safe: ReturnType<typeof safeResolveTargetPath>;
@@ -86,14 +93,16 @@ export function planGeneration(
         existing,
         file.content,
       );
+      const contents = decision.type === FileChangeType.Skip ? existing : file.content;
       changes.push({
         type: decision.type,
         absolutePath,
         relativePath: relPath,
-        contents: decision.type === FileChangeType.Skip ? existing : file.content,
+        contents,
         reason: decision.reason,
         sizeBytes: Buffer.byteLength(file.content, 'utf8'),
       });
+      overlay.set(absolutePath, contents);
     } else {
       changes.push({
         type: FileChangeType.Create,
@@ -103,12 +112,14 @@ export function planGeneration(
         reason: 'New file (does not exist)',
         sizeBytes: Buffer.byteLength(file.content, 'utf8'),
       });
+      overlay.set(absolutePath, file.content);
     }
   }
 
-  // 2) v2 planned changes — evaluate against live filesystem.
+  // 2) v2 planned changes — evaluate against the live filesystem, threaded
+  //    through the overlay so successive changes to one file compose.
   for (const tplChange of rendered.changes) {
-    const evaluated = planOne(tplChange, request.projectRoot);
+    const evaluated = planOne(tplChange, request.projectRoot, overlay);
     changes.push(evaluated);
   }
 
@@ -128,7 +139,11 @@ export function planGeneration(
   };
 }
 
-function planOne(tplChange: ITemplateChange, projectRoot: string): IFileChange {
+function planOne(
+  tplChange: ITemplateChange,
+  projectRoot: string,
+  overlay?: Map<string, string>,
+): IFileChange {
   const op: IPlannedOperation = tplChange.operation;
   let safe: ReturnType<typeof safeResolveTargetPath>;
   try {
@@ -150,15 +165,23 @@ function planOne(tplChange: ITemplateChange, projectRoot: string): IFileChange {
     targetPath: tplChange.targetPath,
     operation: op,
   };
-  const existing = existsSync(safe.absolutePath)
-    ? readFileSafe(safe.absolutePath)
-    : null;
-  return evaluatePlannedChange({
+  // Prefer the overlay (cumulative result of prior same-file changes) over
+  // the on-disk bytes so successive ops on one file compose deterministically.
+  const existing = overlay?.has(safe.absolutePath)
+    ? (overlay.get(safe.absolutePath) ?? null)
+    : existsSync(safe.absolutePath)
+      ? readFileSafe(safe.absolutePath)
+      : null;
+  const result = evaluatePlannedChange({
     change,
     absolutePath: safe.absolutePath,
     relativePath: safe.relativePath,
     existing,
   });
+  // Record the cumulative content (Skip/Conflict carry the unchanged bytes,
+  // which is exactly what a later op on the same file should see).
+  overlay?.set(safe.absolutePath, result.contents);
+  return result;
 }
 
 function readFileSafe(absolutePath: string): string | null {
@@ -197,6 +220,8 @@ function previewContentForOperation(op: IPlannedOperation): string {
       return `${op.enumName}.${op.entryName} = '${op.entryValue}'`;
     case 'insert-object-entry':
       return `${op.objectName}.${op.entryKey}: ${op.entryValue}`;
+    case 'insert-array-entry':
+      return `${op.arrayName} ⟵ ${op.entryValue}`;
     case 'insert-before-closing-brace':
       return op.snippet;
     case 'insert-between-anchors':

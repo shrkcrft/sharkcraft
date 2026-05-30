@@ -37,6 +37,7 @@ export type PlannedOperationKind =
   | 'ensure-import'
   | 'insert-enum-entry'
   | 'insert-object-entry'
+  | 'insert-array-entry'
   | 'insert-before-closing-brace'
   | 'insert-between-anchors';
 
@@ -159,6 +160,21 @@ interface IInsertObjectEntryOperation {
   description?: string;
 }
 
+interface IInsertArrayEntryOperation {
+  kind: 'insert-array-entry';
+  /**
+   * Array identifier — a `const`/`let`/`var` bound to an array literal,
+   * e.g. `editorScopeEntries` or `DEFAULT_PANELS`. The element is inserted
+   * before the array's matching closing bracket.
+   */
+  arrayName: string;
+  /** Element source text to add (already source-formatted, no trailing comma). */
+  entryValue: string;
+  /** Optional idempotency marker (default = `entryValue`). */
+  ifMissing?: string;
+  description?: string;
+}
+
 interface IInsertBeforeClosingBraceOperation {
   kind: 'insert-before-closing-brace';
   /** Container identifier, e.g. an interface/class/enum name. */
@@ -190,6 +206,7 @@ export type IPlannedOperation =
   | IEnsureImportOperation
   | IInsertEnumEntryOperation
   | IInsertObjectEntryOperation
+  | IInsertArrayEntryOperation
   | IInsertBeforeClosingBraceOperation
   | IInsertBetweenAnchorsOperation;
 
@@ -235,6 +252,8 @@ export function evaluatePlannedChange(input: IEvaluateInput): IFileChange {
       return evaluateInsertEnumEntry(op, absolutePath, relativePath, existing);
     case 'insert-object-entry':
       return evaluateInsertObjectEntry(op, absolutePath, relativePath, existing);
+    case 'insert-array-entry':
+      return evaluateInsertArrayEntry(op, absolutePath, relativePath, existing);
     case 'insert-before-closing-brace':
       return evaluateInsertBeforeClosingBrace(op, absolutePath, relativePath, existing);
     case 'insert-between-anchors':
@@ -805,6 +824,75 @@ function evaluateInsertObjectEntry(
   );
 }
 
+function evaluateInsertArrayEntry(
+  op: Extract<IPlannedOperation, { kind: 'insert-array-entry' }>,
+  absolutePath: string,
+  relativePath: string,
+  existing: string | null,
+): IFileChange {
+  if (existing === null) {
+    return mkChange(
+      FileChangeType.Conflict,
+      absolutePath,
+      relativePath,
+      '',
+      'insert-array-entry: target file does not exist',
+      op,
+    );
+  }
+  const arr = findArrayLiteralBlock(existing, op.arrayName);
+  if (!arr) {
+    return mkChange(
+      FileChangeType.Conflict,
+      absolutePath,
+      relativePath,
+      existing,
+      `insert-array-entry: array "${op.arrayName}" not found`,
+      op,
+    );
+  }
+  if (arr.duplicate) {
+    return mkChange(
+      FileChangeType.Conflict,
+      absolutePath,
+      relativePath,
+      existing,
+      `insert-array-entry: array "${op.arrayName}" appears multiple times (ambiguous)`,
+      op,
+    );
+  }
+  // Idempotency: skip when the element (or its caller-supplied marker) is
+  // already present anywhere inside the array body.
+  const body = existing.slice(arr.openIdx + 1, arr.closeIdx);
+  const marker = op.ifMissing ?? op.entryValue;
+  if (marker.length > 0 && body.includes(marker)) {
+    return mkChange(
+      FileChangeType.Skip,
+      absolutePath,
+      relativePath,
+      existing,
+      `insert-array-entry: "${op.arrayName}" already contains entry (idempotent)`,
+      op,
+    );
+  }
+  const indent = detectIndent(body) || '  ';
+  const trailingTrim = body.replace(/[\s,]+$/, '');
+  const needsComma = trailingTrim.length > 0;
+  const insertion = `${needsComma ? ',\n' : '\n'}${indent}${op.entryValue}`;
+  const next =
+    existing.slice(0, arr.openIdx + 1 + trailingTrim.length) +
+    insertion +
+    existing.slice(arr.openIdx + 1 + trailingTrim.length);
+  return mkChange(
+    FileChangeType.InsertBefore,
+    absolutePath,
+    relativePath,
+    next,
+    `insert-array-entry: added entry to ${op.arrayName}`,
+    op,
+  );
+}
+
 function evaluateInsertBeforeClosingBrace(
   op: Extract<IPlannedOperation, { kind: 'insert-before-closing-brace' }>,
   absolutePath: string,
@@ -1080,6 +1168,41 @@ function findObjectLiteralBlock(source: string, objectName: string): IBlockLocat
     'g',
   );
   return findBraceBlock(source, re);
+}
+
+function findArrayLiteralBlock(source: string, arrayName: string): IBlockLocation | null {
+  const re = new RegExp(
+    `\\b(?:const|let|var)\\s+${escapeRegex(arrayName)}\\b[^=]*=\\s*\\[`,
+    'g',
+  );
+  return findBracketBlock(source, re);
+}
+
+function findBracketBlock(source: string, headRegex: RegExp): IBlockLocation | null {
+  headRegex.lastIndex = 0;
+  const first = headRegex.exec(source);
+  if (!first) return null;
+  const openIdx = first.index + first[0].length - 1;
+  const second = headRegex.exec(source);
+  const duplicate = second !== null;
+  const closeIdx = findMatchingCloseBracket(source, openIdx);
+  if (closeIdx < 0) return null;
+  return { openIdx, closeIdx, duplicate };
+}
+
+function findMatchingCloseBracket(source: string, openBracketIdx: number): number {
+  let depth = 0;
+  let i = openBracketIdx;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === '[') depth += 1;
+    else if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+    i += 1;
+  }
+  return -1;
 }
 
 function findBlockByName(source: string, name: string): IBlockLocation | null {
