@@ -24,7 +24,10 @@ export interface IAggregatedActionHints {
 }
 
 function dedupePush<T>(out: T[], items: readonly T[] | undefined, key: (item: T) => string): void {
-  if (!items) return;
+  // Defensive: an entry may author an object-array hint (commands / mcpTools)
+  // as a scalar by mistake. Iterating a non-array here would walk string chars
+  // and produce garbage keys, so anything that isn't an array is ignored.
+  if (!Array.isArray(items)) return;
   const seen = new Set(out.map(key));
   for (const item of items) {
     const k = key(item);
@@ -35,8 +38,23 @@ function dedupePush<T>(out: T[], items: readonly T[] | undefined, key: (item: T)
   }
 }
 
-function dedupeStrings(out: string[], items: readonly string[] | undefined): void {
-  dedupePush(out, items, (s) => s);
+/**
+ * Coerce an authored hint value into a string array. A common authoring typo
+ * is to write a single-value field as a scalar (`preferredFlow: 'x'`) instead
+ * of an array (`preferredFlow: ['x']`). A scalar string has `.length` but no
+ * `.map`, which previously crashed the formatter (`preferredFlow.map is not a
+ * function`) and took down the whole `shrk context` entrypoint. Normalizing
+ * here preserves the authored content while guaranteeing the all-array contract
+ * of `IAggregatedActionHints`.
+ */
+function toHintStrings(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
+  if (typeof value === 'string' && value.trim().length > 0) return [value];
+  return [];
+}
+
+function dedupeStrings(out: string[], items: unknown): void {
+  dedupePush(out, toHintStrings(items), (s) => s);
 }
 
 /**
@@ -72,8 +90,9 @@ export function aggregateActionHints(
     if (!h) continue;
     dedupePush(out.commands, h.commands, (c) => c.command);
     dedupePush(out.mcpTools, h.mcpTools, (m) => m.tool);
-    if (!out.preferredFlow.length && h.preferredFlow?.length) {
-      out.preferredFlow = h.preferredFlow;
+    const flow = toHintStrings(h.preferredFlow);
+    if (!out.preferredFlow.length && flow.length) {
+      out.preferredFlow = flow;
       out.preferredFlowSourceId = entry.id;
     }
     dedupeStrings(out.forbiddenActions, h.forbiddenActions);

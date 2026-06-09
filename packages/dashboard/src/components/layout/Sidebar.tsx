@@ -11,6 +11,7 @@ const ITEMS: ReadonlyArray<INavItem | { group: string }> = [
   { hash: '#/overview', label: 'Overview' },
   { group: 'Codebase' },
   { hash: '#/stats', label: 'Statistics' },
+  { hash: '#/knowledge', label: 'Knowledge' },
   { hash: '#/architecture', label: 'Architecture' },
   { hash: '#/graph', label: 'Knowledge Graph' },
   { hash: '#/code-intelligence', label: 'Code Intelligence' },

@@ -546,6 +546,168 @@ export interface IDashboardQualityGatesResponse {
   readonly commandHints: readonly IDashboardCommandHint[];
 }
 
+/* -------------------------------------------------------------------------- */
+/* knowledge explorer                                                          */
+/* -------------------------------------------------------------------------- */
+
+export interface IDashboardKnowledgeFacet {
+  readonly value: string;
+  readonly count: number;
+}
+
+export interface IDashboardKnowledgeSummary {
+  readonly id: string;
+  readonly title: string;
+  readonly type: string;
+  readonly priority: string;
+  readonly scope: readonly string[];
+  readonly tags: readonly string[];
+  readonly summary?: string;
+  readonly relatedCount: number;
+  readonly hasActionHints: boolean;
+  readonly source: string;
+}
+
+export interface IDashboardKnowledgeInsights {
+  readonly byPriority: {
+    readonly critical: number;
+    readonly high: number;
+    readonly medium: number;
+    readonly low: number;
+  };
+  /** Entries with no actionHints — agents have to guess the flow for these. */
+  readonly withoutActionHints: number;
+  /** Entries with no summary. */
+  readonly withoutSummary: number;
+  /** Entries with no related / relatedKnowledge links (graph orphans). */
+  readonly orphans: number;
+}
+
+export interface IDashboardKnowledgeListResponse {
+  readonly available: boolean;
+  readonly total: number;
+  readonly entries: readonly IDashboardKnowledgeSummary[];
+  readonly facets: {
+    readonly types: readonly IDashboardKnowledgeFacet[];
+    readonly scopes: readonly IDashboardKnowledgeFacet[];
+    readonly tags: readonly IDashboardKnowledgeFacet[];
+    readonly priorities: readonly IDashboardKnowledgeFacet[];
+  };
+  readonly insights: IDashboardKnowledgeInsights;
+  readonly commandHints: readonly IDashboardCommandHint[];
+}
+
+export interface IDashboardKnowledgeActionHints {
+  readonly commands: readonly string[];
+  readonly mcpTools: readonly string[];
+  readonly preferredFlow: readonly string[];
+  readonly forbiddenActions: readonly string[];
+  readonly verificationCommands: readonly string[];
+  readonly relatedTemplates: readonly string[];
+  readonly relatedPathConventions: readonly string[];
+  readonly relatedKnowledge: readonly string[];
+  readonly writePolicy?: string;
+}
+
+export interface IDashboardKnowledgeExample {
+  readonly title?: string;
+  readonly description?: string;
+  readonly language?: string;
+  readonly code?: string;
+}
+
+export interface IDashboardKnowledgeDetail {
+  readonly id: string;
+  readonly title: string;
+  readonly type: string;
+  readonly priority: string;
+  readonly scope: readonly string[];
+  readonly tags: readonly string[];
+  readonly appliesWhen: readonly string[];
+  readonly content: string;
+  readonly summary?: string;
+  readonly related: readonly string[];
+  readonly source: string;
+  readonly actionHints?: IDashboardKnowledgeActionHints;
+  readonly examples: readonly IDashboardKnowledgeExample[];
+}
+
+export interface IDashboardKnowledgeNeighbor {
+  readonly id: string;
+  readonly kind: string;
+  readonly relation: string;
+  readonly why: string;
+}
+
+export interface IDashboardKnowledgeEntryResponse {
+  readonly found: boolean;
+  readonly entry?: IDashboardKnowledgeDetail;
+  readonly inbound: readonly IDashboardKnowledgeNeighbor[];
+  readonly outbound: readonly IDashboardKnowledgeNeighbor[];
+  readonly related: readonly IDashboardKnowledgeSummary[];
+  readonly commandHints: readonly IDashboardCommandHint[];
+}
+
+export interface IDashboardKnowledgeGraphResponse {
+  readonly available: boolean;
+  readonly nodes: readonly {
+    readonly id: string;
+    readonly kind: string;
+    readonly label?: string;
+  }[];
+  readonly edges: readonly {
+    readonly from: string;
+    readonly to: string;
+    readonly kind: string;
+  }[];
+  readonly truncated: boolean;
+}
+
+export interface IDashboardKnowledgeSource {
+  readonly id: string;
+  readonly title: string;
+  readonly type: string;
+  readonly score: number;
+}
+
+export interface IDashboardKnowledgeSimilar {
+  readonly id: string;
+  readonly title: string;
+  readonly type: string;
+  readonly score: number;
+  /** Which fields matched (id / title / tags / scope / …). */
+  readonly reasons: readonly string[];
+}
+
+/**
+ * Relevance-ranked "more like this" for a single entry — distinct from the
+ * author-declared `related` links. Deterministic (lexical), so it never needs
+ * the LLM or a native embedding model.
+ */
+export interface IDashboardKnowledgeSimilarResponse {
+  readonly id: string;
+  readonly available: boolean;
+  readonly similar: readonly IDashboardKnowledgeSimilar[];
+}
+
+/**
+ * Answer to a natural-language question over the knowledge base. Deterministic
+ * retrieval always populates `sources`; the local LLM only synthesizes
+ * `answer`. When no LLM is reachable (or it times out) `llmAvailable`/`answer`
+ * degrade and `sources` carry the response on their own.
+ */
+export interface IDashboardKnowledgeAskResponse {
+  readonly question: string;
+  readonly llmAvailable: boolean;
+  readonly provider?: string;
+  readonly answer: string | null;
+  readonly degraded: boolean;
+  readonly note?: string;
+  readonly sources: readonly IDashboardKnowledgeSource[];
+  readonly citedEntryIds: readonly string[];
+  readonly durationMs: number;
+}
+
 export interface IDashboardErrorResponse {
   readonly error: string;
   readonly code:

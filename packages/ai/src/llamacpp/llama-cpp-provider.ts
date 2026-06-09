@@ -78,6 +78,9 @@ export class LlamaCppProvider extends AbstractAiProvider {
       }
     }
 
+    let promptAbort: AbortController | undefined;
+    let promptTimer: ReturnType<typeof setTimeout> | undefined;
+    let promptTimedOut = false;
     try {
       const tf = (await import('node-llama-cpp')) as typeof import('node-llama-cpp');
       const { LlamaChatSession } = tf;
@@ -140,11 +143,23 @@ export class LlamaCppProvider extends AbstractAiProvider {
       }
       const start = Date.now();
       const onChunk = request.onTokenStream;
+      // Per-call wall-clock timeout: abort the decode if it overruns so a
+      // slow model can't hang the command. node-llama-cpp honours an
+      // AbortSignal when `stopOnAbortSignal` is set.
+      const timeoutMs = request.timeoutMs ?? this.config.timeoutMs;
+      if (timeoutMs && timeoutMs > 0) {
+        promptAbort = new AbortController();
+        promptTimer = setTimeout(() => {
+          promptTimedOut = true;
+          promptAbort?.abort();
+        }, timeoutMs);
+      }
       const text = await session.prompt(userPrompt, {
         maxTokens,
         ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
         ...(wantsJson ? { trimWhitespaceSuffix: true } : {}),
         ...(grammar ? { grammar: grammar as never } : {}),
+        ...(promptAbort ? { signal: promptAbort.signal, stopOnAbortSignal: true } : {}),
         ...(onChunk
           ? {
               onTextChunk: (chunk: string) => {
@@ -177,6 +192,17 @@ export class LlamaCppProvider extends AbstractAiProvider {
         raw: { backend: 'node-llama-cpp', modelPath, elapsedMs },
       });
     } catch (e) {
+      if (promptTimedOut) {
+        return err(
+          new AppErrorImpl(
+            ERROR_CODES.TIMEOUT,
+            `node-llama-cpp decode exceeded the per-call timeout and was aborted.`,
+            {
+              suggestion: 'The model is too slow for the budget. Try a smaller model, fewer --enhance-passes, or raise the budget.',
+            },
+          ),
+        );
+      }
       return err(
         new AppErrorImpl(
           ERROR_CODES.IO_ERROR,
@@ -187,6 +213,8 @@ export class LlamaCppProvider extends AbstractAiProvider {
           },
         ),
       );
+    } finally {
+      if (promptTimer) clearTimeout(promptTimer);
     }
   }
 
@@ -240,16 +268,20 @@ let sharedLlamaState: ISharedLlamaState | null = null;
  * loaded. Errors during dispose are swallowed (the alternative is
  * the abort we're trying to prevent).
  */
-export async function disposeLlamaCppRuntime(): Promise<void> {
+export async function disposeLlamaCppRuntime(): Promise<boolean> {
   const state = sharedLlamaState;
   sharedLlamaState = null;
-  if (!state) return;
+  if (!state) return false;
   // Context first — it holds the sequence pool that depends on the model.
   await callMaybeDispose(state.context);
   // Then the model, which depends on the llama runtime.
   await callMaybeDispose(state.model);
   // Finally the Llama instance itself (releases the Metal device).
   await callMaybeDispose(state.llama);
+  // libggml/Metal was loaded — even after disposing, this Node version still
+  // runs the native static destructor during `exit()` and it can abort with a
+  // GGML backtrace. The caller redirects fd 2 to a log file to contain it.
+  return true;
 }
 
 async function callMaybeDispose(target: unknown): Promise<void> {

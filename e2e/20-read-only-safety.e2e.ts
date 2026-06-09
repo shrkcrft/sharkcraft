@@ -7,7 +7,7 @@
 import { test, expect } from '@playwright/test';
 
 test('dashboard server rejects every write verb', async ({ request }) => {
-  for (const path of ['/api/health', '/api/overview', '/api/sessions']) {
+  for (const path of ['/api/health', '/api/overview', '/api/sessions', '/api/knowledge', '/api/knowledge/ask']) {
     for (const method of ['POST', 'PUT', 'PATCH', 'DELETE'] as const) {
       const res = await request.fetch(path, { method });
       expect(res.status(), `${method} ${path}`).toBe(405);

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { ERROR_CODES } from '@shrkcrft/core';
 import { OllamaProvider } from '../ollama/ollama-provider.ts';
 import { AiMessageRole } from '../ai-request.ts';
 
@@ -262,6 +263,51 @@ describe('OllamaProvider — request shaping (mocked fetch)', () => {
     const result = await provider.send({ messages: [{ role: AiMessageRole.User, content: 'x' }] });
     expect(result.ok).toBe(true);
     expect(capturedUrl).toBe('http://localhost:22222/api/chat');
+  });
+
+  test('per-call timeoutMs aborts a slow call and returns a TIMEOUT error', async () => {
+    // fetch never resolves on its own; it rejects only when the provider's
+    // timeout fires and aborts the signal it passed in.
+    globalThis.fetch = ((_input: unknown, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal) {
+          signal.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError')),
+          );
+        }
+      })) as unknown as typeof fetch;
+    const provider = new OllamaProvider();
+    const result = await provider.send({
+      messages: [{ role: AiMessageRole.User, content: 'x' }],
+      timeoutMs: 10,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe(ERROR_CODES.TIMEOUT);
+      expect(result.error.message).toContain('10ms');
+    }
+  });
+
+  test('passes an AbortSignal to fetch only when a timeout is set', async () => {
+    let sawSignal = false;
+    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+      sawSignal = init?.signal !== undefined;
+      return new Response(
+        JSON.stringify({ message: { role: 'assistant', content: 'ok' } }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const provider = new OllamaProvider();
+    const noTimeout = await provider.send({ messages: [{ role: AiMessageRole.User, content: 'x' }] });
+    expect(noTimeout.ok).toBe(true);
+    expect(sawSignal).toBe(false);
+    const withTimeout = await provider.send({
+      messages: [{ role: AiMessageRole.User, content: 'x' }],
+      timeoutMs: 5000,
+    });
+    expect(withTimeout.ok).toBe(true);
+    expect(sawSignal).toBe(true);
   });
 
   test('network error includes host in the message', async () => {

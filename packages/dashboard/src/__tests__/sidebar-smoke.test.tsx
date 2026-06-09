@@ -34,6 +34,9 @@ describe('dashboard smoke render', () => {
     ]) {
       expect(html).toContain(label);
     }
+    // The new Knowledge explorer page is wired into the nav (distinct from
+    // the existing "Knowledge Graph" item).
+    expect(html).toContain('>Knowledge</button>');
     // Removed labels must NOT appear in the trimmed sidebar.
     for (const removed of ['Onboarding', 'Reports', 'Review &amp; CI', 'Commands']) {
       expect(html).not.toContain(removed);

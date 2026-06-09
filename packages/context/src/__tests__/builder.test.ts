@@ -103,4 +103,40 @@ describe('buildContext', () => {
     });
     expect(result.sections.find((s) => s.title === 'Relevant Rules')).toBeUndefined();
   });
+
+  test('exposes structured action hints (parity with task --json)', () => {
+    const withHints = defineKnowledgeEntry({
+      id: 'rule.gen.flow',
+      title: 'Generation flow',
+      type: KnowledgeType.Rule,
+      priority: KnowledgePriority.Critical,
+      scope: ['typescript'],
+      tags: ['safety', 'generator'],
+      appliesWhen: ['generate-code'],
+      content: 'Dry-run, review, then apply.',
+      actionHints: {
+        preferredFlow: ['list_templates', 'create_generation_plan', 'shrk apply'],
+        forbiddenActions: ['Writing files directly when a template exists.'],
+        verificationCommands: ['bun test'],
+        writePolicy: 'cli-only',
+      },
+    });
+    const result = buildContext([...entries, withHints], {
+      task: 'generate code',
+      scope: ['typescript'],
+      maxTokens: 4000,
+    });
+    // The structured bundle is present without parsing the markdown body.
+    expect(result.actionHints.preferredFlow).toEqual([
+      'list_templates',
+      'create_generation_plan',
+      'shrk apply',
+    ]);
+    expect(result.actionHints.forbiddenActions).toContain('Writing files directly when a template exists.');
+    expect(result.actionHints.verificationCommands).toContain('bun test');
+    expect(result.actionHints.writePolicy).toBe('cli-only');
+    expect(result.actionHints.contributingEntries).toContain('rule.gen.flow');
+    // And it stays consistent with the rendered body.
+    expect(result.body).toContain('Agent Actions');
+  });
 });

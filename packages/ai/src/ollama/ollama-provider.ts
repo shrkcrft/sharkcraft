@@ -102,11 +102,28 @@ export class OllamaProvider extends AbstractAiProvider {
     const format = formatFor(request.responseFormat);
     if (format !== undefined) body.format = format;
 
+    // Per-call wall-clock timeout. Without this a slow local model (a large
+    // 20B+ model, or one still loading) hangs the request indefinitely — the
+    // root cause of `smart-context` "running too long". Manual controller +
+    // timer (rather than AbortSignal.timeout) so the catch can distinguish a
+    // timeout from an unrelated network error.
+    const timeoutMs = request.timeoutMs ?? this.config.timeoutMs;
+    const controller = timeoutMs && timeoutMs > 0 ? new AbortController() : undefined;
+    let timedOut = false;
+    const timer =
+      controller && timeoutMs
+        ? setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, timeoutMs)
+        : undefined;
+
     try {
       const res = await fetch(`${baseUrl}/api/chat`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
+        ...(controller ? { signal: controller.signal } : {}),
       });
       if (!res.ok) {
         const text = await res.text();
@@ -133,6 +150,17 @@ export class OllamaProvider extends AbstractAiProvider {
         raw: json,
       });
     } catch (e) {
+      if (timedOut) {
+        return err(
+          new AppErrorImpl(
+            ERROR_CODES.TIMEOUT,
+            `Ollama call exceeded ${timeoutMs}ms and was aborted (model "${model}").`,
+            {
+              suggestion: `The model is too slow for the budget. Try a smaller --model, fewer --enhance-passes, or raise the budget.`,
+            },
+          ),
+        );
+      }
       return err(
         new AppErrorImpl(
           ERROR_CODES.IO_ERROR,
@@ -143,6 +171,8 @@ export class OllamaProvider extends AbstractAiProvider {
           },
         ),
       );
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 }

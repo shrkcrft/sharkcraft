@@ -25,6 +25,14 @@ export interface IAiRequest {
    * progress without the synchronous wait.
    */
   onTokenStream?: (chunk: string) => void;
+  /**
+   * Per-call wall-clock timeout in milliseconds. When set and exceeded, the
+   * provider aborts the in-flight request and returns an `AppError` with code
+   * `TIMEOUT`. Bounds slow local models so a single call can never hang the
+   * command. Takes precedence over the provider's `config.timeoutMs`; when
+   * neither is set, no timeout is applied.
+   */
+  timeoutMs?: number;
 }
 
 export interface IAiResponse {

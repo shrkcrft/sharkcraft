@@ -6,6 +6,7 @@ import {
   EnhancementPipeline,
   EnhancementStageKind,
   buildDefaultEnhancementStages,
+  buildFastEnhancementStages,
   type IEnhancementStage,
   type IEnhancementStageInput,
 } from '../pipeline/enhancement-pipeline.ts';
@@ -160,6 +161,68 @@ describe('EnhancementPipeline', () => {
       'refine:true:3/4',
       'polish:true:4/4',
     ]);
+  });
+
+  test('buildFastEnhancementStages is draft → polish (2 calls)', async () => {
+    const provider = new ScriptedProvider([res('DRAFT'), res('POLISHED')]);
+    const pipeline = new EnhancementPipeline(buildFastEnhancementStages());
+    const result = await pipeline.run({ task: 't', originalContext: 'CTX' }, provider);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.stages.map((s) => s.kind)).toEqual([
+      EnhancementStageKind.Draft,
+      EnhancementStageKind.Polish,
+    ]);
+    expect(result.value.finalOutput).toBe('POLISHED');
+    expect(provider.calls.length).toBe(2);
+  });
+
+  test('forwards an effective per-call timeout into each request', async () => {
+    const provider = new ScriptedProvider([res('DRAFT'), res('POLISHED')]);
+    const pipeline = new EnhancementPipeline(buildFastEnhancementStages());
+    const result = await pipeline.run(
+      { task: 't', originalContext: 'CTX' },
+      provider,
+      { budgetMs: 5000, perStageTimeoutMs: 1000 },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // timeout = min(perStageTimeoutMs, remaining budget) = 1000.
+    expect(provider.calls[0]?.timeoutMs).toBe(1000);
+    expect(result.value.budgetExhausted).toBe(false);
+  });
+
+  test('stops before any stage when the budget is already too small', async () => {
+    const provider = new ScriptedProvider([res('DRAFT')]);
+    const pipeline = new EnhancementPipeline(buildFastEnhancementStages());
+    const result = await pipeline.run(
+      { task: 't', originalContext: 'SEED' },
+      provider,
+      { budgetMs: 100 }, // below the min-stage guard
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(provider.calls.length).toBe(0);
+    expect(result.value.budgetExhausted).toBe(true);
+    expect(result.value.finalOutput).toBe('SEED');
+    expect(result.value.deterministicFallback).toBe(false);
+  });
+
+  test('does not retry a stage that timed out', async () => {
+    const timeout = err(new AppErrorImpl(ERROR_CODES.TIMEOUT, 'too slow'));
+    const provider = new ScriptedProvider([
+      timeout, // draft times out — must NOT retry
+      res('POLISHED-OVER-SEED'),
+    ]);
+    const pipeline = new EnhancementPipeline(buildFastEnhancementStages());
+    const result = await pipeline.run({ task: 't', originalContext: 'SEED' }, provider);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // draft: 1 call (no retry on timeout); polish: 1 call → 2 total.
+    expect(provider.calls.length).toBe(2);
+    const draft = result.value.stages.find((s) => s.kind === EnhancementStageKind.Draft);
+    expect(draft?.degraded).toBe(true);
+    expect(result.value.finalOutput).toBe('POLISHED-OVER-SEED');
   });
 
   test('honours a custom stage list (caller can swap stages)', async () => {

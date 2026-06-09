@@ -47,6 +47,7 @@ export * from './dev-session.ts';
 export * from './dev-session-report.ts';
 export * from './dev-session-html.ts';
 export * from './dashboard/dashboard-data.ts';
+export * from './dashboard/dashboard-knowledge.ts';
 export * from './git-helpers.ts';
 export * from './boundaries-changed-only.ts';
 export * from './helper-registry.ts';

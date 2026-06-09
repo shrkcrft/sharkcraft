@@ -121,4 +121,79 @@ describe('dashboard-api-server', () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  test('knowledge routes are read-only and degrade cleanly on an empty workspace', async () => {
+    const cwd = makeProject();
+    const handle = await startDashboardApiServer({ cwd });
+    try {
+      const list = await http('GET', `${handle.url}/api/knowledge`);
+      expect(list.status).toBe(200);
+      const listEnv = JSON.parse(list.body) as { data: { available: boolean; total: number } };
+      expect(listEnv.data.available).toBe(false);
+      expect(listEnv.data.total).toBe(0);
+
+      const graph = await http('GET', `${handle.url}/api/knowledge/graph`);
+      expect(graph.status).toBe(200);
+      expect((JSON.parse(graph.body) as { data: { available: boolean } }).data.available).toBe(false);
+
+      const missing = await http('GET', `${handle.url}/api/knowledge/entry/does-not-exist`);
+      expect(missing.status).toBe(200);
+      expect((JSON.parse(missing.body) as { data: { found: boolean } }).data.found).toBe(false);
+
+      const similar = await http('GET', `${handle.url}/api/knowledge/similar/does-not-exist`);
+      expect(similar.status).toBe(200);
+      expect((JSON.parse(similar.body) as { data: { available: boolean } }).data.available).toBe(false);
+
+      // Ask without an LLM (no entries → short-circuits before any model call).
+      const ask = await http('GET', `${handle.url}/api/knowledge/ask?q=how%20do%20I%20generate`);
+      expect(ask.status).toBe(200);
+      const askEnv = JSON.parse(ask.body) as { data: { llmAvailable: boolean; degraded: boolean; answer: string | null } };
+      expect(askEnv.data.degraded).toBe(true);
+      expect(askEnv.data.answer).toBe(null);
+
+      // Ask requires a question.
+      const badAsk = await http('GET', `${handle.url}/api/knowledge/ask`);
+      expect(badAsk.status).toBe(400);
+
+      // Write verbs are rejected globally.
+      for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+        const w = await http(method, `${handle.url}/api/knowledge`);
+        expect(w.status).toBe(405);
+      }
+    } finally {
+      await handle.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('knowledge entry resolves against a real workspace', async () => {
+    // Point at the repo itself so the loaders surface real entries + the graph.
+    const handle = await startDashboardApiServer({ cwd: process.cwd() });
+    try {
+      const list = await http('GET', `${handle.url}/api/knowledge`);
+      const listEnv = JSON.parse(list.body) as {
+        data: { available: boolean; total: number; entries: { id: string }[] };
+      };
+      expect(listEnv.data.available).toBe(true);
+      expect(listEnv.data.total).toBeGreaterThan(0);
+
+      const id = listEnv.data.entries[0]!.id;
+      const entry = await http('GET', `${handle.url}/api/knowledge/entry/${encodeURIComponent(id)}`);
+      expect(entry.status).toBe(200);
+      const entryEnv = JSON.parse(entry.body) as {
+        data: { found: boolean; entry?: { id: string; content: string } };
+      };
+      expect(entryEnv.data.found).toBe(true);
+      expect(entryEnv.data.entry?.id).toBe(id);
+      expect(typeof entryEnv.data.entry?.content).toBe('string');
+
+      const similar = await http('GET', `${handle.url}/api/knowledge/similar/${encodeURIComponent(id)}`);
+      const simEnv = JSON.parse(similar.body) as { data: { id: string; similar: { id: string }[] } };
+      expect(simEnv.data.id).toBe(id);
+      // The entry must never be similar to itself.
+      expect(simEnv.data.similar.some((s) => s.id === id)).toBe(false);
+    } finally {
+      await handle.close();
+    }
+  });
 });

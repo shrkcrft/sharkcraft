@@ -633,11 +633,11 @@ function resolveEmbeddingsDtype(): string {
  * immediately. Errors during dispose are swallowed (it's a best-effort
  * teardown, and the alternative is to crash anyway).
  */
-export async function disposeSemanticIndexPipeline(): Promise<void> {
+export async function disposeSemanticIndexPipeline(): Promise<boolean> {
   const pending = cachedPipelinePromise;
   cachedPipelinePromise = null;
   cachedPipelineModel = '';
-  if (!pending) return;
+  if (!pending) return false;
   try {
     const pipeline = await pending;
     if (typeof pipeline.dispose === 'function') {
@@ -646,6 +646,9 @@ export async function disposeSemanticIndexPipeline(): Promise<void> {
   } catch {
     // Teardown failures are non-fatal — we tried our best.
   }
+  // The ONNX runtime was loaded — the caller may need to contain its
+  // worker-thread teardown noise on exit.
+  return true;
 }
 
 async function embedViaPipeline(

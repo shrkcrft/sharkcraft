@@ -55,6 +55,19 @@ export interface IEnhancementPipelineOptions {
   temperature?: number;
   /** Override the model selection (forwarded to the provider per call). */
   model?: string;
+  /**
+   * Total wall-clock budget (ms) for the whole pipeline. Before each stage the
+   * elapsed time is checked; once the budget is spent the pipeline stops and
+   * returns the best output so far (degrading to the deterministic seed if not
+   * even the draft finished). Undefined = no budget (legacy behaviour).
+   */
+  budgetMs?: number;
+  /**
+   * Per-call timeout (ms) handed to the provider for each stage. Effective
+   * timeout is `min(perStageTimeoutMs, remaining budget)`. Bounds a single
+   * slow call so it can't blow the whole budget.
+   */
+  perStageTimeoutMs?: number;
   /** Optional progress hook — called once per stage. */
   onStage?: (event: { kind: EnhancementStageKind; ok: boolean; pass: number; total: number }) => void;
 }
@@ -72,6 +85,11 @@ export interface IEnhancementPipelineRun {
    * the deterministic seed unchanged.
    */
   deterministicFallback: boolean;
+  /**
+   * True when the wall-clock `budgetMs` was reached before every planned
+   * stage ran. `finalOutput` still holds the best result produced so far.
+   */
+  budgetExhausted: boolean;
 }
 
 /**
@@ -116,6 +134,7 @@ export class EnhancementPipeline {
         stages: [],
         totalUsage: { inputTokens: 0, outputTokens: 0 },
         deterministicFallback: true,
+        budgetExhausted: false,
       });
     }
 
@@ -126,8 +145,18 @@ export class EnhancementPipeline {
     let previous = '';
     let lastCritique: string | undefined;
     let lastGood = input.originalContext;
+    const startedAt = Date.now();
+    let budgetExhausted = false;
 
     for (let i = 0; i < plan.length; i += 1) {
+      // Wall-clock budget guard: stop before starting a stage we have no time
+      // for, and keep the best output produced so far.
+      const remaining =
+        options.budgetMs !== undefined ? options.budgetMs - (Date.now() - startedAt) : undefined;
+      if (remaining !== undefined && remaining <= MIN_STAGE_BUDGET_MS) {
+        budgetExhausted = true;
+        break;
+      }
       const stage = plan[i]!;
       const messages = stage.buildMessages({
         originalContext: input.originalContext,
@@ -136,11 +165,14 @@ export class EnhancementPipeline {
         lastCritique,
       });
 
+      // Effective per-call timeout = min(configured per-stage, remaining budget).
+      const perStageTimeout = effectiveTimeout(options.perStageTimeoutMs, remaining);
       const stageResult = await callOnceWithRetry(provider, {
         messages,
         maxTokens: options.maxTokensPerStage ?? 4096,
         temperature: options.temperature ?? 0.2,
         ...(options.model ? { model: options.model } : {}),
+        ...(perStageTimeout !== undefined ? { timeoutMs: perStageTimeout } : {}),
       });
 
       const onStage = options.onStage;
@@ -190,8 +222,23 @@ export class EnhancementPipeline {
       stages: stagesOut,
       totalUsage,
       deterministicFallback: false,
+      budgetExhausted,
     });
   }
+}
+
+/** Don't start a stage with less than this much budget left (a call needs at
+ * least this long to have any chance of returning). */
+const MIN_STAGE_BUDGET_MS = 250;
+
+/**
+ * Effective per-call timeout: the tighter of an explicit per-stage cap and the
+ * remaining wall-clock budget. Returns undefined when neither is set.
+ */
+function effectiveTimeout(perStage: number | undefined, remaining: number | undefined): number | undefined {
+  const candidates = [perStage, remaining].filter((n): n is number => typeof n === 'number' && n > 0);
+  if (candidates.length === 0) return undefined;
+  return Math.min(...candidates);
 }
 
 /**
@@ -210,6 +257,19 @@ export function buildDefaultEnhancementStages(): IEnhancementStage[] {
     new RefineStage(),
     new PolishStage(),
   ];
+}
+
+/**
+ * The fast default for interactive use: `draft → polish` (2 calls). Skips the
+ * slow critique + refine round-trip (the two passes small/large local models
+ * spend the most wall-clock on) while still applying the polish pass that
+ * gives the agent file:line refs and terse imperative bullets. Materially
+ * better than a single shot, ~half the calls of the full pipeline. Callers who
+ * want maximal density opt into `buildDefaultEnhancementStages()` (the
+ * `--plus` path).
+ */
+export function buildFastEnhancementStages(): IEnhancementStage[] {
+  return [new DraftStage(), new PolishStage()];
 }
 
 class DraftStage implements IEnhancementStage {
@@ -367,11 +427,17 @@ async function callOnceWithRetry(
     maxTokens?: number;
     temperature?: number;
     model?: string;
+    timeoutMs?: number;
   },
 ): Promise<Result<{ content: string; model: string; usage?: { inputTokens?: number; outputTokens?: number } }, AppError>> {
   const first = await provider.send(request);
   if (first.ok) {
     return ok({ content: first.value.content, model: first.value.model, usage: first.value.usage });
+  }
+  // Don't retry a timeout — the model is too slow for the budget, so a second
+  // attempt just burns another timeout period. Surface the timeout immediately.
+  if (first.error.code === ERROR_CODES.TIMEOUT) {
+    return first;
   }
   // One retry — small local models routinely 500 on the first request
   // after a daemon start. Idempotent reissue is safe.

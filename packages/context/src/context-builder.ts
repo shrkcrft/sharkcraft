@@ -112,6 +112,7 @@ export function buildContext(
     maxTokens,
     omittedSections: omitted,
     body: fullBody,
+    actionHints: aggregated,
   };
 }
 

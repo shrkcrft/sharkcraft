@@ -6,6 +6,7 @@ import { QualityPage } from './quality.page.tsx';
 import { SafetyPage } from './safety.page.tsx';
 import { ArchitecturePage } from './architecture.page.tsx';
 import { GraphPage } from './graph.page.tsx';
+import { KnowledgePage } from './knowledge.page.tsx';
 import { PacksPage } from './packs.page.tsx';
 import { PresetsPipelinesPage } from './presets-pipelines.page.tsx';
 import { McpPage } from './mcp.page.tsx';
@@ -35,6 +36,7 @@ export function resolveRoute(path: string): IResolvedRoute {
   if (path === '/quality') return { title: 'Quality', node: <QualityPage /> };
   if (path === '/safety') return { title: 'Safety', node: <SafetyPage /> };
   if (path === '/architecture') return { title: 'Architecture', node: <ArchitecturePage /> };
+  if (path === '/knowledge') return { title: 'Knowledge', node: <KnowledgePage /> };
   if (path === '/graph') return { title: 'Knowledge Graph', node: <GraphPage /> };
   if (path === '/packs') return { title: 'Packs', node: <PacksPage /> };
   if (path === '/presets-pipelines') return { title: 'Presets & Pipelines', node: <PresetsPipelinesPage /> };

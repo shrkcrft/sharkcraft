@@ -20,6 +20,7 @@ export const ERROR_CODES = {
   FILE_WRITE_ERROR: 'SHRK_FILE_WRITE_ERROR',
   LOADER_ERROR: 'SHRK_LOADER_ERROR',
   IO_ERROR: 'SHRK_IO_ERROR',
+  TIMEOUT: 'SHRK_TIMEOUT',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

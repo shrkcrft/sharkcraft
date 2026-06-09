@@ -25,11 +25,40 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header } from '../output/format-output.ts';
+import type { IContextResult } from '@shrkcrft/context';
+
+/**
+ * Minimal JSON shape for agent / skill consumption — the context-side mirror
+ * of `shrk task --compact`. Drops the heavy `body` and `request` echo and
+ * carries the section map + structured action hints (so the agent reads
+ * forbiddenActions / verificationCommands / preferredFlow directly instead of
+ * regexing the markdown body). The schema marker is distinct so consumers can
+ * tell the shapes apart at a glance.
+ */
+function minimalContext(
+  task: string,
+  result: IContextResult,
+  commands: Awaited<ReturnType<typeof recommendCommands>> | null,
+): Record<string, unknown> {
+  return {
+    schema: 'sharkcraft.context/v1-compact',
+    task,
+    tokens: { used: result.totalTokens, max: result.maxTokens },
+    sections: result.sections.map((s) => ({
+      title: s.title,
+      tokens: s.tokens,
+      ...(s.truncated ? { truncated: true } : {}),
+    })),
+    omittedSections: result.omittedSections,
+    actionHints: result.actionHints,
+    topCommands: (commands?.recommendations ?? []).slice(0, 5).map((r) => r.command),
+  };
+}
 
 export const contextCommand: ICommandHandler = {
   name: 'context',
   description: 'Build relevant AI-ready context for a task (token-budgeted). Subcommands: build / refresh / status.',
-  usage: 'shrk context [build|refresh|status] --task "<task>" [--max-tokens 3000] [--framework x] [--area y] [--json]',
+  usage: 'shrk context [build|refresh|status] --task "<task>" [--max-tokens 3000] [--framework x] [--area y] [--json] [--compact] [--full]',
   async run(args: ParsedArgs): Promise<number> {
     // Dispatch subcommands (build / refresh / status) based on first positional.
     const sub = args.positional[0];
@@ -101,6 +130,14 @@ export const contextCommand: ICommandHandler = {
     }
 
     if (flagBool(args, 'json') || flagBool(args, 'machine-json')) {
+      // `--compact` emits a minimal, structured agent shape (no long body /
+      // request echo) — the context-side mirror of `shrk task --compact`.
+      // Carries the load-bearing action hints as structured data so the agent
+      // never has to parse the markdown body. Full shape stays the default.
+      if (flagBool(args, 'compact')) {
+        process.stdout.write(asJson(minimalContext(task, result, commandRecommendations)) + '\n');
+        return 0;
+      }
       process.stdout.write(
         asJson({
           ...result,

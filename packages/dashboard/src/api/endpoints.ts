@@ -30,6 +30,11 @@ import type {
   IDashboardRoutesResponse,
   IDashboardMigrationsResponse,
   IDashboardQualityGatesResponse,
+  IDashboardKnowledgeListResponse,
+  IDashboardKnowledgeEntryResponse,
+  IDashboardKnowledgeGraphResponse,
+  IDashboardKnowledgeAskResponse,
+  IDashboardKnowledgeSimilarResponse,
 } from './types.ts';
 import { apiGet, type IRawApiResponse } from './client.ts';
 
@@ -120,3 +125,26 @@ export const getQualityGates = (
   signal?: AbortSignal,
 ): Promise<IRawApiResponse<IDashboardQualityGatesResponse>> =>
   apiGet('/api/quality-gates', undefined, signal);
+export const getKnowledge = (
+  signal?: AbortSignal,
+): Promise<IRawApiResponse<IDashboardKnowledgeListResponse>> =>
+  apiGet('/api/knowledge', undefined, signal);
+export const getKnowledgeEntry = (
+  id: string,
+  signal?: AbortSignal,
+): Promise<IRawApiResponse<IDashboardKnowledgeEntryResponse>> =>
+  apiGet(`/api/knowledge/entry/${encodeURIComponent(id)}`, undefined, signal);
+export const getKnowledgeGraph = (
+  signal?: AbortSignal,
+): Promise<IRawApiResponse<IDashboardKnowledgeGraphResponse>> =>
+  apiGet('/api/knowledge/graph', undefined, signal);
+export const getKnowledgeSimilar = (
+  id: string,
+  signal?: AbortSignal,
+): Promise<IRawApiResponse<IDashboardKnowledgeSimilarResponse>> =>
+  apiGet(`/api/knowledge/similar/${encodeURIComponent(id)}`, undefined, signal);
+export const askKnowledge = (
+  question: string,
+  signal?: AbortSignal,
+): Promise<IRawApiResponse<IDashboardKnowledgeAskResponse>> =>
+  apiGet('/api/knowledge/ask', { q: question }, signal);

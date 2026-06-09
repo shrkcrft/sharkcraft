@@ -28,6 +28,10 @@ import {
   buildDashboardGraphNode,
   buildDashboardGraphPath,
   buildDashboardHealth,
+  buildDashboardKnowledgeList,
+  buildDashboardKnowledgeEntry,
+  buildDashboardKnowledgeGraph,
+  buildDashboardKnowledgeSimilar,
   buildDashboardMcpSummary,
   buildDashboardOnboarding,
   buildDashboardOverview,
@@ -55,6 +59,7 @@ import {
   buildDashboardQualityGates,
   buildDashboardRoutes,
 } from './code-intelligence-data.ts';
+import { buildKnowledgeAsk } from './knowledge-ask.ts';
 
 const SCHEMA_ID = 'sharkcraft.dashboard-api/v1';
 
@@ -423,6 +428,7 @@ async function handle(
     path.startsWith('/api/pipelines') ||
     path.startsWith('/api/architecture') ||
     path.startsWith('/api/graph') ||
+    path.startsWith('/api/knowledge') ||
     path.startsWith('/api/onboarding') ||
     path.startsWith('/api/review') ||
     path.startsWith('/api/scaffolds');
@@ -488,6 +494,31 @@ async function handle(
     const to = url.searchParams.get('to');
     if (!from || !to) return respondError(res, 400, 'bad-request', 'from and to query params required');
     return respond(res, buildEnvelope(projectRoot, buildDashboardGraphPath(inspection!, from, to)));
+  }
+  // Knowledge explorer. Specific sub-paths (ask / graph / entry) are matched
+  // before the bare list route. The ask route synthesizes a grounded answer
+  // with the local LLM — still a read: it never writes, and is wall-clock
+  // bounded so it cannot hang the server.
+  if (path === '/api/knowledge/ask') {
+    const q = url.searchParams.get('q');
+    if (!q || !q.trim()) return respondError(res, 400, 'bad-request', 'q query param required');
+    return respond(res, buildEnvelope(projectRoot, await buildKnowledgeAsk(inspection!, q)));
+  }
+  if (path === '/api/knowledge/graph') {
+    return respond(res, buildEnvelope(projectRoot, buildDashboardKnowledgeGraph(inspection!)));
+  }
+  const knowledgeSimilarMatch = path.match(/^\/api\/knowledge\/similar\/(.+)$/);
+  if (knowledgeSimilarMatch) {
+    const id = decodeURIComponent(knowledgeSimilarMatch[1]!);
+    return respond(res, buildEnvelope(projectRoot, buildDashboardKnowledgeSimilar(inspection!, id)));
+  }
+  const knowledgeEntryMatch = path.match(/^\/api\/knowledge\/entry\/(.+)$/);
+  if (knowledgeEntryMatch) {
+    const id = decodeURIComponent(knowledgeEntryMatch[1]!);
+    return respond(res, buildEnvelope(projectRoot, buildDashboardKnowledgeEntry(inspection!, id)));
+  }
+  if (path === '/api/knowledge') {
+    return respond(res, buildEnvelope(projectRoot, buildDashboardKnowledgeList(inspection!)));
   }
   if (path === '/api/onboarding') {
     return respond(res, buildEnvelope(projectRoot, buildDashboardOnboarding(inspection!)));

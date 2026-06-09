@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import * as os from 'node:os';
 import {
   AiMessageRole,
   buildPromptMessages,
@@ -8,6 +9,7 @@ import {
   EnhancementStageKind,
   OllamaProvider,
   buildDefaultEnhancementStages,
+  buildFastEnhancementStages,
   selectAiProvider,
   type IAiMessage,
   type IEnhancementStageResult,
@@ -108,12 +110,29 @@ export const smartContextCommand: ICommandHandler = {
   description:
     'Build deterministic context and ask an AI provider to synthesise an enriched brief (default), structured plan (--plan), or two-stage development plan (--ai-plan).',
   usage:
-    'shrk smart-context "<task>" [--plan] [--ai-plan] [--save] [--provider auto|ollama|llamacpp] [--enhance|--no-enhance] [--enhance-passes N] [--instructions <path>] [--no-instructions] [--model <id>] [--max-tokens N] [--stage1-max-tokens N] [--seed-tokens N] [--expansion-tokens N] [--expansion-limit N] [--log-prompt] [--save-conversation[=<path>]] [--dry-run] [--debug] [--json]',
+    'shrk smart-context "<task>" [--plus] [--budget <seconds>] [--plan] [--ai-plan] [--save] [--provider auto|ollama|llamacpp] [--enhance|--no-enhance] [--enhance-passes N] [--instructions <path>] [--no-instructions] [--model <id>] [--max-tokens N] [--stage1-max-tokens N] [--seed-tokens N] [--expansion-tokens N] [--expansion-limit N] [--log-prompt] [--save-conversation[=<path>]] [--dry-run] [--debug] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const task = args.positional.join(' ').trim();
     if (!task) {
       process.stderr.write('Usage: shrk smart-context "<task>" [--plan] [--ai-plan] [--save]\n');
       return 2;
+    }
+    // Isolate the LLM / native-runtime work in a child process. On macOS the
+    // node-llama-cpp (ggml/Metal) and ONNX static destructors abort during
+    // `exit()` — surfacing a GGML backtrace + `libc++abi … mutex lock failed`
+    // (and a shell `abort`) AFTER a perfectly good result. There is no JS hook
+    // in this Node build to skip libc++ finalizers, so instead the child
+    // self-contains that noise (fd 2 → log on exit) and hands its real exit
+    // code back through a sentinel file; the parent never loads a native
+    // runtime, so it exits cleanly with the correct code. Dry-run does no
+    // native work, so it stays in-process. Gated on SHRK_CLI so a unit test
+    // calling `run()` in-process never spawns a subprocess.
+    if (
+      process.env.SHRK_CLI === '1' &&
+      process.env.SHRK_SMART_CONTEXT_WORKER !== '1' &&
+      !flagBool(args, 'dry-run')
+    ) {
+      return runSmartContextInChild();
     }
     const cwd = resolveCwd(args);
     const opts = readCommonOptions(args);
@@ -191,6 +210,19 @@ export const smartContextCommand: ICommandHandler = {
         });
         if (!opts.json) {
           process.stderr.write(`[smart-context] conversation saved → ${path}\n`);
+        }
+      }
+      const enh = enhanced.value.enhancement;
+      if (!opts.json && !enh.deterministicFallback) {
+        if (enh.budgetExhausted) {
+          process.stderr.write(
+            `[smart-context] budget reached before all ${enh.plannedPasses} passes finished — output is the best so far. Try a smaller --model or raise --budget.\n`,
+          );
+        }
+        if (!enh.plus) {
+          process.stderr.write(
+            `[smart-context] fast ${enh.plannedPasses}-pass enhancement. Pass --plus for the full draft→critique→refine→polish (denser, slower).\n`,
+          );
         }
       }
       const envelope = buildEnvelope({
@@ -1236,6 +1268,62 @@ function isEmbeddingsCleanupNoise(line: string): boolean {
  * already set the kernel-visible exit code before the abort. We
  * surface that code verbatim.
  */
+/**
+ * Run a smart-context brief/plan in an isolated child and return its real exit
+ * code. stdio is inherited so progress + result flow straight to the user's
+ * terminal; the child redirects fd 2 to a log file before its native teardown
+ * abort, so no backtrace reaches the console. The child writes its true exit
+ * code to a sentinel file (read back here) because the SIGABRT during teardown
+ * would otherwise clobber it with 134. The parent loads no native runtime, so
+ * it exits cleanly — no `zsh: abort`, correct code.
+ */
+function runSmartContextInChild(): Promise<number> {
+  return new Promise<number>((resolve) => {
+    const exitFile = nodePath.join(
+      os.tmpdir(),
+      `shrk-sc-exit-${process.pid}-${Date.now()}.code`,
+    );
+    const child = spawn(process.execPath, process.argv.slice(1), {
+      env: {
+        ...process.env,
+        SHRK_SMART_CONTEXT_WORKER: '1',
+        SHRK_WORKER_EXITCODE_FILE: exitFile,
+      },
+      stdio: 'inherit',
+    });
+    child.on('error', (err) => {
+      process.stderr.write(`Failed to spawn smart-context worker: ${err.message}\n`);
+      resolve(1);
+    });
+    child.on('close', (code, signal) => {
+      // Prefer the sentinel — the worker writes its true exit code before the
+      // native teardown can abort the process.
+      let real: number | null = null;
+      try {
+        if (existsSync(exitFile)) {
+          const raw = readFileSync(exitFile, 'utf8').trim();
+          if (raw.length > 0 && Number.isFinite(Number(raw))) real = Number(raw);
+          try {
+            unlinkSync(exitFile);
+          } catch {
+            // best-effort cleanup
+          }
+        }
+      } catch {
+        // fall through to the signal/code-based result below
+      }
+      if (real !== null) {
+        resolve(real);
+        return;
+      }
+      // No sentinel (worker crashed mid-run, not during teardown) → surface a
+      // failure rather than masking it. SIGABRT with no sentinel ⇒ non-zero.
+      if (typeof code === 'number') resolve(code);
+      else resolve(signal ? 1 : 0);
+    });
+  });
+}
+
 function runEmbeddingsBuildInChild(): Promise<number> {
   return new Promise<number>((resolve) => {
     const child = spawn(process.execPath, process.argv.slice(1), {
@@ -1502,6 +1590,18 @@ interface ISmartContextOptions {
   enhance: boolean;
   /** Cap pipeline depth (default 4 = all stages). */
   enhancePasses: number | null;
+  /**
+   * `--plus`: run the full multi-pass `draft → critique → refine → polish`
+   * pipeline ("use the LLM more, several calls, denser output") with a larger
+   * wall-clock budget. Default (off) runs the fast 2-pass `draft → polish`.
+   */
+  plus: boolean;
+  /**
+   * `--budget <seconds>` override for the enhancement wall-clock budget. When
+   * unset, defaults to the fast / plus ceiling. Lets the user cap a slow model
+   * tightly (e.g. `--budget 60`).
+   */
+  budgetMs?: number;
 }
 
 function readCommonOptions(args: ParsedArgs): ISmartContextOptions {
@@ -1539,6 +1639,10 @@ function readCommonOptions(args: ParsedArgs): ISmartContextOptions {
     stream: flagBool(args, 'stream'),
     enhance: resolveEnhanceFlag(args),
     enhancePasses: flagNumber(args, 'enhance-passes') ?? readEnhancePassesEnv(),
+    plus: flagBool(args, 'plus'),
+    ...(flagNumber(args, 'budget') !== undefined
+      ? { budgetMs: Math.max(1, flagNumber(args, 'budget')!) * 1000 }
+      : {}),
     logPrompt: flagBool(args, 'log-prompt'),
     saveConversation:
       flagBool(args, 'save-conversation') || flagString(args, 'save-conversation') !== undefined,
@@ -2971,6 +3075,10 @@ interface IEnhancementRun {
     }>;
     totalUsage: { inputTokens: number; outputTokens: number };
     deterministicFallback: boolean;
+    budgetExhausted: boolean;
+    /** Stage count that actually ran (fast=2, plus=4, or capped). */
+    plannedPasses: number;
+    plus: boolean;
   };
   turns: ISmartContextConversationTurn[];
 }
@@ -2985,6 +3093,17 @@ interface IEnhancementRun {
  * system body verbatim across stages so the model never loses
  * grounding; only the user turn changes per stage.
  */
+/**
+ * Wall-clock ceilings for the enhancement pipeline. These are anti-hang
+ * guards, not target runtimes — the speed win comes from running fewer passes
+ * by default and from picking a smaller `--model`. A slow model that overruns
+ * degrades to the best output so far (or the deterministic seed). Override per
+ * invocation with `--budget <seconds>`.
+ */
+const PER_STAGE_TIMEOUT_MS = 90_000;
+const FAST_ENHANCE_BUDGET_MS = 150_000;
+const PLUS_ENHANCE_BUDGET_MS = 360_000;
+
 async function runEnhancementPipeline(input: {
   provider: ReturnType<typeof selectAiProvider>['provider'];
   messages: IAiMessage[];
@@ -2997,7 +3116,13 @@ async function runEnhancementPipeline(input: {
   const originalContext = systemMsg?.content ?? '';
   const taskBody = userMsg?.content ?? input.seed.task;
 
-  const pipeline = new EnhancementPipeline(buildDefaultEnhancementStages());
+  // Default is the fast 2-pass draft→polish; `--plus` opts into the full
+  // draft→critique→refine→polish for denser output. Both are wall-clock
+  // bounded so a slow local model degrades gracefully instead of hanging.
+  const plus = input.options.plus;
+  const stages = plus ? buildDefaultEnhancementStages() : buildFastEnhancementStages();
+  const budgetMs = input.options.budgetMs ?? (plus ? PLUS_ENHANCE_BUDGET_MS : FAST_ENHANCE_BUDGET_MS);
+  const pipeline = new EnhancementPipeline(stages);
   const stageInputs: Array<{ kind: string; messages: IAiMessage[] }> = [];
   const stageResponses: Array<IEnhancementStageResult> = [];
 
@@ -3022,6 +3147,8 @@ async function runEnhancementPipeline(input: {
     {
       ...(input.options.enhancePasses ? { maxPasses: input.options.enhancePasses } : {}),
       maxTokensPerStage: input.options.maxTokens,
+      budgetMs,
+      perStageTimeoutMs: PER_STAGE_TIMEOUT_MS,
       ...(input.options.model ? { model: input.options.model } : {}),
       onStage: (e) => {
         if (!input.options.json) {
@@ -3097,6 +3224,9 @@ async function runEnhancementPipeline(input: {
         })),
         totalUsage: piRun.value.totalUsage,
         deterministicFallback: piRun.value.deterministicFallback,
+        budgetExhausted: piRun.value.budgetExhausted,
+        plannedPasses: stages.length,
+        plus,
       },
       turns,
     },

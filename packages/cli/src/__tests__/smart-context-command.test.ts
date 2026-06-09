@@ -1488,7 +1488,7 @@ describe('shrk smart-context — --tiny-only (BGE plan, no LLM)', () => {
 });
 
 describe('shrk smart-context — multi-pass enhancement pipeline (brief mode)', () => {
-  test('runs draft → critique → refine → polish against Ollama and uses the polished output as the brief content', async () => {
+  test('--plus runs draft → critique → refine → polish against Ollama and uses the polished output as the brief content', async () => {
     process.env.AI_PROVIDER = 'ollama';
     process.env.OLLAMA_HOST = 'http://localhost:11434';
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'shrk-pipeline-brief-'));
@@ -1527,6 +1527,7 @@ describe('shrk smart-context — multi-pass enhancement pipeline (brief mode)', 
             ['cwd', fixtureRoot],
             ['json', true],
             ['no-instructions', true],
+            ['plus', true],
           ]),
         ),
       );
@@ -1550,6 +1551,60 @@ describe('shrk smart-context — multi-pass enhancement pipeline (brief mode)', 
       ]);
       // 4 LLM round-trips (one per stage).
       expect(call).toBe(4);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('default (no --plus) runs the fast draft → polish pipeline (2 LLM calls)', async () => {
+    process.env.AI_PROVIDER = 'ollama';
+    process.env.OLLAMA_HOST = 'http://localhost:11434';
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'shrk-pipeline-fast-'));
+    try {
+      writeFileSync(
+        join(fixtureRoot, 'package.json'),
+        JSON.stringify({ name: 'tmp', version: '0.0.0' }),
+        'utf8',
+      );
+      let call = 0;
+      const sequence = ['DRAFT-BODY', 'POLISHED-BODY'];
+      globalThis.fetch = (async (input: unknown) => {
+        if (String(input).includes('/api/tags')) {
+          return new Response(JSON.stringify({ models: [{ name: 'llama3.1' }] }), { status: 200 });
+        }
+        const idx = Math.min(call, sequence.length - 1);
+        call += 1;
+        return new Response(
+          JSON.stringify({
+            model: 'llama3.1',
+            message: { role: 'assistant', content: sequence[idx] },
+            done: true,
+            done_reason: 'stop',
+            prompt_eval_count: 5,
+            eval_count: 5,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }) as unknown as typeof fetch;
+
+      const { value, stdout } = await captureStdio(() =>
+        smartContextCommand.run(
+          makeArgs(['add', 'a', 'new', 'doctor', 'check'], [
+            ['cwd', fixtureRoot],
+            ['json', true],
+            ['no-instructions', true],
+          ]),
+        ),
+      );
+      expect(value).toBe(0);
+      const parsed = JSON.parse(stdout) as {
+        content: string;
+        enhancement?: { stages: Array<{ kind: string }>; deterministicFallback: boolean };
+      };
+      expect(parsed.content).toContain('POLISHED-BODY');
+      expect(parsed.enhancement?.stages.map((s) => s.kind)).toEqual(['draft', 'polish']);
+      // Only 2 LLM round-trips by default — the fast path.
+      expect(call).toBe(2);
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
@@ -1602,7 +1657,7 @@ describe('shrk smart-context — multi-pass enhancement pipeline (brief mode)', 
     }
   });
 
-  test('--enhance-passes 2 caps the pipeline at draft + critique', async () => {
+  test('--plus --enhance-passes 2 caps the pipeline at draft + critique', async () => {
     process.env.AI_PROVIDER = 'ollama';
     process.env.OLLAMA_HOST = 'http://localhost:11434';
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'shrk-pipeline-cap-'));
@@ -1635,6 +1690,7 @@ describe('shrk smart-context — multi-pass enhancement pipeline (brief mode)', 
             ['cwd', fixtureRoot],
             ['json', true],
             ['no-instructions', true],
+            ['plus', true],
             ['enhance-passes', '2'],
           ]),
         ),

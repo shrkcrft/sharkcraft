@@ -42,6 +42,20 @@ export type {
   IDashboardMigrationStep,
   IDashboardQualityGatesResponse,
   IDashboardQualityGate,
+  IDashboardKnowledgeFacet,
+  IDashboardKnowledgeSummary,
+  IDashboardKnowledgeInsights,
+  IDashboardKnowledgeListResponse,
+  IDashboardKnowledgeSimilar,
+  IDashboardKnowledgeSimilarResponse,
+  IDashboardKnowledgeActionHints,
+  IDashboardKnowledgeExample,
+  IDashboardKnowledgeDetail,
+  IDashboardKnowledgeNeighbor,
+  IDashboardKnowledgeEntryResponse,
+  IDashboardKnowledgeGraphResponse,
+  IDashboardKnowledgeSource,
+  IDashboardKnowledgeAskResponse,
 } from '@shrkcrft/dashboard-api';
 
 export interface IDashboardApiError {

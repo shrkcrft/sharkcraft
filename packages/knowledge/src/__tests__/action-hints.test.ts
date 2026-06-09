@@ -103,3 +103,54 @@ describe('formatAggregatedHints', () => {
     expect(formatEntryActionHints(ruleWithoutHints)).toBe('');
   });
 });
+
+describe('aggregateActionHints tolerates malformed authoring', () => {
+  // A common typo is to author a single-value field as a scalar string
+  // (`preferredFlow: 'x'`) instead of an array. A string has `.length` but no
+  // `.map`, which used to crash the formatter (`preferredFlow.map is not a
+  // function`) and take down the whole `shrk context` entrypoint.
+  const malformed = {
+    id: 'r.scalar-flow',
+    title: 'Scalar preferredFlow',
+    type: KnowledgeType.Rule,
+    priority: KnowledgePriority.High,
+    scope: ['ts'],
+    content: '...',
+    actionHints: {
+      preferredFlow: 'list_templates -> apply',
+      forbiddenActions: 'do not write through MCP',
+      commands: 'shrk gen',
+      verificationCommands: ['bun test', 42, 'tsc'],
+    },
+    // Bypass the typed surface to simulate hand-authored / imported data.
+  } as unknown as Parameters<typeof aggregateActionHints>[0][number];
+
+  test('coerces a scalar preferredFlow into a single-element array', () => {
+    const agg = aggregateActionHints([malformed]);
+    expect(agg.preferredFlow).toEqual(['list_templates -> apply']);
+    expect(agg.preferredFlowSourceId).toBe('r.scalar-flow');
+  });
+
+  test('coerces a scalar string-array field into a single-element array', () => {
+    const agg = aggregateActionHints([malformed]);
+    expect(agg.forbiddenActions).toEqual(['do not write through MCP']);
+  });
+
+  test('ignores a scalar authored where an object array is expected', () => {
+    const agg = aggregateActionHints([malformed]);
+    expect(agg.commands).toEqual([]);
+  });
+
+  test('drops non-string members of an array field', () => {
+    const agg = aggregateActionHints([malformed]);
+    expect(agg.verificationCommands).toEqual(['bun test', 'tsc']);
+  });
+
+  test('formatAggregatedHints does not throw on malformed input', () => {
+    const agg = aggregateActionHints([malformed]);
+    expect(() => formatAggregatedHints(agg, { level: '###', compact: true })).not.toThrow();
+    const out = formatAggregatedHints(agg, { level: '###', compact: true });
+    expect(out).toContain('### Preferred Flow');
+    expect(out).toContain('1. list_templates -> apply');
+  });
+});

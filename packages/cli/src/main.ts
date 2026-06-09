@@ -1100,6 +1100,40 @@ function printDidYouMean(attempted: string): void {
   if (footer) process.stderr.write(renderErrorFooter(footer));
 }
 
+/**
+ * Point fd 2 (stderr) at a log file so native-runtime teardown noise written
+ * during process exit lands in a file instead of the user's terminal. Returns
+ * silently on any failure (the worst case is the pre-existing noisy stderr).
+ *
+ * The log path can be overridden with `SHRK_NATIVE_TEARDOWN_LOG`; default is
+ * `<tmpdir>/shrk-native-teardown.log`. We append, with a timestamped header,
+ * so the trace is recoverable for debugging without ever touching the console.
+ */
+async function redirectStderrToTeardownLog(): Promise<void> {
+  try {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const logPath =
+      process.env.SHRK_NATIVE_TEARDOWN_LOG?.trim() ||
+      path.join(os.tmpdir(), 'shrk-native-teardown.log');
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    // Close fd 2; the next open() reclaims the lowest free descriptor (2),
+    // so all subsequent stderr — including native C++ writes during
+    // `__cxa_finalize` — flows to the log file.
+    fs.closeSync(2);
+    const fd = fs.openSync(logPath, 'a');
+    if (fd !== 2) {
+      // Couldn't reclaim fd 2 — leave things as they are rather than risk
+      // writing the result to the wrong descriptor.
+      return;
+    }
+    fs.writeSync(2, `\n--- shrk native-runtime teardown @ ${new Date().toISOString()} ---\n`);
+  } catch {
+    // Best-effort containment; never let log redirection break the exit.
+  }
+}
+
 // Entry point when invoked directly.
 //
 // Bun exposes `import.meta.main`; Node does not. When Node runs the
@@ -1117,6 +1151,10 @@ if (
   entryPath.endsWith('shrk.js') ||
   entryPath.endsWith('shrk.cmd')
 ) {
+  // Marks a real CLI invocation (vs. a command handler imported directly by a
+  // test). Commands that re-exec themselves in an isolated child gate on this
+  // so unit tests calling `run()` in-process never spawn a subprocess.
+  process.env.SHRK_CLI = '1';
   loadDotenv(process.cwd());
   const argv = process.argv.slice(2);
   const cleanShutdown = async (code: number): Promise<void> => {
@@ -1126,22 +1164,28 @@ if (
     // work completed — the user sees their result then `zsh: abort`.
     // Dynamic imports keep these off the hot path for commands that
     // never touched them.
+    // Track whether any native runtime (ONNX via embeddings, Metal/ggml via
+    // node-llama-cpp) was actually loaded this run. If so, its static
+    // destructors can still abort with a backtrace during `exit()` below —
+    // and there is no JS hook in this Node version to skip libc++ finalizers.
+    // We contain that by redirecting fd 2 to a log file just before exit.
+    let nativeRuntimeLoaded = false;
     try {
       const mod = (await import('@shrkcrft/embeddings')) as {
-        disposeSemanticIndexPipeline?: () => Promise<void>;
+        disposeSemanticIndexPipeline?: () => Promise<boolean>;
       };
       if (typeof mod.disposeSemanticIndexPipeline === 'function') {
-        await mod.disposeSemanticIndexPipeline();
+        nativeRuntimeLoaded = (await mod.disposeSemanticIndexPipeline()) || nativeRuntimeLoaded;
       }
     } catch {
       // Best-effort; never block the exit on teardown failure.
     }
     try {
       const mod = (await import('@shrkcrft/ai')) as {
-        disposeLlamaCppRuntime?: () => Promise<void>;
+        disposeLlamaCppRuntime?: () => Promise<boolean>;
       };
       if (typeof mod.disposeLlamaCppRuntime === 'function') {
-        await mod.disposeLlamaCppRuntime();
+        nativeRuntimeLoaded = (await mod.disposeLlamaCppRuntime()) || nativeRuntimeLoaded;
       }
     } catch {
       // Best-effort.
@@ -1156,6 +1200,28 @@ if (
       await new Promise<void>((resolve) => process.stderr.write('', () => resolve()));
     } catch {
       // ignore flush failures
+    }
+    // When running as an isolated worker (e.g. the smart-context child), hand
+    // the real exit code back to the parent via a sentinel file. The native
+    // teardown abort below would otherwise clobber it with SIGABRT (134).
+    const exitCodeFile = process.env.SHRK_WORKER_EXITCODE_FILE;
+    if (exitCodeFile) {
+      try {
+        const fs = await import('node:fs');
+        fs.writeFileSync(exitCodeFile, String(code), 'utf8');
+      } catch {
+        // best-effort; parent falls back to the child's signal/code.
+      }
+    }
+    // Contain native-runtime teardown noise. The ggml/ONNX destructors write a
+    // backtrace + `libc++abi: terminating … mutex lock failed` straight to fd 2
+    // during `exit()`, AFTER our real output is already on screen. That bypasses
+    // any JS stream wrapper, so the only reliable way to keep it off the user's
+    // terminal is to point fd 2 at a log file first: close(2) frees the lowest
+    // fd, and the next open() reclaims it. Gated on `nativeRuntimeLoaded` so
+    // ordinary commands keep their stderr untouched.
+    if (nativeRuntimeLoaded) {
+      await redirectStderrToTeardownLog();
     }
     // Prefer a low-level exit over `process.exit` on Node. Without
     // this, libc++ static destructors run during `process.exit`, and

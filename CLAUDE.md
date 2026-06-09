@@ -95,9 +95,10 @@ Opt-in **local-LLM** enrichment (requires a reachable Ollama daemon or a
 local `.gguf` model for llama.cpp — *no hosted API keys*):
 
 ```bash
-shrk smart-context "<task>"                        # multi-pass LLM-enhanced brief
+shrk smart-context "<task>"                        # fast LLM brief (draft → polish, 2 calls)
+shrk smart-context "<task>" --plus                 # full pipeline (draft → critique → refine → polish)
+shrk smart-context "<task>" --budget 60            # cap enhancement wall-clock at 60s
 shrk smart-context "<task>" --no-enhance           # single-shot (skip pipeline)
-shrk smart-context "<task>" --enhance-passes 2     # cap pipeline at draft + critique
 shrk smart-context "<task>" --plan --save          # structured plan, persisted
 shrk smart-context plan-ahead "t1" "t2" "t3"       # pre-plan a multi-task queue
 shrk smart-context list                            # list saved entries
@@ -112,9 +113,17 @@ point at a remote box, or `LLAMACPP_MODEL_PATH=/path/to/<model>.gguf` for
 in-process inference. When no LLM is reachable, every command still
 works against the deterministic seed.
 
-In brief mode (the default) the multi-pass **enhancement pipeline**
-runs `draft → critique → refine → polish` so the output is materially
-denser than a single LLM call. `--no-enhance` falls back to single-shot.
+In brief mode the **default is fast**: a 2-pass `draft → polish` so a
+result comes back quickly. `--plus` opts into the full
+`draft → critique → refine → polish` pipeline (denser, ~2× the calls).
+`--no-enhance` falls back to a single shot. Every enhancement run is
+wall-clock-bounded (override with `--budget <seconds>`); a model too slow
+for the budget degrades to the best output so far rather than hanging.
+The whole brief/plan run executes in an isolated child process so the
+native-runtime teardown abort (ggml/Metal, ONNX) can't pollute the
+console — that noise is redirected to a log file
+(`<tmpdir>/shrk-native-teardown.log`, override with
+`SHRK_NATIVE_TEARDOWN_LOG`) and the parent exits with the real code.
 `CLAUDE.md` (this file) is included in the seed; editing it changes
 what the LLM sees. See `docs/smart-context.md` and the
 `shrk-smart-context` skill for the agent workflow.
