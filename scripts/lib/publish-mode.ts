@@ -58,6 +58,7 @@ export function rewriteFile(s: string): string {
 }
 
 export function rewriteTypes(s: string): string {
+  if (s.endsWith('.d.ts')) return s.replace(/^\.\/src\//, './dist/');
   return s.replace(/^\.\/src\//, './dist/').replace(/\.tsx?$/, '.d.ts');
 }
 
