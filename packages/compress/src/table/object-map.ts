@@ -109,11 +109,27 @@ export function expandObjectMap(value: unknown): Record<string, unknown> | null 
     const obj: Record<string, unknown> = {};
     for (let c = 0; c < map.cols.length; c += 1) {
       if (absent.has(`${r},${c}`)) continue;
-      obj[map.cols[c]!] = map.rows[r]?.[c];
+      setOwn(obj, map.cols[c]!, map.rows[r]?.[c]);
     }
-    out[map.keys[r]!] = obj;
+    setOwn(out, map.keys[r]!, obj);
   }
   return out;
+}
+
+/**
+ * Assign an own enumerable data property. Plain `obj[key] = value` would invoke
+ * the `Object.prototype.__proto__` setter for a column name or map key literally
+ * equal to `"__proto__"` (a real own key after `JSON.parse`), silently dropping
+ * the value and breaking the lossless round-trip. The array path
+ * ({@link expandColumnar}) hardens against this the same way.
+ */
+function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
 }
 
 function isBareObjectMap(value: unknown): value is IObjectMap {

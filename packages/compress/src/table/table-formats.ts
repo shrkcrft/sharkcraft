@@ -18,29 +18,60 @@ function csvEscapeField(s: string): string {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-/** Parse one CSV line into fields, honouring `"`-quoted fields with `""` escapes. */
-function parseCsvLine(line: string): string[] {
-  const fields: string[] = [];
-  let cur = '';
+/**
+ * Parse a whole CSV document into records of fields, honouring `"`-quoted
+ * fields with `""` escapes — including fields that contain commas, `\r`/`\n`,
+ * or the record separator itself. Splitting the document into lines BEFORE
+ * honouring quotes (the old approach) shattered any quoted field that carried
+ * a newline (e.g. a column name containing `\n`), so the inverse threw or
+ * dropped data. Record separators are unquoted `\n`, `\r\n`, or `\r`.
+ */
+function parseCsvRecords(csv: string): string[][] {
+  const records: string[][] = [];
+  let row: string[] = [];
+  let field = '';
   let inQuotes = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
+  let pending = false; // the current record has started (content or a separator seen)
+  const endField = (): void => {
+    row.push(field);
+    field = '';
+    pending = true;
+  };
+  const endRecord = (): void => {
+    endField();
+    records.push(row);
+    row = [];
+    pending = false;
+  };
+  for (let i = 0; i < csv.length; i += 1) {
+    const ch = csv[i];
     if (inQuotes) {
       if (ch === '"') {
-        if (line[i + 1] === '"') {
-          cur += '"';
+        if (csv[i + 1] === '"') {
+          field += '"';
           i += 1;
         } else inQuotes = false;
-      } else cur += ch;
+      } else field += ch;
+      pending = true;
     } else if (ch === '"') {
       inQuotes = true;
+      pending = true;
     } else if (ch === ',') {
-      fields.push(cur);
-      cur = '';
-    } else cur += ch;
+      endField();
+    } else if (ch === '\n') {
+      endRecord();
+    } else if (ch === '\r') {
+      endRecord();
+      if (csv[i + 1] === '\n') i += 1;
+    } else {
+      field += ch;
+      pending = true;
+    }
   }
-  fields.push(cur);
-  return fields;
+  // Flush a trailing record unless the document ended exactly on a record
+  // separator (nothing pending), matching `out.join('\n')` having no trailer.
+  if (pending || field.length > 0 || row.length > 0) endRecord();
+  return records;
 }
 
 /**
@@ -76,14 +107,12 @@ export function columnarToCsv(table: IColumnarTable): string {
 
 /** Inverse of {@link columnarToCsv}: rebuild the original object array. */
 export function csvToObjects(csv: string): Row[] {
-  // Tolerate CRLF: split on \r?\n so a trailing \r never contaminates a column
-  // name or value (Windows / network-transferred CSV).
-  const lines = csv.split(/\r?\n/);
-  if (lines.length === 0) return [];
-  const header = parseCsvLine(lines[0] ?? '');
+  const records = parseCsvRecords(csv);
+  if (records.length === 0) return [];
+  const header = records[0] ?? [];
   const out: Row[] = [];
-  for (let r = 1; r < lines.length; r += 1) {
-    const fields = parseCsvLine(lines[r] ?? '');
+  for (let r = 1; r < records.length; r += 1) {
+    const fields = records[r] ?? [];
     // A present value is always JSON-encoded (non-empty: even "" becomes `""`),
     // so a truly empty parsed field unambiguously means the key was absent.
     const obj: Row = {};
@@ -104,6 +133,17 @@ export function csvToObjects(csv: string): Row[] {
   return out;
 }
 
+/**
+ * A column name is safe to write bare in a `key: value` line only when it can't
+ * collide with the `: ` separator or the line/record structure. Otherwise we
+ * JSON-encode it (a leading `"` is the decoder's signal) so the key survives the
+ * round trip — `markdownKvToObjects` splits on the FIRST `: `, which a key
+ * containing `: ` or a newline would otherwise break.
+ */
+function markdownKeyNeedsQuoting(key: string): boolean {
+  return key.includes(': ') || key.includes('\n') || key.includes('\r') || key.startsWith('"');
+}
+
 /** Encode a columnar table as Markdown key/value blocks, one block per record. */
 export function columnarToMarkdownKv(table: IColumnarTable): string {
   const { cols, rows, absent } = table._table;
@@ -114,7 +154,9 @@ export function columnarToMarkdownKv(table: IColumnarTable): string {
     const present: string[] = [];
     for (let c = 0; c < w; c += 1) {
       if (absentSet.has(r * w + c)) continue;
-      present.push(`${cols[c]}: ${JSON.stringify(cellValue(table, r, c))}`);
+      const rawKey = String(cols[c]);
+      const keyText = markdownKeyNeedsQuoting(rawKey) ? JSON.stringify(rawKey) : rawKey;
+      present.push(`${keyText}: ${JSON.stringify(cellValue(table, r, c))}`);
     }
     // `- ` opens a record; remaining keys are indented two spaces.
     const lines = present.map((line, idx) => (idx === 0 ? `- ${line}` : `  ${line}`));
@@ -143,10 +185,27 @@ export function markdownKvToObjects(md: string): Row[] {
       continue;
     }
     if (!cur) continue;
-    const sep = line.indexOf(': ');
-    if (sep < 0) continue;
-    const key = line.slice(0, sep);
-    const value = line.slice(sep + 2);
+    let key: string;
+    let value: string;
+    if (line.startsWith('"')) {
+      // JSON-encoded key (emitted by markdownKeyNeedsQuoting): read the JSON
+      // string token, then the `: ` separator, then the JSON value.
+      const end = jsonStringEnd(line);
+      if (end < 0) continue;
+      const rest = line.slice(end);
+      if (!rest.startsWith(': ')) continue;
+      try {
+        key = JSON.parse(line.slice(0, end)) as string;
+      } catch {
+        continue;
+      }
+      value = rest.slice(2);
+    } else {
+      const sep = line.indexOf(': ');
+      if (sep < 0) continue;
+      key = line.slice(0, sep);
+      value = line.slice(sep + 2);
+    }
     Object.defineProperty(cur, key, {
       value: JSON.parse(value),
       writable: true,
@@ -156,4 +215,21 @@ export function markdownKvToObjects(md: string): Row[] {
   }
   commit();
   return out;
+}
+
+/**
+ * Given a string whose char 0 is `"`, return the index just past the matching
+ * closing quote of that JSON string token (honouring `\"` escapes), or -1 if
+ * unterminated.
+ */
+function jsonStringEnd(s: string): number {
+  for (let i = 1; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === '\\') {
+      i += 1;
+      continue;
+    }
+    if (ch === '"') return i + 1;
+  }
+  return -1;
 }

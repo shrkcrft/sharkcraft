@@ -1,0 +1,10 @@
+# Bun configuration.
+#
+# [test].preload runs once before the test suite. `preload-env.ts` scrubs
+# local LLM provider/model env vars (LLAMACPP_*, OLLAMA_*, AI_PROVIDER) that
+# Bun would otherwise inherit from a developer's `.env`. Without this, a `.env`
+# pointing at a real local model makes `bun test` load it in-process and abort
+# on teardown with a llama.cpp/ggml Metal `GGML_ASSERT` (see test/preload-env.ts),
+# which corrupts the runner's exit code and breaks `release:preflight`.
+[test]
+preload = ["./test/preload-env.ts"]

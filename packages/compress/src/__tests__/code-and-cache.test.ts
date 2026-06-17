@@ -183,4 +183,17 @@ describe('active cache alignment', () => {
     expect(restoreVolatileTokens(aligned, map)).toBe('"550e8400-e29b-41d4-a716-446655440000",');
     expect(alignVolatileTokens('the quick brown fox').replaced).toBe(0);
   });
+
+  test('restoreVolatileTokens ignores corrupt (non-object) bindings instead of throwing', () => {
+    const { aligned, map } = alignVolatileTokens(text);
+    // A hand-edited / corrupt map file can carry junk in bindings[] that still
+    // passes a shallow Array.isArray validation. The documented contract is
+    // "never throws"; junk is skipped and real placeholders still restore.
+    const corrupt = {
+      ...map,
+      bindings: [null, 42, undefined, ...map.bindings, { original: 'no-placeholder' }],
+    } as unknown as typeof map;
+    expect(() => restoreVolatileTokens(aligned, corrupt)).not.toThrow();
+    expect(restoreVolatileTokens(aligned, corrupt)).toBe(text);
+  });
 });

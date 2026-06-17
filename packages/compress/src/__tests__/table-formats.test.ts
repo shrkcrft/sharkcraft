@@ -48,3 +48,23 @@ describe('read-accuracy table formats (P4.2)', () => {
     expect('tags' in fromMd[2]!).toBe(false);
   });
 });
+
+describe('table formats round-trip exotic column names (P4.2 reversibility)', () => {
+  const cases: Array<[string, Record<string, unknown>[]]> = [
+    ["a column name containing ': '", [{ 'a: b': 1, x: 10 }, { 'a: b': 2, x: 20 }, { 'a: b': 3, x: 30 }]],
+    ['a column name containing a newline', [{ 'a\nb': 1, x: 1 }, { 'a\nb': 2, x: 2 }, { 'a\nb': 3, x: 3 }]],
+    ['a column name with comma + quote', [{ 'a,b"c': 1, x: 1 }, { 'a,b"c': 2, x: 2 }, { 'a,b"c': 3, x: 3 }]],
+  ];
+  for (const [label, records] of cases) {
+    test(`CSV round-trips with ${label}`, () => {
+      const table = compactArrayToColumnar(records);
+      expect(table).not.toBeNull();
+      expect(csvToObjects(columnarToCsv(table!))).toEqual(expandColumnar(table!));
+    });
+    test(`Markdown-KV round-trips with ${label}`, () => {
+      const table = compactArrayToColumnar(records);
+      expect(table).not.toBeNull();
+      expect(markdownKvToObjects(columnarToMarkdownKv(table!))).toEqual(expandColumnar(table!));
+    });
+  }
+});

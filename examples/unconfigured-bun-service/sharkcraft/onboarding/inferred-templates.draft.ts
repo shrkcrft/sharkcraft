@@ -7,7 +7,7 @@ export default [
     description: "New service file under src/services/.",
     confidence: "high",
     // targetPath hint: src/services/<name>.service.ts
-    // sample: src\services\billing.service.ts
+    // sample: src/services/billing.service.ts
     // reason: 3 matching file(s) found
   },
   {
@@ -16,7 +16,7 @@ export default [
     description: "New utility module under src/utils/.",
     confidence: "medium",
     // targetPath hint: src/utils/<name>.util.ts
-    // sample: src\utils\format.util.ts
+    // sample: src/utils/format.util.ts
     // reason: 2 matching file(s) found
   },
   {
@@ -25,7 +25,7 @@ export default [
     description: "New spec/test file colocated with source.",
     confidence: "medium",
     // targetPath hint: src/<area>/<name>.spec.ts
-    // sample: tests\format.spec.ts
+    // sample: tests/format.spec.ts
     // reason: 2 matching file(s) found
   },
 ];

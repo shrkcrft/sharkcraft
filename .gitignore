@@ -36,6 +36,18 @@ quality.html
 # Smoke-test scratch files
 .tmp-*
 
+# Root-level debug / scratch files — these must never be committed. A
+# `git add -A` release commit once swept `test_var_re.ts`, `test_marker.ts`
+# and a broken `test_triple_quote_issue.test.ts` into a tagged release, which
+# failed `bun test`. Anchored to the repo root so real tests under packages/
+# (e.g. `packages/*/src/__tests__/*.test.ts`) are unaffected.
+/test_*.ts
+/test_*.js
+/_tmp_*
+
+# Codex CLI local config (machine-specific tool state)
+.codex/
+
 # Per-package build output that occasionally leaks into src/ alongside the
 # .ts source. Packages publish from `dist/`, so anything compiled into
 # `packages/*/src/` is stale noise (and pollutes greps).

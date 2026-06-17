@@ -72,5 +72,9 @@ export function findFiles(
     }
   }
   if (existsSync(startDir) && statSync(startDir).isDirectory()) walk(startDir, 0);
-  return out;
+  // `readdirSync` order is filesystem-dependent (and differs across machines),
+  // so callers that take `matches[0]` — e.g. the onboarding inference's sample
+  // file — would otherwise be non-deterministic, violating the "every output is
+  // a function of the workspace" contract. Sort to a stable lexicographic order.
+  return out.sort();
 }

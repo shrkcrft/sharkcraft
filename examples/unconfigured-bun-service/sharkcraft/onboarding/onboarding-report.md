@@ -82,17 +82,17 @@ _No boundary rules inferred — layer structure not clear enough._
 - **inferred.service** (high) — Service
   - New service file under src/services/.
   - target: `src/services/<name>.service.ts`
-  - sample: `src\services\billing.service.ts`
+  - sample: `src/services/billing.service.ts`
   - reason: 3 matching file(s) found
 - **inferred.util** (medium) — Utility
   - New utility module under src/utils/.
   - target: `src/utils/<name>.util.ts`
-  - sample: `src\utils\format.util.ts`
+  - sample: `src/utils/format.util.ts`
   - reason: 2 matching file(s) found
 - **inferred.spec** (medium) — Spec / test file
   - New spec/test file colocated with source.
   - target: `src/<area>/<name>.spec.ts`
-  - sample: `tests\format.spec.ts`
+  - sample: `tests/format.spec.ts`
   - reason: 2 matching file(s) found
 
 ## Suggested pipelines

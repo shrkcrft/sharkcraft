@@ -104,3 +104,34 @@ describe('object-map columnar (P2.3)', () => {
     }
   });
 });
+
+describe('object-map preserves a literal "__proto__" key/column (lossless contract)', () => {
+  // A JS object literal `{ __proto__: x }` sets the prototype, so to get a REAL
+  // own "__proto__" data property — exactly what JSON.parse produces off the
+  // wire — these inputs are parsed from hand-written JSON strings.
+  test('a top-level map key named "__proto__" round-trips as an own key', () => {
+    const original = JSON.parse('{"__proto__":{"id":"p"},"b":{"id":"q"},"c":{"id":"r"}}');
+    const compact = compactObjectMap(original);
+    expect(compact).not.toBeNull();
+    const back = expandObjectMap(compact!)!;
+    expect(Object.keys(back).sort()).toEqual(['__proto__', 'b', 'c']);
+    // Read the OWN property — `back.__proto__` would invoke the prototype getter.
+    expect(Object.getOwnPropertyDescriptor(back, '__proto__')!.value).toEqual({ id: 'p' });
+  });
+
+  test('a "__proto__" FIELD inside entries survives the columnar round-trip', () => {
+    const parts: string[] = [];
+    for (let i = 0; i < 30; i += 1) {
+      parts.push(`"k${i}":{"__proto__":${i},"descriptiveFieldName":"v${i}","anotherLongFieldName":"w${i}"}`);
+    }
+    const original = JSON.parse(`{${parts.join(',')}}`);
+    const compact = compactObjectMap(original);
+    expect(compact).not.toBeNull();
+    const back = expandObjectMap(compact!)!;
+    for (let i = 0; i < 30; i += 1) {
+      const entry = back[`k${i}`] as Record<string, unknown>;
+      expect(Object.keys(entry)).toContain('__proto__');
+      expect(Object.getOwnPropertyDescriptor(entry, '__proto__')!.value).toBe(i);
+    }
+  });
+});
