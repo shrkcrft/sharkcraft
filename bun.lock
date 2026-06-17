@@ -8,6 +8,7 @@
         "@playwright/test": "1.60.0",
         "@types/bun": "latest",
         "@types/node": "^22",
+        "gpt-tokenizer": "^3.4.0",
         "typescript": "^5.6.0",
       },
     },
@@ -174,7 +175,7 @@
     },
     "packages/ai": {
       "name": "@shrkcrft/ai",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/context": "workspace:*",
         "@shrkcrft/core": "workspace:*",
@@ -183,7 +184,7 @@
     },
     "packages/api-surface-diff": {
       "name": "@shrkcrft/api-surface-diff",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/graph": "workspace:*",
@@ -192,7 +193,7 @@
     },
     "packages/architecture-guard": {
       "name": "@shrkcrft/architecture-guard",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/core": "workspace:*",
@@ -201,14 +202,14 @@
     },
     "packages/boundaries": {
       "name": "@shrkcrft/boundaries",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/cli": {
       "name": "@shrkcrft/cli",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "bin": {
         "shrk": "./dist/main.js",
       },
@@ -218,6 +219,7 @@
         "@shrkcrft/api-surface-diff": "workspace:*",
         "@shrkcrft/architecture-guard": "workspace:*",
         "@shrkcrft/boundaries": "workspace:*",
+        "@shrkcrft/compress": "workspace:*",
         "@shrkcrft/config": "workspace:*",
         "@shrkcrft/context": "workspace:*",
         "@shrkcrft/context-planner": "workspace:*",
@@ -247,9 +249,16 @@
         "@shrkcrft/workspace": "workspace:*",
       },
     },
+    "packages/compress": {
+      "name": "@shrkcrft/compress",
+      "version": "0.1.0-alpha.16",
+      "dependencies": {
+        "@shrkcrft/core": "workspace:*",
+      },
+    },
     "packages/config": {
       "name": "@shrkcrft/config",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "zod": "^3.25.0 || ^4.0.0",
@@ -257,7 +266,7 @@
     },
     "packages/context": {
       "name": "@shrkcrft/context",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -268,7 +277,7 @@
     },
     "packages/context-planner": {
       "name": "@shrkcrft/context-planner",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/graph": "workspace:*",
@@ -277,14 +286,14 @@
     },
     "packages/core": {
       "name": "@shrkcrft/core",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "jiti": "^2.7.0",
       },
     },
     "packages/dashboard": {
       "name": "@shrkcrft/dashboard",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/dashboard-api": "workspace:*",
         "react": "^18.3.0",
@@ -299,18 +308,18 @@
     },
     "packages/dashboard-api": {
       "name": "@shrkcrft/dashboard-api",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
     },
     "packages/embeddings": {
       "name": "@shrkcrft/embeddings",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@huggingface/transformers": "^3.7.5",
       },
     },
     "packages/framework-scanners": {
       "name": "@shrkcrft/framework-scanners",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/graph": "workspace:*",
@@ -320,7 +329,7 @@
     },
     "packages/generator": {
       "name": "@shrkcrft/generator",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/paths": "workspace:*",
@@ -330,7 +339,7 @@
     },
     "packages/graph": {
       "name": "@shrkcrft/graph",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/core": "workspace:*",
@@ -339,7 +348,7 @@
     },
     "packages/impact-engine": {
       "name": "@shrkcrft/impact-engine",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/graph": "workspace:*",
@@ -348,7 +357,7 @@
     },
     "packages/importer": {
       "name": "@shrkcrft/importer",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -356,7 +365,7 @@
     },
     "packages/inspector": {
       "name": "@shrkcrft/inspector",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/config": "workspace:*",
@@ -379,19 +388,20 @@
     },
     "packages/knowledge": {
       "name": "@shrkcrft/knowledge",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/mcp-server": {
       "name": "@shrkcrft/mcp-server",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.0.0",
         "@shrkcrft/api-surface-diff": "workspace:*",
         "@shrkcrft/architecture-guard": "workspace:*",
         "@shrkcrft/boundaries": "workspace:*",
+        "@shrkcrft/compress": "workspace:*",
         "@shrkcrft/config": "workspace:*",
         "@shrkcrft/context": "workspace:*",
         "@shrkcrft/context-planner": "workspace:*",
@@ -419,7 +429,7 @@
     },
     "packages/migrate": {
       "name": "@shrkcrft/migrate",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/structural-search": "workspace:*",
@@ -427,7 +437,7 @@
     },
     "packages/packs": {
       "name": "@shrkcrft/packs",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/plugin-api": "workspace:*",
@@ -435,7 +445,7 @@
     },
     "packages/paths": {
       "name": "@shrkcrft/paths",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -443,21 +453,21 @@
     },
     "packages/pipelines": {
       "name": "@shrkcrft/pipelines",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/plugin-api": {
       "name": "@shrkcrft/plugin-api",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/presets": {
       "name": "@shrkcrft/presets",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -466,7 +476,7 @@
     },
     "packages/quality-gates": {
       "name": "@shrkcrft/quality-gates",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/api-surface-diff": "workspace:*",
         "@shrkcrft/architecture-guard": "workspace:*",
@@ -480,7 +490,7 @@
     },
     "packages/rule-graph": {
       "name": "@shrkcrft/rule-graph",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/core": "workspace:*",
@@ -490,7 +500,7 @@
     },
     "packages/rules": {
       "name": "@shrkcrft/rules",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -498,11 +508,11 @@
     },
     "packages/shared": {
       "name": "@shrkcrft/shared",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
     },
     "packages/structural-search": {
       "name": "@shrkcrft/structural-search",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "typescript": "^5.5.0",
@@ -510,14 +520,14 @@
     },
     "packages/templates": {
       "name": "@shrkcrft/templates",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/workspace": {
       "name": "@shrkcrft/workspace",
-      "version": "0.1.0-alpha.11",
+      "version": "0.1.0-alpha.16",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
@@ -989,6 +999,8 @@
     "@shrkcrft/boundaries": ["@shrkcrft/boundaries@workspace:packages/boundaries"],
 
     "@shrkcrft/cli": ["@shrkcrft/cli@workspace:packages/cli"],
+
+    "@shrkcrft/compress": ["@shrkcrft/compress@workspace:packages/compress"],
 
     "@shrkcrft/config": ["@shrkcrft/config@workspace:packages/config"],
 
@@ -1477,6 +1489,8 @@
     "globalthis": ["globalthis@1.0.4", "", { "dependencies": { "define-properties": "^1.2.1", "gopd": "^1.0.1" } }, "sha512-DpLKbNU4WylpxJykQujfCcwYWiV/Jhm50Goo0wrVILAv5jOr9d+H+UR3PhSCD2rCCEIg0uc+G+muBTwD54JhDQ=="],
 
     "gopd": ["gopd@1.2.0", "", {}, "sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg=="],
+
+    "gpt-tokenizer": ["gpt-tokenizer@3.4.0", "", {}, "sha512-wxFLnhIXTDjYebd9A9pGl3e31ZpSypbpIJSOswbgop5jLte/AsZVDvjlbEuVFlsqZixVKqbcoNmRlFDf6pz/UQ=="],
 
     "graceful-fs": ["graceful-fs@4.2.11", "", {}, "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="],
 

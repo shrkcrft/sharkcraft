@@ -1,5 +1,6 @@
 import { analyzeGraphImpact, type IGraphImpactInput } from '@shrkcrft/impact-engine';
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
 interface IInput {
   files?: readonly string[];
@@ -22,6 +23,7 @@ export const getGraphImpactAnalysisTool: IToolDefinition = {
       gitref: { type: 'string' },
       maxDepth: { type: 'number' },
       limit: { type: 'number' },
+      ...FORMAT_INPUT_PROPERTY,
     },
     additionalProperties: false,
   },
@@ -42,7 +44,7 @@ export const getGraphImpactAnalysisTool: IToolDefinition = {
       limit: clamp(args.limit ?? 200, 1, 2000),
       maxDepth: clamp(args.maxDepth ?? 5, 1, 10),
     });
-    return { data: analysis };
+    return { data: formatObjectArrays(analysis, input) };
   },
 };
 

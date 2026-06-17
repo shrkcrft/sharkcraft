@@ -1,5 +1,6 @@
 import { OverviewPage } from './overview.page.tsx';
 import { StatsPage } from './stats.page.tsx';
+import { CompressionPage } from './compression.page.tsx';
 import { SessionsPage } from './sessions.page.tsx';
 import { SessionDetailPage } from './session-detail.page.tsx';
 import { QualityPage } from './quality.page.tsx';
@@ -30,6 +31,7 @@ export interface IResolvedRoute {
 export function resolveRoute(path: string): IResolvedRoute {
   if (path === '/' || path === '/overview') return { title: 'Overview', node: <OverviewPage /> };
   if (path === '/stats') return { title: 'Statistics', node: <StatsPage /> };
+  if (path === '/compression') return { title: 'Token Savings', node: <CompressionPage /> };
   if (path === '/sessions') return { title: 'Dev Sessions', node: <SessionsPage /> };
   const sessMatch = matchSegment(path, '/sessions/:id');
   if (sessMatch) return { title: `Session ${sessMatch.id}`, node: <SessionDetailPage id={sessMatch.id!} /> };

@@ -1,5 +1,6 @@
 import { GraphQueryApi, GraphStore } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
 const NEXT = 'shrk graph index';
 
@@ -27,6 +28,7 @@ export const getGraphCyclesTool: IToolDefinition = {
     properties: {
       limit: { type: 'number' },
       minSize: { type: 'number' },
+      ...FORMAT_INPUT_PROPERTY,
     },
     additionalProperties: false,
   },
@@ -56,16 +58,15 @@ export const getGraphCyclesTool: IToolDefinition = {
     const all = api.cycles();
     const filtered = all.filter((c) => c.size >= minSize);
     const limited = filtered.slice(0, rawLimit);
-    return {
-      data: {
-        schema: 'sharkcraft.graph-cycles/v1',
-        total: filtered.length,
-        truncated: filtered.length > rawLimit,
-        cycles: limited.map((c) => ({
-          size: c.size,
-          paths: c.paths ?? c.nodeIds.map((id) => id.replace(/^file:/, '')),
-        })),
-      },
+    const data = {
+      schema: 'sharkcraft.graph-cycles/v1',
+      total: filtered.length,
+      truncated: filtered.length > rawLimit,
+      cycles: limited.map((c) => ({
+        size: c.size,
+        paths: c.paths ?? c.nodeIds.map((id) => id.replace(/^file:/, '')),
+      })),
     };
+    return { data: formatObjectArrays(data, input) };
   },
 };

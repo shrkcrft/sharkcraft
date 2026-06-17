@@ -52,6 +52,8 @@ import {
   scanDevSession,
   type ISharkcraftInspection,
 } from '@shrkcrft/inspector';
+import { EContentType, compactArrayToColumnar, estimateTokens } from '@shrkcrft/compress';
+import type { IDashboardCompressionResponse } from '@shrkcrft/dashboard-api';
 import { COMMAND_CATALOG } from '../commands/command-catalog.ts';
 import {
   buildDashboardCodeIntelligence,
@@ -62,6 +64,74 @@ import {
 import { buildKnowledgeAsk } from './knowledge-ask.ts';
 
 const SCHEMA_ID = 'sharkcraft.dashboard-api/v1';
+
+/**
+ * Compute the deterministic compression layer's per-surface token savings for
+ * the dashboard. Measured on the live workspace (no timestamps → stable).
+ *
+ * `realTokens`, when supplied, is an exact BPE tokenizer (cl100k_base); the
+ * panel then reports exact counts and flags `tokensAreEstimated: false`. With
+ * no tokenizer (the default in a published install, where the dev-only
+ * `gpt-tokenizer` is absent) it falls back to the engine's estimator — whose
+ * *percentages* are sound but whose *absolutes* are rough — and flags
+ * `tokensAreEstimated: true` so the UI never presents an estimate as exact.
+ */
+function buildDashboardCompression(
+  inspection: ISharkcraftInspection,
+  realTokens?: (text: string) => number,
+): IDashboardCompressionResponse {
+  const graph = buildDashboardKnowledgeGraph(inspection);
+  // Both encodings are JSON, so when estimating, score them with the JSON
+  // divisor — the same ratio the engine uses — for the closest absolute counts.
+  const count = (text: string): number =>
+    realTokens ? realTokens(text) : estimateTokens(text, EContentType.Json);
+  const surfaces: Array<{ surface: string; strategy: string; before: number; after: number; savedPct: number }> = [];
+  const add = (surface: string, strategy: string, beforeText: string, afterText: string): void => {
+    const before = count(beforeText);
+    // Net-loss guard: columnar/legend overhead can exceed the raw encoding on
+    // tiny arrays. The engine ships whichever is smaller, so report what the
+    // agent actually pays — never a negative saving.
+    const after = Math.min(count(afterText), before);
+    surfaces.push({ surface, strategy, before, after, savedPct: before > 0 ? Math.round((1 - after / before) * 100) : 0 });
+  };
+  const nodes = [...graph.nodes];
+  const edges = [...graph.edges];
+  add(
+    'knowledge graph',
+    'columnar table',
+    JSON.stringify({ nodes, edges }),
+    JSON.stringify({ nodes: compactArrayToColumnar(nodes) ?? nodes, edges: compactArrayToColumnar(edges) ?? edges }),
+  );
+  add('knowledge nodes', 'columnar table', JSON.stringify(nodes), JSON.stringify(compactArrayToColumnar(nodes) ?? nodes));
+  const totalsBefore = surfaces.reduce((s, x) => s + x.before, 0);
+  const totalsAfter = surfaces.reduce((s, x) => s + x.after, 0);
+  return {
+    surfaces,
+    totals: {
+      before: totalsBefore,
+      after: totalsAfter,
+      savedPct: totalsBefore > 0 ? Math.round((1 - totalsAfter / totalsBefore) * 100) : 0,
+    },
+    tokensAreEstimated: !realTokens,
+  };
+}
+
+/**
+ * Best-effort load of the optional dev tokenizer for exact dashboard counts.
+ * Guarded dynamic import: `gpt-tokenizer` is not a runtime dependency of the
+ * CLI, so this resolves to `undefined` in any install that did not ship it, and
+ * the dashboard transparently falls back to the estimator.
+ */
+async function loadDashboardTokenizer(): Promise<((text: string) => number) | undefined> {
+  try {
+    const mod = (await import('gpt-tokenizer')) as { encode?: (s: string) => number[] };
+    if (typeof mod.encode !== 'function') return undefined;
+    const encode = mod.encode;
+    return (text: string): number => (text ? encode(text).length : 0);
+  } catch {
+    return undefined;
+  }
+}
 
 interface IServerOptions {
   cwd: string;
@@ -431,6 +501,7 @@ async function handle(
     path.startsWith('/api/knowledge') ||
     path.startsWith('/api/onboarding') ||
     path.startsWith('/api/review') ||
+    path.startsWith('/api/compression') ||
     path.startsWith('/api/scaffolds');
   const inspection: ISharkcraftInspection | null = needsInspection
     ? await inspectSharkcraft({ cwd: projectRoot })
@@ -460,6 +531,10 @@ async function handle(
   }
   if (path === '/api/packs') {
     return respond(res, buildEnvelope(projectRoot, buildDashboardPacks(inspection!)));
+  }
+  if (path === '/api/compression') {
+    const realTokens = await loadDashboardTokenizer();
+    return respond(res, buildEnvelope(projectRoot, buildDashboardCompression(inspection!, realTokens)));
   }
   if (path === '/api/presets') {
     return respond(res, buildEnvelope(projectRoot, buildDashboardPresets(inspection!)));

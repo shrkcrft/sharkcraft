@@ -1,5 +1,6 @@
 import { GraphQueryApi, GraphStore, type INode } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
 const NEXT = 'shrk graph index';
 
@@ -20,6 +21,7 @@ export const getGraphImpactTool: IToolDefinition = {
       target: { type: 'string' },
       maxDepth: { type: 'number' },
       limit: { type: 'number' },
+      ...FORMAT_INPUT_PROPERTY,
     },
     required: ['target'],
     additionalProperties: false,
@@ -61,20 +63,19 @@ export const getGraphImpactTool: IToolDefinition = {
     const closure = reverseClosure(api, anchor.id, maxDepth, limit);
     const direct = closure.layer[1] ?? [];
     const transitive = closure.all.filter((id) => id !== anchor.id && !direct.includes(id));
-    return {
-      data: {
-        schema: 'sharkcraft.graph-impact/v1',
-        anchor: summarise(anchor),
-        maxDepth,
-        limit,
-        truncated: closure.truncated,
-        directDependents: direct.map((id) => summarise(api.neighbours(id)!.node)),
-        transitiveDependents: transitive
-          .slice(0, limit)
-          .map((id) => summarise(api.neighbours(id)!.node)),
-        totalReached: closure.all.length - 1,
-      },
+    const data = {
+      schema: 'sharkcraft.graph-impact/v1',
+      anchor: summarise(anchor),
+      maxDepth,
+      limit,
+      truncated: closure.truncated,
+      directDependents: direct.map((id) => summarise(api.neighbours(id)!.node)),
+      transitiveDependents: transitive
+        .slice(0, limit)
+        .map((id) => summarise(api.neighbours(id)!.node)),
+      totalReached: closure.all.length - 1,
     };
+    return { data: formatObjectArrays(data, input) };
   },
 };
 

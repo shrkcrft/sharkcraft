@@ -2,6 +2,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { GraphQueryApi, GraphStore, NodeKind } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays, COLUMNAR_LEGEND } from '../server/columnar-format.ts';
+import { fitArrayToBudget } from '../server/fit-array-to-budget.ts';
 
 /**
  * `deps_audit` — MCP wrapper around `shrk deps-audit`. Pure read-only.
@@ -13,11 +15,18 @@ import type { IToolDefinition } from '../server/tool-definition.ts';
 export const depsAuditTool: IToolDefinition = {
   name: 'deps_audit',
   description:
-    'Per-package audit of declared dependencies (package.json) vs actually-imported specifiers (graph). Reports missing + unused deps. Read-only.',
+    'Per-package audit of declared dependencies (package.json) vs actually-imported specifiers (graph). Reports missing + unused deps. Pass `format:"table"` for a token-efficient columnar encoding of the per-package report list. Read-only.',
   inputSchema: {
     type: 'object',
     properties: {
       package: { type: 'string' },
+      ...FORMAT_INPUT_PROPERTY,
+      maxTokens: {
+        type: 'number',
+        minimum: 1,
+        description:
+          'Token budget for the per-package report list. When set and the columnar form still exceeds it, falls back to the lossy SmartCrusher row-sampler (full original cached — retrieve via the returned ccrKey).',
+      },
     },
     additionalProperties: false,
   },
@@ -44,7 +53,30 @@ export const depsAuditTool: IToolDefinition = {
       },
       { missing: 0, unused: 0 },
     );
-    return { data: { totals, packages: reports } };
+    // P5.2: an explicit token budget routes the per-package report list through
+    // the SmartCrusher row-sampler (lossy, CCR-recoverable) when even the
+    // columnar form is over budget.
+    const maxTokens =
+      typeof input.maxTokens === 'number' && input.maxTokens > 0 ? Math.floor(input.maxTokens) : undefined;
+    if (maxTokens) {
+      const fitted = fitArrayToBudget(reports, maxTokens, ctx.ccrStore);
+      return {
+        data: {
+          _format: 'table',
+          _legend: COLUMNAR_LEGEND,
+          totals,
+          packages: fitted.value,
+          ...(fitted.ccrKey
+            ? { ccrKey: fitted.ccrKey, retrieveWith: `retrieve_original { "key": "${fitted.ccrKey}" }` }
+            : {}),
+        },
+      };
+    }
+    // `format:"table"` columnar-encodes the homogeneous `packages` report
+    // list; the `totals` scalar object is left untouched. The per-package
+    // string arrays (importedSpecifiers/missingDeps/unusedDeps) ride along
+    // inside each compacted row and reconstruct losslessly.
+    return { data: formatObjectArrays({ totals, packages: reports }, input) };
   },
 };
 

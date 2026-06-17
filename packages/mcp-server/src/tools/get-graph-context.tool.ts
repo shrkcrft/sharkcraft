@@ -5,6 +5,7 @@ import {
   type INode,
 } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
 const NEXT = 'shrk graph index';
 
@@ -19,7 +20,7 @@ export const getGraphContextTool: IToolDefinition = {
   cliCommand: 'graph context',
   inputSchema: {
     type: 'object',
-    properties: { target: { type: 'string' } },
+    properties: { target: { type: 'string' }, ...FORMAT_INPUT_PROPERTY },
     required: ['target'],
     additionalProperties: false,
   },
@@ -57,25 +58,24 @@ export const getGraphContextTool: IToolDefinition = {
     }
     const neighbours = api.neighbours(anchor.id)!;
     const symbols = anchor.kind === NodeKind.File ? api.symbolsIn(anchor.id) : [];
-    return {
-      data: {
-        schema: 'sharkcraft.graph-context/v1',
-        anchor: summarise(anchor),
-        importsFrom: neighbours.out
-          .filter((o) => o.edge.kind === 'imports-file')
-          .slice(0, 50)
-          .map((o) => ('resolved' in o.target
-            ? { id: o.target.id, resolved: false }
-            : { ...summarise(o.target), resolved: true })),
-        importedBy: neighbours.in
-          .filter((i) => i.edge.kind === 'imports-file')
-          .slice(0, 50)
-          .map((i) => ('resolved' in i.source
-            ? { id: i.source.id, resolved: false }
-            : { ...summarise(i.source), resolved: true })),
-        symbols: symbols.slice(0, 50).map(summarise),
-      },
+    const data = {
+      schema: 'sharkcraft.graph-context/v1',
+      anchor: summarise(anchor),
+      importsFrom: neighbours.out
+        .filter((o) => o.edge.kind === 'imports-file')
+        .slice(0, 50)
+        .map((o) => ('resolved' in o.target
+          ? { id: o.target.id, resolved: false }
+          : { ...summarise(o.target), resolved: true })),
+      importedBy: neighbours.in
+        .filter((i) => i.edge.kind === 'imports-file')
+        .slice(0, 50)
+        .map((i) => ('resolved' in i.source
+          ? { id: i.source.id, resolved: false }
+          : { ...summarise(i.source), resolved: true })),
+      symbols: symbols.slice(0, 50).map(summarise),
     };
+    return { data: formatObjectArrays(data, input) };
   },
 };
 

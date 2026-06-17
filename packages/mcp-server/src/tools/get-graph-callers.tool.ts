@@ -1,5 +1,6 @@
 import { GraphQueryApi, GraphStore, type INode } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
 const NEXT = 'shrk graph index';
 
@@ -18,6 +19,7 @@ export const getGraphCallersTool: IToolDefinition = {
     properties: {
       symbol: { type: 'string' },
       mode: { type: 'string', enum: ['call', 'reference'] },
+      ...FORMAT_INPUT_PROPERTY,
     },
     required: ['symbol'],
     additionalProperties: false,
@@ -56,15 +58,14 @@ export const getGraphCallersTool: IToolDefinition = {
       };
     }
     const hits = mode === 'reference' ? api.referencesOf(sym.id) : api.callersOf(sym.id);
-    return {
-      data: {
-        schema: 'sharkcraft.graph-callers/v1',
-        symbol: summarise(sym),
-        mode,
-        total: hits.length,
-        callers: hits.slice(0, 200).map(summarise),
-      },
+    const data = {
+      schema: 'sharkcraft.graph-callers/v1',
+      symbol: summarise(sym),
+      mode,
+      total: hits.length,
+      callers: hits.slice(0, 200).map(summarise),
     };
+    return { data: formatObjectArrays(data, input) };
   },
 };
 

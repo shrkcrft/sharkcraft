@@ -1,9 +1,11 @@
 import type { IToolDefinition } from '../server/tool-definition.ts';
 import { searchKnowledge } from '@shrkcrft/knowledge';
+import { FORMAT_INPUT_PROPERTY, formatRows } from '../server/columnar-format.ts';
 
 export const searchKnowledgeTool: IToolDefinition = {
   name: 'search_knowledge',
-  description: 'Search knowledge entries by query/tags/types/scope/appliesWhen.',
+  description:
+    'Search knowledge entries by query/tags/types/scope/appliesWhen. Pass `format:"table"` for a token-efficient columnar payload.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -14,6 +16,7 @@ export const searchKnowledgeTool: IToolDefinition = {
       appliesWhen: { type: 'array', items: { type: 'string' } },
       minPriority: { type: 'string' },
       limit: { type: 'integer', minimum: 1 },
+      ...FORMAT_INPUT_PROPERTY,
     },
     additionalProperties: false,
   },
@@ -28,17 +31,19 @@ export const searchKnowledgeTool: IToolDefinition = {
       minPriority: typeof input.minPriority === 'string' ? input.minPriority : undefined,
       limit,
     });
-    return {
-      data: results.map((r) => ({
-        id: r.entry.id,
-        title: r.entry.title,
-        score: r.score,
-        type: r.entry.type,
-        priority: r.entry.priority,
-        tags: r.entry.tags,
-        scope: r.entry.scope,
-        reasons: r.reasons,
-      })),
-    };
+    const rows = results.map((r) => ({
+      id: r.entry.id,
+      title: r.entry.title,
+      score: r.score,
+      type: r.entry.type,
+      priority: r.entry.priority,
+      tags: r.entry.tags,
+      scope: r.entry.scope,
+      reasons: r.reasons,
+    }));
+    // `format:"table"` columnar-encodes the homogeneous hit rows; scalars and
+    // string-array cells (tags/scope/reasons) reconstruct losslessly. Default
+    // (no format / format:"json") returns the bare array unchanged.
+    return { data: formatRows(rows, input) };
   },
 };

@@ -64,4 +64,18 @@ describe('validateToolInput', () => {
     });
     expect(result.ok).toBe(false);
   });
+
+  test('compress_context accepts maxTokens (strict validator mirrors the inputSchema)', () => {
+    // Regression: the strict zod validator runs on the real MCP wire BEFORE the
+    // handler, so every input the tool advertises must be allowed here or the
+    // call is rejected with "Unrecognized key". maxTokens arms SmartCrusher.
+    const result = validateToolInput('compress_context', {
+      content: '[{"a":1},{"a":2}]',
+      contentType: 'json-array',
+      query: 'a',
+      maxItems: 5,
+      maxTokens: 50,
+    });
+    expect(result.ok).toBe(true);
+  });
 });

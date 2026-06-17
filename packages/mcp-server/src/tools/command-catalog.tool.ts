@@ -1,4 +1,5 @@
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
 // DX#4 — the previous `ALL_TOOLS_FOR_AUDIT` static list was a manual
 // duplicate of `ALL_TOOLS` from `./all-tools.ts`. Every round that added
@@ -180,6 +181,7 @@ export const getCommandCatalogTool: IToolDefinition = {
     properties: {
       safetyLevel: { type: 'string', description: 'Filter by safety level (read-only, writes-session, writes-drafts, writes-source, runs-shell, requires-review).' },
       category: { type: 'string', description: 'Filter by category.' },
+      ...FORMAT_INPUT_PROPERTY,
     },
     additionalProperties: false,
   },
@@ -189,14 +191,16 @@ export const getCommandCatalogTool: IToolDefinition = {
     let entries: readonly ICatalogEntry[] = COMMAND_CATALOG_EXPORT;
     if (typeof safety === 'string') entries = entries.filter((e) => e.safetyLevel === safety);
     if (typeof category === 'string') entries = entries.filter((e) => e.category === category);
-    return {
-      data: {
-        entries,
-        totals: {
-          total: COMMAND_CATALOG_EXPORT.length,
-          returned: entries.length,
-        },
+    const data = {
+      entries,
+      totals: {
+        total: COMMAND_CATALOG_EXPORT.length,
+        returned: entries.length,
       },
     };
+    // `format:"table"` columnar-encodes the homogeneous `entries` array
+    // (the ~11-field catalog rows); the `totals` scalar object is left
+    // untouched. Default/`format:"json"` returns the object unchanged.
+    return { data: formatObjectArrays(data, input) };
   },
 };

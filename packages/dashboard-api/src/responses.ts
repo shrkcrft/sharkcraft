@@ -122,6 +122,30 @@ export interface IDashboardPresetsResponse {
   }[];
 }
 
+/** Per-surface token savings from the deterministic compression layer. */
+export interface IDashboardCompressionResponse {
+  readonly surfaces: readonly {
+    readonly surface: string;
+    readonly strategy: string;
+    readonly before: number;
+    readonly after: number;
+    readonly savedPct: number;
+  }[];
+  /** Total before/after across the measured surfaces. */
+  readonly totals: {
+    readonly before: number;
+    readonly after: number;
+    readonly savedPct: number;
+  };
+  /**
+   * True when the token counts are the deterministic estimator's approximation
+   * (accurate on percentages, rough on absolutes — off by up to ~74%), false
+   * when a real BPE tokenizer produced exact cl100k_base counts. The UI must
+   * never present an estimate as exact.
+   */
+  readonly tokensAreEstimated: boolean;
+}
+
 export interface IDashboardPipelinesResponse {
   readonly available: boolean;
   readonly pipelines: readonly {

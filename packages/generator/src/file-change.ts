@@ -1,4 +1,4 @@
-import type { IPlannedOperation } from './planned-change.ts';
+import type { IPlannedOperation } from './operations.ts';
 
 export enum FileChangeType {
   Create = 'create',

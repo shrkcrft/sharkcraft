@@ -1,8 +1,9 @@
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatRows } from '../server/columnar-format.ts';
 
 export const listKnowledgeTool: IToolDefinition = {
   name: 'list_knowledge',
-  description: 'Lists available knowledge entries (id, title, type, tags, scope, priority, appliesWhen). Filterable.',
+  description: 'Lists available knowledge entries (id, title, type, tags, scope, priority, appliesWhen). Filterable. Pass `format:"table"` for a token-efficient columnar payload.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -12,6 +13,7 @@ export const listKnowledgeTool: IToolDefinition = {
       tags: { type: 'array', items: { type: 'string' } },
       appliesWhen: { type: 'array', items: { type: 'string' } },
       limit: { type: 'integer', minimum: 1 },
+      ...FORMAT_INPUT_PROPERTY,
     },
     additionalProperties: false,
   },
@@ -33,17 +35,16 @@ export const listKnowledgeTool: IToolDefinition = {
     }
     entries = entries.slice(0, limit);
 
-    return {
-      data: entries.map((e) => ({
-        id: e.id,
-        title: e.title,
-        type: e.type,
-        priority: e.priority,
-        scope: e.scope,
-        tags: e.tags,
-        appliesWhen: e.appliesWhen,
-        summary: e.summary,
-      })),
-    };
+    const rows = entries.map((e) => ({
+      id: e.id,
+      title: e.title,
+      type: e.type,
+      priority: e.priority,
+      scope: e.scope,
+      tags: e.tags,
+      appliesWhen: e.appliesWhen,
+      summary: e.summary,
+    }));
+    return { data: formatRows(rows, input) };
   },
 };

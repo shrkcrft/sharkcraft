@@ -44,6 +44,7 @@ const getRelevantContextSchema = z
     includeRules: z.boolean().optional(),
     includePaths: z.boolean().optional(),
     includeDocs: z.boolean().optional(),
+    compact: z.boolean().optional(),
   })
   .strict();
 
@@ -86,6 +87,48 @@ const getPipelineContextSchema = z
   })
   .strict();
 
+const compressContextSchema = z
+  .object({
+    content: z.string().min(1, 'content is required'),
+    contentType: z.string().optional(),
+    query: z.string().optional(),
+    maxItems: z.number().int().min(1).optional(),
+    // Arms the lossy SmartCrusher row-sampler for oversized homogeneous arrays.
+    // Must mirror the tool's inputSchema, or the strict validator rejects the
+    // call on the real MCP wire before the handler ever runs.
+    maxTokens: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+const retrieveOriginalSchema = z.object({ key: z.string().min(1, 'key is required') }).strict();
+
+const alignCacheSchema = z
+  .object({ content: z.string().min(1, 'content is required'), map: z.unknown().optional() })
+  .strict();
+
+const restoreCacheSchema = z
+  .object({ content: z.string(), map: z.unknown() })
+  .strict();
+
+const getKnowledgeGraphSchema = z
+  .object({
+    format: z.enum(['json', 'table']).optional(),
+    // Mirrors the tool's inputSchema (P5.2). Must stay in lockstep, or the
+    // schema-parity guard (schema-parity.test.ts) turns red.
+    maxTokens: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+// deps_audit advertises package/format/maxTokens; validate them on the wire so
+// the new lossy `maxTokens` budget can't be armed with a bad value (P5.2/P1.3).
+const depsAuditSchema = z
+  .object({
+    package: z.string().optional(),
+    format: z.enum(['json', 'table']).optional(),
+    maxTokens: z.number().int().min(1).optional(),
+  })
+  .strict();
+
 export const TOOL_INPUT_SCHEMAS: Readonly<Record<string, z.ZodTypeAny>> = Object.freeze({
   create_generation_plan: createGenerationPlanSchema,
   render_template_preview: renderTemplatePreviewSchema,
@@ -102,6 +145,12 @@ export const TOOL_INPUT_SCHEMAS: Readonly<Record<string, z.ZodTypeAny>> = Object
   get_pipeline_context: getPipelineContextSchema,
   get_pack: getPackSchema,
   create_pipeline_plan: createPipelinePlanSchema,
+  compress_context: compressContextSchema,
+  retrieve_original: retrieveOriginalSchema,
+  align_cache: alignCacheSchema,
+  restore_cache: restoreCacheSchema,
+  get_knowledge_graph: getKnowledgeGraphSchema,
+  deps_audit: depsAuditSchema,
 });
 
 export interface IToolValidationFailure {

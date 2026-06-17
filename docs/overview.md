@@ -54,3 +54,4 @@ Each file is **structured TypeScript** (typed entries) so retrieval is precise. 
 - **What should I re-validate?** — `shrk changes acceptance-replay` (R39). See [`docs/acceptance-replay.md`](acceptance-replay.md).
 - **How big is this repo?** — `shrk stats` (R59). See [`docs/repository-stats.md`](repository-stats.md). Available as the **Statistics** dashboard page and the `get_repository_stats` MCP tool.
 - **Open the dashboard** — `shrk dashboard` (R59). See [`docs/dashboard.md`](dashboard.md).
+- **Cut the tokens an agent reads** — `shrk compress` / `shrk expand`, the `compress_context` + `retrieve_original` MCP tools, and `get_knowledge_graph format:"table"`. Deterministic, reversible (CCR), no model in the loop. See [`docs/compression.md`](compression.md).

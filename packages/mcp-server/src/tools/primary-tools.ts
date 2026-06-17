@@ -58,6 +58,11 @@ export const PRIMARY_MCP_TOOLS: ReadonlySet<string> = new Set([
   'search_all',
   'search_knowledge',
   'search_commands',
+  // Token compression (deterministic, reversible)
+  'compress_context',
+  'retrieve_original',
+  'align_cache',
+  'restore_cache',
 ]);
 
 /**

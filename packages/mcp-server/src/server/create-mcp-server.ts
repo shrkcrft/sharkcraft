@@ -8,6 +8,8 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { inspectSharkcraft, type ISharkcraftInspection } from '@shrkcrft/inspector';
+import { InMemoryCcrStore, type ICcrStore } from '@shrkcrft/compress';
+import { serializeToolData } from './serialize-tool-data.ts';
 import {
   MCP_SERVER_NAME,
   MCP_SERVER_VERSION,
@@ -63,6 +65,8 @@ interface ServerState {
   toolsByName: Map<string, IToolDefinition>;
   /** Optional tier-gate resolver. */
   gateResolver?: McpGateResolver;
+  /** In-memory CCR store shared across this server's tool calls. */
+  ccrStore: ICcrStore;
 }
 
 /**
@@ -92,7 +96,7 @@ function toolResponseToCallResult(response: IToolResponse): {
   const content: Array<{ type: 'text'; text: string }> = [];
   if (response.text) content.push({ type: 'text', text: response.text });
   if (response.data !== undefined) {
-    content.push({ type: 'text', text: JSON.stringify(response.data, null, 2) });
+    content.push({ type: 'text', text: serializeToolData(response.data) });
   }
   if (content.length === 0) content.push({ type: 'text', text: '(empty)' });
   return { content, isError: response.isError ?? false };
@@ -114,6 +118,7 @@ export function createSharkcraftServer(config: CreateSharkcraftServerOptions): {
     config: effectiveConfig,
     inspection: null,
     toolsByName: new Map(ALL_TOOLS.map((t) => [t.name, t])),
+    ccrStore: new InMemoryCcrStore(),
     ...(config.gateResolver ? { gateResolver: config.gateResolver } : {}),
   };
 
@@ -202,7 +207,7 @@ export function createSharkcraftServer(config: CreateSharkcraftServerOptions): {
       const inspection = await loadInspection(state);
       const response = await tool.handler(
         validation.data as Record<string, unknown>,
-        { inspection, cwd: state.config.cwd },
+        { inspection, cwd: state.config.cwd, allTools: ALL_TOOLS, ccrStore: state.ccrStore },
       );
       return toolResponseToCallResult(response);
     } catch (e) {

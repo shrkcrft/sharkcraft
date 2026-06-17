@@ -25,6 +25,7 @@ export type {
   IDashboardCommandsResponse,
   IDashboardPacksResponse,
   IDashboardPresetsResponse,
+  IDashboardCompressionResponse,
   IDashboardPipelinesResponse,
   IDashboardSessionsResponse,
   IDashboardSessionDetailResponse,

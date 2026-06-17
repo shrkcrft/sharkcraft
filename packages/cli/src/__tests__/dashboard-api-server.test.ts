@@ -23,13 +23,43 @@ describe('dashboard-api-server', () => {
     const cwd = makeProject();
     const handle = await startDashboardApiServer({ cwd });
     try {
-      for (const path of ['/api/health', '/api/capabilities', '/api/overview', '/api/commands', '/api/schemas', '/api/sessions', '/api/onboarding/adoption', '/api/scaffolds', '/api/stats']) {
+      for (const path of ['/api/health', '/api/capabilities', '/api/overview', '/api/commands', '/api/schemas', '/api/sessions', '/api/onboarding/adoption', '/api/scaffolds', '/api/stats', '/api/compression']) {
         const r = await http('GET', `${handle.url}${path}`);
         expect(r.status).toBe(200);
         const env = JSON.parse(r.body) as { schema: string; data: unknown; projectRoot: string };
         expect(env.schema).toBe('sharkcraft.dashboard-api/v1');
         expect(env.projectRoot).toBe(cwd);
         expect(env.data).toBeTruthy();
+      }
+    } finally {
+      await handle.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('compression endpoint reports per-surface token savings', async () => {
+    const cwd = makeProject();
+    const handle = await startDashboardApiServer({ cwd });
+    try {
+      const r = await http('GET', `${handle.url}/api/compression`);
+      expect(r.status).toBe(200);
+      const env = JSON.parse(r.body) as {
+        data: {
+          surfaces: { surface: string; strategy: string; before: number; after: number; savedPct: number }[];
+          totals: { before: number; after: number; savedPct: number };
+          tokensAreEstimated: boolean;
+        };
+      };
+      expect(Array.isArray(env.data.surfaces)).toBe(true);
+      expect(typeof env.data.totals.before).toBe('number');
+      expect(typeof env.data.totals.after).toBe('number');
+      expect(typeof env.data.totals.savedPct).toBe('number');
+      // Honesty flag: the panel must declare whether counts are estimated or
+      // exact, so the UI never presents an approximation as a precise number.
+      expect(typeof env.data.tokensAreEstimated).toBe('boolean');
+      for (const s of env.data.surfaces) {
+        // The compression layer must never inflate a surface.
+        expect(s.after).toBeLessThanOrEqual(s.before);
       }
     } finally {
       await handle.close();

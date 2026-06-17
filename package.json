@@ -1,6 +1,6 @@
 {
   "name": "sharkcraft",
-  "version": "0.1.0-alpha.15",
+  "version": "0.1.0-alpha.16",
   "private": true,
   "description": "SharkCraft — universal AI-ready developer intelligence system (Bun-native).",
   "license": "MIT",
@@ -38,6 +38,7 @@
     "release:smoke-test": "bun run scripts/install-smoke-test.ts",
     "release:preflight": "bun run scripts/release-preflight.ts",
     "audit:doctor-json": "bun run scripts/audit-doctor-json.ts",
+    "compress:token-eval": "bun run scripts/compress-token-eval.ts",
     "bump-versions": "bun run scripts/bump-versions.ts",
     "typecheck": "tsc -p tsconfig.base.json --noEmit",
     "test": "bun test",
@@ -65,6 +66,7 @@
     "@playwright/test": "1.60.0",
     "@types/bun": "latest",
     "@types/node": "^22",
+    "gpt-tokenizer": "^3.4.0",
     "typescript": "^5.6.0"
   },
   "engines": {

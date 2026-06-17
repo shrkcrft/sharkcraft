@@ -62,7 +62,8 @@ describe('MCP onboarding adoption tools', () => {
     const inspection = await inspectSharkcraft({ cwd: root });
     const tool = ALL_TOOLS.find((t) => t.name === 'get_command_catalog');
     expect(tool).toBeDefined();
-    const r = await tool!.handler({}, { inspection, cwd: root });
+    // format:"json" pins the explicit-array shape (table is the wire default).
+    const r = await tool!.handler({ format: 'json' }, { inspection, cwd: root });
     expect(r.isError ?? false).toBe(false);
     const data = r.data as { entries: { command: string }[] };
     expect(data.entries.length).toBeGreaterThan(0);

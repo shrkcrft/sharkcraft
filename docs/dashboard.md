@@ -79,6 +79,8 @@ See `docs/dashboard-api.md` for the full list. All endpoints return an
 | Route                    | Purpose |
 |--------------------------|---------|
 | `#/overview`             | Repo health, next actions, recent sessions |
+| `#/stats`                | Repository statistics (files, LOC, sizes, languages) |
+| `#/compression`          | Per-surface token savings from the compression layer |
 | `#/sessions`             | Browse dev sessions |
 | `#/sessions/:id`         | Session detail: plans, artifacts, next command |
 | `#/quality`              | Quality gates, drift, coverage |

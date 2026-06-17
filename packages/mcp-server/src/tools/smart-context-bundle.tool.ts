@@ -7,6 +7,7 @@ import {
   parseTaskTypeOverride,
 } from '@shrkcrft/embeddings';
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
 /**
  * `smart_context_bundle` — read-only MCP surface for the focused
@@ -32,6 +33,7 @@ export const smartContextBundleTool: IToolDefinition = {
       task: { type: 'string' },
       taskType: { type: 'string' },
       maxBlocks: { type: 'number' },
+      ...FORMAT_INPUT_PROPERTY,
     },
     required: ['task'],
     additionalProperties: false,
@@ -84,14 +86,17 @@ export const smartContextBundleTool: IToolDefinition = {
           confidence: classification.confidence,
           signals: classification.signals.slice(0, 6),
         },
-        focused: {
-          model: focused.model,
-          approxTokens: focused.approxTokens,
-          files: focused.files,
-          rules: focused.rules,
-          docHits: focused.docHits,
-          verificationCommands: focused.verificationCommands,
-        },
+        focused: formatObjectArrays(
+          {
+            model: focused.model,
+            approxTokens: focused.approxTokens,
+            files: focused.files,
+            rules: focused.rules,
+            docHits: focused.docHits,
+            verificationCommands: focused.verificationCommands,
+          },
+          input,
+        ),
         nextCommands: nextCommandHints(task, classification.type),
         notes: [
           'This bundle is read-only. To turn the recommended MVP into starter files, the human should run `shrk smart-context "<task>" --focused --plan --save` followed by `shrk spike <slug>`.',

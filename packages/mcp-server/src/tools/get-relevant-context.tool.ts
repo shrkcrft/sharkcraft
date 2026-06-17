@@ -1,6 +1,7 @@
 import type { IToolDefinition } from '../server/tool-definition.ts';
 import { buildContext } from '@shrkcrft/context';
 import { buildProjectOverview, renderOverviewText } from '@shrkcrft/inspector';
+import { compressMarkdown } from '@shrkcrft/compress';
 
 export const getRelevantContextTool: IToolDefinition = {
   name: 'get_relevant_context',
@@ -20,6 +21,11 @@ export const getRelevantContextTool: IToolDefinition = {
       includeRules: { type: 'boolean' },
       includePaths: { type: 'boolean' },
       includeDocs: { type: 'boolean' },
+      compact: {
+        type: 'boolean',
+        description:
+          'When true, the markdown body is run through the deterministic markdown compressor (headers/leads/structure kept, prose thinned). Reversible: the original is cached and a `<<ccr:KEY>>` marker emitted — call retrieve_original to get it back.',
+      },
     },
     required: ['task'],
     additionalProperties: false,
@@ -40,18 +46,37 @@ export const getRelevantContextTool: IToolDefinition = {
       includeDocs: input.includeDocs as boolean | undefined,
       projectOverview: renderOverviewText(overview),
     });
+    const sections = result.sections.map((s) => ({
+      title: s.title,
+      tokens: s.tokens,
+      truncated: s.truncated ?? false,
+      entryIds: s.entryIds,
+    }));
+    if (input.compact === true) {
+      const c = compressMarkdown(result.body, ctx.ccrStore ? { store: ctx.ccrStore } : {});
+      return {
+        text: c.compressed,
+        data: {
+          totalTokens: result.totalTokens,
+          maxTokens: result.maxTokens,
+          omittedSections: result.omittedSections,
+          sections,
+          compaction: {
+            strategy: c.strategy,
+            tokensBefore: c.savings.before,
+            tokensAfter: c.savings.after,
+            ccrKey: c.ccrKey ?? null,
+          },
+        },
+      };
+    }
     return {
       text: result.body,
       data: {
         totalTokens: result.totalTokens,
         maxTokens: result.maxTokens,
         omittedSections: result.omittedSections,
-        sections: result.sections.map((s) => ({
-          title: s.title,
-          tokens: s.tokens,
-          truncated: s.truncated ?? false,
-          entryIds: s.entryIds,
-        })),
+        sections,
       },
     };
   },

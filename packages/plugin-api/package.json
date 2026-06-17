@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/plugin-api",
-  "version": "0.1.0-alpha.15",
+  "version": "0.1.0-alpha.16",
   "description": "SharkCraft plugin API: extension points for commands, knowledge, templates, MCP tools.",
   "license": "MIT",
   "author": "SharkCraft contributors",

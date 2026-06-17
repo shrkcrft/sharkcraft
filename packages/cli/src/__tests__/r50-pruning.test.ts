@@ -145,8 +145,11 @@ describe('surface lockdown holds', () => {
     // complete the parallel-agent feed loop — ceiling 379. Daemon
     // management (`watch list/stop/prune`) + `deps-audit` add four
     // more — ceiling 384. `scaffold-validate` + `move-plan` round
-    // out the delegatable-task surface — ceiling 386.
-    expect(COMMAND_CATALOG.length).toBeLessThan(386);
+    // out the delegatable-task surface — ceiling 386. The token-compression
+    // layer adds four deterministic, reversible commands — `compress` / `expand`
+    // (Compress-Cache-Retrieve) and `align` / `unalign` (KV-cache alignment) —
+    // raising the ceiling to 392 (see docs/compression.md).
+    expect(COMMAND_CATALOG.length).toBeLessThan(392);
     // Sanity: not absurdly small.
     expect(COMMAND_CATALOG.length).toBeGreaterThan(250);
   });

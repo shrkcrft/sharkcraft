@@ -1,5 +1,6 @@
 import { GraphQueryApi, GraphStore, type INode } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
 const NEXT = 'shrk graph index';
 
@@ -22,6 +23,7 @@ export const getGraphSearchTool: IToolDefinition = {
       kind: { type: 'string', enum: ['file', 'symbol', 'package'] },
       limit: { type: 'number' },
       exact: { type: 'boolean' },
+      ...FORMAT_INPUT_PROPERTY,
     },
     required: ['query'],
     additionalProperties: false,
@@ -61,15 +63,14 @@ export const getGraphSearchTool: IToolDefinition = {
       const p = api.neighbours(`package:${query}`);
       if (p) matches.push(p.node);
     }
-    return {
-      data: {
-        schema: 'sharkcraft.graph-search/v1',
-        query,
-        kind: args.kind ?? 'any',
-        total: Math.min(matches.length, limit),
-        matches: matches.slice(0, limit).map(summarise),
-      },
+    const data = {
+      schema: 'sharkcraft.graph-search/v1',
+      query,
+      kind: args.kind ?? 'any',
+      total: Math.min(matches.length, limit),
+      matches: matches.slice(0, limit).map(summarise),
     };
+    return { data: formatObjectArrays(data, input) };
   },
 };
 

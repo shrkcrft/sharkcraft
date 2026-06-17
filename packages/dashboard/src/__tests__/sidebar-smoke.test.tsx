@@ -31,6 +31,7 @@ describe('dashboard smoke render', () => {
       'Packs',
       'Presets &amp; Pipelines',
       'MCP',
+      'Token Savings',
     ]) {
       expect(html).toContain(label);
     }

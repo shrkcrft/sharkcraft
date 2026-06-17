@@ -212,23 +212,17 @@ describe('JSON outputs remain clean (no banner / prose pollution)', () => {
 
 describe('MCP canonical entrypoint guidance', () => {
   test('prepare_agent_task tool description claims canonical first-call status', async () => {
-    const { prepareAgentTaskTool } = await import(
-      '../../../mcp-server/src/tools/r33-agent-task-prep.tool.ts'
-    );
+    const { prepareAgentTaskTool } = await import('@shrkcrft/mcp-server');
     expect(prepareAgentTaskTool.description).toMatch(/canonical|first/i);
   });
 
   test('get_task_packet defers to prepare_agent_task', async () => {
-    const { getTaskPacketTool } = await import(
-      '../../../mcp-server/src/tools/get-task-packet.tool.ts'
-    );
+    const { getTaskPacketTool } = await import('@shrkcrft/mcp-server');
     expect(getTaskPacketTool.description).toMatch(/prepare_agent_task/i);
   });
 
   test('get_relevant_context defers to prepare_agent_task', async () => {
-    const { getRelevantContextTool } = await import(
-      '../../../mcp-server/src/tools/get-relevant-context.tool.ts'
-    );
+    const { getRelevantContextTool } = await import('@shrkcrft/mcp-server');
     expect(getRelevantContextTool.description).toMatch(/prepare_agent_task/i);
   });
 });

@@ -89,7 +89,16 @@ shrk graph why <a> <b>           # shortest-path explanation between two graph n
 shrk onboard --dry-run           # onboard an existing repo (advisory)
 shrk stats                       # per-language file counts, LOC, sizes, averages
 shrk dashboard                   # local read-only dashboard (127.0.0.1:4567)
+shrk compress <file|->           # deterministically shrink a blob (JSON→table, log/diff/search→signal); CCR-reversible
+shrk expand <ccr-key>            # retrieve a CCR-cached original (the reverse of compress)
 ```
+
+**Token compression (deterministic, no model — see `docs/compression.md`).**
+`@shrkcrft/compress` cuts the tokens an agent pays for the same information:
+MCP responses are minified valid JSON; `get_knowledge_graph format:"table"`
+and `compress_context` hoist/columnarise or line-reduce blobs; lossy passes
+cache the original (Compress-Cache-Retrieve) and emit a `<<ccr:KEY>>` marker
+recoverable via `retrieve_original` / `shrk expand`.
 
 Opt-in **local-LLM** enrichment (requires a reachable Ollama daemon or a
 local `.gguf` model for llama.cpp — *no hosted API keys*):

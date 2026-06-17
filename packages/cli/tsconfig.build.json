@@ -8,6 +8,9 @@
       "@shrkcrft/core": [
         "../core/dist/index.d.ts"
       ],
+      "@shrkcrft/compress": [
+        "../compress/dist/index.d.ts"
+      ],
       "@shrkcrft/config": [
         "../config/dist/index.d.ts"
       ],

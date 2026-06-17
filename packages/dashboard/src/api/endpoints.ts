@@ -4,6 +4,7 @@ import type {
   IDashboardBoundaryResponse,
   IDashboardCapabilitiesResponse,
   IDashboardCommandsResponse,
+  IDashboardCompressionResponse,
   IDashboardCoverageResponse,
   IDashboardDoctorResponse,
   IDashboardDriftResponse,
@@ -54,6 +55,9 @@ export const getCommands = (signal?: AbortSignal): Promise<IRawApiResponse<IDash
   apiGet('/api/commands', undefined, signal);
 export const getPacks = (signal?: AbortSignal): Promise<IRawApiResponse<IDashboardPacksResponse>> =>
   apiGet('/api/packs', undefined, signal);
+export const getCompression = (
+  signal?: AbortSignal,
+): Promise<IRawApiResponse<IDashboardCompressionResponse>> => apiGet('/api/compression', undefined, signal);
 export const getPresets = (signal?: AbortSignal): Promise<IRawApiResponse<IDashboardPresetsResponse>> =>
   apiGet('/api/presets', undefined, signal);
 export const getPipelines = (signal?: AbortSignal): Promise<IRawApiResponse<IDashboardPipelinesResponse>> =>

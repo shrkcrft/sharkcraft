@@ -4,6 +4,7 @@ import {
   type IDoctorCheck,
 } from '@shrkcrft/inspector';
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
 interface IInput {
   /** Restrict to specific severities. Same set as `shrk code-intel --only`. */
@@ -30,6 +31,7 @@ export const getCodeIntelligenceStateTool: IToolDefinition = {
     properties: {
       only: { type: 'array', items: { type: 'string' } },
       checkId: { type: 'string' },
+      ...FORMAT_INPUT_PROPERTY,
     },
     additionalProperties: false,
   },
@@ -44,14 +46,13 @@ export const getCodeIntelligenceStateTool: IToolDefinition = {
       checks = checks.filter((c) => allowed.has(c.severity));
     }
     const summary = summarize(checks);
-    return {
-      data: {
-        schema: 'sharkcraft.code-intelligence-state/v1',
-        totalChecks: checks.length,
-        summary,
-        checks,
-      },
+    const data = {
+      schema: 'sharkcraft.code-intelligence-state/v1',
+      totalChecks: checks.length,
+      summary,
+      checks,
     };
+    return { data: formatObjectArrays(data, input) };
   },
 };
 

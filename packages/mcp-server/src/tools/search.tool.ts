@@ -7,11 +7,12 @@ import {
   SearchSource,
 } from '@shrkcrft/inspector';
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
 export const searchAllTool: IToolDefinition = {
   name: 'search_all',
   description:
-    'Unified, deterministic search across knowledge, rules, paths, templates, pipelines, presets, packs, boundaries, docs, sessions, bundles, constructs, and playbooks. No AI / embeddings — pure ranking. Read-only.',
+    'Unified, deterministic search across knowledge, rules, paths, templates, pipelines, presets, packs, boundaries, docs, sessions, bundles, constructs, and playbooks. No AI / embeddings — pure ranking. Pass `format:"table"` for a token-efficient columnar encoding of the `hits` array. Read-only.',
   inputSchema: {
     type: 'object',
     required: ['query'],
@@ -21,6 +22,7 @@ export const searchAllTool: IToolDefinition = {
       sources: { type: 'array', items: { type: 'string' } },
       limit: { type: 'number' },
       explain: { type: 'boolean' },
+      ...FORMAT_INPUT_PROPERTY,
     },
     additionalProperties: false,
   },
@@ -41,13 +43,14 @@ export const searchAllTool: IToolDefinition = {
     if (kinds.length > 0) opts.kinds = kinds;
     if (sources.length > 0) opts.sources = sources;
     const result = searchIndex(index, opts);
-    return {
-      data: {
-        query: result.query,
-        total: result.total,
-        truncated: result.truncated,
-        hits: result.hits,
-      },
+    const data = {
+      query: result.query,
+      total: result.total,
+      truncated: result.truncated,
+      hits: result.hits,
     };
+    // `format:"table"` columnar-encodes the homogeneous `hits` array; the
+    // scalar fields (query/total/truncated) pass through untouched.
+    return { data: formatObjectArrays(data, input) };
   },
 };

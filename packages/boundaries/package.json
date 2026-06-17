@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/boundaries",
-  "version": "0.1.0-alpha.15",
+  "version": "0.1.0-alpha.16",
   "description": "SharkCraft boundary rules: detect when a repository violates its own architecture (forbidden imports across folder/package/layer boundaries).",
   "license": "MIT",
   "author": "SharkCraft contributors",

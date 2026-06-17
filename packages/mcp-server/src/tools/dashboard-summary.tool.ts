@@ -15,8 +15,6 @@ import {
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { IToolDefinition } from '../server/tool-definition.ts';
-// DX#4 — derive audit view from ALL_TOOLS at runtime.
-import { ALL_TOOLS } from './all-tools.ts';
 
 interface IDashboardSummaryInput {
   includeRecentSessions?: boolean;
@@ -102,7 +100,7 @@ export const getDashboardSummaryTool: IToolDefinition = {
     const safety = buildSafetyAudit({
       inspection,
       catalog: [],
-      mcpTools: ALL_TOOLS.map((t) => ({ name: t.name, description: t.description })),
+      mcpTools: (ctx.allTools ?? []).map((t) => ({ name: t.name, description: t.description })),
       planSecretEnv: 'SHARKCRAFT_PLAN_SECRET',
       planSecretConfigured:
         typeof process.env['SHARKCRAFT_PLAN_SECRET'] === 'string' &&
@@ -186,7 +184,7 @@ export const getDashboardSummaryTool: IToolDefinition = {
         invalid: inspection.packs.invalidPacks?.length ?? 0,
       },
       policy: policySummary,
-      mcpTools: { total: ALL_TOOLS.length, anyWritable: safety.mcp.anyWritable },
+      mcpTools: { total: ctx.allTools?.length ?? 0, anyWritable: safety.mcp.anyWritable },
       reportSite: { available: siteAvailable, dir: reportSiteDir },
       releaseReadiness: releaseReadinessSummary,
       releaseSmoke: smokeSummary,

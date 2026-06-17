@@ -26,8 +26,6 @@ import {
   scanDevSession,
   type IReviewPacket,
 } from '@shrkcrft/inspector';
-// DX#4 — derive audit view from ALL_TOOLS at runtime.
-import { ALL_TOOLS } from './all-tools.ts';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
 type ReportFormat = 'text' | 'markdown' | 'html' | 'json';
@@ -118,7 +116,7 @@ export const getSafetyHtmlReportTool: IToolDefinition = {
     const audit = buildSafetyAudit({
       inspection: ctx.inspection,
       catalog: [],
-      mcpTools: ALL_TOOLS.map((t) => ({ name: t.name, description: t.description, canWrite: false })),
+      mcpTools: (ctx.allTools ?? []).map((t) => ({ name: t.name, description: t.description, canWrite: false })),
       planSecretEnv: 'SHARKCRAFT_PLAN_SECRET',
       planSecretConfigured: typeof process.env.SHARKCRAFT_PLAN_SECRET === 'string' && process.env.SHARKCRAFT_PLAN_SECRET.length > 0,
     });

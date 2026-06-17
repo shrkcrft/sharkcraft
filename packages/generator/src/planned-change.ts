@@ -22,193 +22,23 @@
  */
 
 import { FileChangeType, type IFileChange } from './file-change.ts';
+import {
+  type IPlannedOperation,
+  type ICreateOperation,
+  type IAppendOperation,
+  type IInsertAfterOperation,
+  type IInsertBeforeOperation,
+  type IReplaceOperation,
+  type IExportOperation,
+} from './operations.ts';
+
+// The operation model lives in ./operations.ts. Re-export it from here — this
+// module is the public face of the planned-change pipeline, and its consumers
+// (dry-run, saved-plan, synthetic-plan, and the @shrkcrft/generator barrel)
+// import the operation types from this path.
+export * from './operations.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Operation union — declared by templates, persisted in saved plans
-// ─────────────────────────────────────────────────────────────────────────────
-
-export type PlannedOperationKind =
-  | 'create'
-  | 'append'
-  | 'insert-after'
-  | 'insert-before'
-  | 'replace'
-  | 'export'
-  | 'ensure-import'
-  | 'insert-enum-entry'
-  | 'insert-object-entry'
-  | 'insert-array-entry'
-  | 'insert-before-closing-brace'
-  | 'insert-between-anchors';
-
-interface ICreateOperation {
-  kind: 'create';
-  content: string;
-  description?: string;
-}
-
-interface IAppendOperation {
-  kind: 'append';
-  /**
-   * The snippet to append at the end of the file. The engine adds a single
-   * `\n` separator between the existing trailing content and the snippet if
-   * the existing file does not already end with a newline.
-   */
-  snippet: string;
-  /**
-   * Optional idempotency marker. If the existing file already contains this
-   * string anywhere, the operation is skipped (already applied).
-   */
-  ifMissing?: string;
-  description?: string;
-}
-
-interface IInsertAfterOperation {
-  kind: 'insert-after';
-  /** Literal substring that must appear exactly once in the file. */
-  anchor: string;
-  /** The snippet to insert immediately after `anchor`. */
-  snippet: string;
-  /** Idempotency check; default = `snippet`. */
-  ifMissing?: string;
-  description?: string;
-}
-
-interface IInsertBeforeOperation {
-  kind: 'insert-before';
-  anchor: string;
-  snippet: string;
-  ifMissing?: string;
-  description?: string;
-}
-
-interface IReplaceOperation {
-  kind: 'replace';
-  /** Literal substring to find. */
-  find: string;
-  /** Replacement text. */
-  replaceWith: string;
-  /**
-   * If provided, the engine requires exactly this many matches; otherwise the
-   * default is exactly 1. Multiple matches without an explicit `expectMatches`
-   * is a conflict (ambiguous replace).
-   */
-  expectMatches?: number;
-  description?: string;
-}
-
-interface IExportOperation {
-  kind: 'export';
-  /** The symbol/path to re-export. */
-  from: string;
-  /** Optional named symbols. When omitted, emits `export * from`. */
-  symbols?: readonly string[];
-  /** Idempotency check; default = computed export line. */
-  ifMissing?: string;
-  description?: string;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Higher-level deterministic primitives.
-//
-// These resolve to one of the v2 base kinds at evaluation time (no AST, no
-// codegen at apply time). They give templates a stable, idempotent way to
-// edit common surfaces (imports, enum entries, object entries, etc.) without
-// re-inventing anchor strings per pack.
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface IEnsureImportOperation {
-  kind: 'ensure-import';
-  /** Module specifier, e.g. `'./events'` or `'@app/plugin-core'`. */
-  from: string;
-  /**
-   * Named symbols to ensure. The op is a NO-OP for symbols already imported
-   * from `from`. Default import (`type: 'default'`) and namespace import
-   * (`type: 'namespace'`) are also supported via dedicated fields below.
-   */
-  symbols?: readonly string[];
-  /** Treat the import as `import type { ... }` instead of value import. */
-  typeOnly?: boolean;
-  /** Default import binding (e.g. `import Foo from 'foo'`). */
-  defaultBinding?: string;
-  /** Namespace import binding (e.g. `import * as foo from 'foo'`). */
-  namespaceBinding?: string;
-  description?: string;
-}
-
-interface IInsertEnumEntryOperation {
-  kind: 'insert-enum-entry';
-  /** Enum identifier, e.g. `PaginationEventType`. */
-  enumName: string;
-  /** Identifier of the new enum member, e.g. `ITEM_SELECTED`. */
-  entryName: string;
-  /** Literal string value to assign, e.g. `'pagination.itemSelected'`. */
-  entryValue: string;
-  description?: string;
-}
-
-interface IInsertObjectEntryOperation {
-  kind: 'insert-object-entry';
-  /** Object identifier, e.g. `ROUTE_KEYS`. */
-  objectName: string;
-  /** Key to add. */
-  entryKey: string;
-  /** Value literal (already source-formatted). */
-  entryValue: string;
-  /** When `true`, allow shorthand entries; default `false`. */
-  shorthand?: boolean;
-  description?: string;
-}
-
-interface IInsertArrayEntryOperation {
-  kind: 'insert-array-entry';
-  /**
-   * Array identifier — a `const`/`let`/`var` bound to an array literal,
-   * e.g. `editorScopeEntries` or `DEFAULT_PANELS`. The element is inserted
-   * before the array's matching closing bracket.
-   */
-  arrayName: string;
-  /** Element source text to add (already source-formatted, no trailing comma). */
-  entryValue: string;
-  /** Optional idempotency marker (default = `entryValue`). */
-  ifMissing?: string;
-  description?: string;
-}
-
-interface IInsertBeforeClosingBraceOperation {
-  kind: 'insert-before-closing-brace';
-  /** Container identifier, e.g. an interface/class/enum name. */
-  containerName: string;
-  /** Snippet inserted immediately before the matching closing brace. */
-  snippet: string;
-  /** Optional idempotency marker (default = `snippet`). */
-  ifMissing?: string;
-  description?: string;
-}
-
-interface IInsertBetweenAnchorsOperation {
-  kind: 'insert-between-anchors';
-  beginAnchor: string;
-  endAnchor: string;
-  snippet: string;
-  /** Optional idempotency marker (default = `snippet`). */
-  ifMissing?: string;
-  description?: string;
-}
-
-export type IPlannedOperation =
-  | ICreateOperation
-  | IAppendOperation
-  | IInsertAfterOperation
-  | IInsertBeforeOperation
-  | IReplaceOperation
-  | IExportOperation
-  | IEnsureImportOperation
-  | IInsertEnumEntryOperation
-  | IInsertObjectEntryOperation
-  | IInsertArrayEntryOperation
-  | IInsertBeforeClosingBraceOperation
-  | IInsertBetweenAnchorsOperation;
 
 export interface IPlannedChange {
   /** Final file path relative to project root. */

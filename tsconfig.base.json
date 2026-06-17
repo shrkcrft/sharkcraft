@@ -54,6 +54,7 @@
       "@shrkcrft/plugin-api": ["./packages/plugin-api/src/index.ts"],
       "@shrkcrft/dashboard-api": ["./packages/dashboard-api/src/index.ts"],
       "@shrkcrft/shared": ["./packages/shared/src/index.ts"],
+      "@shrkcrft/compress": ["./packages/compress/src/index.ts"],
       "@shrkcrft/cli": ["./packages/cli/src/index.ts"],
       "@shrkcrft/mcp-server": ["./packages/mcp-server/src/index.ts"]
     }

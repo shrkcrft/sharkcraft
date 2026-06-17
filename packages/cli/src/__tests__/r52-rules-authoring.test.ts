@@ -76,7 +76,7 @@ describe('rules add / rules remove', () => {
       }),
     );
     expect(r.exit).toBe(0);
-    expect(r.out).toContain('"operation": "add"');
+    expect(r.out).toMatch(/"operation":\s*"add"/);
     expect(r.out).toMatch(/"type":\s*"rule"/);
   });
 

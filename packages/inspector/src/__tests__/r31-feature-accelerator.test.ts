@@ -39,7 +39,7 @@ import { findSymbolInProject, SymbolResolution } from '../symbol-index.ts';
 import {
   buildWatchPlan,
   maybeRunInWatchMode,
-} from '../../../cli/src/output/watch-loop.ts';
+} from '@shrkcrft/cli';
 import {
   explainRankerDecision,
   RANKER_EXPLAINABILITY_SCHEMA,

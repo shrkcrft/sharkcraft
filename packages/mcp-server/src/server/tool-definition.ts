@@ -1,4 +1,5 @@
 import type { ISharkcraftInspection } from '@shrkcrft/inspector';
+import type { ICcrStore } from '@shrkcrft/compress';
 
 export interface IToolJsonSchema {
   type: 'object';
@@ -10,6 +11,20 @@ export interface IToolJsonSchema {
 export interface IToolContext {
   inspection: ISharkcraftInspection;
   cwd: string;
+  /**
+   * The full list of tools registered in the server. Tools that need
+   * to self-reflect (e.g. `get_safety_audit`) use this instead of
+   * importing `ALL_TOOLS` from the tool-registry to avoid import cycles.
+   */
+  allTools?: readonly IToolDefinition[];
+  /**
+   * Per-server in-memory Compress-Cache-Retrieve store. The
+   * `compress_context` tool caches originals here and `retrieve_original`
+   * reads them back. In-memory only — the MCP server never writes to disk,
+   * honouring the read-only contract. Absent in unit tests that construct a
+   * bare context.
+   */
+  ccrStore?: ICcrStore;
 }
 
 export interface IToolDefinition {

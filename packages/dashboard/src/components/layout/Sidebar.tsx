@@ -28,6 +28,7 @@ const ITEMS: ReadonlyArray<INavItem | { group: string }> = [
   { hash: '#/presets-pipelines', label: 'Presets & Pipelines' },
   { group: 'System' },
   { hash: '#/mcp', label: 'MCP' },
+  { hash: '#/compression', label: 'Token Savings' },
 ];
 
 export function Sidebar(): JSX.Element {

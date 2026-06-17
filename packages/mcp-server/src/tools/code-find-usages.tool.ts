@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { EdgeKind, GraphQueryApi, GraphStore, NodeKind, type INode } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
+import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
 /**
  * `code_find_usages` — structured usage finder backed by the
@@ -19,13 +20,14 @@ import type { IToolDefinition } from '../server/tool-definition.ts';
 export const codeFindUsagesTool: IToolDefinition = {
   name: 'code_find_usages',
   description:
-    'Find structured usages of a symbol via the SharkCraft graph (file + symbol nodes). Read-only. Distinguishes definition, import-of-declaring-file, and neighbouring symbols.',
+    'Find structured usages of a symbol via the SharkCraft graph (file + symbol nodes). Read-only. Distinguishes definition, import-of-declaring-file, and neighbouring symbols. Pass `format:"table"` for a token-efficient columnar encoding of the definitions/importers/neighbours arrays.',
   inputSchema: {
     type: 'object',
     properties: {
       symbolName: { type: 'string' },
       kindHint: { type: 'string' },
       maxResults: { type: 'number' },
+      ...FORMAT_INPUT_PROPERTY,
     },
     required: ['symbolName'],
     additionalProperties: false,
@@ -100,16 +102,19 @@ export const codeFindUsagesTool: IToolDefinition = {
       }
     }
 
-    return {
-      data: {
-        symbol: { name: symbolName, kind: matches[0]?.kind ?? 'unknown' },
-        definitions,
-        importersOfDeclaringFile: [...importerSet.values()],
-        neighbouringSymbols: neighbours.slice(0, 12),
-        totalSymbolMatches: matches.length,
-        note: 'importersOfDeclaringFile = files that import the declaring file. This is a structural signal — it may include type-only imports and unused references. Pair with `shrk impact` for a tighter blast radius.',
-      },
+    const data = {
+      symbol: { name: symbolName, kind: matches[0]?.kind ?? 'unknown' },
+      definitions,
+      importersOfDeclaringFile: [...importerSet.values()],
+      neighbouringSymbols: neighbours.slice(0, 12),
+      totalSymbolMatches: matches.length,
+      note: 'importersOfDeclaringFile = files that import the declaring file. This is a structural signal — it may include type-only imports and unused references. Pair with `shrk impact` for a tighter blast radius.',
     };
+    // `format:"table"` columnar-encodes the homogeneous object-array fields
+    // (definitions, importersOfDeclaringFile, neighbouringSymbols); the scalar
+    // `symbol` object, totalSymbolMatches, and the note string pass through
+    // untouched. Default/`format:"json"` returns the bare object unchanged.
+    return { data: formatObjectArrays(data, input) };
   },
 };
 

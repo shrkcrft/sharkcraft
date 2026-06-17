@@ -53,5 +53,12 @@ export {
   schemasWriteCommand,
 } from './commands/schemas.command.ts';
 export { versionCommand } from './commands/version.command.ts';
+export { compressCommand, expandCommand } from './commands/compress.command.ts';
+export { alignCommand, unalignCommand } from './commands/cache-align.command.ts';
 export { makeHelpCommand } from './commands/help.command.ts';
 export { buildRegistry, runCli } from './main.ts';
+export {
+  buildWatchPlan,
+  maybeRunInWatchMode,
+  runWatchLoop,
+} from './output/watch-loop.ts';

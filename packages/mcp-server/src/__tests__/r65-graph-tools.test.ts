@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildFullIndex } from '@shrkcrft/graph';
 import { inspectSharkcraft } from '@shrkcrft/inspector';
+import { isColumnarTable, expandColumnar } from '@shrkcrft/compress';
 import { ALL_TOOLS } from '../tools/index.ts';
 
 const R65_TOOLS = [
@@ -288,6 +289,66 @@ describe('r65 graph mcp tools', () => {
         './also-missing',
         './missing',
       ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('get_graph_unresolved honours format json vs table (mode-explicit)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-graph-mcp-unresolved-fmt-'));
+    try {
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'demo', workspaces: ['packages/*'] }, null, 2),
+      );
+      mkdirSync(join(root, 'packages', 'p', 'src'), { recursive: true });
+      writeFileSync(
+        join(root, 'packages', 'p', 'package.json'),
+        JSON.stringify({ name: '@demo/p', main: 'src/a.ts' }, null, 2),
+      );
+      // Two distinct source files, each with unresolved imports, so the outer
+      // `files` array clears the columnar minimum-rows gate.
+      writeFileSync(
+        join(root, 'packages', 'p', 'src', 'a.ts'),
+        "import './missing-a1'; import './missing-a2';",
+      );
+      writeFileSync(
+        join(root, 'packages', 'p', 'src', 'b.ts'),
+        "import './missing-b1';",
+      );
+      buildFullIndex({ projectRoot: root });
+      const ctx = await ctxFor(root);
+      const tool = ALL_TOOLS.find((t) => t.name === 'get_graph_unresolved')!;
+
+      // Tool advertises the format switch.
+      expect(
+        (tool.inputSchema.properties as Record<string, unknown>).format,
+      ).toBeDefined();
+
+      // format:"json" → the explicit object shape, files is a bare array.
+      const jsonRes = await tool.handler({ format: 'json' }, ctx as never);
+      expect(jsonRes.isError).not.toBe(true);
+      const jd = jsonRes.data as {
+        schema: string;
+        totalFiles: number;
+        files: { path: string; unresolved: string[] }[];
+      };
+      expect(jd.schema).toBe('sharkcraft.graph-unresolved/v1');
+      expect(Array.isArray(jd.files)).toBe(true);
+      expect(jd.totalFiles).toBe(2);
+
+      // format:"table" → scalars preserved; `files` columnarised when hoisting
+      // saves tokens, or kept bare under the net-loss guard (this 2-row list is
+      // small). Either way it reconstructs to the json-mode array.
+      const tableRes = await tool.handler({ format: 'table' }, ctx as never);
+      expect(tableRes.isError).not.toBe(true);
+      const td = tableRes.data as Record<string, unknown>;
+      expect(td.schema).toBe('sharkcraft.graph-unresolved/v1'); // scalar untouched
+      expect(td.totalFiles).toBe(2); // scalar untouched
+      const files = isColumnarTable(td.files) ? expandColumnar(td.files as never) : td.files;
+      expect(files).toEqual(jd.files);
+      // Still valid JSON.
+      JSON.parse(JSON.stringify(td));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

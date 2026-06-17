@@ -170,8 +170,8 @@ describe('shrk smart-context — enriched seed', () => {
     );
     expect(value).toBe(0);
     expect(stderr).toContain('[smart-context] prompt log (brief)');
-    expect(stderr).toContain('"role": "system"');
-    expect(stderr).toContain('"role": "user"');
+    expect(stderr).toMatch(/"role":\s*"system"/);
+    expect(stderr).toMatch(/"role":\s*"user"/);
   });
 });
 

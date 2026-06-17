@@ -96,7 +96,8 @@ describe('CLI registrations', () => {
     const r = shrk(['knowledge', 'lint', '--json']);
     expect(r.code === 0 || r.code === 1).toBe(true);
     // The output may contain JSON; we expect schema string in there.
-    expect(r.out).toContain('"schema": "sharkcraft.knowledge-lint/v1"');
+    // Whitespace-agnostic so it holds for minified (default) and pretty output.
+    expect(r.out).toMatch(/"schema":\s*"sharkcraft\.knowledge-lint\/v1"/);
   });
 
   test('shrk provenance list works with empty ledger', () => {

@@ -12,7 +12,12 @@ export function kv(key: string, value: string | number | boolean | undefined | n
 }
 
 export function asJson(value: unknown): string {
-  return JSON.stringify(value, null, 2);
+  // Minified by default: `--json` output is for machine / agent consumption, so
+  // we emit the smallest valid JSON (mirrors the MCP wire's default). The shape
+  // is unchanged — only whitespace is removed — so `JSON.parse` consumers are
+  // unaffected. Set SHRK_JSON_PRETTY=1 for human-readable 2-space indentation.
+  const pretty = process.env.SHRK_JSON_PRETTY === '1' || process.env.SHRK_JSON_PRETTY === 'true';
+  return pretty ? JSON.stringify(value, null, 2) : JSON.stringify(value);
 }
 
 export function table(rows: readonly (readonly string[])[]): string {

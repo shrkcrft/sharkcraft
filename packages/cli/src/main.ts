@@ -142,6 +142,8 @@ import { gateCommand } from './commands/gate.command.ts';
 import { migrateCommand } from './commands/migrate.command.ts';
 import { coverageCommand } from './commands/coverage.command.ts';
 import { statsCommand } from './commands/stats.command.ts';
+import { compressCommand, expandCommand } from './commands/compress.command.ts';
+import { alignCommand, unalignCommand } from './commands/cache-align.command.ts';
 import { reviewCommand } from './commands/review.command.ts';
 import { onboardCommand } from './commands/onboard.command.ts';
 import {
@@ -435,6 +437,10 @@ export function buildRegistry(): CommandRegistry {
   registry.register(migrateCommand);
   registry.register(coverageCommand);
   registry.register(statsCommand);
+  registry.register(compressCommand);
+  registry.register(expandCommand);
+  registry.register(alignCommand);
+  registry.register(unalignCommand);
   registry.register(reviewCommand);
   registry.register(onboardCommand);
   registry.register(ingestCommand);

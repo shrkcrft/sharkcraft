@@ -67,6 +67,9 @@ import { getQualityGateTool } from './get-quality-gate.tool.ts';
 import { getMigrationsTool } from './get-migrations.tool.ts';
 import { getDriftReportTool } from './get-drift-report.tool.ts';
 import { getKnowledgeGraphTool } from './get-knowledge-graph.tool.ts';
+import { compressContextTool } from './compress-context.tool.ts';
+import { retrieveOriginalTool } from './retrieve-original.tool.ts';
+import { alignCacheTool, restoreCacheTool } from './align-cache.tool.ts';
 import { getGraphNodeTool } from './get-graph-node.tool.ts';
 import { getCoverageReportTool } from './get-coverage-report.tool.ts';
 import { getReviewPacketTool } from './get-review-packet.tool.ts';
@@ -399,6 +402,10 @@ export const ALL_TOOLS: readonly IToolDefinition[] = Object.freeze([
   getMigrationsTool,
   getDriftReportTool,
   getKnowledgeGraphTool,
+  compressContextTool,
+  retrieveOriginalTool,
+  alignCacheTool,
+  restoreCacheTool,
   getGraphNodeTool,
   getCoverageReportTool,
   getReviewPacketTool,

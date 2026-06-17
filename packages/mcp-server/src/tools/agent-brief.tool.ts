@@ -1,4 +1,5 @@
 import { buildAgentBrief, BriefMode } from '@shrkcrft/inspector';
+import { compressMarkdown } from '@shrkcrft/compress';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
 const VALID_MODES = new Set(Object.values(BriefMode));
@@ -18,6 +19,11 @@ export const createAgentBriefTool: IToolDefinition = {
       maxTokens: { type: 'number' },
       chunked: { type: 'boolean' },
       sectionBudgets: { type: 'object' },
+      compact: {
+        type: 'boolean',
+        description:
+          'Run the brief markdown through the deterministic markdown compressor (headers/leads/structure kept, prose thinned). Reversible — the original is cached and a `<<ccr:KEY>>` marker emitted (retrieve_original to recover).',
+      },
     },
     additionalProperties: false,
   },
@@ -44,6 +50,21 @@ export const createAgentBriefTool: IToolDefinition = {
       ...(chunked ? { chunked: true } : {}),
       ...(sectionBudgets ? { sectionBudgets } : {}),
     });
+    if (input['compact'] === true) {
+      const c = compressMarkdown(brief.markdown, ctx.ccrStore ? { store: ctx.ccrStore } : {});
+      return {
+        data: {
+          ...brief,
+          markdown: c.compressed,
+          compaction: {
+            strategy: c.strategy,
+            tokensBefore: c.savings.before,
+            tokensAfter: c.savings.after,
+            ccrKey: c.ccrKey ?? null,
+          },
+        },
+      };
+    }
     return { data: brief };
   },
 };
