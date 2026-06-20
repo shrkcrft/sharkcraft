@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/graph",
-  "version": "0.1.0-alpha.16",
+  "version": "0.1.0-alpha.17",
   "description": "SharkCraft code intelligence graph: files, symbols, packages, imports and exports. Persistent JSONL store; on-disk index queried by every other code-intelligence package.",
   "license": "MIT",
   "author": "SharkCraft contributors",
@@ -47,7 +47,8 @@
   "dependencies": {
     "@shrkcrft/core": "workspace:*",
     "@shrkcrft/boundaries": "workspace:*",
-    "@shrkcrft/inspector": "workspace:*"
+    "@shrkcrft/inspector": "workspace:*",
+    "typescript": "^5.6.0"
   },
   "publishConfig": {
     "access": "public"

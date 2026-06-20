@@ -24,11 +24,15 @@ interface IFrontmatter {
 }
 
 function parseFrontmatter(raw: string): { fm: IFrontmatter; body: string } {
-  if (!raw.startsWith('---')) return { fm: {}, body: raw };
-  const end = raw.indexOf('\n---', 3);
-  if (end < 0) return { fm: {}, body: raw };
-  const block = raw.slice(3, end).trim();
-  const body = raw.slice(end + 4).replace(/^\n+/, '');
+  // Normalize CRLF/CR first: otherwise a trailing `\r` breaks the `\n---`
+  // separator offset math AND the `key: (.*)$` regex (`$` won't span `\r`),
+  // dropping description/globs/tags on a Windows-authored .mdc file.
+  const text = raw.replace(/\r\n?/g, '\n');
+  if (!text.startsWith('---')) return { fm: {}, body: text };
+  const end = text.indexOf('\n---', 3);
+  if (end < 0) return { fm: {}, body: text };
+  const block = text.slice(3, end).trim();
+  const body = text.slice(end + 4).replace(/^\n+/, '');
   const fm: IFrontmatter = {};
   for (const line of block.split('\n')) {
     const m = /^([A-Za-z][\w-]*)\s*:\s*(.*)$/.exec(line);

@@ -49,6 +49,23 @@ describe('read-accuracy table formats (P4.2)', () => {
   });
 });
 
+describe('columnar array presence is own-property based', () => {
+  test('a column named "toString" does not leak the inherited Object.prototype member', () => {
+    const records: Record<string, unknown>[] = [
+      { id: 'a', toString: 'own-a', val: 1 },
+      { id: 'b', val: 2 }, // no own toString
+      { id: 'c', toString: 'own-c', val: 3 },
+    ];
+    const table = compactArrayToColumnar(records);
+    expect(table).not.toBeNull();
+    const back = expandColumnar(table!);
+    expect(back).toEqual(records);
+    // The middle row never had an own toString — it must not gain the function.
+    expect(Object.prototype.hasOwnProperty.call(back[1], 'toString')).toBe(false);
+    expect(back[0]!['toString']).toBe('own-a');
+  });
+});
+
 describe('table formats round-trip exotic column names (P4.2 reversibility)', () => {
   const cases: Array<[string, Record<string, unknown>[]]> = [
     ["a column name containing ': '", [{ 'a: b': 1, x: 10 }, { 'a: b': 2, x: 20 }, { 'a: b': 3, x: 30 }]],

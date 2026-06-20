@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
-import * as nodePath from 'node:path';
+import { Buffer } from 'node:buffer';
 import {
   compressContent,
+  ECompressionStrategy,
   EContentType,
-  FileCcrStore,
   type ICompressOptions,
 } from '@shrkcrft/compress';
 import {
@@ -15,12 +15,9 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson } from '../output/format-output.ts';
+import { ccrDir, openCcrStore } from '../output/ccr-store-config.ts';
 
 const CONTENT_TYPES = new Set<string>(Object.values(EContentType));
-
-function ccrDir(cwd: string): string {
-  return nodePath.join(cwd, '.sharkcraft', 'ccr');
-}
 
 function readInput(args: ParsedArgs): string {
   const positional = args.positional[0];
@@ -41,7 +38,7 @@ export const compressCommand: ICommandHandler = {
   description:
     'Compress a blob (file or stdin) deterministically to cut tokens — JSON→table, logs/search/diffs→signal. Reversible via `shrk expand`.',
   usage:
-    'shrk [--cwd <dir>] compress [<file>|-] [--stdin] [--type <content-type>] [--query <text>] [--max <n>] [--no-cache] [--json]',
+    'shrk [--cwd <dir>] compress [<file>|-] [--stdin] [--type <content-type>] [--query <text>] [--max <n>] [--lossless] [--no-cache] [--json]',
   run(args: ParsedArgs): number {
     const cwd = resolveCwd(args);
     let content: string;
@@ -57,11 +54,12 @@ export const compressCommand: ICommandHandler = {
     }
 
     const opts: ICompressOptions = {};
-    if (!flagBool(args, 'no-cache')) opts.store = new FileCcrStore(ccrDir(cwd));
+    if (!flagBool(args, 'no-cache')) opts.store = openCcrStore(cwd);
     const query = flagString(args, 'query');
     if (query) opts.query = query;
     const max = flagNumber(args, 'max');
     if (max !== undefined && max > 0) opts.maxItems = Math.floor(max);
+    if (flagBool(args, 'lossless')) opts.lossless = true;
     const type = flagString(args, 'type');
     if (type && CONTENT_TYPES.has(type)) opts.contentType = type as EContentType;
 
@@ -77,28 +75,40 @@ export const compressCommand: ICommandHandler = {
       );
     }
 
+    const queryApplied = query !== undefined && query.length > 0;
+
     if (flagBool(args, 'json')) {
-      process.stdout.write(
-        asJson({
-          contentType: result.contentType,
-          strategy: result.strategy,
-          lossy: result.lossy,
-          tokensBefore: result.savings.before,
-          tokensAfter: result.savings.after,
-          tokensSaved: result.savings.saved,
-          savedRatio: result.savings.ratio,
-          ccrKey: result.ccrKey ?? null,
-          note: result.note,
-          compressed: result.compressed,
-        }) + '\n',
-      );
+      // tokens are a deterministic ESTIMATE (chars/divisor heuristic), not a
+      // real BPE count — flagged so callers don't treat savedRatio as exact.
+      const base = {
+        contentType: result.contentType,
+        strategy: result.strategy,
+        lossy: result.lossy,
+        tokensBefore: result.savings.before,
+        tokensAfter: result.savings.after,
+        tokensSaved: result.savings.saved,
+        savedRatio: result.savings.ratio,
+        tokensAreEstimated: true,
+        queryApplied,
+        ccrKey: result.ccrKey ?? null,
+        note: result.note,
+      };
+      // Net-loss guard: on a passthrough/no-win blob the engine returns the
+      // VERBATIM original as `compressed`. Echoing it back inside the JSON
+      // envelope (plus scaffold) costs more tokens than the input. Signal
+      // passthrough and omit the duplicated content — the caller still has it.
+      const noWin = result.strategy === ECompressionStrategy.Passthrough || result.savings.saved <= 0;
+      const payload = noWin
+        ? { ...base, passthrough: true, inputBytes: Buffer.byteLength(content, 'utf8') }
+        : { ...base, compressed: result.compressed };
+      process.stdout.write(asJson(payload) + '\n');
       return 0;
     }
 
     process.stdout.write(result.compressed + '\n');
     const cached = result.ccrKey ? ` · original cached as ${result.ccrKey} (shrk expand ${result.ccrKey})` : '';
     process.stderr.write(
-      `${result.strategy}: ${result.savings.before} → ${result.savings.after} tokens (−${pct}%)${cached}\n`,
+      `${result.strategy}: ~${result.savings.before} → ~${result.savings.after} tokens (−${pct}%, est.)${cached}\n`,
     );
     return 0;
   },
@@ -119,7 +129,7 @@ export const expandCommand: ICommandHandler = {
       process.stderr.write('expand: a CCR key is required (e.g. `shrk expand a1b2c3d4e5f60718`).\n');
       return 1;
     }
-    const store = new FileCcrStore(ccrDir(cwd));
+    const store = openCcrStore(cwd);
     const entry = store.get(key);
     if (!entry) {
       process.stderr.write(
@@ -131,7 +141,9 @@ export const expandCommand: ICommandHandler = {
       process.stdout.write(asJson({ key: entry.key, bytes: entry.bytes, content: entry.content }) + '\n');
       return 0;
     }
-    process.stdout.write(entry.content + '\n');
+    // Write the cached original VERBATIM — appending a newline broke byte-for-byte
+    // round-trip (`compress … ; expand` must reproduce the input exactly).
+    process.stdout.write(entry.content);
     return 0;
   },
 };

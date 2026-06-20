@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/structural-search",
-  "version": "0.1.0-alpha.16",
+  "version": "0.1.0-alpha.17",
   "description": "SharkCraft structural search: declarative AST patterns for TypeScript codebases. Find call sites, decorators, classes, imports — preview-only by default; rewrite mode lands in Wave 8.",
   "license": "MIT",
   "author": "SharkCraft contributors",

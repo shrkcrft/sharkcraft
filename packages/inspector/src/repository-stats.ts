@@ -184,7 +184,9 @@ function walkRepository(root: string, maxFiles: number): IWalkResult {
     const cur = stack.pop()!;
     let entries: string[];
     try {
-      entries = readdirSync(cur);
+      // Sort the walk so `topFiles` (byte-tie order) and `byLanguage` (tie
+      // order) in `shrk stats` are deterministic, not filesystem-dependent.
+      entries = readdirSync(cur).sort();
     } catch {
       continue;
     }

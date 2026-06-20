@@ -84,4 +84,22 @@ describe('contract gates', () => {
       expect(r.pass).toBe(false);
     });
   });
+
+  it('computeContractHash covers NESTED-object fields (a nested tamper changes the hash)', async () => {
+    await withRoot(async (root) => {
+      const inspection = await inspectSharkcraft({ cwd: root });
+      const contract = await buildAgentContract(
+        'rewrite authentication and delete production logs',
+        inspection,
+        { role: 'developer' },
+      );
+      const h1 = computeContractHash(contract);
+      // Tamper a field nested INSIDE taskRisk. The old key-allowlist
+      // canonicalizer dropped nested keys, so this would not change the hash —
+      // letting an approval bound to h1 silently cover a weakened contract.
+      const tampered = JSON.parse(JSON.stringify(contract));
+      tampered.taskRisk.score = (tampered.taskRisk.score ?? 0) + 100;
+      expect(computeContractHash(tampered)).not.toBe(h1);
+    });
+  });
 });

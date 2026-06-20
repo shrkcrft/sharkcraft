@@ -12,6 +12,7 @@
  */
 import { existsSync, renameSync, rmSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { safeResolveTargetPath, UnsafeTargetPathError } from '@shrkcrft/core';
 import { checkFolderOpSafety, FolderOpSafety } from './folder-safety.ts';
 
 export interface IFolderOpInput {
@@ -101,7 +102,25 @@ export function applyFolderOps(
         });
         continue;
       }
-      if (existsSync(absNewPath)) {
+      // The rename DESTINATION is never validated by checkFolderOpSafety (which
+      // only checks targetPath), and resolveAbs even allows absolute newPaths —
+      // so `newPath: '../sibling'` or '/etc/x' would move the folder OUTSIDE the
+      // project root. Enforce containment through the same chokepoint as writes.
+      let safeNew: ReturnType<typeof safeResolveTargetPath>;
+      try {
+        safeNew = safeResolveTargetPath(op.newPath!, options.projectRoot);
+      } catch (e) {
+        const pathErr = e as UnsafeTargetPathError;
+        rejected.push({
+          ...baseResult,
+          applied: false,
+          safety: FolderOpSafety.Unsafe,
+          reason: `rename-folder destination "${op.newPath}" is outside the project root (${pathErr.code}).`,
+        });
+        continue;
+      }
+      const safeAbsNewPath = safeNew.absolutePath;
+      if (existsSync(safeAbsNewPath)) {
         rejected.push({
           ...baseResult,
           applied: false,
@@ -115,7 +134,7 @@ export function applyFolderOps(
         continue;
       }
       try {
-        renameSync(absTarget, absNewPath);
+        renameSync(absTarget, safeAbsNewPath);
         applied.push({ ...baseResult, applied: true });
       } catch (e) {
         rejected.push({

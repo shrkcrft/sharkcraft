@@ -109,12 +109,33 @@ export interface ICheckContractOptions {
 
 const APPROVAL_SECRET_ENV_DEFAULT = 'SHARKCRAFT_CONTRACT_SECRET';
 
+/**
+ * Deterministic JSON: keys sorted at EVERY depth, keys/values JSON-quoted.
+ * Critically NOT `JSON.stringify(obj, keysArray)` — an array replacer is a key
+ * ALLOWLIST applied at every nesting level, which silently DROPS nested-object
+ * keys (e.g. `forbiddenFilesDetailed` rule fields) from the hash input, letting
+ * a contract be tampered in a nested field without changing its hash and
+ * bypassing approval binding.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map((v) => canonicalJson(v)).join(',') + ']';
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const parts: string[] = [];
+  for (const k of keys) {
+    const v = (value as Record<string, unknown>)[k];
+    if (v === undefined) continue;
+    parts.push(JSON.stringify(k) + ':' + canonicalJson(v));
+  }
+  return '{' + parts.join(',') + '}';
+}
+
 function canonicalContractJson(contract: IAgentContract): string {
   // Deterministic JSON for hashing — exclude `generatedAt` so hashes stay
   // stable across re-builds of the same task.
   const { generatedAt: _drop, ...rest } = contract;
   void _drop;
-  return JSON.stringify(rest, Object.keys(rest as unknown as Record<string, unknown>).sort());
+  return canonicalJson(rest);
 }
 
 export function computeContractHash(contract: IAgentContract): string {
@@ -126,7 +147,7 @@ export function computeContractHash(contract: IAgentContract): string {
 function canonicalApprovalJson(a: IAgentContractApproval): string {
   const { signature: _drop, ...rest } = a;
   void _drop;
-  return JSON.stringify(rest, Object.keys(rest as unknown as Record<string, unknown>).sort());
+  return canonicalJson(rest);
 }
 
 export function signApproval(a: IAgentContractApproval, secret: string): IAgentContractApproval {

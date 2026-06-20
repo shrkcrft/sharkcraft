@@ -15,6 +15,13 @@ export interface ICompressOptions {
   contentType?: EContentType;
   /** Soft cap on retained items/lines/matches/hunks (compressor-specific). */
   maxItems?: number;
+  /**
+   * Refuse any lossy reduction: a pass that would drop lines/rows/hunks
+   * returns the input untouched (passthrough) instead. Provably-lossless
+   * transforms (JSON columnar, dedup that round-trips) still apply. Lets a
+   * caller demand "shrink only if fully reconstructable from the output alone".
+   */
+  lossless?: boolean;
   /** Below this many lines a lossy text pass returns the input untouched. */
   minLines?: number;
   /**

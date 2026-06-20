@@ -2,10 +2,12 @@
 import { loadDotenv } from './env/load-dotenv.ts';
 import {
   CommandRegistry,
+  extractGlobalCompress,
   extractGlobalCwd,
   parseArgs,
   type ICommandHandler,
 } from './command-registry.ts';
+import { runCommandWithCompression } from './output/output-compression.ts';
 import { initCommand } from './commands/init.command.ts';
 import { inspectCommand } from './commands/inspect.command.ts';
 import {
@@ -810,8 +812,26 @@ async function runCliInner(argv: readonly string[]): Promise<number> {
   const registry = buildRegistry();
 
   // Pre-parse the global --cwd so it can appear anywhere (incl. before the command).
-  const { cwd: globalCwd, rest: cleanArgv } = extractGlobalCwd(argv);
+  const { cwd: globalCwd, rest: cwdCleanArgv } = extractGlobalCwd(argv);
+  // Pre-parse the global --compress / --ccr output-compression flags.
+  const { directive: compressDirective, rest: cleanArgv } = extractGlobalCompress(cwdCleanArgv);
   const [first] = cleanArgv;
+
+  // `--compress` / `--ccr` on a real command: re-run it and compress its stdout.
+  // (Meta verbs like --help/--version and bare invocations are left untouched.)
+  if (
+    compressDirective &&
+    first &&
+    first !== '--help' &&
+    first !== '-h' &&
+    first !== '--full-help' &&
+    first !== '--version' &&
+    first !== '-v' &&
+    first !== '--about'
+  ) {
+    const childArgv = globalCwd ? ['--cwd', globalCwd, ...cleanArgv] : [...cleanArgv];
+    return runCommandWithCompression(childArgv, compressDirective, globalCwd ?? process.cwd());
+  }
 
   // bare invocation lands on the curated tiered view.
   if (!first) {

@@ -30,11 +30,12 @@ export const compressContextTool: IToolDefinition = {
         description: 'Optional task/query text that biases which lines or matches are kept.',
       },
       maxItems: {
-        type: 'number',
+        type: 'integer',
+        minimum: 1,
         description: 'Soft cap on retained lines / matches / hunks (compressor-specific).',
       },
       maxTokens: {
-        type: 'number',
+        type: 'integer',
         minimum: 1,
         description:
           'Token budget for a JSON array. When set and the lossless columnar form still exceeds it, falls back to the lossy SmartCrusher row-sampler (kept rows + CCR original).',

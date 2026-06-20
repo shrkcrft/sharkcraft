@@ -62,7 +62,10 @@ export function compactObjectArray(items: unknown): ITableCompaction | null {
     const row: unknown[] = [];
     for (let c = 0; c < colNames.length; c += 1) {
       const key = colNames[c]!;
-      const present = key in item && item[key] !== undefined;
+      // `key in item` walks the prototype chain, so a column named after an
+      // Object.prototype member (`toString`, `hasOwnProperty`, …) would read the
+      // inherited member as a cell value. Own-property check keeps it lossless.
+      const present = Object.prototype.hasOwnProperty.call(item, key) && item[key] !== undefined;
       if (!present) {
         absent.push([r, c]);
         row.push(null);

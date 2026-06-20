@@ -38,4 +38,12 @@ describe('parseCursorRuleFile', () => {
     const e = parseCursorRuleFile(raw, { origin: 'x.mdc', idPrefix: 'cursor.x' });
     expect(e.tags.some((t) => t.includes('ts'))).toBe(true);
   });
+
+  test('parses CRLF-authored .mdc frontmatter without losing description/tags', () => {
+    const raw = ['---', 'description: Use bun test only', 'tags: [testing, bun]', '---', '', '- Do not introduce Jest.'].join('\r\n');
+    const e = parseCursorRuleFile(raw, { origin: '.cursor/rules/x.mdc', idPrefix: 'cursor.x' });
+    expect(e.title).toBe('Use bun test only');
+    expect(e.tags).toContain('testing');
+    expect(e.content).toContain('Do not introduce Jest');
+  });
 });

@@ -15,18 +15,33 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return proto === null || proto === Object.prototype;
 }
 
+/**
+ * Assign an own enumerable data property. Plain `target[key] = value` invokes
+ * the `Object.prototype.__proto__` setter for a key literally equal to
+ * `"__proto__"` (a real own key after `JSON.parse`), which silently drops the
+ * value (or pollutes the prototype) — so build these objects via defineProperty.
+ */
+function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+}
+
+/** Read an OWN property value (returns undefined when the key isn't an own prop). */
+function getOwn(obj: Record<string, unknown>, key: string): unknown {
+  return Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;
+}
+
 export function merge<A extends Record<string, unknown>, B extends Record<string, unknown>>(
   a: A,
   b: B,
 ): A & B {
   const result: Record<string, unknown> = { ...a };
   for (const key of Object.keys(b)) {
-    const av = result[key];
+    const av = getOwn(result, key);
     const bv = (b as Record<string, unknown>)[key];
     if (isPlainObject(av) && isPlainObject(bv)) {
-      result[key] = merge(av, bv);
+      setOwn(result, key, merge(av, bv));
     } else if (bv !== undefined) {
-      result[key] = bv;
+      setOwn(result, key, bv);
     }
   }
   return result as A & B;
@@ -35,7 +50,11 @@ export function merge<A extends Record<string, unknown>, B extends Record<string
 export function pick<T extends object, K extends keyof T>(obj: T, keys: readonly K[]): Pick<T, K> {
   const result = {} as Pick<T, K>;
   for (const key of keys) {
-    if (key in obj) result[key] = obj[key];
+    // Own-property check (not `key in obj`, which walks the prototype chain, so
+    // pick(obj, ['toString']) would otherwise copy the inherited function).
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      setOwn(result as Record<string, unknown>, key as string, obj[key]);
+    }
   }
   return result;
 }
@@ -45,7 +64,7 @@ export function omit<T extends object, K extends keyof T>(obj: T, keys: readonly
   const result = {} as Omit<T, K>;
   for (const key of Object.keys(obj) as (keyof T)[]) {
     if (!keySet.has(key)) {
-      (result as Record<keyof T, unknown>)[key] = obj[key];
+      setOwn(result as Record<string, unknown>, key as string, obj[key]);
     }
   }
   return result;

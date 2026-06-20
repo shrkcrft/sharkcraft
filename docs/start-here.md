@@ -24,10 +24,6 @@ seconds.
 >   so existing-linter teams can still consume SharkCraft findings.
 > - `shrk ide file <path> --json` — single-shot per-file data surface
 >   for IDE extensions.
->
-> Designs for opt-in local metrics and a preset / pack registry live in
-> [`docs/local-metrics-design.md`](local-metrics-design.md) and
-> [`docs/preset-pack-registry-design.md`](preset-pack-registry-design.md).
 
 > **R47 (Universal Adoption top-5) note.** R45 built the floor; R47
 > fills the gaps so a brand-new TypeScript project gets useful value

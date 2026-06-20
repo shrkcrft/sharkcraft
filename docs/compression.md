@@ -101,13 +101,56 @@ shrk compress <file>                 # compress a file; compressed text → stdo
 cat build.log | shrk compress --stdin --type build-log
 shrk compress data.json --json       # full result + token accounting as JSON
 shrk compress big.diff --query auth  # bias what's kept toward "auth"
+shrk compress doc.md --lossless      # refuse to drop lines (passthrough if it would)
 shrk compress x.json --no-cache      # don't write a CCR original
 shrk expand <ccr-key>                # retrieve a cached original
+
+# Compress ANY command's output in one step (no temp-file detour):
+shrk knowledge list --json --compress
+shrk task "add an auth rule" --compress --compress-query auth
 ```
 
 `shrk compress` prints the compressed blob to stdout (pipeable) and a one-line
-savings summary to stderr (`table: 40 → 19 tokens (−53%)`). With `--json` it
-prints the full structured result instead.
+savings summary to stderr (`table: ~40 → ~19 tokens (−53%, est.)`). With `--json`
+it prints the full structured result instead.
+
+**Global `--compress` / `--ccr` flag.** Append `--compress` (alias `--ccr`) to
+*any* read command and shrk re-runs it, compresses its stdout, and caches the
+original for `shrk expand` — so you never need the `cmd > tmp; shrk compress tmp`
+two-step. `--compress-type <t>` forces a content type and `--compress-query <q>`
+biases what's kept. It's opt-in (a run without the flag is byte-identical) and
+robust to commands that hard-exit (the command runs in a child process, so its
+real exit code is preserved).
+
+**`--lossless`.** Refuses any reduction that drops lines/rows/hunks: a pass that
+would elide returns the input untouched instead, while provably-lossless
+transforms (JSON→columnar) still apply. Use it when you need output that is fully
+reconstructable from itself, without relying on the CCR cache.
+
+**`--query` / `--max`.** `--query` re-orders which matches/hunks survive (real
+BM25 relevance) and `--max` caps how many are kept. Note: by default the
+per-file budget auto-sizes and keeps everything until a blob exceeds it, so
+`--query` has no *visible* effect (same output, same `savedRatio`) until `--max`
+or a large input forces drops — and `ccrKey` is a hash of the **original**, so it
+never changes with these flags. The `--json` payload reports `queryApplied` so
+the query's effect is observable even when the ratio is unchanged.
+
+**Token counts are estimates.** `tokensBefore`/`tokensAfter`/`savedRatio` come
+from a deterministic chars-per-type heuristic, **not** a BPE tokenizer; the
+`--json` payload carries `tokensAreEstimated: true` and the stderr summary is
+suffixed `est.`. Treat `savedRatio` as approximate (accurate on percentages,
+rough on absolutes).
+
+**`--json` net-loss guard.** On a passthrough / no-win blob the envelope sets
+`"passthrough": true` and reports `inputBytes` instead of echoing the full
+content back in `compressed` — so compressing a tiny blob never costs more tokens
+than the input. On a real win the full `compressed` field is present as before.
+
+**CCR cache is bounded.** Originals live under `.sharkcraft/ccr/` and the store
+evicts the oldest past a fixed cap (count-based, so a key never silently expires
+out from under `shrk expand`). Lossy elision markers (`… N lines omitted`) are
+annotated with the recovery key — `… N lines omitted (shrk expand <key>)` — so a
+clipped view still advertises that the detail is retrievable.
 
 **`--json` is minified by default.** Every CLI command's `--json` output is
 emitted as the smallest valid JSON (no indentation) — it's for machine / agent

@@ -91,4 +91,77 @@ describe('shrk compress / expand', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  function lossyDoc(): string {
+    const lines = ['# Title', ''];
+    for (let i = 0; i < 40; i += 1) lines.push(`- bullet point ${i} with filler text to drop`);
+    return lines.join('\n');
+  }
+
+  test('--lossless refuses a lossy reduction (passthrough, lossy=false)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
+    try {
+      const file = join(dir, 'doc.md');
+      writeFileSync(file, lossyDoc(), 'utf8');
+      const r = capture(
+        () => compressCommand.run(makeArgs([file], { json: true, lossless: true }, dir)) as number,
+      );
+      const parsed = JSON.parse(r.out) as Record<string, unknown>;
+      expect(parsed.lossy).toBe(false);
+      expect(parsed.strategy).toBe('passthrough');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('--json emits a passthrough envelope (no duplicated content) on a no-win blob', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
+    try {
+      const file = join(dir, 'tiny.txt');
+      writeFileSync(file, 'tiny', 'utf8');
+      const r = capture(() => compressCommand.run(makeArgs([file], { json: true }, dir)) as number);
+      const parsed = JSON.parse(r.out) as Record<string, unknown>;
+      expect(parsed.passthrough).toBe(true);
+      expect(parsed.compressed).toBeUndefined(); // not echoed back
+      expect(parsed.inputBytes).toBe(4);
+      expect(parsed.tokensAreEstimated).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('--json reports tokensAreEstimated + queryApplied on a real win', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
+    try {
+      const arr = Array.from({ length: 20 }, (_, i) => ({ id: `n${i}`, kind: 'rule', title: `T${i}` }));
+      const file = join(dir, 'data.json');
+      writeFileSync(file, JSON.stringify(arr), 'utf8');
+      const r = capture(
+        () => compressCommand.run(makeArgs([file], { json: true, query: 'rule' }, dir)) as number,
+      );
+      const parsed = JSON.parse(r.out) as Record<string, unknown>;
+      expect(parsed.tokensAreEstimated).toBe(true);
+      expect(parsed.queryApplied).toBe(true);
+      expect(typeof parsed.compressed).toBe('string'); // win → content present
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('expand restores the original byte-for-byte (no appended newline)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
+    try {
+      const text = lossyDoc();
+      const file = join(dir, 'doc.md');
+      writeFileSync(file, text, 'utf8');
+      const c = capture(() => compressCommand.run(makeArgs([file], { json: true }, dir)) as number);
+      const key = (JSON.parse(c.out) as Record<string, unknown>).ccrKey as string;
+      expect(typeof key).toBe('string');
+      const e = capture(() => expandCommand.run(makeArgs([key], {}, dir)) as number);
+      expect(e.code).toBe(0);
+      expect(e.out).toBe(text); // exact — no trailing '\n' added
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

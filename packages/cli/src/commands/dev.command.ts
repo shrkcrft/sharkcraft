@@ -803,7 +803,11 @@ async function validateSession(args: ParsedArgs): Promise<number> {
   const allVerifications = flagBool(args, 'all-verifications');
   const allowPackCommands = flagBool(args, 'allow-pack-commands');
   const wantStrict = flagBool(args, 'strict');
-  const wantReport = flagBool(args, 'report') !== false; // default: write report
+  // flagBool is two-valued (absent → false), so `flagBool(...) !== false` is
+  // false when the flag is absent — the opposite of the intended default. Read
+  // the raw value: write the report by default, opt out only via --report=false.
+  const reportFlag = args.flags.get('report');
+  const wantReport = reportFlag !== false && reportFlag !== 'false';
   const wantJson = flagBool(args, 'json');
   const startedAt = new Date().toISOString();
   const reportFileName = `validate-${startedAt.replace(/[:.]/g, '-')}.json`;

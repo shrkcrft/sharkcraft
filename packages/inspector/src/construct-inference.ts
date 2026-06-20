@@ -371,7 +371,9 @@ export async function inferConstructs(
 
   // Pass 3: facet detection (events/tokens).
   for (const b of builders.values()) {
-    for (const f of [...b.files].slice(0, 8)) {
+    // Sort before slicing: the files Set is in readdir order, so an unsorted
+    // first-8 would make the inferred events/tokens filesystem-order-dependent.
+    for (const f of [...b.files].sort().slice(0, 8)) {
       const abs = nodePath.join(projectRoot, f);
       const facets = scanFacets(abs);
       for (const e of facets.events) b.events.add(e);

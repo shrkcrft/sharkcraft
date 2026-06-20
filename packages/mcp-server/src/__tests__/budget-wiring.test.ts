@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
-import { InMemoryCcrStore, isSampledTable, isColumnarTable } from '@shrkcrft/compress';
+import {
+  EContentType,
+  estimateTokens,
+  InMemoryCcrStore,
+  isSampledTable,
+  isColumnarTable,
+} from '@shrkcrft/compress';
 import { inspectSharkcraft } from '@shrkcrft/inspector';
 import { fitArrayToBudget } from '../server/fit-array-to-budget.ts';
 import { ALL_TOOLS } from '../tools/index.ts';
@@ -27,6 +33,20 @@ describe('SmartCrusher budget wiring (P5.2)', () => {
     expect(over.ccrKey).toBeDefined();
     // The full original is recoverable.
     expect(store.get(over.ccrKey!)!.content).toBe(JSON.stringify(rows));
+  });
+
+  test('fitArrayToBudget BOUNDS the sampled payload to the budget (not just a trigger)', () => {
+    // 200 small rows; the lossless form far exceeds the budget, so it samples —
+    // and the sample must actually FIT the budget, which the old code (where
+    // maxTokens was only a sampling trigger) did not guarantee.
+    const rows = Array.from({ length: 200 }, (_, i) => ({ id: i, label: `row-${i}` }));
+    const store = new InMemoryCcrStore();
+    const budget = 150;
+    const fitted = fitArrayToBudget(rows, budget, store);
+    expect(fitted.ccrKey).toBeDefined(); // over budget → sampled
+    const tokens = estimateTokens(JSON.stringify(fitted.value), EContentType.JsonArray);
+    expect(tokens).toBeLessThanOrEqual(budget);
+    expect(store.has(fitted.ccrKey!)).toBe(true); // full original recoverable
   });
 
   test('get_knowledge_graph honours maxTokens: samples + caches the original', async () => {

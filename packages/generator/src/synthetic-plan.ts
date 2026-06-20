@@ -15,6 +15,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { safeResolveTargetPath, UnsafeTargetPathError } from '@shrkcrft/core';
 import { evaluatePlannedChange, type IPlannedOperation } from './planned-change.ts';
 import { FileChangeType, type IFileChange } from './file-change.ts';
 import type { IGenerationPlan } from './generation-plan.ts';
@@ -74,12 +75,29 @@ function applyOperation(
   relativePath: string,
   operation: IPlannedOperation,
 ): IFileChange {
-  const absolutePath = nodePath.resolve(projectRoot, relativePath);
-  const existing = existsSync(absolutePath) ? readFileSync(absolutePath, 'utf8') : null;
+  // Route through the single generator chokepoint instead of a bare resolve, so
+  // a traversal / absolute `relativePath` in a hand-crafted or tampered plan
+  // can't write OUTSIDE the project root. An unsafe path becomes a Conflict,
+  // which writeSyntheticPlan refuses (matching the template path in dry-run.ts).
+  let safe: ReturnType<typeof safeResolveTargetPath>;
+  try {
+    safe = safeResolveTargetPath(relativePath, projectRoot);
+  } catch (e) {
+    const pathErr = e as UnsafeTargetPathError;
+    return {
+      type: FileChangeType.Conflict,
+      absolutePath: pathErr.rawPath,
+      relativePath: pathErr.rawPath,
+      contents: '',
+      reason: `Refused unsafe target path (${pathErr.code}): ${pathErr.message}`,
+      sizeBytes: 0,
+    };
+  }
+  const existing = existsSync(safe.absolutePath) ? readFileSync(safe.absolutePath, 'utf8') : null;
   return evaluatePlannedChange({
-    change: { targetPath: relativePath, operation },
-    absolutePath,
-    relativePath,
+    change: { targetPath: safe.relativePath, operation },
+    absolutePath: safe.absolutePath,
+    relativePath: safe.relativePath,
     existing,
   });
 }

@@ -119,6 +119,26 @@ describe('object-map preserves a literal "__proto__" key/column (lossless contra
     expect(Object.getOwnPropertyDescriptor(back, '__proto__')!.value).toEqual({ id: 'p' });
   });
 
+  test('a column named after an Object.prototype member ("toString") does not leak the inherited member', () => {
+    // Some entries have an OWN `toString`, some don't. The presence check must be
+    // own-property based — `key in entry` would read the INHERITED function for
+    // the entries lacking it, corrupting the round-trip.
+    const original: Record<string, unknown> = {};
+    for (let i = 0; i < 12; i += 1) {
+      original[`k${i}`] =
+        i % 2 === 0
+          ? { id: `n${i}`, toString: `own-${i}`, label: `L${i}` }
+          : { id: `n${i}`, label: `L${i}` }; // no own toString
+    }
+    const compact = compactObjectMap(original);
+    expect(compact).not.toBeNull();
+    const back = expandObjectMap(compact!)!;
+    expect(back).toEqual(original);
+    // Entries that never had an own toString must still not have one.
+    expect(Object.prototype.hasOwnProperty.call(back.k1, 'toString')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(back.k0, 'toString')).toBe(true);
+  });
+
   test('a "__proto__" FIELD inside entries survives the columnar round-trip', () => {
     const parts: string[] = [];
     for (let i = 0; i < 30; i += 1) {

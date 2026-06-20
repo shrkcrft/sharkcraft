@@ -134,7 +134,9 @@ function listPackages(projectRoot: string): { name: string; kind: 'package' | 'a
   for (const top of ['packages', 'apps', 'examples'] as const) {
     const root = nodePath.join(projectRoot, top);
     if (!existsSync(root)) continue;
-    for (const short of readdirSync(root)) {
+    // Sort so package iteration order (and therefore which packages' files land
+    // before FILES_CAP truncates) is deterministic, not filesystem-dependent.
+    for (const short of readdirSync(root).sort()) {
       const dir = nodePath.join(root, short);
       const pkgJson = nodePath.join(dir, 'package.json');
       if (!existsSync(pkgJson)) continue;
@@ -165,7 +167,10 @@ function walkSourceFiles(packageDir: string, cap: number): string[] {
     const dir = stack.pop()!;
     let entries: string[] = [];
     try {
-      entries = readdirSync(dir);
+      // Sort entries so the capped walk selects the SAME files every run — the
+      // `out.length >= cap` early-break otherwise makes the selected set depend
+      // on filesystem order.
+      entries = readdirSync(dir).sort();
     } catch {
       continue;
     }

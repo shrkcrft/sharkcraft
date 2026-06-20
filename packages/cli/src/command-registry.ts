@@ -317,6 +317,13 @@ export function extractGlobalCwd(argv: readonly string[]): {
   let cwd: string | undefined;
   for (let i = 0; i < argv.length; i += 1) {
     const t = argv[i]!;
+    // Honor the POSIX `--` end-of-options separator (as parseArgs does):
+    // everything after it is a literal positional, so a `--cwd` there must not
+    // be intercepted. Preserve `--` and the remainder verbatim.
+    if (t === '--') {
+      rest.push(...argv.slice(i));
+      break;
+    }
     if (t === '--cwd') {
       const next = argv[i + 1];
       if (next !== undefined && !next.startsWith('-')) {
@@ -336,6 +343,92 @@ export function extractGlobalCwd(argv: readonly string[]): {
   }
   if (cwd && !nodePath.isAbsolute(cwd)) cwd = nodePath.resolve(process.cwd(), cwd);
   return cwd === undefined ? { rest } : { cwd, rest };
+}
+
+/** A request to compress a command's stdout, parsed from the global flags. */
+export interface IGlobalCompressDirective {
+  /** Force a content type for the compressor (else auto-detect). */
+  type?: string;
+  /** Query text that biases which lines/matches the compressor keeps. */
+  query?: string;
+}
+
+/**
+ * Extracts the global output-compression flags from anywhere in argv:
+ * `--compress` / `--ccr` (synonyms; turn it on) plus optional
+ * `--compress-type <t>` and `--compress-query <q>`. Returns the directive (when
+ * any was present) and the remaining argv with those flags removed — so the
+ * underlying command can be re-run cleanly without them (and never recurses).
+ */
+export function extractGlobalCompress(argv: readonly string[]): {
+  directive?: IGlobalCompressDirective;
+  rest: string[];
+} {
+  const rest: string[] = [];
+  let active = false;
+  let type: string | undefined;
+  let query: string | undefined;
+  const valued = (token: string, flag: string, set: (v: string) => void, i: number): boolean => {
+    if (token === flag) {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('-')) {
+        set(next);
+        return true; // caller skips next
+      }
+      return false;
+    }
+    return false;
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const t = argv[i]!;
+    // Honor the POSIX `--` end-of-options separator exactly as parseArgs does:
+    // everything after it is a literal positional, so a compress-flag-shaped
+    // token there must NOT be intercepted (and the next token must not be
+    // swallowed as a value). Preserve `--` and the remainder verbatim for the
+    // child to re-parse.
+    if (t === '--') {
+      rest.push(...argv.slice(i));
+      break;
+    }
+    if (t === '--compress' || t === '--ccr') {
+      active = true;
+      continue;
+    }
+    if (t.startsWith('--compress-type=')) {
+      type = t.slice('--compress-type='.length);
+      active = true;
+      continue;
+    }
+    if (t.startsWith('--compress-query=')) {
+      query = t.slice('--compress-query='.length);
+      active = true;
+      continue;
+    }
+    if (t === '--compress-type') {
+      if (valued(t, '--compress-type', (v) => (type = v), i)) {
+        active = true;
+        i += 1;
+        continue;
+      }
+      active = true;
+      continue;
+    }
+    if (t === '--compress-query') {
+      if (valued(t, '--compress-query', (v) => (query = v), i)) {
+        active = true;
+        i += 1;
+        continue;
+      }
+      active = true;
+      continue;
+    }
+    rest.push(t);
+  }
+  if (!active) return { rest };
+  const directive: IGlobalCompressDirective = {};
+  if (type !== undefined) directive.type = type;
+  if (query !== undefined) directive.query = query;
+  return { directive, rest };
 }
 
 /**

@@ -316,7 +316,9 @@ export function exploreArea(input: IExploreAreaInput): IAreaExploreReport {
       kind: classifyFileKind(relPath),
     });
   }
-  files.sort((a, b) => b.sizeBytes - a.sizeBytes);
+  // Secondary key makes the order TOTAL: same-size files near the cutoff would
+  // otherwise be ranked by filesystem order (non-deterministic).
+  files.sort((a, b) => b.sizeBytes - a.sizeBytes || a.relPath.localeCompare(b.relPath));
 
   const areaMap = buildAreaMap(input.inspection);
   const inferredKind = inferKindForPath(relPath, areaMap);

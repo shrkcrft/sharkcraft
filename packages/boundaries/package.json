@@ -1,12 +1,12 @@
 {
   "name": "@shrkcrft/boundaries",
-  "version": "0.1.0-alpha.16",
+  "version": "0.1.0-alpha.17",
   "description": "SharkCraft boundary rules: detect when a repository violates its own architecture (forbidden imports across folder/package/layer boundaries).",
   "license": "MIT",
   "author": "SharkCraft contributors",
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "types": "./dist/index.d.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -43,7 +43,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@shrkcrft/core": "workspace:*"
+    "@shrkcrft/core": "^0.1.0-alpha.17"
   },
   "publishConfig": {
     "access": "public"

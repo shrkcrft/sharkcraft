@@ -22,7 +22,7 @@ export const depsAuditTool: IToolDefinition = {
       package: { type: 'string' },
       ...FORMAT_INPUT_PROPERTY,
       maxTokens: {
-        type: 'number',
+        type: 'integer',
         minimum: 1,
         description:
           'Token budget for the per-package report list. When set and the columnar form still exceeds it, falls back to the lossy SmartCrusher row-sampler (full original cached — retrieve via the returned ccrKey).',
@@ -252,6 +252,9 @@ function rootOfSpecifier(spec: string): string {
 }
 function isBuiltinModule(spec: string): boolean {
   if (spec.startsWith('node:')) return true;
+  // Bun runtime builtins (`bun:test`, `bun:sqlite`, …) are runtime-provided,
+  // never an npm dependency — so they are not "missing".
+  if (spec.startsWith('bun:')) return true;
   return new Set([
     'fs', 'path', 'os', 'crypto', 'http', 'https', 'url', 'util', 'stream',
     'events', 'child_process', 'process', 'buffer', 'querystring', 'zlib',

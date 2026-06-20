@@ -45,13 +45,19 @@ export function finalizeLossy(params: {
   let key: string | undefined;
   if (opts.store) {
     key = opts.store.put(original);
+    // Make inline `… N lines omitted` placeholders self-describing: a reader
+    // who only sees a clipped middle of the output otherwise can't tell the
+    // dropped detail is retrievable. Annotate each with the recovery key.
+    compressed = annotateElisionMarkers(body, key);
     // Skip the trailing marker when the body already references THIS key inline
     // (e.g. compressLog's per-drop elision hints) — no need to repeat it. A
     // different inline key (e.g. a diff's per-section keys) still gets the
     // whole-blob marker appended. The marker carries only the key: the human
     // `note` is shipped separately in the result, so repeating it on the wire
     // would just cost tokens.
-    compressed = body.includes(`<<ccr:${key}`) ? body : `${body}\n${formatCcrMarker(key)}`;
+    compressed = compressed.includes(`<<ccr:${key}`)
+      ? compressed
+      : `${compressed}\n${formatCcrMarker(key)}`;
   }
   const savings = measureSavings(original, compressed, contentType);
   if (savings.after >= savings.before) {
@@ -66,4 +72,21 @@ export function finalizeLossy(params: {
     ...(key ? { ccrKey: key } : {}),
     note,
   };
+}
+
+/**
+ * Append the recovery key to each `… N line(s) omitted` placeholder produced by
+ * {@link elide} (used by the markdown/search/lines compressors), so a clipped
+ * view still advertises that the dropped detail is retrievable via `shrk expand`.
+ * Deterministic; leaves bodies without such markers (logs/diffs use their own
+ * keyed hints) untouched.
+ */
+function annotateElisionMarkers(body: string, key: string): string {
+  // Match ONLY a standalone-line `… N lines omitted` (what elide() emits, on its
+  // own line). The lookahead for end-of-line excludes compressLog's inline-keyed
+  // markers (`… N lines omitted → <<ccr:KEY>>`), which already carry the key.
+  return body.replace(
+    /(… \d+ lines? omitted)(?=\n|$)/g,
+    (marker) => `${marker} (shrk expand ${key})`,
+  );
 }

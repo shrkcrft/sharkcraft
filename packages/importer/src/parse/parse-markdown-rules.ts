@@ -87,7 +87,10 @@ export function parseMarkdownRules(
   options: IMarkdownParseOptions,
 ): IImportedEntry[] {
   const entries: IImportedEntry[] = [];
-  const lines = raw.split('\n');
+  // Normalize CRLF/CR first: a trailing `\r` on each line makes the heading
+  // regex `(.*)$` fail (`.`/`$` don't span `\r`), silently dropping every rule
+  // in a Windows/mixed-OS file.
+  const lines = raw.replace(/\r\n?/g, '\n').split('\n');
   const sections: IPendingSection[] = [];
   let current: IPendingSection | null = null;
   let paragraph: string[] = [];

@@ -11,6 +11,7 @@ import type { TaskIntent } from '../schema/context-pack.ts';
  * its neutral baseline weights.
  */
 export function classifyIntent(task: string): TaskIntent {
+  if (typeof task !== 'string') return 'unknown';
   const t = task.toLowerCase();
   if (matchAny(t, ['release', 'cut release', 'publish', 'preflight', 'tag '])) return 'release';
   if (matchAny(t, ['migration', 'migrate', 'upgrade', 'deprecat'])) return 'migration';

@@ -49,4 +49,12 @@ describe('parseMarkdownRules', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]!.content).toContain('handles user profiles');
   });
+
+  test('parses CRLF-authored markdown without dropping rules (Windows files)', () => {
+    const md = ['# Coding Standards', '', '- Use 2-space indentation.', '- Prefer interfaces.'].join('\r\n');
+    const entries = parseMarkdownRules(md, { origin: 'CLAUDE.md', idPrefix: 'claude' });
+    expect(entries).toHaveLength(2);
+    expect(entries[0]!.title).toBe('Use 2-space indentation');
+    expect(entries[0]!.tags).toContain('coding');
+  });
 });

@@ -248,7 +248,7 @@ export const applyCommand: ICommandHandler = {
   description:
     'Apply a previously-saved generation plan (sharkcraft.plan/v1 JSON). The CLI is the only write path; MCP never writes. Plans that live under .sharkcraft/sessions/<id>/plans/ automatically update the session metadata (signature + divergence + applied + validation).',
   usage:
-    'shrk [--cwd <dir>] apply <plan.json> [--session <id>] [--force] [--allow-divergent] [--verify-signature] [--require-signature] [--dry-run] [--validate] [--report] [--json] [--trace] [--explain-dispatch] | shrk apply --asset-preview <draft.ts> --target <file> [--write] [--allow-unknown-target] [--reason <text>] | shrk apply --batch <plan.json> [--allow-divergent] [--dry-run] [--json]',
+    'shrk [--cwd <dir>] apply <plan.json> [--session <id>] [--force] [--allow-divergent] [--verify-signature] [--require-signature] [--no-verify-signature] [--dry-run] [--validate] [--report] [--json] [--trace] [--explain-dispatch] | shrk apply --asset-preview <draft.ts> --target <file> [--write] [--allow-unknown-target] [--reason <text>] | shrk apply --batch <plan.json> [--allow-divergent] [--dry-run] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     // Asset-preview flow: paste-with-review for authoring drafts.
     // Distinct from the plan-based apply path: takes a TS draft and a
@@ -296,7 +296,15 @@ export const applyCommand: ICommandHandler = {
 
     let signatureStatus: DevSessionSignatureStatus = DevSessionSignatureStatus.NotChecked;
     let signatureMessage: string | undefined;
-    if (verifySig) {
+    // A plan that CARRIES a signature self-enforces verification: the signature
+    // is the producer's tamper-evidence declaration, so a signed plan must not
+    // apply unverified just because the caller forgot --verify-signature
+    // (contract: "Apply requires --verify-signature for signed plans"). A
+    // tampered/invalid signature then refuses below. `--no-verify-signature` is
+    // the explicit escape hatch for sign-here / apply-there-without-the-secret.
+    const isSigned = Boolean(saved.signature);
+    const skipSig = flagBool(args, 'no-verify-signature') && !verifySig;
+    if (verifySig || (isSigned && !skipSig)) {
       const result = verifyPlan(saved);
       if (result.ok === true) {
         signatureStatus = DevSessionSignatureStatus.Verified;

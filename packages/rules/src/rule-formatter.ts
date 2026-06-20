@@ -12,6 +12,6 @@ export function formatRuleFull(rule: IRule, options: { includeExamples?: boolean
 export function formatRulesForAi(rules: readonly IKnowledgeEntry[]): string {
   if (rules.length === 0) return 'No relevant rules found.';
   return rules
-    .map((r, i) => `${i + 1}. [${r.id}] ${r.title}\n   ${r.content.trim()}`)
+    .map((r, i) => `${i + 1}. [${r.id}] ${r.title ?? '(untitled)'}\n   ${(r.content ?? '').trim()}`)
     .join('\n\n');
 }

@@ -70,7 +70,11 @@ export async function runValidationLoop(
     const ver = (cfg as WithVer | null)?.verificationCommands ?? [];
     const wantIds = new Set(options.verificationIds);
     for (const v of ver) {
-      const shouldRun = options.allVerifications || wantIds.has(v.id);
+      // `--all-verifications` auto-runs commands, so it must respect the
+      // explicit `trusted: false` opt-out (a command the project marked
+      // untrusted must not be executed en masse). An explicit `--verification
+      // <id>` still runs it — naming it by id IS the opt-in.
+      const shouldRun = (options.allVerifications && v.trusted !== false) || wantIds.has(v.id);
       if (!shouldRun) continue;
       commands.push({ id: v.id, command: v.command, trusted: v.trusted !== false });
     }

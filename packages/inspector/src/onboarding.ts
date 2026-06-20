@@ -905,7 +905,8 @@ function listSubDirs(projectRoot: string): Map<string, string[]> {
   try {
     topLevel = readdirSync(projectRoot, { withFileTypes: true })
       .filter((e) => e.isDirectory() && !IGNORE_DIRS.has(e.name))
-      .map((e) => e.name);
+      .map((e) => e.name)
+      .sort(); // readdir order is filesystem-dependent; sort so the monorepo summary is deterministic
   } catch {
     return out;
   }
@@ -914,7 +915,8 @@ function listSubDirs(projectRoot: string): Map<string, string[]> {
       const fullTop = nodePath.join(projectRoot, top);
       const children = readdirSync(fullTop, { withFileTypes: true })
         .filter((e) => e.isDirectory() && !IGNORE_DIRS.has(e.name))
-        .map((e) => e.name);
+        .map((e) => e.name)
+        .sort();
       out.set(top, children);
     } catch {
       out.set(top, []);

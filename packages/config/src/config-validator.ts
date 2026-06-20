@@ -12,6 +12,15 @@ export interface ConfigValidationResult {
 }
 
 export function validateConfig(config: ISharkCraftConfig): ConfigValidationResult {
+  // Defensive: a malformed config file can deserialize to null / a non-object.
+  // Report it as a single root error instead of throwing on `config.<field>`.
+  if (config === null || typeof config !== 'object') {
+    return {
+      valid: false,
+      issues: [{ field: '<root>', message: 'config must be an object', severity: 'error' }],
+    };
+  }
+
   const issues: ConfigValidationIssue[] = [];
 
   if (config.defaultMaxTokens !== undefined && config.defaultMaxTokens <= 0) {

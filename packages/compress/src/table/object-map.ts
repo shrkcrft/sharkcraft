@@ -64,7 +64,9 @@ export function compactObjectMap(value: unknown): IObjectMap | null {
     const row: unknown[] = [];
     for (let c = 0; c < cols.length; c += 1) {
       const key = cols[c]!;
-      if (key in entry && entry[key] !== undefined) {
+      // Own-property check (not `key in entry`, which walks the prototype chain)
+      // so a column named after an Object.prototype member isn't read as a value.
+      if (Object.prototype.hasOwnProperty.call(entry, key) && entry[key] !== undefined) {
         row.push(entry[key]);
       } else {
         absent.push([r, c]);

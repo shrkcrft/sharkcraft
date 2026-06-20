@@ -5,6 +5,7 @@ import type { ICompressionResult } from './result/compression-result.ts';
 import type { ICompressOptions } from './result/compress-options.ts';
 import { ECompressionStrategy } from './result/compression-strategy.ts';
 import { measureSavings } from './tokens/estimate-tokens.ts';
+import { passthroughResult } from './text/finalize.ts';
 import { compressJson } from './json/compress-json.ts';
 import { compressLog } from './text/compress-log.ts';
 import { compressSearch } from './text/compress-search.ts';
@@ -21,6 +22,17 @@ import { compressCode } from './code/compress-code.ts';
  * and options always yield the same output.
  */
 export function compressContent(text: string, opts: ICompressOptions = {}): ICompressionResult {
+  const result = routeCompressContent(text, opts);
+  // `lossless` is a hard guard applied at the single entry point so it catches
+  // every lossy path (text elision, JSON row-sampling, mixed) uniformly: a
+  // result that drops information is replaced by the verbatim original.
+  if (opts.lossless && result.lossy) {
+    return passthroughResult(text, result.contentType, 'lossless requested — lossy reduction skipped');
+  }
+  return result;
+}
+
+function routeCompressContent(text: string, opts: ICompressOptions): ICompressionResult {
   const type = opts.contentType ?? detectContentType(text);
   switch (type) {
     case EContentType.JsonArray:

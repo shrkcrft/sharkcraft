@@ -31,6 +31,18 @@ describe('extractGlobalCwd', () => {
     expect(cwd).toBeUndefined();
     expect(rest).toEqual(['inspect', '--json']);
   });
+
+  test('honors the `--` separator: a --cwd after it is a literal, not extracted', () => {
+    // `--cwd` BEFORE `--` is still extracted; everything from `--` on is verbatim.
+    const a = extractGlobalCwd(['--cwd', '/foo', 'gen', '--', '--cwd', '/bar']);
+    expect(a.cwd).toBe('/foo');
+    expect(a.rest).toEqual(['gen', '--', '--cwd', '/bar']);
+
+    // A `--cwd` only after `--` is NOT extracted (it's a literal positional).
+    const b = extractGlobalCwd(['gen', 'name', '--', '--cwd', '/etc']);
+    expect(b.cwd).toBeUndefined();
+    expect(b.rest).toEqual(['gen', 'name', '--', '--cwd', '/etc']);
+  });
 });
 
 describe('resolveCwd', () => {

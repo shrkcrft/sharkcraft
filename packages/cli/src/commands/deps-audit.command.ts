@@ -287,6 +287,9 @@ function rootOfSpecifier(spec: string): string {
 
 function isBuiltinModule(spec: string): boolean {
   if (spec.startsWith('node:')) return true;
+  // Bun runtime builtins (`bun:test`, `bun:sqlite`, `bun:ffi`, …) are provided by
+  // the runtime, never an npm dependency — so they are not "missing".
+  if (spec.startsWith('bun:')) return true;
   // Common bare-name builtins.
   return new Set([
     'fs', 'path', 'os', 'crypto', 'http', 'https', 'url', 'util', 'stream',

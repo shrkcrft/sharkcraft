@@ -39,11 +39,24 @@ export function matchPattern(node: ts.Node, pattern: StructuralPattern): boolean
   }
 }
 
+/**
+ * Compile a user-supplied regex defensively. An invalid pattern (e.g. an
+ * unbalanced `[`) returns null — treated as "no match" — instead of throwing
+ * and aborting the entire search walk over the project.
+ */
+function compileRegex(source: string): RegExp | null {
+  try {
+    return new RegExp(source);
+  } catch {
+    return null;
+  }
+}
+
 function matchIdentifier(node: ts.Identifier, pat: IIdentifierPattern): boolean {
   if (pat.name && pat.name !== '*' && node.text !== pat.name) return false;
   if (pat.nameRegex) {
-    const re = new RegExp(pat.nameRegex);
-    if (!re.test(node.text)) return false;
+    const re = compileRegex(pat.nameRegex);
+    if (!re || !re.test(node.text)) return false;
   }
   return true;
 }
@@ -51,8 +64,8 @@ function matchIdentifier(node: ts.Identifier, pat: IIdentifierPattern): boolean 
 function matchStringLiteral(node: ts.StringLiteral, pat: IStringLiteralPattern): boolean {
   if (pat.text !== undefined && node.text !== pat.text) return false;
   if (pat.textRegex) {
-    const re = new RegExp(pat.textRegex);
-    if (!re.test(node.text)) return false;
+    const re = compileRegex(pat.textRegex);
+    if (!re || !re.test(node.text)) return false;
   }
   return true;
 }
@@ -82,8 +95,8 @@ function matchImportDeclaration(node: ts.ImportDeclaration, pat: IImportDeclarat
   const spec = node.moduleSpecifier.text;
   if (pat.from !== undefined && spec !== pat.from) return false;
   if (pat.fromRegex) {
-    const re = new RegExp(pat.fromRegex);
-    if (!re.test(spec)) return false;
+    const re = compileRegex(pat.fromRegex);
+    if (!re || !re.test(spec)) return false;
   }
   if (pat.sideEffectOnly === true) {
     if (node.importClause) return false;
@@ -112,8 +125,8 @@ function matchClassDeclaration(node: ts.ClassDeclaration, pat: IClassDeclaration
   }
   if (pat.nameRegex) {
     if (!node.name) return false;
-    const re = new RegExp(pat.nameRegex);
-    if (!re.test(node.name.text)) return false;
+    const re = compileRegex(pat.nameRegex);
+    if (!re || !re.test(node.name.text)) return false;
   }
   if (pat.hasDecoratorNamed) {
     const mods = ts.canHaveDecorators(node) ? ts.getDecorators(node) : undefined;

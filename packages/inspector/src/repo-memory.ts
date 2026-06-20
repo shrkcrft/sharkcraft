@@ -173,7 +173,9 @@ function walkJsonFiles(root: string): string[] {
     if (st.isDirectory()) {
       let entries: string[];
       try {
-        entries = readdirSync(cur);
+        // Sort the walk so `shrk memory` topFiles / riskyFilesByLanguage slices
+        // are deterministic, not filesystem-order-dependent.
+        entries = readdirSync(cur).sort();
       } catch {
         continue;
       }

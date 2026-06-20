@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/pipelines",
-  "version": "0.1.0-alpha.16",
+  "version": "0.1.0-alpha.17",
   "description": "SharkCraft AI development pipelines: typed flow definitions, registry, loader, formatter.",
   "license": "MIT",
   "author": "SharkCraft contributors",

@@ -10,7 +10,8 @@ export function selectBestPath(
   candidates: readonly IPathConvention[],
   task: string,
 ): IPathSelection | null {
-  if (candidates.length === 0) return null;
+  if (!candidates || candidates.length === 0) return null;
+  if (typeof task !== 'string' || task.trim() === '') return null;
   const taskLower = task.toLowerCase();
   const scored = candidates
     .map((c) => {

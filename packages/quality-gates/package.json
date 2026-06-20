@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/quality-gates",
-  "version": "0.1.0-alpha.16",
+  "version": "0.1.0-alpha.17",
   "description": "SharkCraft quality gates: single aggregator that runs the code-intelligence checks (graph index, boundaries, architecture, impact summary) and emits one pass/fail report. The pre-merge gate for AI-agent-authored changes.",
   "license": "MIT",
   "author": "SharkCraft contributors",

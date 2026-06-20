@@ -25,7 +25,7 @@ export const getKnowledgeGraphTool: IToolDefinition = {
           'json (default): explicit node/edge object arrays. table: columnar encoding (schema hoisted, keys deduped) — fewer tokens for large graphs.',
       },
       maxTokens: {
-        type: 'number',
+        type: 'integer',
         minimum: 1,
         description:
           'Token budget for the table. When set and the lossless columnar form still exceeds it, falls back to the lossy SmartCrusher row-sampler (representative rows kept; full original cached — retrieve via the returned ccrKey).',

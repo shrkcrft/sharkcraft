@@ -3573,6 +3573,8 @@ const PRIMARY_VERBS_ALLOWLIST: ReadonlySet<string> = new Set([
   'impact',
   'graph',
   'code-intel',
+  'compress',
+  'expand',
   // Generate code safely
   'gen',
   'apply',

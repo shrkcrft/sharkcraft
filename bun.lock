@@ -344,6 +344,7 @@
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/inspector": "workspace:*",
+        "typescript": "^5.6.0",
       },
     },
     "packages/impact-engine": {

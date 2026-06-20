@@ -109,7 +109,9 @@ export function listDecisions(inspection: ISharkcraftInspection): readonly IDeci
     if (!existsSync(dir)) continue;
     let entries: string[] = [];
     try {
-      entries = readdirSync(dir);
+      // Sort so the decision-record list (and the doctor findings derived from
+      // it) is deterministic, not filesystem-order-dependent.
+      entries = readdirSync(dir).sort();
     } catch {
       continue;
     }
