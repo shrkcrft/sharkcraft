@@ -6,7 +6,7 @@
   "author": "SharkCraft contributors",
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./dist/index.d.d.ts",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -43,7 +43,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@shrkcrft/core": "^0.1.0-alpha.17"
+    "@shrkcrft/core": "workspace:*"
   },
   "publishConfig": {
     "access": "public"
