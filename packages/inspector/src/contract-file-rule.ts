@@ -23,7 +23,7 @@ export interface IContractFileRule {
   severity?: ContractFileRuleSeverity;
 }
 
-function toPosix(p: string): string {
+export function toPosix(p: string): string {
   return p.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
@@ -31,8 +31,13 @@ function escapeRegex(s: string): string {
   return s.replace(/[.+^$(){}|\\[\]]/g, '\\$&');
 }
 
-/** Translate a deterministic POSIX-style glob to a regex anchored at both ends. */
-function globToRegex(pattern: string): RegExp {
+/**
+ * Translate a deterministic POSIX-style glob to a regex anchored at both ends.
+ * Case-sensitive by itself — `matchContractFileRule` lowercases its inputs for
+ * the contract use-case, but security-sensitive callers (the delegate guardrail)
+ * use this directly to keep file-path case significant.
+ */
+export function globToRegex(pattern: string): RegExp {
   const p = toPosix(pattern);
   let re = '';
   let i = 0;

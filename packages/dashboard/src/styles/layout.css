@@ -134,6 +134,12 @@
   color: var(--muted);
   margin: 0 0 10px;
 }
+.section__subtitle {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 12px;
+  max-width: 70ch;
+}
 .grid {
   display: grid;
   gap: 14px;

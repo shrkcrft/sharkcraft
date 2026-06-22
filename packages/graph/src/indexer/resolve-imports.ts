@@ -9,11 +9,27 @@ import type { IWorkspacePackage } from './detect-workspace.ts';
 
 const PROBE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
 
+/**
+ * Extensions for non-code assets a TS/JS file can legitimately import
+ * (CSS modules, JSON, images, fonts, wasm). The graph only indexes source
+ * files, so these never resolve to a file node — but an asset that EXISTS
+ * on disk is NOT an unresolved import (the bundler handles it), whereas a
+ * missing one still is a real broken reference.
+ */
+const NON_CODE_ASSET_EXTS = new Set([
+  '.css', '.scss', '.sass', '.less', '.styl',
+  '.json', '.json5',
+  '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.bmp',
+  '.woff', '.woff2', '.ttf', '.eot', '.otf',
+  '.wasm',
+]);
+
 export enum ImportResolution {
   Relative = 'relative',
   Alias = 'alias',
   Workspace = 'workspace',
   External = 'external',
+  Asset = 'asset',
   Unresolved = 'unresolved',
 }
 
@@ -61,7 +77,17 @@ export function resolveImport(
 ): IResolvedImport {
   if (specifier.startsWith('.')) {
     const dir = nodePath.dirname(fromAbsPath);
-    const probe = probeCandidate(nodePath.resolve(dir, specifier));
+    const abs = nodePath.resolve(dir, specifier);
+    const ext = nodePath.extname(specifier).toLowerCase();
+    if (NON_CODE_ASSET_EXTS.has(ext)) {
+      // Existing asset → resolved-enough (not counted as unresolved); a
+      // missing asset stays Unresolved so a real broken reference is caught.
+      if (existsSafe(abs) && isFile(abs)) {
+        return { specifier, kind: ImportResolution.Asset };
+      }
+      return { specifier, kind: ImportResolution.Unresolved };
+    }
+    const probe = probeCandidate(abs);
     if (probe) {
       return {
         specifier,

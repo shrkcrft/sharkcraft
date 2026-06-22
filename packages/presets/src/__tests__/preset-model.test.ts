@@ -59,6 +59,23 @@ describe('preset recommendation', () => {
     // node-api is notAppropriateFor has-bun
     expect(recs.find((r) => r.preset.id === 'node-api')).toBeUndefined();
   });
+
+  test('drops a targeted preset that matched zero of its profiles', () => {
+    // A non-Angular repo must not be recommended Angular presets (they declare
+    // appliesTo:[has-angular] and match nothing) — the cry-wolf "5 Angular
+    // presets for a vanilla repo" bug.
+    const recs = recommendPresets([...BUILTIN_PRESETS], {
+      profiles: [WorkspaceProfile.HasTypeScript],
+    });
+    expect(recs.some((r) => r.preset.id.startsWith('angular'))).toBe(false);
+    // Every recommended preset that declares appliesTo requirements actually
+    // matched at least one of them; universal presets (no appliesTo) survive.
+    for (const r of recs) {
+      if ((r.preset.appliesTo?.length ?? 0) > 0) {
+        expect(r.reasons.some((reason) => reason.startsWith('matches profile:'))).toBe(true);
+      }
+    }
+  });
 });
 
 describe('preset preview', () => {

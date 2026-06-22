@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { runArchCheck } from '@shrkcrft/architecture-guard';
 import { FrameworkQueryApi } from '@shrkcrft/framework-scanners';
-import { GraphStore } from '@shrkcrft/graph';
+import { detectGraphFreshness, GraphQueryApi, GraphStore } from '@shrkcrft/graph';
 import {
   findResumePoint,
   type IMigrationRunReport,
@@ -11,6 +11,7 @@ import { QualityGateReportStore, runQualityGates } from '@shrkcrft/quality-gates
 import { BridgeStore } from '@shrkcrft/rule-graph';
 import type {
   IDashboardCodeIntelligenceResponse,
+  IDashboardGraphHub,
   IDashboardMigrationRow,
   IDashboardMigrationsResponse,
   IDashboardQualityGate,
@@ -41,7 +42,7 @@ export function buildDashboardCodeIntelligence(projectRoot: string): IDashboardC
   // Graph.
   const graphStore = new GraphStore(projectRoot);
   const graph: IDashboardCodeIntelligenceResponse['graph'] = graphStore.exists()
-    ? readGraphSection(graphStore)
+    ? readGraphSection(graphStore, projectRoot)
     : { available: false, hint: "run 'shrk graph index'" };
 
   // Bridge.
@@ -122,8 +123,26 @@ export function buildDashboardRoutes(projectRoot: string): IDashboardRoutesRespo
   };
 }
 
-function readGraphSection(store: GraphStore): IDashboardCodeIntelligenceResponse['graph'] {
+function readGraphSection(
+  store: GraphStore,
+  projectRoot: string,
+): IDashboardCodeIntelligenceResponse['graph'] {
   const snap = store.loadSnapshot();
+  const api = new GraphQueryApi(snap);
+  const hubs = api.topHubs(8);
+  const toRow = (h: { node: { id: string; label: string; path?: string }; inDegree: number }): IDashboardGraphHub => ({
+    id: h.node.id,
+    label: h.node.label,
+    ...(h.node.path ? { path: h.node.path } : {}),
+    inDegree: h.inDegree,
+  });
+  // Freshness vs the working tree — the same signal `shrk graph status` reports.
+  // `corrupt` (store self-integrity) outranks `stale` (disk drift): a digest
+  // failure means the counts themselves can't be trusted.
+  const fresh = detectGraphFreshness(projectRoot);
+  const behind = fresh.modified.length + fresh.added.length + fresh.deleted.length;
+  const verify = store.verifyDigest();
+  const state: 'fresh' | 'stale' | 'corrupt' = !verify.ok ? 'corrupt' : behind > 0 ? 'stale' : 'fresh';
   return {
     available: true,
     fileCount: snap.manifest.filesIndexed,
@@ -133,6 +152,13 @@ function readGraphSection(store: GraphStore): IDashboardCodeIntelligenceResponse
     lastIndexedAt: snap.manifest.lastIndexedAt,
     nodesByKind: snap.manifest.nodesByKind,
     edgesByKind: snap.manifest.edgesByKind,
+    freshness: {
+      state,
+      modified: fresh.modified.length,
+      added: fresh.added.length,
+      deleted: fresh.deleted.length,
+    },
+    hubs: { symbols: hubs.symbols.map(toRow), files: hubs.files.map(toRow) },
   };
 }
 

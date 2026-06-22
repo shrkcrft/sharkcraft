@@ -44,6 +44,7 @@ import {
   getDefaultSourceRoots,
   listIndexableFiles,
   parseTaskTypeOverride,
+  pruneDeletedHits,
   renderFocusedContextForPrompt,
   type IFocusedContext,
   type IPlanCacheHit,
@@ -105,8 +106,17 @@ const SMART_CONTEXT_DIR = nodePath.join('.sharkcraft', 'smart-context');
  *   - `smart-context list`                   — list saved entries.
  *   - `smart-context show <slug>`            — print a saved entry.
  */
+const SMART_CONTEXT_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  'ai-plan', 'brief', 'debug', 'dry-run', 'enhance', 'fix-plan', 'focused',
+  'json', 'log-prompt', 'no-cache', 'no-enhance', 'no-instructions',
+  'no-polish', 'no-refresh-index', 'no-stale-check', 'only-plan', 'plan',
+  'plus', 'rebuild', 'refresh', 'save', 'save-conversation', 'stream',
+  'tiny-only',
+]);
+
 export const smartContextCommand: ICommandHandler = {
   name: 'smart-context',
+  booleanFlags: SMART_CONTEXT_BOOLEAN_FLAGS,
   description:
     'Build deterministic context and ask an AI provider to synthesise an enriched brief (default), structured plan (--plan), or two-stage development plan (--ai-plan).',
   usage:
@@ -249,8 +259,33 @@ export const smartContextCommand: ICommandHandler = {
       model: opts.model,
     });
     if (!aiResult.ok) {
-      printError(aiResult.error);
-      return 1;
+      // Deterministic-always contract (CLAUDE.md): a provider failure must
+      // still return the deterministic seed brief and exit 0 — not nothing on
+      // exit 1. The agent that asked for fast grounding still gets usable
+      // rules / paths / templates / candidate files. The error is advisory on
+      // stderr (never stdout, so --json stays valid).
+      process.stderr.write(
+        '[smart-context] provider unavailable — returning deterministic context only.\n',
+      );
+      const fallbackEnvelope = buildEnvelope({
+        task,
+        seed,
+        ai: {
+          content: renderSeed(seed),
+          model: 'deterministic',
+          finishReason: 'deterministic-fallback',
+          usage: null,
+          providerId: 'deterministic',
+        },
+        mode: opts.mode,
+      });
+      if (opts.save) {
+        const saved = saveEnvelope(cwd, fallbackEnvelope);
+        writeSavedNotice(saved, opts.json, fallbackEnvelope);
+        return 0;
+      }
+      writeEnvelope(fallbackEnvelope, opts.json, opts.debug);
+      return 0;
     }
 
     if (opts.saveConversation) {
@@ -1563,6 +1598,8 @@ interface ISmartContextOptions {
   saveConversation: boolean;
   saveConversationPath?: string;
   noRefreshIndex: boolean;
+  /** Force an inline incremental embeddings refresh before retrieval. */
+  refresh: boolean;
   noCache: boolean;
   cacheReplayThreshold: number;
   cacheReferenceThreshold: number;
@@ -1628,6 +1665,7 @@ function readCommonOptions(args: ParsedArgs): ISmartContextOptions {
     ...(flagString(args, 'instructions') ? { instructionsPath: flagString(args, 'instructions') } : {}),
     noInstructions: flagBool(args, 'no-instructions'),
     noRefreshIndex: flagBool(args, 'no-refresh-index'),
+    refresh: flagBool(args, 'refresh'),
     noCache: flagBool(args, 'no-cache'),
     cacheReplayThreshold: flagNumber(args, 'cache-replay-threshold') ?? 0.95,
     cacheReferenceThreshold: flagNumber(args, 'cache-reference-threshold') ?? 0.75,
@@ -1668,6 +1706,44 @@ interface IDocumentationHit {
   token: string;
 }
 
+interface IIndexFreshness {
+  /** Files currently in the semantic index. */
+  indexed: number;
+  /** stale + missing + untracked — how far the index is behind the working tree. */
+  behind: number;
+  stale: number;
+  missing: number;
+  untracked: number;
+  /** True when this run refreshed the index inline (--refresh or under the auto cap). */
+  refreshed: boolean;
+  /**
+   * Deleted-file suggestions DROPPED from this query's results — a stale index
+   * returned hits for files no longer on disk; they were pruned before the agent
+   * ever saw them. Present (and > 0) only when the prune actually fired.
+   */
+  prunedDeleted?: number;
+  /** Command to bring the index current, when it is still behind. */
+  nextCommand?: string;
+}
+
+/**
+ * Render the one-line freshness warning for a stale semantic index — including
+ * how many deleted-file suggestions were dropped from the results this query.
+ * Returns null when the index is current (no noise). Pure + testable.
+ */
+export function renderIndexFreshnessWarning(f: IIndexFreshness | undefined): string | null {
+  if (!f || f.behind <= 0) return null;
+  const pruned =
+    f.prunedDeleted && f.prunedDeleted > 0
+      ? ` ${f.prunedDeleted} deleted-file suggestion(s) were dropped from the list above.`
+      : '';
+  return (
+    `> ⚠ Semantic index is ${f.behind} file(s) behind the working tree ` +
+    `(${f.stale} changed, ${f.missing} deleted, ${f.untracked} new).${pruned} ` +
+    'Verify the file suggestions above before editing — run `shrk smart-context --refresh` to rebuild.'
+  );
+}
+
 interface ISmartContextSeed {
   task: string;
   overviewText: string;
@@ -1679,6 +1755,12 @@ interface ISmartContextSeed {
   documentationHits: IDocumentationHit[];
   semanticCandidates: ISemanticHit[];
   semanticModel: string | null;
+  /**
+   * Freshness of the semantic index behind `semanticCandidates`. Surfaced so a
+   * downstream agent never trusts file suggestions from a silently-stale index
+   * (the smart-context parallel to the code graph's freshness signal).
+   */
+  indexFreshness?: IIndexFreshness;
 }
 
 async function buildSmartContextSeed(input: {
@@ -1709,6 +1791,7 @@ async function buildSmartContextSeed(input: {
     documentationHits: collectDocumentationHits(cwd, tokenizeTask(task), 10),
     semanticCandidates: semantic.hits,
     semanticModel: semantic.model,
+    ...(semantic.freshness ? { indexFreshness: semantic.freshness } : {}),
   };
 }
 
@@ -2600,23 +2683,36 @@ async function tryLoadSemanticHits(
   task: string,
   k: number,
   options: ISmartContextOptions,
-): Promise<{ hits: ISemanticHit[]; model: string | null; index: SemanticIndex | null }> {
+): Promise<{
+  hits: ISemanticHit[];
+  model: string | null;
+  index: SemanticIndex | null;
+  freshness: IIndexFreshness | null;
+}> {
   if (isSemanticAutomationDisabled()) {
-    return { hits: [], model: null, index: null };
+    return { hits: [], model: null, index: null, freshness: null };
   }
   try {
     const index = await SemanticIndex.tryLoad(cwd);
     if (!index) {
       maybePrintMissingIndexHint(options);
-      return { hits: [], model: null, index: null };
+      return { hits: [], model: null, index: null, freshness: null };
     }
+    let freshness: IIndexFreshness | null = null;
     if (!options.noRefreshIndex && !options.dryRun) {
-      await maybeAutoRefresh(cwd, index, options);
+      freshness = await maybeAutoRefresh(cwd, index, options);
     }
-    const hits = await index.searchFiles(task, k);
-    return { hits, model: index.modelName, index };
+    // Over-fetch, then DROP hits whose file no longer exists on disk — a stale
+    // embedding index must never suggest a deleted file (the reason an agent
+    // would fall back to grep). The freshness block separately reports the drift.
+    const rawHits = await index.searchFiles(task, Math.min(Math.max(k * 2, k), 200));
+    const { hits, prunedDeleted } = pruneDeletedHits(rawHits, cwd, k);
+    if (freshness && prunedDeleted > 0) {
+      freshness = { ...freshness, prunedDeleted };
+    }
+    return { hits, model: index.modelName, index, freshness };
   } catch {
-    return { hits: [], model: null, index: null };
+    return { hits: [], model: null, index: null, freshness: null };
   }
 }
 
@@ -2652,22 +2748,45 @@ async function lookupPlanCache(
   }
 }
 
+function freshnessFrom(
+  report: ReturnType<typeof SemanticIndex.freshnessReport>,
+  refreshed: boolean,
+): IIndexFreshness {
+  const behind = report.stale + report.missing + report.untracked;
+  return {
+    indexed: report.indexed,
+    behind,
+    stale: report.stale,
+    missing: report.missing,
+    untracked: report.untracked,
+    refreshed,
+    ...(behind > 0 && !refreshed
+      ? { nextCommand: 'shrk smart-context --refresh' }
+      : {}),
+  };
+}
+
 async function maybeAutoRefresh(
   cwd: string,
   index: SemanticIndex,
   options: ISmartContextOptions,
-): Promise<void> {
+): Promise<IIndexFreshness> {
   const current = listIndexableFiles(cwd, 5000);
   const report = SemanticIndex.freshnessReport(cwd, current);
   const driftCount = report.stale + report.missing + report.untracked;
-  if (driftCount === 0) return;
-  if (driftCount > AUTO_REFRESH_FILE_CAP) {
-    if (!options.json) {
-      process.stderr.write(
-        `[smart-context] semantic index drifted by ${driftCount} files — too many for auto-refresh. Run \`shrk smart-context embeddings-build\`.\n`,
-      );
-    }
-    return;
+  if (driftCount === 0) return freshnessFrom(report, false);
+
+  // `--refresh` forces an incremental rebuild regardless of the auto cap, so an
+  // agent can bring the index current on demand (mirrors `graph --refresh`).
+  const forced = options.refresh === true;
+  if (!forced && driftCount > AUTO_REFRESH_FILE_CAP) {
+    // Advisory on STDERR (never stdout, so --json stays valid). The honest
+    // `indexFreshness` block in the brief/envelope carries the same signal to
+    // the JSON consumer, which is exactly the agent that needs it.
+    process.stderr.write(
+      `[smart-context] semantic index ${driftCount} files behind — too many for auto-refresh. Run \`shrk smart-context --refresh\` (or \`embeddings-build\`).\n`,
+    );
+    return freshnessFrom(report, false);
   }
   const entries = current.map((path) => ({
     path,
@@ -2677,9 +2796,12 @@ async function maybeAutoRefresh(
   const refreshReport = await index.refresh(entries);
   if (!options.json && (refreshReport.added + refreshReport.changed + refreshReport.removed) > 0) {
     process.stderr.write(
-      `[smart-context] auto-refreshed semantic index: +${refreshReport.added} ~${refreshReport.changed} -${refreshReport.removed} (unchanged ${refreshReport.unchanged}).\n`,
+      `[smart-context] refreshed semantic index: +${refreshReport.added} ~${refreshReport.changed} -${refreshReport.removed} (unchanged ${refreshReport.unchanged}).\n`,
     );
   }
+  // Recompute against the now-updated index so `indexFreshness` is accurate.
+  const after = SemanticIndex.freshnessReport(cwd, listIndexableFiles(cwd, 5000));
+  return freshnessFrom(after, true);
 }
 
 let missingIndexHintShown = false;
@@ -3026,6 +3148,12 @@ function renderSeed(seed: ISmartContextSeed): string {
     lines.push('');
   }
 
+  // Honest freshness signal: a stale embedding index returns suggestions for
+  // moved/deleted/never-indexed files. Surface it so the agent verifies (or
+  // rebuilds) instead of trusting silently-stale grounding.
+  const freshnessWarning = renderIndexFreshnessWarning(seed.indexFreshness);
+  if (freshnessWarning) lines.push(freshnessWarning, '');
+
   lines.push('# Knowledge context (engine-ranked, token-budgeted)');
   lines.push(seed.contextBody.trim());
   return lines.join('\n');
@@ -3301,6 +3429,8 @@ interface ISmartContextEnvelope {
     relevantTemplates: Array<{ id: string; name: string }>;
     recommendedCommands: readonly string[];
   };
+  /** Semantic-index freshness behind the file suggestions (omitted when index absent). */
+  indexFreshness?: IIndexFreshness;
   content: string;
   aiPlan?: {
     strategy: 'deterministic-fallback' | 'two-stage' | 'cache-replay' | 'focused' | 'focused-polished';
@@ -3431,6 +3561,7 @@ function buildEnvelope(input: {
       recommendedCommands: input.seed.packet.recommendedCliCommands,
     },
     content: input.content ?? input.ai.content,
+    ...(input.seed.indexFreshness ? { indexFreshness: input.seed.indexFreshness } : {}),
     ...(input.aiPlan ? { aiPlan: input.aiPlan } : {}),
     ...(input.enhancement ? { enhancement: input.enhancement } : {}),
   };
@@ -3592,10 +3723,24 @@ function readSavedIndex(cwd: string): ISavedIndexEntry[] {
   const out: ISavedIndexEntry[] = [];
   for (const name of readdirSync(dir)) {
     if (!name.endsWith('.json')) continue;
+    // Skip sidecar files (a saved entry also writes <slug>.raw.json /
+    // .plan.json / .conversation.json) so `list` doesn't show them as rows.
+    if (/\.(raw|plan|conversation)\.json$/.test(name)) continue;
     const jsonPath = nodePath.join(dir, name);
     try {
       if (!statSync(jsonPath).isFile()) continue;
-      const env = JSON.parse(readFileSync(jsonPath, 'utf8')) as ISmartContextEnvelope;
+      const env = JSON.parse(readFileSync(jsonPath, 'utf8')) as Partial<ISmartContextEnvelope>;
+      // Shape-guard: only real smart-context envelopes — other commands dump
+      // foreign JSON (audit-/fix-/pipelines-…) into this dir that merely parses
+      // as JSON and otherwise renders as `[undefined] undefined` noise.
+      if (
+        typeof env.task !== 'string' ||
+        typeof env.mode !== 'string' ||
+        typeof env.savedAt !== 'string' ||
+        typeof env.content !== 'string'
+      ) {
+        continue;
+      }
       const slugBase = name.replace(/\.json$/, '');
       const mdPath = nodePath.join(dir, `${slugBase}.md`);
       out.push({

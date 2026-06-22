@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/framework-scanners",
-  "version": "0.1.0-alpha.17",
+  "version": "0.1.0-alpha.18",
   "description": "SharkCraft framework-aware extractors. Plugin-shaped enrichment for the code graph: NestJS controllers/modules/providers, React components/hooks, future Angular/Express/Next.",
   "license": "MIT",
   "author": "SharkCraft contributors",

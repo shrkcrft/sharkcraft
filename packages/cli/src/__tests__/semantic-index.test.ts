@@ -293,6 +293,30 @@ describe('SemanticIndex build + refresh (fake embedder)', () => {
     expect(hits[0]!.score).toBeCloseTo(1, 5);
     expect(hits[0]!.score).toBeGreaterThan(hits[1]!.score);
   });
+
+  test('searchFiles() never returns a path whose file was deleted on disk', async () => {
+    writeFileSync(join(tempRepo, 'auth.ts'), 'login flow\n');
+    writeFileSync(join(tempRepo, 'render.ts'), 'render frames\n');
+    const entries: ISemanticIndexEntry[] = [
+      { path: 'auth.ts', summary: 'authentication and login', exports: ['login'] },
+      { path: 'render.ts', summary: 'frame rendering', exports: ['render'] },
+    ];
+
+    withFakeEmbedder();
+    const index = await SemanticIndex.build(tempRepo, entries, { model: 'fake/embed' });
+
+    // Delete auth.ts on disk WITHOUT reindexing — the index still holds its
+    // vector (a stale index), so an unguarded scan would rank it #1 for its
+    // own descriptor and feed a dead path into the smart-context seed.
+    rmSync(join(tempRepo, 'auth.ts'));
+
+    const authDescriptor = 'auth.ts\nauthentication and login\nexports: login';
+    const hits = await index.searchFiles(authDescriptor, 2);
+    // The query-time prune drops the deleted path entirely; only the
+    // still-present file survives.
+    expect(hits.map((h) => h.path)).not.toContain('auth.ts');
+    expect(hits.map((h) => h.path)).toContain('render.ts');
+  });
 });
 
 function simpleHash(s: string): number {

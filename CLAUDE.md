@@ -100,8 +100,12 @@ and `compress_context` hoist/columnarise or line-reduce blobs; lossy passes
 cache the original (Compress-Cache-Retrieve) and emit a `<<ccr:KEY>>` marker
 recoverable via `retrieve_original` / `shrk expand`.
 
-Opt-in **local-LLM** enrichment (requires a reachable Ollama daemon or a
-local `.gguf` model for llama.cpp — *no hosted API keys*):
+Opt-in **local-LLM** enrichment. The default (`AI_PROVIDER=auto`) is
+local-only — a reachable Ollama daemon or a local `.gguf` model for
+llama.cpp, *never hosted*. Hosted Claude/Gemini providers exist but are
+**explicit opt-in** (`AI_PROVIDER=claude|gemini` or `--provider`, need
+`ANTHROPIC_API_KEY`/`GEMINI_API_KEY`); they send repo context off-machine
+and are never in the `auto` chain:
 
 ```bash
 shrk smart-context "<task>"                        # fast LLM brief (draft → polish, 2 calls)

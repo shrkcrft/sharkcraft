@@ -1,5 +1,23 @@
+import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { TtlFileCcrStore } from '@shrkcrft/compress';
+
+/**
+ * Walk up from `cwd` to the nearest ancestor containing a `.sharkcraft/` dir
+ * (the project root), so `compress` and `expand` share ONE cache per project —
+ * a `<<ccr:KEY>>` cached at the repo root stays recoverable from any subdir
+ * instead of being unrecoverable because `expand` looked in `<subdir>/.sharkcraft/ccr`.
+ * Falls back to `cwd` when no project root is found (a fresh repo).
+ */
+function ccrRoot(cwd: string): string {
+  let dir = nodePath.resolve(cwd);
+  for (;;) {
+    if (existsSync(nodePath.join(dir, '.sharkcraft'))) return dir;
+    const parent = nodePath.dirname(dir);
+    if (parent === dir) return cwd; // reached the filesystem root
+    dir = parent;
+  }
+}
 
 /**
  * Upper bound on cached CCR originals under `.sharkcraft/ccr/`. The store evicts
@@ -11,9 +29,9 @@ import { TtlFileCcrStore } from '@shrkcrft/compress';
  */
 export const CCR_MAX_ENTRIES = 1000;
 
-/** Absolute path to the per-workspace CCR cache directory. */
+/** Absolute path to the per-project CCR cache directory (project-root-relative). */
 export function ccrDir(cwd: string): string {
-  return nodePath.join(cwd, '.sharkcraft', 'ccr');
+  return nodePath.join(ccrRoot(cwd), '.sharkcraft', 'ccr');
 }
 
 /**

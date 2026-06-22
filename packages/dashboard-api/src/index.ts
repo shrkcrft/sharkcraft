@@ -50,6 +50,7 @@ export type {
   IDashboardStatsLanguage,
   IDashboardStatsTopFile,
   IDashboardCodeIntelligenceResponse,
+  IDashboardGraphHub,
   IDashboardRoutesResponse,
   IDashboardRouteRow,
   IDashboardMigrationsResponse,

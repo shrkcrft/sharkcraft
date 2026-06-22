@@ -33,12 +33,20 @@ function readInput(args: ParsedArgs): string {
  * it back. The compressed text goes to stdout (pipeable); the savings summary
  * goes to stderr unless `--json` is set.
  */
+const COMPRESS_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  'stdin',
+  'lossless',
+  'no-cache',
+  'json',
+]);
+
 export const compressCommand: ICommandHandler = {
   name: 'compress',
   description:
     'Compress a blob (file or stdin) deterministically to cut tokens — JSON→table, logs/search/diffs→signal. Reversible via `shrk expand`.',
   usage:
     'shrk [--cwd <dir>] compress [<file>|-] [--stdin] [--type <content-type>] [--query <text>] [--max <n>] [--lossless] [--no-cache] [--json]',
+  booleanFlags: COMPRESS_BOOLEAN_FLAGS,
   run(args: ParsedArgs): number {
     const cwd = resolveCwd(args);
     let content: string;

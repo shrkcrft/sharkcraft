@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { EdgeKind, GraphQueryApi, GraphStore, NodeKind, type INode } from '@shrkcrft/graph';
+import { EdgeKind, GraphQueryApi, GraphStore, NodeKind, loadGraphApiCached, type INode } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
+import { callGraphLanguageNote } from './graph-staleness.ts';
 
 /**
  * `code_find_usages` — structured usage finder backed by the
@@ -20,7 +21,7 @@ import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-fo
 export const codeFindUsagesTool: IToolDefinition = {
   name: 'code_find_usages',
   description:
-    'Find structured usages of a symbol via the SharkCraft graph (file + symbol nodes). Read-only. Distinguishes definition, import-of-declaring-file, and neighbouring symbols. Pass `format:"table"` for a token-efficient columnar encoding of the definitions/importers/neighbours arrays.',
+    'Find where a symbol is used (use this instead of grep). Returns the definition site and exact use sites as path:line via the SharkCraft graph, plus files that import the declaring file and neighbouring symbols. Read-only; needs `shrk graph index`. Pass `format:"table"` for a token-efficient columnar encoding.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -44,12 +45,12 @@ export const codeFindUsagesTool: IToolDefinition = {
       return {
         data: {
           error: 'no-graph',
-          message: 'The SharkCraft graph index has not been built yet. Build it with `shrk graph build`.',
-          nextCommand: 'shrk graph build',
+          message: 'The SharkCraft graph index has not been built yet. Build it with `shrk graph index`.',
+          nextCommand: 'shrk graph index',
         },
       };
     }
-    const api = GraphQueryApi.fromStore(ctx.cwd);
+    const api = loadGraphApiCached(ctx.cwd) ?? GraphQueryApi.fromStore(ctx.cwd);
     const matches = api.findSymbol(symbolName, { exact: true, limit: maxResults });
     if (matches.length === 0) {
       return {
@@ -67,14 +68,28 @@ export const codeFindUsagesTool: IToolDefinition = {
     const definitions: Array<{ symbolId: string; file: string | null; line?: number; kind: string }> = [];
     const importerSet = new Map<string, { file: string; via: string }>();
     const neighbours: Array<{ name: string; kind: string; file: string | null }> = [];
+    const useSites: Array<{ file: string; line?: number }> = [];
 
     for (const sym of matches) {
       const declaringFile = declaringFileOf(api, sym.id);
       definitions.push({
         symbolId: sym.id,
         file: declaringFile?.path ?? null,
+        ...(sym.line ? { line: sym.line } : {}),
         kind: String(sym.label && sym.label.length > 0 ? sym.label : sym.kind),
       });
+      // Exact use sites (path:line) from the symbol's own call/reference
+      // edges, so the agent jumps straight to where it's used rather than
+      // grepping inside each importing file.
+      for (const site of api.referenceSitesOf(sym.id)) {
+        if (!site.node.path) continue;
+        // Prune use sites whose file no longer exists — uniformly with
+        // importersOfDeclaringFile below, so the payload never lists a deleted
+        // file in one field while dropping it in another (a self-contradicting,
+        // authoritative-looking result is worse than a uniformly-stale one).
+        if (!pathExists(ctx.cwd, site.node.path)) continue;
+        useSites.push({ file: site.node.path, ...(site.line ? { line: site.line } : {}) });
+      }
       if (declaringFile) {
         for (const importer of api.importersOf(declaringFile.id)) {
           if (!importer.path) continue;
@@ -102,13 +117,35 @@ export const codeFindUsagesTool: IToolDefinition = {
       }
     }
 
+    // Result-file staleness: which surviving result files changed content
+    // since indexing (deleted ones are already pruned above). Flags a payload
+    // whose line numbers / membership may be out of date for files the agent
+    // just edited. Read-only.
+    const resultPaths = [
+      ...definitions.map((d) => d.file),
+      ...useSites.map((u) => u.file),
+      ...[...importerSet.values()].map((i) => i.file),
+    ].filter((p): p is string => !!p);
+    const stale = api.staleFilesAmong(ctx.cwd, resultPaths);
+    // Non-TS languages have no call/reference extraction, so empty useSites must
+    // not be read as "no usages".
+    const langNote = matches[0] ? callGraphLanguageNote(api, matches[0]) : undefined;
     const data = {
       symbol: { name: symbolName, kind: matches[0]?.kind ?? 'unknown' },
       definitions,
+      useSites,
       importersOfDeclaringFile: [...importerSet.values()],
       neighbouringSymbols: neighbours.slice(0, 12),
       totalSymbolMatches: matches.length,
-      note: 'importersOfDeclaringFile = files that import the declaring file. This is a structural signal — it may include type-only imports and unused references. Pair with `shrk impact` for a tighter blast radius.',
+      note:
+        (langNote ? langNote + ' ' : '') +
+        'useSites = exact file:line of each call/reference to the symbol (first use per file). importersOfDeclaringFile = files that import the declaring file (coarser; may include type-only/unused imports). Pair with `shrk impact` for a tighter blast radius.',
+      ...(stale.modified.length > 0
+        ? {
+            stale: { modified: stale.modified },
+            staleHint: 'Some result files changed since indexing — run `shrk graph index --changed` for fresh line numbers.',
+          }
+        : {}),
     };
     // `format:"table"` columnar-encodes the homogeneous object-array fields
     // (definitions, importersOfDeclaringFile, neighbouringSymbols); the scalar

@@ -532,6 +532,19 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     surface: CommandSurface.Common,
     taskRole: CommandTaskRole.Apply,
   }),
+  entry({
+    command: 'delegate',
+    description:
+      'Hand a mechanical edit to a local-LLM worker; the engine verifies the result and auto-reverts on failure (run|brief). Writes source only via --apply through the signed-plan + verify gate.',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSource,
+    writesFiles: true,
+    writesSource: true,
+    requiresReview: true,
+    surface: CommandSurface.Advanced,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent],
+    taskRole: CommandTaskRole.Apply,
+  }),
   // `shrk spec` intent artifact over plan/review/apply.
   entry({
     command: 'spec',

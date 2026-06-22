@@ -1,4 +1,4 @@
-import { GraphQueryApi, GraphStore } from '@shrkcrft/graph';
+import { GraphQueryApi, GraphStore, loadGraphApiCached } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
@@ -54,7 +54,7 @@ export const getGraphCyclesTool: IToolDefinition = {
         },
       };
     }
-    const api = GraphQueryApi.fromStore(ctx.inspection.projectRoot);
+    const api = loadGraphApiCached(ctx.inspection.projectRoot) ?? GraphQueryApi.fromStore(ctx.inspection.projectRoot);
     const all = api.cycles();
     const filtered = all.filter((c) => c.size >= minSize);
     const limited = filtered.slice(0, rawLimit);

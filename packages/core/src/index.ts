@@ -1,5 +1,6 @@
 export * from './result/result.ts';
 export * from './result/errors.ts';
+export * from './delegate/delegate-recipe.ts';
 export * from './logger/log-level.ts';
 export * from './logger/logger.ts';
 export * from './fs/file-system.ts';

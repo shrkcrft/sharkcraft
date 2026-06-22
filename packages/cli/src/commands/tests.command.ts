@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
   analyzeTestImpact,
+  getChangedFiles,
   inspectSharkcraft,
   readFeatureBundle,
   suggestTestPathFor,
@@ -20,7 +21,14 @@ function collectFiles(cwd: string, args: ParsedArgs): string[] {
   const files = flagList(args, 'files');
   const planFile = flagString(args, 'plan');
   const bundleId = flagString(args, 'bundle');
+  const since = flagString(args, 'since');
+  const staged = flagBool(args, 'staged');
   const out: string[] = [...files];
+  // `--since <ref>` / `--staged`: collect changed files straight from git so
+  // the agent's reflex `shrk tests impact --since main` works the same way as
+  // `shrk impact --since` (was --files-only, forcing a manual diff).
+  if (since) for (const f of getChangedFiles(cwd, { since })) out.push(f);
+  if (staged) for (const f of getChangedFiles(cwd, { staged: true })) out.push(f);
   if (planFile) {
     const path = nodePath.isAbsolute(planFile) ? planFile : nodePath.join(cwd, planFile);
     if (existsSync(path)) {
@@ -49,7 +57,7 @@ function collectFiles(cwd: string, args: ParsedArgs): string[] {
 export const testsImpactCommand: ICommandHandler = {
   name: 'impact',
   description: 'Test impact analysis for changed files / plan / bundle.',
-  usage: 'shrk tests impact [--files a,b] [--plan <plan>] [--bundle <id>] "<task>"',
+  usage: 'shrk tests impact [--files a,b] [--since <ref>] [--staged] [--plan <plan>] [--bundle <id>] "<task>"',
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });

@@ -87,7 +87,7 @@ export const movePlanCommand: ICommandHandler = {
 
     const store = new GraphStore(cwd);
     if (!store.exists()) {
-      process.stderr.write('No SharkCraft graph found. Run `shrk graph build` so move-plan can trace importers.\n');
+      process.stderr.write('No SharkCraft graph found. Run `shrk graph index` so move-plan can trace importers.\n');
       return 1;
     }
     const api = GraphQueryApi.fromStore(cwd);

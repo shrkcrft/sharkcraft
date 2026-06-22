@@ -194,6 +194,35 @@ describe('buildCodeIntelligenceChecks', () => {
     expect(gate.message).toContain('FAIL');
     expect(gate.message).toContain('arch');
     expect(gate.fix).toContain('shrk gate');
+    expect(gate.advisory).toBeUndefined();
+  });
+
+  test('quality-gate FAIL older than the stale threshold folds into an advisory', () => {
+    const now = Date.parse('2026-05-22T12:00:00Z');
+    writeJson(root, '.sharkcraft/quality-gates/last.json', {
+      schema: 'sharkcraft.quality-gate-report/v1',
+      overall: 'fail',
+      // 8 days old — past the default 7-day stale threshold.
+      startedAt: new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString(),
+      totalDurationMs: 500,
+      counts: { pass: 2, fail: 1, warn: 0, skipped: 0 },
+      gates: [
+        { id: 'arch', status: 'fail' },
+        { id: 'impact', status: 'fail' },
+      ],
+      diagnostics: [],
+    });
+    const checks = buildCodeIntelligenceChecks(root, { nowMs: now });
+    const gate = checks.find((c) => c.id === 'code-intelligence-quality-gate')!;
+    // A stale FAIL is not a verified current regression: it ages out into a
+    // folded advisory (Info) that nudges a re-run, instead of a hard headline
+    // Warning that masks the now-unknown state of the tree. It still names the
+    // failing gates so nothing is hidden.
+    expect(gate.severity).toBe(DoctorSeverity.Info);
+    expect(gate.advisory).toBe(true);
+    expect(gate.message).toContain('Stale');
+    expect(gate.message).toContain('arch');
+    expect(gate.fix).toContain('shrk gate');
   });
 
   test('quality-gate last run = pass shows OK with no extra hints', () => {

@@ -12,5 +12,6 @@ export * from './planned-change.ts';
 export * from './folder-safety.ts';
 export * from './folder-apply.ts';
 export * from './synthetic-plan.ts';
+export * from './package-delegate-plan.ts';
 export * from './spec/index.ts';
 export * from './grounding/index.ts';

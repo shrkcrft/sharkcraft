@@ -56,4 +56,10 @@ export default {
     audience: 'engine-contributors',
     note: 'This is the SharkCraft engine repo, not a generic consumer. Knowledge entries / docs intentionally stay empty; rules, paths, templates, pipelines, and boundaries describe the monorepo layout and the canonical engine-development flow.',
   },
+// surface.profile picked by `shrk init` (override): no high-signal profile match — fell back to the default developer profile.
+  surface: {
+    profile: "developer",
+    enabled: [],
+    hidden: [],
+  },
 };

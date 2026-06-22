@@ -44,7 +44,7 @@ describe('deps_audit columnar format', () => {
       const jd = jsonRes.data as Record<string, unknown>;
       if (jd.error === 'no-graph') {
         // No graph index here — wiring is covered by the unit test below.
-        expect(jd.nextCommand).toBe('shrk graph build');
+        expect(jd.nextCommand).toBe('shrk graph index');
         return;
       }
 

@@ -1,9 +1,15 @@
-# `shrk smart-context` — Gemini-backed enriched briefs & multi-task pre-planning
+# `shrk smart-context` — local-first enriched briefs & multi-task pre-planning
 
 This skill teaches Claude (or any agent that loads `.claude/skills/*`)
 how to use `shrk smart-context` to get richer, repository-grounded
 context before — and during — multi-task work. It's the opt-in AI lens
 that sits on top of SharkCraft's deterministic engine.
+
+The LLM is **local-first**: the default (`AI_PROVIDER=auto`) walks
+`llamacpp → ollama` and never calls a hosted API. Hosted Claude/Gemini are
+explicit opt-in (`AI_PROVIDER=claude|gemini` / `--provider`) and send repo
+context off-machine. With **no** LLM reachable, every command still returns
+the deterministic seed (rules / paths / templates / candidate files).
 
 If the user's request is a *single, scoped* implementation change in
 this repo, use the `sharkcraft-dev` skill instead. `smart-context` is
@@ -16,9 +22,9 @@ the right move when you need:
 - a structured plan (file paths, rules, steps, gotchas) you can act on
   step by step.
 
-## What it sends to Gemini
+## What it sends to the LLM
 
-The seed Gemini sees is:
+The seed the local LLM (or, if explicitly opted in, the hosted provider) sees is:
 
 1. **`CLAUDE.md`** (auto-included if present at the repo root) — the
    repository's own agent instructions. This is the user's primary

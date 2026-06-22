@@ -81,19 +81,30 @@ const RECIPES: readonly IRecipe[] = [
     ],
   },
   {
-    match: /code[-\s]?intel|code intelligence|code graph|graph status|graph health|import cycle|unresolved import|blast radius|callers|dependents/i,
+    match: /code[-\s]?intel|code intelligence|code graph|graph status|graph health|import cycle|unresolved import|blast radius|callers|dependents|who calls|who uses|where is .*\bused|find usages|usages? of|is .*\bwired|wired (up|to)|wire[ds]? .*\bto\b|path (from|between)|reach(es|able)|connected to|who implements|implementations? of|subclass|subtype|load[-\s]?bearing|\bhubs?\b|most[-\s](depended|imported|referenced)|what.*change carefully|important.*\b(code|files?|symbols?)|what breaks if|what calls|call sites?|trace .*\b(symbol|function|usage)/i,
     recommendations: [
+      { command: 'shrk graph callers <symbol>', why: 'Who calls / references a symbol, as path:line — the grep replacement for "who calls X / where is X used".' },
+      { command: 'shrk graph path <from> <to>', why: 'Is code A actually wired to code B? Shortest import/call/implements path between two files or symbols — the deterministic answer to "is X wired to Y".' },
+      { command: 'shrk graph hubs', why: 'The most-depended-on symbols/files (biggest blast radius) — what to change carefully or understand first when onboarding.' },
+      { command: 'shrk graph context <file-or-symbol>', why: 'Inspect one file or symbol with imports, callers, subtypes/supertypes, bridge context, and framework hits — answers "is X wired".' },
+      { command: 'shrk graph impact <file-or-symbol> --full', why: 'What breaks if you change it: graph-backed dependents, caller files, rules, and likely tests.' },
       { command: 'shrk code-intel', why: 'One-shot health view across the code graph, bridge, and quality gates.' },
       { command: 'shrk graph status', why: 'Check whether the code graph is present, fresh, and internally consistent.' },
-      { command: 'shrk graph cycles', why: 'List import cycles that inflate blast-radius calculations.' },
       { command: 'shrk graph unresolved', why: 'Find unresolved imports that undercut graph accuracy.' },
-      { command: 'shrk graph context <file-or-symbol>', why: 'Inspect one file or symbol with imports, callers, bridge context, and framework hits.' },
-      { command: 'shrk graph impact <file-or-symbol> --full', why: 'Estimate blast radius with graph-backed dependents, caller files, rules, and likely tests.' },
+    ],
+  },
+  {
+    match: /delegate|mechanical (edit|task|change|refactor)|grunt (work|task)|boilerplate|repetitive edit|hand (this|it|off) (off |over )?to (a |the )?(local |worker|model)|add (a |an )?(barrel )?(export|import)\b|local (llm|model) (do|handle|make)/i,
+    recommendations: [
+      { command: 'shrk delegate list', why: 'See the MECHANICAL task recipes a local-LLM worker can handle (the engine verifies the result + auto-reverts on failure). Each is fenced to specific files + op kinds.' },
+      { command: 'shrk delegate run "<task>" --recipe <id> --apply', why: 'Hand a mechanical, deterministically-verifiable edit to the LOCAL worker — you pay for a compact brief + result instead of reading the whole file and writing the edit. The edit lands only if it passes the recipe verification.' },
+      { command: 'shrk delegate explain <id>', why: 'Audit a recipe before trusting it: the allowed ops, guardrail globs, and whether its verification is bound.' },
     ],
   },
 ];
 
 function safetyLevelFor(command: string): ICommandRecommendation['safetyLevel'] {
+  if (/^shrk delegate run/i.test(command)) return 'writes-source';
   if (/^shrk (gen|init|apply|import|presets apply --write|packs (sign|new))/i.test(command)) return 'writes-source';
   if (/^shrk (onboard|brief|dev start|handoff|export|report site|impact|ci scaffold|simulate|orchestrate)/i.test(command)) return 'writes-drafts';
   if (/^shrk (session|dev report)/i.test(command)) return 'writes-session';

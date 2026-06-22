@@ -47,7 +47,10 @@ import { getGraphStatusTool } from './get-graph-status.tool.ts';
 import { getGraphSearchTool } from './get-graph-search.tool.ts';
 import { getGraphContextTool } from './get-graph-context.tool.ts';
 import { getGraphImpactTool } from './get-graph-impact.tool.ts';
+import { getGraphPathTool } from './get-graph-path.tool.ts';
+import { getGraphHubsTool } from './get-graph-hubs.tool.ts';
 import { getGraphCallersTool } from './get-graph-callers.tool.ts';
+import { delegateTaskTool } from './delegate-task.tool.ts';
 import { getGraphCyclesTool } from './get-graph-cycles.tool.ts';
 import { getGraphUnresolvedTool } from './get-graph-unresolved.tool.ts';
 import { getGraphDepsTool } from './get-graph-deps.tool.ts';
@@ -382,7 +385,10 @@ export const ALL_TOOLS: readonly IToolDefinition[] = Object.freeze([
   getGraphSearchTool,
   getGraphContextTool,
   getGraphImpactTool,
+  getGraphPathTool,
+  getGraphHubsTool,
   getGraphCallersTool,
+  delegateTaskTool,
   getGraphCyclesTool,
   getGraphUnresolvedTool,
   getGraphDepsTool,

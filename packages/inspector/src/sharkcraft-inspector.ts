@@ -25,6 +25,7 @@ import { BoundaryRegistry, loadBoundaryRulesFromFile } from '@shrkcrft/boundarie
 import { DoctorSeverity, type IDoctorCheck, type IDoctorResult } from './doctor-result.ts';
 import { diagnoseActionHints } from './action-hint-diagnostics.ts';
 import { buildCodeIntelligenceChecks } from './code-intelligence-doctor.ts';
+import { buildDelegateRecipeChecks } from './delegate-doctor.ts';
 import {
   computeFileFingerprint,
   createInspectorCache,
@@ -928,6 +929,13 @@ export function runDoctor(inspection: ISharkcraftInspection): IDoctorResult {
   // state file under `.sharkcraft/` and stays silent when the user has
   // not opted into the relevant feature.
   for (const c of buildCodeIntelligenceChecks(inspection.projectRoot)) {
+    checks.push(c);
+  }
+
+  // Delegate-worker recipe health: surface any recipe that isn't safely
+  // delegatable (unbound / missing verification). Silent when the repo hasn't
+  // opted into a `delegation` block.
+  for (const c of buildDelegateRecipeChecks(inspection.config)) {
     checks.push(c);
   }
 

@@ -60,7 +60,7 @@ export const depsAuditCommand: ICommandHandler = {
     const store = new GraphStore(cwd);
     if (!store.exists()) {
       process.stderr.write(
-        'No SharkCraft graph found. Run `shrk graph build` first so deps-audit has import data.\n',
+        'No SharkCraft graph found. Run `shrk graph index` first so deps-audit has import data.\n',
       );
       return 1;
     }

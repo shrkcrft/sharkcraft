@@ -220,6 +220,7 @@ function renderSemanticIndexCheck(report: ReturnType<typeof SemanticIndex.freshn
   message: string;
   fix?: string;
   category: string;
+  advisory?: boolean;
 } {
   if (!report.hasIndex) {
     return {
@@ -243,7 +244,6 @@ function renderSemanticIndexCheck(report: ReturnType<typeof SemanticIndex.freshn
     };
   }
   const driftCount = report.stale + report.missing + report.untracked;
-  const driftPct = report.indexed > 0 ? (driftCount * 100) / report.indexed : 0;
   if (driftCount === 0) {
     return {
       id: 'semantic-index-fresh',
@@ -253,13 +253,28 @@ function renderSemanticIndexCheck(report: ReturnType<typeof SemanticIndex.freshn
       category: 'semantic-index',
     };
   }
-  const severity = driftPct >= 10 ? DoctorSeverity.Warning : DoctorSeverity.Info;
+  // Severity is driven only by *rot* — indexed entries that changed (stale)
+  // or were deleted (missing), as a fraction of the indexed set. Newly added
+  // files (`untracked`) are benign growth, not drift: they aren't in the
+  // index yet so they can't return wrong hits, and they don't belong in a
+  // ratio whose denominator is the indexed set. The old fused "% drift"
+  // (stale+missing+untracked over indexed) tripped a yellow WARN purely on
+  // repo growth — exactly the "scary number" noise. The index is a derived
+  // cache, so this is always `advisory` (folds into the calm "N advisory"
+  // line and nudges a refresh) rather than a code-health defect; a deleted
+  // file can no longer reach a caller either, because searchFiles prunes
+  // on-disk-missing paths at query time.
+  const rotPct =
+    report.indexed > 0 ? ((report.stale + report.missing) * 100) / report.indexed : 0;
+  const severity = rotPct >= 10 ? DoctorSeverity.Warning : DoctorSeverity.Info;
   return {
     id: 'semantic-index-stale',
     title: 'Semantic embedding index',
     severity,
+    advisory: true,
     message:
-      `${report.indexed} indexed; ${report.stale} stale, ${report.missing} deleted, ${report.untracked} new on disk (≈ ${Math.round(driftPct)}% drift).`,
+      `Index drifted from disk — ${report.untracked} new, ${report.missing} deleted, ${report.stale} changed ` +
+      `(${report.indexed} indexed; ${Math.round(rotPct)}% stale/deleted).`,
     fix: 'shrk smart-context embeddings-build',
     category: 'semantic-index',
   };
@@ -571,6 +586,13 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
     }
 
     process.stdout.write('\n');
+    // How many of the warnings are routine index/cache maintenance (advisory
+    // staleness) rather than code-health defects. Surfaced as an additive
+    // sub-line so the headline count isn't misread as N real problems —
+    // these fold out under --show-advisory.
+    const maintenanceWarnings = visibleChecks.filter(
+      (c) => c.severity === DoctorSeverity.Warning && c.advisory,
+    ).length;
     if (filtered) {
       const s = filtered.summary;
       process.stdout.write(
@@ -589,6 +611,11 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
     } else {
       process.stdout.write(
         `Summary: ${result.summary.ok} ok, ${result.summary.info} info, ${result.summary.warnings} warnings, ${result.summary.errors} errors\n`,
+      );
+    }
+    if (maintenanceWarnings > 0) {
+      process.stdout.write(
+        `  (${maintenanceWarnings} ${maintenanceWarnings === 1 ? 'warning is' : 'warnings are'} routine index/cache maintenance, not code-health defects — fold-out via --show-advisory)\n`,
       );
     }
     void buildSuppressionEntry;

@@ -21,8 +21,10 @@ import {
   runGraphContext,
   runGraphCycles,
   runGraphDeps,
+  runGraphHubs,
   runGraphImpact,
   runGraphIndex,
+  runGraphPath,
   runGraphSearch,
   runGraphStatus,
   runGraphUnresolved,
@@ -43,10 +45,12 @@ const KNOWN_KINDS: GraphNodeKind[] = [
 export const graphCommand: ICommandHandler = {
   name: 'graph',
   description:
-    'Show the SharkCraft knowledge graph and the code-intelligence graph surface. Use `shrk graph <id>` for asset-graph nodes and `shrk graph index|status|search|context|impact|callers|cycles|unresolved|deps|why|export` for code-graph workflows.',
+    'Show the SharkCraft knowledge graph and the code-intelligence graph surface. Use `shrk graph <id>` for asset-graph nodes and `shrk graph index|status|search|context|impact|path|hubs|callers|cycles|unresolved|deps|why|export` for code-graph workflows.',
   usage:
     'shrk [--cwd <dir>] graph [<id>] [--type <kind>] [--format text|json|dot|mermaid] [--output <file>] [--json]\n' +
-    'shrk graph index|status|search|context|impact|callers|cycles|unresolved|deps|why|export ...',
+    'shrk graph index|status|search|context|impact|path|hubs|callers|cycles|unresolved|deps|why|export ...\n' +
+    'shrk graph path <from> <to>   — is code A wired to code B? (shortest import/call path)\n' +
+    'shrk graph hubs [--limit N] [--path <dir>]   — most-depended-on symbols/files (load-bearing code; scope to a subsystem)',
   async run(args: ParsedArgs): Promise<number> {
     // Code-intelligence subverbs (R65) don't need the knowledge graph —
     // dispatch them before the expensive inspection so they stay fast.
@@ -56,6 +60,8 @@ export const graphCommand: ICommandHandler = {
     if (earlySub === 'search') return runGraphSearch(args);
     if (earlySub === 'context') return runGraphContext(args);
     if (earlySub === 'impact') return runGraphImpact(args);
+    if (earlySub === 'path') return runGraphPath(args);
+    if (earlySub === 'hubs') return runGraphHubs(args);
     if (earlySub === 'callers') return runGraphCallers(args);
     if (earlySub === 'cycles') return runGraphCycles(args);
     if (earlySub === 'unresolved') return runGraphUnresolved(args);

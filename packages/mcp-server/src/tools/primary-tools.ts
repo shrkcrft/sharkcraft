@@ -1,5 +1,5 @@
 /**
- * Primary MCP tools — the ~30 tools advertised to a connected agent
+ * Primary MCP tools — the core set advertised to a connected agent
  * by default. Every tool in {@link ALL_TOOLS} stays callable (so an
  * agent that already knows the name can use it), but `tools/list`
  * only advertises the primary set. Smaller surface = better
@@ -54,6 +54,17 @@ export const PRIMARY_MCP_TOOLS: ReadonlySet<string> = new Set([
   // Doctor / readiness
   'get_ai_readiness_report',
   'doctor_packs',
+  // Code-intelligence graph — the agent's grep replacement for understanding
+  // existing code: who calls X, where is X used (path:line), what breaks if I
+  // change X, is X wired. Verifiable file:line truth from the indexed graph.
+  'get_graph_callers',
+  'code_find_usages',
+  'get_graph_impact',
+  'get_graph_path',
+  'get_graph_hubs',
+  'graph_why',
+  'get_graph_node',
+  'get_graph_search',
   // Search
   'search_all',
   'search_knowledge',

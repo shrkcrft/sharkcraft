@@ -9,9 +9,11 @@ import {
   buildFullIndex,
   changedFilesSince,
   detectChangedAndDeleted,
+  detectGraphFreshness,
   EdgeKind,
   GraphQueryApi,
   GraphStore,
+  hasCallGraphReferences,
   NodeKind,
   updateChanged,
 } from '@shrkcrft/graph';
@@ -19,11 +21,120 @@ import type { INode } from '@shrkcrft/graph';
 import { analyzeGraphImpact } from '@shrkcrft/impact-engine';
 import { BridgeStore, RuleGraphQueryApi } from '@shrkcrft/rule-graph';
 import { FrameworkQueryApi, FrameworkStore } from '@shrkcrft/framework-scanners';
+import { existsSync } from 'node:fs';
+import * as nodePath from 'node:path';
+import { compactArrayToColumnar } from '@shrkcrft/compress';
 import { flagBool, flagString, resolveCwd, type ParsedArgs } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { maybeRunInWatchMode } from '../output/watch-loop.ts';
 
+/**
+ * Opt-in `--table`/`--compact`: columnarise each homogeneous object-array field
+ * of a graph `--json` payload (compact, still valid JSON, reversible via
+ * `expandColumnar` — and stacks with the round-8 derived-column pass to drop
+ * id/kind/label). Off by default so the bare-array wire shape is unchanged.
+ * Ships the columnar form only when it is actually smaller (net-loss guard).
+ */
+/** Drop refs whose file no longer exists on disk (a deleted dependent can't be
+ *  affected by an edit and a deleted test shouldn't be run). */
+function pruneDeletedRefs<T extends { path?: string }>(refs: readonly T[], cwd: string): T[] {
+  return refs.filter(
+    (r) => !r.path || existsSync(nodePath.isAbsolute(r.path) ? r.path : nodePath.join(cwd, r.path)),
+  );
+}
+
+/**
+ * A note when a symbol's file language has no call-graph extraction (Go,
+ * Python, Java, …) — only TS/JS build the call graph — so an EMPTY caller list
+ * isn't read by the agent as "nothing calls it".
+ */
+function callGraphLanguageNote(api: GraphQueryApi, sym: INode): string | null {
+  const file = sym.path ? api.findFile(sym.path) : undefined;
+  const lang = file?.data?.['language'] as string | undefined;
+  if (hasCallGraphReferences(lang)) return null;
+  return `Call/reference edges are extracted for TS/JS only — \`${sym.label}\` is in a ${lang} file, so its callers are not tracked here (an empty result does NOT mean nothing calls it).`;
+}
+
+function maybeColumnarize(payload: Record<string, unknown>, args: ParsedArgs): unknown {
+  if (!flagBool(args, 'table') && !flagBool(args, 'compact')) return payload;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(payload)) {
+    if (
+      Array.isArray(v) &&
+      v.length > 0 &&
+      v.every((x) => x !== null && typeof x === 'object' && !Array.isArray(x))
+    ) {
+      const col = compactArrayToColumnar(v);
+      if (col && JSON.stringify(col).length < JSON.stringify(v).length) {
+        out[k] = col;
+        continue;
+      }
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
 const STALE_HINT = `Index is missing or stale. Run 'shrk graph index' to build it.`;
+const STALE_RESULT_HINT =
+  'Some result files changed since the index was built — run `shrk graph index --changed` (or pass --refresh) for fresh results.';
+
+/**
+ * `--refresh`: incrementally reindex changed/deleted files BEFORE querying so
+ * the agent's just-saved edits are reflected. CLI-only — it writes the
+ * gitignored `.sharkcraft` cache; MCP never does this (read-only contract).
+ */
+function maybeRefresh(args: ParsedArgs, cwd: string): void {
+  if (!flagBool(args, 'refresh')) return;
+  const d = detectChangedAndDeleted(cwd);
+  if (d.changed.length > 0 || d.deleted.length > 0) {
+    updateChanged({ projectRoot: cwd, changedFiles: d.changed, deletedFiles: d.deleted });
+  }
+}
+
+interface IResultStaleness {
+  deletedSet: ReadonlySet<string>;
+  modified: readonly string[];
+  deleted: readonly string[];
+  /** A `{ stale, staleHint }` object to spread into a JSON payload, or null when fresh. */
+  field: { stale: { modified: readonly string[]; deleted: readonly string[] }; staleHint: string } | null;
+}
+
+/**
+ * Targeted staleness over a query's result file paths: which changed (flag)
+ * and which were deleted (drop). Cheap — stats only the result files.
+ */
+function resultStaleness(
+  api: GraphQueryApi,
+  cwd: string,
+  paths: ReadonlyArray<string | undefined>,
+): IResultStaleness {
+  const rel = paths.filter((p): p is string => !!p);
+  const stale = api.staleFilesAmong(cwd, rel);
+  const has = stale.modified.length > 0 || stale.deleted.length > 0;
+  return {
+    deletedSet: new Set(stale.deleted),
+    modified: stale.modified,
+    deleted: stale.deleted,
+    field: has
+      ? { stale: { modified: stale.modified, deleted: stale.deleted }, staleHint: STALE_RESULT_HINT }
+      : null,
+  };
+}
+
+/**
+ * A "the index is N files behind" qualifier for a not-found / empty result, so
+ * an agent doesn't read a bare "not-found" as "this symbol doesn't exist / is
+ * safe to create" when the truth is "it's in a file the index hasn't seen yet."
+ * Runs the full freshness walk — only call it on the rare miss path.
+ */
+function indexBehindHint(cwd: string): string | null {
+  const f = detectGraphFreshness(cwd);
+  if (!f.hasIndex) return null;
+  const behind = f.modified.length + f.added.length + f.deleted.length;
+  if (behind === 0) return null;
+  return `Index is ${behind} file(s) behind (${f.modified.length} modified, ${f.added.length} new, ${f.deleted.length} deleted) — run \`shrk graph index --changed\` and retry.`;
+}
 
 // ─── shrk graph index ─────────────────────────────────────────────────
 
@@ -337,6 +448,17 @@ export async function runGraphDeps(args: ParsedArgs): Promise<number> {
   }
   const api = GraphQueryApi.fromStore(cwd);
   const pkgId = `package:${pkg}`;
+  // Existence guard (mirrors the MCP tool): without it, an unknown package
+  // name returns a confidently-wrong empty `dependsOn/dependedOnBy` that reads
+  // as "this package has no edges" rather than "this package isn't here".
+  if (!api.neighbours(pkgId)?.node) {
+    if (wantJson) {
+      process.stdout.write(asJson({ ok: false, error: 'not-found', package: pkg }) + '\n');
+      return 1;
+    }
+    process.stderr.write(`No workspace package "${pkg}" in the graph.\n`);
+    return 1;
+  }
   // outbound: packages this one depends on
   const outbound = api.packageDeps(pkg).map((n) => n.id.replace(/^package:/, ''));
   // inbound: packages that depend on this one
@@ -400,9 +522,15 @@ export async function runGraphStatus(args: ParsedArgs): Promise<number> {
   const snap = store.loadSnapshot();
   const manifestNodeCount = sumValues(snap.manifest.nodesByKind);
   const manifestEdgeCount = sumValues(snap.manifest.edgesByKind);
+  // Honest freshness vs the working tree. `corrupt` (store self-integrity) and
+  // `stale` (disk drift) are orthogonal — a store can be digest-valid yet
+  // stale — so precedence is corrupt > stale > fresh.
+  const fresh = detectGraphFreshness(cwd);
+  const behind = fresh.modified.length + fresh.added.length + fresh.deleted.length;
+  const state = !verify.ok ? ('corrupt' as const) : behind > 0 ? ('stale' as const) : ('fresh' as const);
   const payload = {
     ok: verify.ok,
-    state: verify.ok ? 'fresh' : ('corrupt' as const),
+    state,
     schema: snap.manifest.schema,
     fileCount: snap.manifest.filesIndexed,
     nodeCount: manifestNodeCount,
@@ -417,6 +545,10 @@ export async function runGraphStatus(args: ParsedArgs): Promise<number> {
     filesWithUnresolvedImports: snap.manifest.filesWithUnresolvedImports ?? null,
     unresolvedImportSamples: snap.manifest.unresolvedImportSamples ?? null,
     digest: verify.ok ? snap.manifest.digest : { expected: verify.expected, actual: verify.actual },
+    modifiedSinceIndex: fresh.modified.length,
+    newSinceIndex: fresh.added.length,
+    deletedSinceIndex: fresh.deleted.length,
+    ...(behind > 0 ? { nextCommand: 'shrk graph index --changed' } : {}),
   };
   if (wantJson) {
     process.stdout.write(asJson(payload) + '\n');
@@ -442,6 +574,14 @@ export async function runGraphStatus(args: ParsedArgs): Promise<number> {
   }
   process.stdout.write(kv('last indexed', payload.lastIndexedAt) + '\n');
   process.stdout.write(kv('state', payload.state) + '\n');
+  if (behind > 0) {
+    process.stdout.write(
+      kv(
+        'drift',
+        `${fresh.modified.length} modified, ${fresh.added.length} new, ${fresh.deleted.length} deleted since index — run \`shrk graph index --changed\``,
+      ) + '\n',
+    );
+  }
   return verify.ok ? 0 : 1;
 }
 
@@ -510,16 +650,18 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
   const depth = Math.max(1, Math.min(3, Number(flagString(args, 'depth') ?? '1')));
   const includeBridge = !flagBool(args, 'no-bridge');
   const includeFramework = !flagBool(args, 'no-framework');
+  maybeRefresh(args, cwd);
   const api = loadOrFail(cwd, wantJson);
   if (!api) return 1;
   const anchor = resolveAnchor(api, target);
   if (!anchor) {
-    const payload = { ok: false, error: 'not-found', target };
+    const hint = indexBehindHint(cwd);
+    const payload = { ok: false, error: 'not-found', target, ...(hint ? { hint } : {}) };
     if (wantJson) {
       process.stdout.write(asJson(payload) + '\n');
       return 1;
     }
-    process.stderr.write(`No graph node matched "${target}".\n`);
+    process.stderr.write(`No graph node matched "${target}".${hint ? ' ' + hint : ''}\n`);
     return 1;
   }
   const anchorFile = anchor.kind === NodeKind.File
@@ -530,6 +672,10 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
   const symbols = anchor.kind === NodeKind.File ? api.symbolsIn(anchor.id) : [];
   const references = anchor.kind === NodeKind.Symbol ? dedupeNodes(api.referencesOf(anchor.id)) : [];
   const callers = anchor.kind === NodeKind.Symbol ? dedupeNodes(api.callersOf(anchor.id)) : [];
+  // Typed subtype/supertype relationships (extends / implements) — the precise
+  // "who implements this interface" answer, distinct from a generic reference.
+  const subtypes = anchor.kind === NodeKind.Symbol ? dedupeNodes(api.subtypesOf(anchor.id)) : [];
+  const supertypes = anchor.kind === NodeKind.Symbol ? dedupeNodes(api.supertypesOf(anchor.id)) : [];
 
   // Optional bridge enrichment: rules / paths / templates applying to
   // the anchor file (or a symbol's containing file).
@@ -544,22 +690,41 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
     ? FrameworkQueryApi.fromStore(cwd).forFile(anchorFile.path)
     : [];
 
+  const importsFromList = neighbours.out
+    .filter((o) => o.edge.kind === 'imports-file')
+    .slice(0, 50)
+    .map((o) => ('target' in o ? targetSummary(o.target) : { id: 'unknown', resolved: false }));
+  const importedByList = neighbours.in
+    .filter((i) => i.edge.kind === 'imports-file')
+    .slice(0, 50)
+    .map((i) => ('source' in i ? sourceSummary(i.source) : { id: 'unknown', resolved: false }));
+  const referencedByList = references.slice(0, 50).map(nodeSummary);
+  const calledByList = callers.slice(0, 50).map(nodeSummary);
+  // Staleness over the anchor + every referenced file: drop dead paths from the
+  // usage lists, flag changed ones.
+  const ctxPathOf = (x: { path?: string }): string | undefined => x.path;
+  const fresh = resultStaleness(api, cwd, [
+    anchor.path,
+    ...importsFromList.map(ctxPathOf),
+    ...importedByList.map(ctxPathOf),
+    ...referencedByList.map(ctxPathOf),
+    ...calledByList.map(ctxPathOf),
+  ]);
+  const ctxDropDel = <T extends { path?: string }>(rows: readonly T[]): T[] =>
+    rows.filter((r) => !r.path || !fresh.deletedSet.has(r.path));
   const payload = {
     schema: 'sharkcraft.graph-context/v1',
     anchor: nodeSummary(anchor),
     declaredIn: anchor.kind === NodeKind.Symbol && anchorFile ? nodeSummary(anchorFile) : null,
     depth,
-    importsFrom: neighbours.out
-      .filter((o) => o.edge.kind === 'imports-file')
-      .slice(0, 50)
-      .map((o) => 'target' in o ? targetSummary(o.target) : { id: 'unknown', resolved: false }),
-    importedBy: neighbours.in
-      .filter((i) => i.edge.kind === 'imports-file')
-      .slice(0, 50)
-      .map((i) => 'source' in i ? sourceSummary(i.source) : { id: 'unknown', resolved: false }),
+    importsFrom: ctxDropDel(importsFromList),
+    importedBy: ctxDropDel(importedByList),
     symbols: symbols.slice(0, 50).map(nodeSummary),
-    referencedBy: references.slice(0, 50).map(nodeSummary),
-    calledBy: callers.slice(0, 50).map(nodeSummary),
+    referencedBy: ctxDropDel(referencedByList),
+    calledBy: ctxDropDel(calledByList),
+    ...(subtypes.length > 0 ? { subtypes: subtypes.slice(0, 50).map(nodeSummary) } : {}),
+    ...(supertypes.length > 0 ? { supertypes: supertypes.slice(0, 50).map(nodeSummary) } : {}),
+    ...(fresh.field ?? {}),
     bridge: bridgeFor
       ? {
           rules: bridgeFor.rules.map((h) => ({
@@ -583,7 +748,7 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
       : null,
   };
   if (wantJson) {
-    process.stdout.write(asJson(payload) + '\n');
+    process.stdout.write(asJson(maybeColumnarize(payload, args)) + '\n');
     return 0;
   }
   process.stdout.write(header(`Graph context: ${anchor.kind}:${anchor.label}`));
@@ -608,6 +773,18 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
     process.stdout.write(`\nCalled by (${payload.calledBy.length}):\n`);
     for (const c of payload.calledBy.slice(0, 20)) {
       process.stdout.write(`  ← ${c.path ?? c.id}\n`);
+    }
+  }
+  if (supertypes.length > 0) {
+    process.stdout.write(`\nExtends / implements (${supertypes.length}):\n`);
+    for (const s of supertypes.slice(0, 20)) {
+      process.stdout.write(`  ▲ ${s.label}${s.path ? '  ' + s.path : ''}${s.line ? ':' + s.line : ''}\n`);
+    }
+  }
+  if (subtypes.length > 0) {
+    process.stdout.write(`\nExtended / implemented by (${subtypes.length}):\n`);
+    for (const s of subtypes.slice(0, 20)) {
+      process.stdout.write(`  ▼ ${s.label}${s.path ? '  ' + s.path : ''}${s.line ? ':' + s.line : ''}\n`);
     }
   }
   if (payload.importsFrom.length > 0) {
@@ -648,6 +825,11 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
       process.stdout.write(`  • ${e.framework}:${e.subtype} ${e.label}\n`);
     }
   }
+  if (fresh.field) {
+    process.stdout.write(
+      `\n  ⚠ ${fresh.modified.length} referenced file(s) changed, ${fresh.deleted.length} deleted since indexing — run \`shrk graph index --changed\`.\n`,
+    );
+  }
   return 0;
 }
 
@@ -666,6 +848,7 @@ export async function runGraphImpact(args: ParsedArgs): Promise<number> {
   }
   const maxDepth = Math.max(1, Math.min(10, Number(flagString(args, 'max-depth') ?? '5')));
   const limit = Math.max(1, Number(flagString(args, 'limit') ?? '200'));
+  maybeRefresh(args, cwd);
 
   // --full → delegate to the impact-engine for a richer v3 payload.
   if (wantFull) {
@@ -673,9 +856,23 @@ export async function runGraphImpact(args: ParsedArgs): Promise<number> {
     const input = isSymbol && !target.includes('/')
       ? { kind: 'symbol' as const, symbolId: target }
       : { kind: 'files' as const, files: [target] };
-    const analysis = analyzeGraphImpact(input, { projectRoot: cwd, limit, maxDepth });
+    const raw = analyzeGraphImpact(input, { projectRoot: cwd, limit, maxDepth });
+    // Drop dependents/tests whose file was deleted on disk so a stale index
+    // never tells the agent a dead file is in the blast radius or routes it to
+    // run a test that no longer exists.
+    const analysis = {
+      ...raw,
+      directDependents: pruneDeletedRefs(raw.directDependents, cwd),
+      transitiveDependents: pruneDeletedRefs(raw.transitiveDependents, cwd),
+      affectedCallerFiles: pruneDeletedRefs(raw.affectedCallerFiles, cwd),
+      likelyTests: pruneDeletedRefs(raw.likelyTests, cwd),
+    };
+    // Pre-merge blast radius drives which tests an agent runs — so it must also
+    // say when the index is behind the working tree (repo-level: a stale --full
+    // analysis can still MISS new dependents the prune can't see).
+    const behind = indexBehindHint(cwd);
     if (wantJson) {
-      process.stdout.write(asJson(analysis) + '\n');
+      process.stdout.write(asJson(behind ? { ...analysis, staleHint: behind } : analysis) + '\n');
       return 0;
     }
     process.stdout.write(header(`Graph impact (full): ${target}`));
@@ -698,6 +895,7 @@ export async function runGraphImpact(args: ParsedArgs): Promise<number> {
       for (const c of analysis.validationScope) process.stdout.write(`  $ ${c}\n`);
     }
     for (const d of analysis.diagnostics.slice(0, 5)) process.stdout.write(`! ${d}\n`);
+    if (behind) process.stdout.write(`\n  ⚠ ${behind}\n`);
     return 0;
   }
 
@@ -705,40 +903,113 @@ export async function runGraphImpact(args: ParsedArgs): Promise<number> {
   if (!api) return 1;
   const anchor = resolveAnchor(api, target);
   if (!anchor) {
-    const payload = { ok: false, error: 'not-found', target };
+    const hint = indexBehindHint(cwd);
+    const payload = { ok: false, error: 'not-found', target, ...(hint ? { hint } : {}) };
     if (wantJson) {
       process.stdout.write(asJson(payload) + '\n');
       return 1;
     }
-    process.stderr.write(`No graph node matched "${target}".\n`);
+    process.stderr.write(`No graph node matched "${target}".${hint ? ' ' + hint : ''}\n`);
     return 1;
   }
   const closure = reverseClosure(api, anchor, maxDepth, limit);
   const direct = closure.layer[1] ?? [];
   const transitive = closure.all.filter((id) => id !== anchor.id && !direct.includes(id));
+  const directNodes = direct.map((id) => nodeSummary(api.neighbours(id)!.node));
+  const transitiveNodes = transitive.slice(0, limit).map((id) => nodeSummary(api.neighbours(id)!.node));
+  // Drop dependents whose file was deleted (they can't break); flag modified.
+  const fresh = resultStaleness(api, cwd, [
+    anchor.path,
+    ...directNodes.map((n) => n.path),
+    ...transitiveNodes.map((n) => n.path),
+  ]);
+  const liveDirect = directNodes.filter((n) => !n.path || !fresh.deletedSet.has(n.path));
+  const liveTransitive = transitiveNodes.filter((n) => !n.path || !fresh.deletedSet.has(n.path));
   const payload = {
     schema: 'sharkcraft.graph-impact/v1',
     anchor: nodeSummary(anchor),
     maxDepth,
     limit,
     truncated: closure.truncated,
-    directDependents: direct.map((id) => nodeSummary(api.neighbours(id)!.node)),
-    transitiveDependents: transitive
-      .slice(0, limit)
-      .map((id) => nodeSummary(api.neighbours(id)!.node)),
+    directDependents: liveDirect,
+    transitiveDependents: liveTransitive,
     totalReached: closure.all.length - 1,
+    ...(fresh.field ?? {}),
   };
   if (wantJson) {
-    process.stdout.write(asJson(payload) + '\n');
+    process.stdout.write(asJson(maybeColumnarize(payload, args)) + '\n');
     return 0;
   }
   process.stdout.write(header(`Graph impact: ${anchor.label}`));
-  process.stdout.write(kv('direct', String(direct.length)) + '\n');
-  process.stdout.write(kv('transitive', String(transitive.length)) + '\n');
+  process.stdout.write(kv('direct', String(liveDirect.length)) + '\n');
+  process.stdout.write(kv('transitive', String(liveTransitive.length)) + '\n');
   process.stdout.write(kv('max-depth', String(maxDepth)) + '\n');
   if (closure.truncated) process.stdout.write(kv('truncated', 'yes') + '\n');
-  for (const d of payload.directDependents.slice(0, 30)) {
+  for (const d of liveDirect.slice(0, 30)) {
     process.stdout.write(`  ${d.path ?? d.id}\n`);
+  }
+  if (fresh.field) {
+    process.stdout.write(
+      `\n  ⚠ ${fresh.modified.length} dependent file(s) changed, ${fresh.deleted.length} deleted since indexing — run \`shrk graph index --changed\`.\n`,
+    );
+  }
+  return 0;
+}
+
+// ─── shrk graph hubs ──────────────────────────────────────────────────
+
+/**
+ * `shrk graph hubs` — the most-depended-on code: symbols ranked by how many
+ * DISTINCT files reference them, files by how many import them. The
+ * "load-bearing code" an agent should change most carefully and a human should
+ * understand first — the natural companion to `graph impact` (impact = blast
+ * radius of ONE node; hubs = the nodes with the biggest blast radius).
+ */
+export async function runGraphHubs(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json');
+  const limit = Math.max(1, Math.min(100, Number(flagString(args, 'limit') ?? '15')));
+  const pathScope = flagString(args, 'path');
+  maybeRefresh(args, cwd);
+  const api = loadOrFail(cwd, wantJson);
+  if (!api) return 1;
+  const hubs = api.topHubs(limit, pathScope);
+  const toRow = (h: { node: INode; inDegree: number }): Record<string, unknown> => ({
+    ...nodeSummary(h.node),
+    inDegree: h.inDegree,
+  });
+  const payload = {
+    schema: 'sharkcraft.graph-hubs/v1',
+    ...(pathScope ? { path: pathScope } : {}),
+    symbols: hubs.symbols.map(toRow),
+    files: hubs.files.map(toRow),
+  };
+  if (wantJson) {
+    process.stdout.write(asJson(maybeColumnarize(payload, args)) + '\n');
+    return 0;
+  }
+  process.stdout.write(header(`Graph hubs (most-depended-on)${pathScope ? ` under ${pathScope}` : ''}`));
+  if (hubs.symbols.length === 0 && hubs.files.length === 0) {
+    process.stdout.write(
+      pathScope
+        ? `  No referenced/imported code under "${pathScope}" (check the path, or the call/reference graph is TS/JS-only).\n`
+        : '  No reference/import edges yet (call/reference graph is TS/JS-only — run `shrk graph index`).\n',
+    );
+    return 0;
+  }
+  if (hubs.symbols.length > 0) {
+    process.stdout.write('\nMost-referenced symbols (distinct dependent files):\n');
+    for (const h of hubs.symbols) {
+      process.stdout.write(
+        `  ${String(h.inDegree).padStart(4)}  ${h.node.label}${h.node.path ? '  ' + h.node.path : ''}${h.node.line ? ':' + h.node.line : ''}\n`,
+      );
+    }
+  }
+  if (hubs.files.length > 0) {
+    process.stdout.write('\nMost-imported files (distinct importers):\n');
+    for (const h of hubs.files) {
+      process.stdout.write(`  ${String(h.inDegree).padStart(4)}  ${h.node.path ?? h.node.id}\n`);
+    }
   }
   return 0;
 }
@@ -750,52 +1021,219 @@ export async function runGraphCallers(args: ParsedArgs): Promise<number> {
   const wantJson = flagBool(args, 'json');
   const target = args.positional[1];
   if (!target) {
-    process.stderr.write('Usage: shrk graph callers <symbol> [--mode call|reference]\n');
+    process.stderr.write('Usage: shrk graph callers <symbol> [--mode call|reference] [--refresh]\n');
     return 2;
   }
   const mode = (flagString(args, 'mode') ?? 'call') as 'call' | 'reference';
+  maybeRefresh(args, cwd);
   const api = loadOrFail(cwd, wantJson);
   if (!api) return 1;
-  const sym = resolveSymbolTarget(api, target);
-  if (!sym) {
-    const payload = { ok: false, error: 'not-found', target };
+  const resolved = resolveSymbolTarget(api, target);
+  if (!resolved) {
+    const behind = indexBehindHint(cwd);
+    const payload = { ok: false, error: 'not-found', target, ...(behind ? { hint: behind } : {}) };
     if (wantJson) {
       process.stdout.write(asJson(payload) + '\n');
       return 1;
     }
-    process.stderr.write(`No symbol matched "${target}".\n`);
+    process.stderr.write(`No symbol matched "${target}".${behind ? ' ' + behind : ''}\n`);
     return 1;
   }
-  const hits = mode === 'reference' ? api.referencesOf(sym.id) : api.callersOf(sym.id);
+  const { sym, alsoNamed } = resolved;
+  const sites = mode === 'reference' ? api.referenceSitesOf(sym.id) : api.callerSitesOf(sym.id);
+  // Targeted staleness over the result files (declaring file + caller files):
+  // drop callers whose file was deleted, flag those whose content changed.
+  const fresh = resultStaleness(api, cwd, [sym.path, ...sites.map((s) => s.node.path)]);
+  const liveSites = sites.filter((s) => !s.node.path || !fresh.deletedSet.has(s.node.path));
+  const langNote = callGraphLanguageNote(api, sym);
+  // When several symbols share the name, callers are reported for ONE of them
+  // (the chosen — exported-preferred — declaration). Say so, otherwise the
+  // agent reads a narrow result as the whole picture for that name.
+  const ambiguityNote =
+    alsoNamed > 0
+      ? `${alsoNamed + 1} symbols named "${sym.label}"; showing callers of the one at ${sym.path ?? sym.id}${sym.line ? ':' + sym.line : ''}. Pass a symbol: id to disambiguate.`
+      : undefined;
+  const note = [ambiguityNote, langNote].filter(Boolean).join(' ');
   const payload = {
     schema: 'sharkcraft.graph-callers/v1',
     symbol: nodeSummary(sym),
     mode,
-    total: hits.length,
-    callers: hits.slice(0, 200).map(nodeSummary),
+    total: liveSites.length,
+    callers: liveSites.slice(0, 200).map((s) => ({
+      ...nodeSummary(s.node),
+      ...(s.line ? { line: s.line } : {}),
+    })),
+    ...(note ? { note } : {}),
+    ...(fresh.field ?? {}),
   };
   if (wantJson) {
-    process.stdout.write(asJson(payload) + '\n');
+    process.stdout.write(asJson(maybeColumnarize(payload, args)) + '\n');
     return 0;
   }
   process.stdout.write(header(`Graph callers: ${sym.label} (${mode})`));
-  process.stdout.write(kv('total', String(hits.length)) + '\n');
+  process.stdout.write(kv('total', String(liveSites.length)) + '\n');
+  if (note) process.stdout.write(`  ⓘ ${note}\n`);
+  // Render `path:line` so the agent jumps straight to the call site instead
+  // of having to grep inside each returned file.
   for (const c of payload.callers.slice(0, 50)) {
-    process.stdout.write(`  ${c.path ?? c.id}\n`);
+    process.stdout.write(`  ${c.path ?? c.id}${c.line ? ':' + c.line : ''}\n`);
+  }
+  if (fresh.field) {
+    process.stdout.write(
+      `\n  ⚠ ${fresh.modified.length} result file(s) changed, ${fresh.deleted.length} deleted since indexing — run \`shrk graph index --changed\`.\n`,
+    );
   }
   return 0;
 }
 
-function resolveSymbolTarget(api: GraphQueryApi, target: string): INode | undefined {
+/**
+ * Resolve a callers target to a single symbol, reporting how many OTHER symbols
+ * share the name (`alsoNamed`) so the caller can disclose the ambiguity instead
+ * of silently picking one.
+ */
+function resolveSymbolTarget(
+  api: GraphQueryApi,
+  target: string,
+): { sym: INode; alsoNamed: number } | undefined {
   if (target.startsWith('symbol:')) {
-    return api.neighbours(target)?.node;
+    const node = api.neighbours(target)?.node;
+    return node ? { sym: node, alsoNamed: 0 } : undefined;
   }
   const syms = api.findSymbol(target, { exact: true, limit: 5 });
   if (syms.length === 0) return undefined;
-  if (syms.length === 1) return syms[0];
+  if (syms.length === 1) return { sym: syms[0]!, alsoNamed: 0 };
   // Multiple symbols with the same name. Prefer an exported one if any.
   const exported = syms.find((s) => (s.data?.['isExported'] ?? false) === true);
-  return exported ?? syms[0];
+  return { sym: exported ?? syms[0]!, alsoNamed: syms.length - 1 };
+}
+
+// ─── shrk graph path ──────────────────────────────────────────────────
+
+/**
+ * `shrk graph path <from> <to>` — does code A actually reach code B?
+ *
+ * The question the original feedback fell back to grep for ("is billing
+ * actually WIRED to checkout?"). `callers` = direct callers, `impact` =
+ * reverse closure, `graph why` = the KNOWLEDGE graph — none answers the
+ * forward CODE path between two symbols/files. This BFS does, over the
+ * import/call/reference/declare/re-export/extends/implements edges, and
+ * prints each hop with its edge kind (and call-site line) so the answer
+ * shows HOW they are wired, not just that they are. When A→B has no path it
+ * also checks B→A so "the dependency runs the other way" is reported instead
+ * of a bare "no".
+ */
+export async function runGraphPath(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json');
+  const fromArg = args.positional[1];
+  const toArg = args.positional[2];
+  if (!fromArg || !toArg) {
+    process.stderr.write('Usage: shrk graph path <from> <to> [--max-depth N] [--refresh] [--json]\n');
+    return 2;
+  }
+  const maxDepth = Math.max(1, Math.min(32, Number(flagString(args, 'max-depth') ?? '16')));
+  maybeRefresh(args, cwd);
+  const api = loadOrFail(cwd, wantJson);
+  if (!api) return 1;
+  const from = resolveAnchor(api, fromArg);
+  const to = resolveAnchor(api, toArg);
+  if (!from || !to) {
+    const missing = !from ? fromArg : toArg;
+    const behind = indexBehindHint(cwd);
+    const payload = { ok: false, error: 'not-found', target: missing, ...(behind ? { hint: behind } : {}) };
+    if (wantJson) {
+      process.stdout.write(asJson(payload) + '\n');
+      return 1;
+    }
+    process.stderr.write(`No graph node matched "${missing}".${behind ? ' ' + behind : ''}\n`);
+    return 1;
+  }
+  // A symbol node has no OUTGOING code edges — references/calls are recorded
+  // file→symbol, so the out-edges live on the symbol's DECLARING FILE. To trace
+  // "does A reach B" when A is a symbol, start the BFS from that file (and note
+  // it), since per-symbol out-edges aren't tracked. The target may stay a symbol
+  // (file→symbol edges land on it).
+  const fromStart = bfsStartNode(api, from);
+  const toStart = bfsStartNode(api, to);
+  const forward = api.pathBetween(fromStart.id, to.id, { maxDepth });
+  // If A doesn't reach B, the agent usually still wants to know whether B
+  // reaches A (the dependency runs the other way) — so check the reverse and
+  // report direction rather than a bare "no".
+  const reverse = forward.found ? null : api.pathBetween(toStart.id, from.id, { maxDepth });
+  const direction: 'forward' | 'reverse' | 'none' = forward.found
+    ? 'forward'
+    : reverse?.found
+      ? 'reverse'
+      : 'none';
+  const chosen = forward.found ? forward : reverse?.found ? reverse : forward;
+  // The endpoint the user asked for at the start of the chosen direction, plus
+  // the file the BFS actually started from (differs only for a symbol endpoint).
+  const startEndpoint = direction === 'reverse' ? to : from;
+  const startFile = direction === 'reverse' ? toStart : fromStart;
+  const startNote =
+    direction !== 'none' && startFile.id !== startEndpoint.id && startEndpoint.kind === NodeKind.Symbol
+      ? `\`${startEndpoint.label}\` is declared in ${startFile.path ?? startFile.id}; path traced from that file (per-symbol out-edges are not tracked).`
+      : null;
+  const hopRows = chosen.hops.map((h) => ({
+    from: h.from.path ?? h.from.id,
+    to: h.to.path ?? h.to.id,
+    kind: h.kind,
+    label: h.to.label,
+    ...(h.line ? { line: h.line } : {}),
+  }));
+  const fresh = resultStaleness(api, cwd, [
+    from.path,
+    to.path,
+    ...chosen.hops.map((h) => h.from.path),
+    ...chosen.hops.map((h) => h.to.path),
+  ]);
+  // A no-path answer between non-TS endpoints may just be missing call edges
+  // (call/reference graph is TS/JS-only), NOT proof they are unwired.
+  const langNote =
+    direction === 'none' ? callGraphLanguageNote(api, from) ?? callGraphLanguageNote(api, to) : null;
+  const note = startNote ?? langNote;
+  const payload = {
+    schema: 'sharkcraft.graph-path/v1',
+    from: nodeSummary(from),
+    to: nodeSummary(to),
+    found: direction !== 'none',
+    direction,
+    ...(direction !== 'none' && startFile.id !== startEndpoint.id ? { tracedFrom: nodeSummary(startFile) } : {}),
+    hops: hopRows,
+    hopCount: hopRows.length,
+    explored: forward.found ? forward.explored : reverse?.explored ?? forward.explored,
+    ...(direction === 'none' && chosen.reason ? { reason: chosen.reason } : {}),
+    ...(note ? { note } : {}),
+    ...(fresh.field ?? {}),
+  };
+  if (wantJson) {
+    process.stdout.write(asJson(maybeColumnarize(payload, args)) + '\n');
+    return 0;
+  }
+  process.stdout.write(header(`Graph path: ${from.label} → ${to.label}`));
+  if (direction === 'none') {
+    process.stdout.write(`  No code path ${from.label} → ${to.label} (or back) within ${maxDepth} hops.\n`);
+    process.stdout.write(`  explored ${payload.explored} node(s).\n`);
+    if (langNote) process.stdout.write(`  ⓘ ${langNote}\n`);
+    return 0;
+  }
+  if (direction === 'reverse') {
+    process.stdout.write(
+      `  No ${from.label} → ${to.label} path, but ${to.label} reaches ${from.label} (dependency runs the other way):\n\n`,
+    );
+  }
+  if (startNote) process.stdout.write(`  ⓘ ${startNote}\n`);
+  process.stdout.write(`  ${startFile.path ?? startFile.label}\n`);
+  for (const h of hopRows) {
+    process.stdout.write(`    ──${h.kind}──▶ ${h.to}${h.line ? ':' + h.line : ''}\n`);
+  }
+  process.stdout.write(`\n  ${hopRows.length} hop(s).\n`);
+  if (fresh.field) {
+    process.stdout.write(
+      `\n  ⚠ ${fresh.modified.length} file(s) on the path changed, ${fresh.deleted.length} deleted since indexing — run \`shrk graph index --changed\`.\n`,
+    );
+  }
+  return 0;
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────
@@ -916,18 +1354,10 @@ function reverseClosure(
 }
 
 function directDependentsForAnchor(api: GraphQueryApi, anchor: INode): string[] {
-  if (anchor.kind === NodeKind.Symbol) {
-    const owner = declaringFileOf(api, anchor.id);
-    const refs = dedupeNodes([...api.referencesOf(anchor.id), ...api.callersOf(anchor.id)])
-      .filter((n) => n.kind === NodeKind.File && n.id !== owner?.id)
-      .map((n) => n.id);
-    if (refs.length > 0) return refs;
-    return owner ? api.importersOf(owner.id).map((n) => n.id) : [];
-  }
-  if (anchor.kind === NodeKind.Package) {
-    return api.packageDependents(packageNameFor(anchor)).map((n) => n.id);
-  }
-  return api.importersOf(anchor.id).map((n) => n.id);
+  // Kind-aware direct dependents (symbol → refs/calls + subtype files, file →
+  // importers, package → dependents) — the ONE shared implementation in the
+  // graph query API, so the CLI + MCP impact closures never disagree.
+  return api.directDependentsOf(anchor).map((n) => n.id);
 }
 
 function nextDependents(api: GraphQueryApi, anchorKind: NodeKind, nodeId: string): readonly INode[] {
@@ -937,6 +1367,17 @@ function nextDependents(api: GraphQueryApi, anchorKind: NodeKind, nodeId: string
     return api.packageDependents(packageNameFor(node));
   }
   return api.importersOf(nodeId);
+}
+
+/**
+ * The node a code-path BFS should START from. Files carry their own outgoing
+ * import/call/reference edges, so a file is its own start. A symbol does NOT —
+ * those edges are recorded on its declaring file — so a symbol resolves to that
+ * file (falling back to the symbol itself if the declaring file is unknown).
+ */
+function bfsStartNode(api: GraphQueryApi, node: INode): INode {
+  if (node.kind !== NodeKind.Symbol) return node;
+  return declaringFileOf(api, node.id) ?? (node.path ? api.findFile(node.path) : undefined) ?? node;
 }
 
 function declaringFileOf(api: GraphQueryApi, symbolId: string): INode | undefined {

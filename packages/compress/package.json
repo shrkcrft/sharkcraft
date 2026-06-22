@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/compress",
-  "version": "0.1.0-alpha.17",
+  "version": "0.1.0-alpha.18",
   "description": "SharkCraft deterministic context-compression engine: content routing, lossless columnar/table compaction, log/search/diff line reduction, and reversible Compress-Cache-Retrieve (CCR). No model inside — every transform is a pure function of its input.",
   "license": "MIT",
   "author": "SharkCraft contributors",

@@ -151,7 +151,7 @@ function readExistingFile(projectRoot: string, relativePath: string): string | n
  * simple longest-common-subsequence on lines via dynamic programming with
  * a guard against huge inputs. For huge inputs falls back to a summary.
  */
-function unifiedDiff(beforeText: string, afterText: string, opts: { context?: number; maxLines?: number; relativePath: string }): { body: string; truncated: boolean } {
+export function unifiedDiff(beforeText: string, afterText: string, opts: { context?: number; maxLines?: number; relativePath: string }): { body: string; truncated: boolean } {
   const context = opts.context ?? 3;
   const maxLines = opts.maxLines ?? 80;
   const before = beforeText.split('\n');

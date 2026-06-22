@@ -48,6 +48,12 @@ export interface ISharkCraftPackContributions {
   /** Future: MCP tool registrations, AI providers, etc. */
   mcpToolFiles?: readonly string[];
   aiProviderFiles?: readonly string[];
+  /**
+   * Delegate-worker recipe files. Each default-exports `readonly IDelegateRecipe[]`
+   * (use `defineDelegateRecipe`). A repo can tune or disable a contributed recipe
+   * via `delegation.recipeOverrides` in its `sharkcraft.config.ts`.
+   */
+  delegateRecipeFiles?: readonly string[];
   /** Scaffold pattern files (default export = array of IScaffoldPattern). */
   scaffoldPatternFiles?: readonly string[];
   /** Policy check files (default export = array of IPackPolicyCheck). */
@@ -181,6 +187,7 @@ export function validatePackManifest(value: unknown): IPackManifestValidationRes
       'agentTestFiles',
       'mcpToolFiles',
       'aiProviderFiles',
+      'delegateRecipeFiles',
       'scaffoldPatternFiles',
       'policyCheckFiles',
       'constructFiles',

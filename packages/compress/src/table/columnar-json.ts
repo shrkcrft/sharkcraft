@@ -2,6 +2,7 @@ import type { ITableCompaction } from './table-compaction.ts';
 import type { IColumnarTable } from './columnar-table.ts';
 import { compactObjectArray } from './compact-object-array.ts';
 import { applyValueDictionaries } from './apply-value-dictionaries.ts';
+import { dropDerivedColumns, reconstructDerived } from './derived-columns.ts';
 
 /**
  * Encode a compacted table as a valid-JSON columnar object. Only the fields a
@@ -11,14 +12,19 @@ import { applyValueDictionaries } from './apply-value-dictionaries.ts';
  * tokens. Low-cardinality columns are value-dictionary encoded (never inflates).
  */
 export function tableToColumnar(table: ITableCompaction): IColumnarTable {
-  const cols = table.cols.map((c) => c.name);
-  const { rows, dict } = applyValueDictionaries(cols, table.rows, table.absent);
+  const cols0 = table.cols.map((c) => c.name);
+  // Drop columns whose every-row value is derivable from another column
+  // (e.g. graph file nodes: id="file:"+path, label=basename(path), kind=const).
+  // Runs on raw values, before value-dictionary encoding.
+  const split = dropDerivedColumns(cols0, table.rows, table.absent);
+  const { rows, dict } = applyValueDictionaries(split.cols, split.rows, split.absent);
   return {
     _table: {
-      cols,
+      cols: split.cols,
       rows,
-      absent: table.absent,
+      absent: split.absent,
       ...(dict ? { dict } : {}),
+      ...(split.derived && split.derived.length > 0 ? { derived: split.derived } : {}),
     },
   };
 }
@@ -53,7 +59,7 @@ export function isColumnarTable(value: unknown): value is IColumnarTable {
  * (an absent key stays absent; key order is not significant).
  */
 export function expandColumnar(table: IColumnarTable): Array<Record<string, unknown>> {
-  const { cols, rows, absent, dict } = table._table;
+  const { cols, rows, absent, dict, derived } = table._table;
   const width = cols.length;
   const absentSet = new Set(absent.map(([r, c]) => r * width + c));
   const out: Array<Record<string, unknown>> = [];
@@ -82,6 +88,8 @@ export function expandColumnar(table: IColumnarTable): Array<Record<string, unkn
         configurable: true,
       });
     }
+    // Rebuild columns dropped because they were a pure function of a kept one.
+    if (derived && derived.length > 0) reconstructDerived(obj, derived);
     out.push(obj);
   }
   return out;

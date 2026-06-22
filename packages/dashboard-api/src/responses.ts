@@ -439,6 +439,15 @@ export interface IDashboardStatsResponse {
   readonly commandHints: readonly IDashboardCommandHint[];
 }
 
+/** A load-bearing code node and how many distinct files depend on it. */
+export interface IDashboardGraphHub {
+  readonly id: string;
+  readonly label: string;
+  readonly path?: string;
+  /** Distinct dependents: referencing files for a symbol, importers for a file. */
+  readonly inDegree: number;
+}
+
 /**
  * Code intelligence overview: aggregated counts across the on-disk
  * stores plus the architecture-guard checks. Surfaces the new code-
@@ -457,6 +466,26 @@ export interface IDashboardCodeIntelligenceResponse {
     readonly lastIndexedAt?: string;
     readonly nodesByKind?: Readonly<Record<string, number>>;
     readonly edgesByKind?: Readonly<Record<string, number>>;
+    /**
+     * How far the on-disk index has drifted from the working tree — the same
+     * signal `shrk graph status` reports, surfaced so the dashboard says when
+     * the graph (and everything derived from it) is stale.
+     */
+    readonly freshness?: {
+      readonly state: 'fresh' | 'stale' | 'corrupt';
+      readonly modified: number;
+      readonly added: number;
+      readonly deleted: number;
+    };
+    /**
+     * The most-depended-on code: symbols ranked by how many distinct files
+     * reference them, files by how many import them. The "load-bearing code"
+     * an agent/human should change most carefully.
+     */
+    readonly hubs?: {
+      readonly symbols: readonly IDashboardGraphHub[];
+      readonly files: readonly IDashboardGraphHub[];
+    };
     readonly hint?: string;
   };
   readonly bridge: {

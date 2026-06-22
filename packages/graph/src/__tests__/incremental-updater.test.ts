@@ -5,9 +5,11 @@ import { join } from 'node:path';
 import { buildFullIndex } from '../indexer/index-builder.ts';
 import {
   detectChangedAndDeleted,
+  detectGraphFreshness,
   updateChanged,
 } from '../indexer/incremental-updater.ts';
 import { GraphQueryApi } from '../query/query-api.ts';
+import { clearGraphApiCache, loadGraphApiCached } from '../query/graph-api-cache.ts';
 import { GraphStore } from '../store/graph-store.ts';
 import { EdgeKind } from '../schema/edge-kind.ts';
 
@@ -109,6 +111,93 @@ describe('updateChanged', () => {
       const d = detectChangedAndDeleted(root);
       expect(d.changed).toContain('packages/beta/src/extra.ts');
       expect(d.deleted).toContain('packages/alpha/src/index.ts');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('detectGraphFreshness categorizes modified / added / deleted', () => {
+    const root = setupFixture();
+    try {
+      buildFullIndex({ projectRoot: root });
+      // modify an indexed file (content + size change → sha differs)
+      writeFileSync(
+        join(root, 'packages', 'alpha', 'src', 'index.ts'),
+        'export function alpha() { return 99; }',
+      );
+      // add a new source file
+      writeFileSync(join(root, 'packages', 'beta', 'src', 'extra.ts'), 'export const extra = 1;');
+      // delete an indexed file
+      unlinkSync(join(root, 'packages', 'beta', 'src', 'index.ts'));
+      const f = detectGraphFreshness(root);
+      expect(f.hasIndex).toBe(true);
+      expect(f.modified).toContain('packages/alpha/src/index.ts');
+      expect(f.added).toContain('packages/beta/src/extra.ts');
+      expect(f.deleted).toContain('packages/beta/src/index.ts');
+      // back-compat adapter: `changed` is the union of modified + added.
+      const d = detectChangedAndDeleted(root);
+      expect(d.changed).toContain('packages/alpha/src/index.ts');
+      expect(d.changed).toContain('packages/beta/src/extra.ts');
+      expect(d.deleted).toContain('packages/beta/src/index.ts');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('loadGraphApiCached caches the API and invalidates when the index is rebuilt', () => {
+    clearGraphApiCache();
+    const root = setupFixture();
+    try {
+      buildFullIndex({ projectRoot: root });
+      const a1 = loadGraphApiCached(root);
+      const a2 = loadGraphApiCached(root);
+      expect(a1).not.toBeNull();
+      expect(a2).toBe(a1); // unchanged store → same cached instance
+
+      // Add a file and rebuild → meta.json changes → cache must invalidate.
+      writeFileSync(join(root, 'packages', 'beta', 'src', 'extra.ts'), 'export const extra = 1;');
+      buildFullIndex({ projectRoot: root });
+      const a3 = loadGraphApiCached(root);
+      expect(a3).not.toBe(a1); // rebuilt store → fresh instance
+      expect(a3!.findFile('packages/beta/src/extra.ts')).toBeDefined(); // reflects the new index
+    } finally {
+      clearGraphApiCache();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('loadGraphApiCached returns null when no index exists', () => {
+    clearGraphApiCache();
+    const root = mkdtempSync(join(tmpdir(), 'shrk-no-graph-'));
+    try {
+      expect(loadGraphApiCached(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('staleFilesAmong flags modified result files and drops deleted ones', () => {
+    const root = setupFixture();
+    try {
+      buildFullIndex({ projectRoot: root });
+      // Snapshot loaded NOW (the "stale index" the agent queries after editing).
+      const q = GraphQueryApi.fromStore(root);
+      expect(q.staleFilesAmong(root, ['packages/alpha/src/index.ts'])).toEqual({
+        modified: [],
+        deleted: [],
+      });
+      // Edit alpha, delete beta — without reindexing.
+      writeFileSync(
+        join(root, 'packages', 'alpha', 'src', 'index.ts'),
+        'export function alpha() { return 42; }',
+      );
+      unlinkSync(join(root, 'packages', 'beta', 'src', 'index.ts'));
+      const stale = q.staleFilesAmong(root, [
+        'packages/alpha/src/index.ts',
+        'packages/beta/src/index.ts',
+      ]);
+      expect(stale.modified).toEqual(['packages/alpha/src/index.ts']);
+      expect(stale.deleted).toEqual(['packages/beta/src/index.ts']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

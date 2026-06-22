@@ -202,9 +202,21 @@ export function buildCoverageReport(inspection: ISharkcraftInspection): ICoverag
     });
   }
 
-  const overall = Math.round(
-    categories.reduce((s, c) => s + c.score, 0) / Math.max(categories.length, 1),
-  );
+  // `overall` measures how well the USER has grounded THIS repo, so two kinds
+  // of category must not inflate it:
+  //   1. Empty categories (total === 0) — they vacuously score 100 (see `pct`),
+  //      so a repo that just hasn't configured boundaries/packs would read as
+  //      perfectly grounded and tell the agent to skip adding rules.
+  //   2. `preset-references` — it scores the BUILT-IN preset registry's
+  //      validity (≈72/72 always), not the user's configuration, so on an
+  //      otherwise-empty repo it alone would peg the overall at 100.
+  // Both stay as displayed categories; they're just out of the average.
+  // 0 when nothing user-authored is configured (honest: no coverage to report).
+  const scored = categories.filter((c) => c.total > 0 && c.id !== 'preset-references');
+  const overall =
+    scored.length > 0
+      ? Math.round(scored.reduce((s, c) => s + c.score, 0) / scored.length)
+      : 0;
   if (overall < 60) suggestions.push('Pair every critical rule with action hints + verification commands.');
   if (overall < 80) suggestions.push('Make templates declare related rules/paths (`template.related`).');
 

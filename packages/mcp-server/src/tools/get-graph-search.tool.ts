@@ -1,4 +1,4 @@
-import { GraphQueryApi, GraphStore, type INode } from '@shrkcrft/graph';
+import { GraphQueryApi, GraphStore, loadGraphApiCached, type INode } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
@@ -49,14 +49,31 @@ export const getGraphSearchTool: IToolDefinition = {
         },
       };
     }
-    const api = GraphQueryApi.fromStore(ctx.inspection.projectRoot);
+    const api = loadGraphApiCached(ctx.inspection.projectRoot) ?? GraphQueryApi.fromStore(ctx.inspection.projectRoot);
+    const exact = args.exact ?? false;
     const matches: INode[] = [];
     if (!args.kind || args.kind === 'file') {
       const f = api.findFile(query);
       if (f) matches.push(f);
+      // Fuzzy fallback (mirrors the CLI): substring match on path/basename so a
+      // bare name like `Foo` finds `packages/x/Foo.ts` without the full path —
+      // otherwise the MCP returned an empty list where the CLI found the file.
+      if (!exact && matches.length < limit) {
+        const q = query.toLowerCase();
+        const seen = new Set(matches.map((n) => n.id));
+        for (const node of api.allFiles()) {
+          if (seen.has(node.id)) continue;
+          const p = node.path?.toLowerCase() ?? '';
+          const base = p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p;
+          if (base.includes(q) || p.includes(q)) {
+            matches.push(node);
+            seen.add(node.id);
+            if (matches.length >= limit) break;
+          }
+        }
+      }
     }
     if (!args.kind || args.kind === 'symbol') {
-      const exact = args.exact ?? false;
       for (const s of api.findSymbol(query, { exact, limit })) matches.push(s);
     }
     if (!args.kind || args.kind === 'package') {

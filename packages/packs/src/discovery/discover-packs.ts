@@ -49,6 +49,7 @@ function emptyCounts(): IDiscoveredPack['contributionCounts'] {
     constructFiles: 0,
     constructFacetFiles: 0,
     playbookFiles: 0,
+    delegateRecipeFiles: 0,
   };
 }
 
@@ -67,6 +68,7 @@ function countContributions(c: ISharkCraftPackContributions | undefined): IDisco
   out.constructFiles = c.constructFiles?.length ?? 0;
   out.constructFacetFiles = c.constructFacetFiles?.length ?? 0;
   out.playbookFiles = c.playbookFiles?.length ?? 0;
+  out.delegateRecipeFiles = c.delegateRecipeFiles?.length ?? 0;
   return out;
 }
 

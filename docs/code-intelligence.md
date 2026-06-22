@@ -258,11 +258,11 @@ export enum EdgeKind {
   BelongsToPackage = 'belongs-to-package',// file → package
   PackageDependsOn = 'package-depends-on',// package → package (aggregated)
 
-  // Symbol references (Phase 2 — recorded as 'unresolved' in MVP)
-  ReferencesSymbol = 'references-symbol',     // symbol → symbol
-  CallsSymbol = 'calls-symbol',               // symbol → symbol
-  ExtendsSymbol = 'extends-symbol',           // symbol → symbol
-  ImplementsSymbol = 'implements-symbol',     // symbol → symbol
+  // Symbol references + heritage (TS/JS extractor emits all four)
+  ReferencesSymbol = 'references-symbol',     // file → symbol
+  CallsSymbol = 'calls-symbol',               // file → symbol
+  ExtendsSymbol = 'extends-symbol',           // symbol → symbol (class/iface extends)
+  ImplementsSymbol = 'implements-symbol',     // symbol → symbol (class implements iface)
 
   // Bridge to assets
   AppliesRule = 'applies-rule',         // file → rule

@@ -3,11 +3,14 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  runGraphCallers,
   runGraphContext,
   runGraphCycles,
   runGraphDeps,
+  runGraphHubs,
   runGraphImpact,
   runGraphIndex,
+  runGraphPath,
   runGraphSearch,
   runGraphStatus,
   runGraphUnresolved,
@@ -369,6 +372,59 @@ describe('graph code-intelligence CLI subverbs', () => {
     }
   });
 
+  test('runGraphDeps reports not-found for an unknown package (was silently empty)', async () => {
+    const root = fixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const cap = capture();
+      const code = await runGraphDeps(withCwd(makeArgs(['@demo/does-not-exist']), root));
+      const out = cap.restore();
+      // Mirrors the MCP `not-found` guard: an unknown package is an error, not a
+      // confidently-empty `dependsOn: []` that reads as "has no dependencies".
+      expect(code).toBe(1);
+      const json = JSON.parse(out);
+      expect(json.ok).toBe(false);
+      expect(json.error).toBe('not-found');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphCallers discloses ambiguity when several symbols share a name', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-graph-cli-dup-'));
+    try {
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'demo', workspaces: ['packages/*'] }, null, 2),
+      );
+      for (const name of ['alpha', 'beta']) {
+        mkdirSync(join(root, 'packages', name, 'src'), { recursive: true });
+        writeFileSync(
+          join(root, 'packages', name, 'package.json'),
+          JSON.stringify({ name: `@demo/${name}`, main: 'src/index.ts' }, null, 2),
+        );
+        // Both packages export a function named `dup` — an ambiguous name.
+        writeFileSync(
+          join(root, 'packages', name, 'src', 'index.ts'),
+          'export function dup() { return 1; }\n',
+        );
+      }
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const cap = capture();
+      const code = await runGraphCallers(withCwd(makeArgs(['callers', 'dup']), root));
+      const out = cap.restore();
+      expect(code).toBe(0);
+      const json = JSON.parse(out);
+      // Callers are reported for ONE chosen `dup`; the note must say there are
+      // others, otherwise the agent reads a partial answer as the whole picture.
+      expect(json.note).toContain('2 symbols named "dup"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('runGraphCycles enumerates a manufactured 3-file cycle', async () => {
     const root = mkdtempSync(join(tmpdir(), 'shrk-graph-cli-cycles-'));
     try {
@@ -394,6 +450,84 @@ describe('graph code-intelligence CLI subverbs', () => {
       expect(json.total).toBe(1);
       expect(json.cycles[0].size).toBe(3);
       expect(json.cycles[0].paths).toHaveLength(3);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphHubs ranks the most-depended-on symbols + files', async () => {
+    const root = symbolFixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const cap = capture();
+      const code = await runGraphHubs(withCwd(makeArgs(['hubs']), root));
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      // `hello` is referenced by consumer.ts (1 distinct dependent file).
+      const hello = json.symbols.find((s: { label: string }) => s.label === 'hello');
+      expect(hello?.inDegree).toBe(1);
+      // index.ts is imported by consumer.ts.
+      const idx = json.files.find((f: { path?: string }) => f.path?.endsWith('index.ts'));
+      expect(idx?.inDegree).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphPath finds the forward path consumer → hello (symbol target)', async () => {
+    const root = symbolFixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const cap = capture();
+      const code = await runGraphPath(
+        withCwd(makeArgs(['path', 'packages/p/src/consumer.ts', 'hello']), root),
+      );
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      expect(json.found).toBe(true);
+      expect(json.direction).toBe('forward');
+      expect(json.hops.length).toBeGreaterThan(0);
+      // Each hop carries the edge kind so the agent sees HOW they're wired.
+      expect(typeof json.hops[0].kind).toBe('string');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphPath reports the reverse direction when only B → A is wired', async () => {
+    const root = symbolFixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const cap = capture();
+      // index.ts does NOT import consumer.ts; consumer.ts imports index.ts.
+      const code = await runGraphPath(
+        withCwd(makeArgs(['path', 'packages/p/src/index.ts', 'packages/p/src/consumer.ts']), root),
+      );
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      expect(json.found).toBe(true);
+      expect(json.direction).toBe('reverse');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphPath exits 1 with a hint when an endpoint is unknown', async () => {
+    const root = symbolFixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const cap = capture();
+      const code = await runGraphPath(
+        withCwd(makeArgs(['path', 'packages/p/src/consumer.ts', 'doesNotExist']), root),
+      );
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(1);
+      expect(json.ok).toBe(false);
+      expect(json.error).toBe('not-found');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

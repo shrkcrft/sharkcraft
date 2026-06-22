@@ -184,6 +184,7 @@ import {
 } from './commands/rounds.command.ts';
 import { genCommand } from './commands/gen.command.ts';
 import { applyCommand } from './commands/apply.command.ts';
+import { delegateCommand } from './commands/delegate.command.ts';
 import { groundingCommand } from './commands/grounding.command.ts';
 import { planCheckCommand } from './commands/plan-check.command.ts';
 import { whyCommand } from './commands/why.command.ts';
@@ -395,6 +396,7 @@ export function buildRegistry(): CommandRegistry {
   registry.register(contextCommand);
   registry.register(genCommand);
   registry.register(applyCommand);
+  registry.register(delegateCommand);
   // `shrk grounding` thin context primer.
   registry.register(groundingCommand);
   // feedback3 — `shrk why <file>` (closes the dangling ide-suggested verb).
@@ -882,7 +884,9 @@ async function runCliInner(argv: readonly string[]): Promise<number> {
       process.stderr.write(renderSurfaceNotEnabledText(err));
       return SURFACE_NOT_ENABLED_EXIT_CODE;
     }
-    return await handler.run(parseArgs(leftover, { globalCwd }));
+    return await handler.run(
+      parseArgs(leftover, { globalCwd, booleanFlags: handler.booleanFlags }),
+    );
   }
 
   // No handler at the deepest match. If we landed on a group node (has

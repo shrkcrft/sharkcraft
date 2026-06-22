@@ -30,6 +30,9 @@ export * from './indexer/resolve-imports.ts';
 export * from './indexer/index-builder.ts';
 export * from './indexer/incremental-updater.ts';
 export * from './indexer/unresolved-imports.ts';
+export * from './indexer/call-graph-support.ts';
+export * from './indexer/resolve-reexports.ts';
 
 export * from './query/query-api.ts';
+export * from './query/graph-api-cache.ts';
 export * from './query/cycle-detection.ts';

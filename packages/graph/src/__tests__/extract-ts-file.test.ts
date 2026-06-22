@@ -51,6 +51,64 @@ describe('extractTsFile', () => {
     }
   });
 
+  test('ignores import-like text in comments and string literals, keeps every real import shape', () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-graph-extract-ast-'));
+    try {
+      mkdirSync(join(root, 'src'), { recursive: true });
+      const fileAbs = join(root, 'src', 'demo.ts');
+      writeFileSync(
+        fileAbs,
+        [
+          "// import { ghost } from './ghost-comment';",
+          "/* import './ghost-block'; */",
+          '/**',
+          ' * Example usage:',
+          " * import { x } from './ghost-jsdoc';",
+          ' */',
+          "const sample = `import { y } from './ghost-template';`;",
+          "const s = \"import z from './ghost-string'\";",
+          "import './side-effect';",
+          "import type { T } from './type-only';",
+          "import { real } from './real';",
+          "export { re } from './re-export';",
+          "const lazy = () => import('./dynamic');",
+          "const cjs = require('./required');",
+          'void sample; void s; void lazy; void cjs;',
+        ].join('\n'),
+      );
+      const fp = fingerprintFile(fileAbs, root);
+      const ex = extractTsFile(fp, fileAbs);
+      const specs = new Set(ex.rawImportSpecifiers.map((r) => r.specifier));
+
+      // Every real import shape is still captured — so a genuine unresolved /
+      // cross-package import is still flagged downstream (no break is masked).
+      for (const real of [
+        './side-effect',
+        './type-only',
+        './real',
+        './re-export',
+        './dynamic',
+        './required',
+      ]) {
+        expect(specs.has(real)).toBe(true);
+      }
+
+      // None of the import-like text inside comments, JSDoc, template, or
+      // string literals is collected — these were the false positives.
+      for (const ghost of [
+        './ghost-comment',
+        './ghost-block',
+        './ghost-jsdoc',
+        './ghost-template',
+        './ghost-string',
+      ]) {
+        expect(specs.has(ghost)).toBe(false);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('tags test files', () => {
     const root = mkdtempSync(join(tmpdir(), 'shrk-graph-extract-test-'));
     try {

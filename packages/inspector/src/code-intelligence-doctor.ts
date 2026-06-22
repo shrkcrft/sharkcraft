@@ -194,7 +194,7 @@ export function buildCodeIntelligenceChecks(
   checks.push(...graphChecks(projectRoot, nowMs, staleDays));
   checks.push(...ruleGraphChecks(projectRoot, nowMs, staleDays));
   checks.push(...apiSurfaceChecks(projectRoot, nowMs, staleDays));
-  checks.push(...qualityGateChecks(projectRoot, nowMs));
+  checks.push(...qualityGateChecks(projectRoot, nowMs, staleDays));
   checks.push(...migrationChecks(projectRoot));
   checks.push(...architectureChecks(projectRoot, nowMs, staleDays));
   checks.push(...impactRunChecks(projectRoot, nowMs, staleDays));
@@ -505,7 +505,11 @@ function apiSurfaceChecks(
   ];
 }
 
-function qualityGateChecks(projectRoot: string, nowMs: number): IDoctorCheck[] {
+function qualityGateChecks(
+  projectRoot: string,
+  nowMs: number,
+  staleDays: number,
+): IDoctorCheck[] {
   const reportPath = nodePath.join(
     projectRoot,
     '.sharkcraft',
@@ -530,6 +534,7 @@ function qualityGateChecks(projectRoot: string, nowMs: number): IDoctorCheck[] {
   }
   const days = ageDays(report.startedAt, nowMs);
   const ageStr = days !== undefined ? ` ${fmtAge(days)}` : '';
+  const stale = days !== undefined && days > staleDays;
   const status = report.overall ?? 'unknown';
   const failingGates = (report.gates ?? [])
     .filter((g) => g.status === 'fail')
@@ -547,16 +552,35 @@ function qualityGateChecks(projectRoot: string, nowMs: number): IDoctorCheck[] {
     ];
   }
   if (status === 'fail') {
+    const failMsg =
+      failingGates.length > 0
+        ? `Last gate FAIL${ageStr} — ${failingGates.join(', ')}.`
+        : `Last gate FAIL${ageStr}.`;
+    // An old FAIL is stale maintenance, not a verified current regression:
+    // age it out into a folded advisory that nudges a re-run instead of a
+    // hard Warning that masks the (now-unknown) state of the tree. A fresh
+    // FAIL stays loud. Mirrors the stale handling in apiSurfaceChecks /
+    // architectureChecks so the whole code-intelligence section is consistent.
+    if (stale) {
+      return [
+        {
+          id: 'code-intelligence-quality-gate',
+          title: 'Quality gate (last run)',
+          severity: DoctorSeverity.Info,
+          advisory: true,
+          category: CATEGORY,
+          message: `${failMsg} Stale (>${staleDays}d) — may not reflect the current tree.`,
+          fix: 'Re-run `shrk gate` to refresh.',
+        },
+      ];
+    }
     return [
       {
         id: 'code-intelligence-quality-gate',
         title: 'Quality gate (last run)',
         severity: DoctorSeverity.Warning,
         category: CATEGORY,
-        message:
-          failingGates.length > 0
-            ? `Last gate FAIL${ageStr} — ${failingGates.join(', ')}.`
-            : `Last gate FAIL${ageStr}.`,
+        message: failMsg,
         fix: 'Re-run with `shrk gate` and address the failing gate(s).',
         whyThisMatters:
           'The quality gate is the one-shot pass/fail the dashboard and CI agents trust — leaving it red hides real regressions.',

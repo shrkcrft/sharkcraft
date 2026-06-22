@@ -82,6 +82,6 @@ describe('shrk move-plan — argument handling', () => {
     );
     expect(value).toBe(1);
     expect(stderr).toContain('No SharkCraft graph');
-    expect(stderr).toContain('shrk graph build');
+    expect(stderr).toContain('shrk graph index');
   });
 });

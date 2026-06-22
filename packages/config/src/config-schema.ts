@@ -1,5 +1,28 @@
 import { z } from 'zod';
 
+/** One delegate-worker recipe (see `IDelegateRecipe`). */
+const DelegateRecipeSchema = z
+  .object({
+    id: z.string(),
+    title: z.string().optional(),
+    match: z
+      .object({
+        keywords: z.array(z.string()).optional(),
+        fileGlobs: z.array(z.string()).optional(),
+      })
+      .strict()
+      .optional(),
+    guardrailGlobs: z.array(z.string()),
+    allowedOps: z.array(z.string()),
+    provider: z.enum(['auto', 'ollama', 'llamacpp']).optional(),
+    model: z.string().optional(),
+    maxAttempts: z.number().int().positive().optional(),
+    maxBudgetMs: z.number().int().positive().optional(),
+    riskCeiling: z.enum(['low', 'medium']).optional(),
+    verificationIds: z.array(z.string()),
+  })
+  .strict();
+
 /**
  * Zod schema for sharkcraft.config.ts. Used by the loader and the doctor to
  * surface clear errors for malformed configs. We don't replace ISharkCraftConfig
@@ -52,6 +75,29 @@ export const SharkCraftConfigSchema = z
     usage: z
       .object({
         enabled: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    // Local-LLM delegate worker (see `shrk delegate`).
+    delegation: z
+      .object({
+        enabled: z.boolean().optional(),
+        provider: z.enum(['auto', 'ollama', 'llamacpp']).optional(),
+        model: z.string().optional(),
+        recipes: z.array(DelegateRecipeSchema).optional(),
+        recipeOverrides: z
+          .record(
+            z.string(),
+            z
+              .object({
+                model: z.string().optional(),
+                verificationIds: z.array(z.string()).optional(),
+                guardrailGlobs: z.array(z.string()).optional(),
+                enabled: z.boolean().optional(),
+              })
+              .strict(),
+          )
+          .optional(),
       })
       .strict()
       .optional(),

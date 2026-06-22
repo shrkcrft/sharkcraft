@@ -10,3 +10,5 @@ export * from './provider-resolver.ts';
 export * from './pipeline/enhancement-pipeline.ts';
 export * from './llm-hints.ts';
 export * from './llm-recommendations.ts';
+export * from './delegate/delegate-edit-schema.ts';
+export * from './delegate/parse-delegate-edit.ts';

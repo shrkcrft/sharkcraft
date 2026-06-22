@@ -50,6 +50,11 @@ export function CodeIntelligencePage(): JSX.Element {
                   Last indexed: <code className="mono">{d.graph.lastIndexedAt}</code>
                 </div>
               ) : null}
+              {d.graph.freshness ? (
+                <div style={{ marginTop: 8 }}>
+                  <Badge kind={freshnessKind(d.graph.freshness.state)}>{freshnessLabel(d.graph.freshness)}</Badge>
+                </div>
+              ) : null}
               {d.graph.nodesByKind ? (
                 <div style={{ marginTop: 12 }}>
                   {Object.entries(d.graph.nodesByKind)
@@ -134,6 +139,24 @@ export function CodeIntelligencePage(): JSX.Element {
         </Card>
       </div>
 
+      {d.graph.hubs && (d.graph.hubs.symbols.length > 0 || d.graph.hubs.files.length > 0) ? (
+        <section className="section">
+          <h2 className="section__title">Load-bearing code</h2>
+          <p className="section__subtitle">
+            The most-depended-on symbols and files — change these most carefully. In-degree counts
+            distinct dependent files.
+          </p>
+          <div className="grid grid--2">
+            <Card title="Most-referenced symbols">
+              <HubList rows={d.graph.hubs.symbols} empty="No referenced symbols (TS/JS call graph only)." />
+            </Card>
+            <Card title="Most-imported files">
+              <HubList rows={d.graph.hubs.files} empty="No imported files yet." />
+            </Card>
+          </div>
+        </section>
+      ) : null}
+
       <section className="section">
         <h2 className="section__title">Next steps</h2>
         {d.commandHints.map((h) => (
@@ -141,5 +164,37 @@ export function CodeIntelligencePage(): JSX.Element {
         ))}
       </section>
     </>
+  );
+}
+
+function freshnessKind(state: 'fresh' | 'stale' | 'corrupt'): 'success' | 'warning' | 'danger' {
+  return state === 'fresh' ? 'success' : state === 'stale' ? 'warning' : 'danger';
+}
+
+function freshnessLabel(f: { state: 'fresh' | 'stale' | 'corrupt'; modified: number; added: number; deleted: number }): string {
+  if (f.state === 'corrupt') return 'index corrupt — run shrk graph index';
+  if (f.state === 'fresh') return 'index fresh';
+  const behind = f.modified + f.added + f.deleted;
+  return `index stale — ${behind} file(s) behind (${f.modified} modified, ${f.added} new, ${f.deleted} deleted)`;
+}
+
+function HubList({
+  rows,
+  empty,
+}: {
+  rows: readonly { id: string; label: string; path?: string; inDegree: number }[];
+  empty: string;
+}): JSX.Element {
+  if (rows.length === 0) return <div className="card__hint">{empty}</div>;
+  return (
+    <ol className="hub-list" style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+      {rows.map((r) => (
+        <li key={r.id} style={{ marginBottom: 4 }}>
+          <code className="mono">{r.label}</code>{' '}
+          <Badge kind="info">{r.inDegree}</Badge>
+          {r.path ? <div className="card__hint">{r.path}</div> : null}
+        </li>
+      ))}
+    </ol>
   );
 }

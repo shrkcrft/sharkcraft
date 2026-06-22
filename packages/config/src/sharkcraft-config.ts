@@ -81,6 +81,47 @@ export interface ISharkCraftConfig {
    * regardless of this field.
    */
   usage?: IUsageConfig;
+
+  /**
+   * Local-LLM delegate worker configuration (see `shrk delegate`).
+   *
+   * Declares the MECHANICAL task recipes a repo lets a local model produce
+   * edits for. Every recipe's edit enters the world only as a signed synthetic
+   * plan that the deterministic engine verifies — so a recipe is just a fenced
+   * description of a delegatable task, never executable code.
+   */
+  delegation?: IDelegationConfig;
+}
+
+// The recipe contract lives in `core` so the pack contract (`@shrkcrft/plugin-api`)
+// can share it; re-export it here for `import { IDelegateRecipe } from '@shrkcrft/config'`.
+export type { IDelegateRecipe, IDelegateRecipeMatch } from '@shrkcrft/core';
+import type { IDelegateRecipe } from '@shrkcrft/core';
+
+/**
+ * Per-recipe override, keyed by recipe id. Lets a project tune a PACK-contributed
+ * recipe (or disable it) without forking it — change the model / verification /
+ * guardrail globs, or set `enabled: false` to drop it from the catalog.
+ */
+export interface IDelegateRecipeOverride {
+  model?: string;
+  verificationIds?: readonly string[];
+  guardrailGlobs?: readonly string[];
+  enabled?: boolean;
+}
+
+/** Project-level delegate-worker settings + the recipe catalog. */
+export interface IDelegationConfig {
+  /** Master switch; when false, `shrk delegate run` refuses. Default true. */
+  enabled?: boolean;
+  /** Default local provider for every recipe that doesn't override it. */
+  provider?: 'auto' | 'ollama' | 'llamacpp';
+  /** Default model for every recipe that doesn't override it. */
+  model?: string;
+  /** Inline project recipes. */
+  recipes?: readonly IDelegateRecipe[];
+  /** Overrides for pack- (or inline-) contributed recipes, keyed by recipe id. */
+  recipeOverrides?: Readonly<Record<string, IDelegateRecipeOverride>>;
 }
 
 export interface ISurfaceConfig {

@@ -16,6 +16,7 @@ export const PRIMARY_COMMANDS_SCHEMA = 'sharkcraft.primary-commands/v1';
 
 export type StartHereFlow =
   | 'onboard'
+  | 'investigate'
   | 'brief'
   | 'dev'
   | 'review'
@@ -71,6 +72,22 @@ const FLOWS_PRIMARY: readonly IStartHereFlow[] = [
     safety: 'writes-drafts',
     docsLink: 'docs/onboarding.md',
     nextCommand: 'shrk brief "<first task you want the agent to handle>"',
+  },
+  {
+    id: 'investigate',
+    title: 'Understand existing code (before you edit)',
+    whenToUse:
+      'You need to know who calls a symbol, where it is used (file:line), what breaks if you change a file, whether code A is wired to code B, or who implements an interface — use the graph instead of grep.',
+    commands: [
+      'shrk graph index',
+      'shrk graph callers <symbol>',
+      'shrk graph path <from> <to>',
+      'shrk graph context <file-or-symbol>',
+      'shrk graph impact <file-or-symbol> --full',
+    ],
+    safety: 'read-only',
+    docsLink: 'docs/overview.md',
+    nextCommand: 'shrk graph callers <symbol>',
   },
   {
     id: 'brief',

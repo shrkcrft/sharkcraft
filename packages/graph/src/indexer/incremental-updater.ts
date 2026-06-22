@@ -12,6 +12,7 @@ import { fingerprintFile } from '../store/file-fingerprint.ts';
 import { GraphStore } from '../store/graph-store.ts';
 import { summarizeCycles } from '../query/cycle-detection.ts';
 import { summarizeUnresolvedImports } from './unresolved-imports.ts';
+import { resolveReExportedReferenceEdges } from './resolve-reexports.ts';
 import {
   detectWorkspacePackages,
   type IWorkspacePackage,
@@ -243,7 +244,16 @@ export function updateChanged(
   }
 
   const nodeList = [...nodes.values()];
-  const edgeList = [...edges.values()];
+  // Resolve barrel re-export chains (rewrites phantom cross-package
+  // reference/call targets to the real symbol), then de-dupe since a rewrite
+  // can collide a rewritten edge id with an existing one.
+  const seenEdge = new Set<string>();
+  const edgeList: IEdge[] = [];
+  for (const e of resolveReExportedReferenceEdges(nodeList, [...edges.values()])) {
+    if (seenEdge.has(e.id)) continue;
+    seenEdge.add(e.id);
+    edgeList.push(e);
+  }
   const cycles = summarizeCycles(nodeList, edgeList);
   const unresolved = summarizeUnresolvedImports(edgeList);
   const manifest = store.writeSnapshot(
@@ -276,22 +286,34 @@ export function updateChanged(
   };
 }
 
-/**
- * Helper: detect changed files by walking the project and comparing
- * fingerprints against the stored snapshot. Used by
- * `shrk graph index --changed` when no explicit file list is provided.
- */
-export function detectChangedAndDeleted(projectRoot: string): {
-  changed: readonly string[];
+export interface IGraphFreshness {
+  hasIndex: boolean;
+  lastIndexedAt?: string;
+  /** Indexed files whose on-disk content changed since the index was built. */
+  modified: readonly string[];
+  /** Source files on disk that are not in the index yet. */
+  added: readonly string[];
+  /** Indexed files that no longer exist on disk. */
   deleted: readonly string[];
-} {
+}
+
+/**
+ * Walk the project and categorise every source file against the stored
+ * snapshot: `modified` (indexed but content changed), `added` (on disk, not
+ * indexed), `deleted` (indexed, gone from disk). This is the per-file truth
+ * behind honest `graph status` freshness and the targeted per-query staleness
+ * check — so an agent never gets a silently-stale answer for a file it just
+ * edited. Outputs are sorted for determinism.
+ */
+export function detectGraphFreshness(projectRoot: string): IGraphFreshness {
   const store = new GraphStore(projectRoot);
   if (!store.exists()) {
-    return { changed: [], deleted: [] };
+    return { hasIndex: false, modified: [], added: [], deleted: [] };
   }
   const snap = store.loadSnapshot();
   const seen = new Set<string>();
-  const changed: string[] = [];
+  const modified: string[] = [];
+  const added: string[] = [];
   const fsStack: string[] = [projectRoot];
   const skip = new Set([
     'node_modules',
@@ -337,7 +359,7 @@ export function detectChangedAndDeleted(projectRoot: string): {
       seen.add(rel);
       const oldFp = snap.files.get(rel);
       if (!oldFp) {
-        changed.push(rel);
+        added.push(rel);
         continue;
       }
       // Cheap check: mtime first. If equal, trust it (assumes mtime
@@ -345,14 +367,38 @@ export function detectChangedAndDeleted(projectRoot: string): {
       // bind mounts). Otherwise recompute the sha and compare.
       if (Math.floor(st.mtimeMs) === oldFp.mtime && st.size === oldFp.sizeBytes) continue;
       const newFp = fingerprintFile(full, projectRoot);
-      if (newFp.sha1 !== oldFp.sha1) changed.push(rel);
+      if (newFp.sha1 !== oldFp.sha1) modified.push(rel);
     }
   }
   const deleted: string[] = [];
   for (const path of snap.files.keys()) {
     if (!seen.has(path)) deleted.push(path);
   }
-  return { changed, deleted };
+  modified.sort((a, b) => a.localeCompare(b));
+  added.sort((a, b) => a.localeCompare(b));
+  deleted.sort((a, b) => a.localeCompare(b));
+  return {
+    hasIndex: true,
+    lastIndexedAt: snap.manifest.lastIndexedAt,
+    modified,
+    added,
+    deleted,
+  };
+}
+
+/**
+ * Back-compat adapter for `shrk graph index --changed`: `changed` is the
+ * union of modified + added (both need re-extraction); `deleted` unchanged.
+ */
+export function detectChangedAndDeleted(projectRoot: string): {
+  changed: readonly string[];
+  deleted: readonly string[];
+} {
+  const f = detectGraphFreshness(projectRoot);
+  return {
+    changed: [...f.modified, ...f.added].sort((a, b) => a.localeCompare(b)),
+    deleted: f.deleted,
+  };
 }
 
 /**

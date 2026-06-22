@@ -90,8 +90,12 @@ shrk pipelines list
 shrk presets list
 shrk packs list
 
-# How does the graph connect this work?
-shrk graph why <fromId> <toId>
+# Understand existing code before you touch it (use the graph, not grep —
+# it returns path:line truth). Run `shrk graph index` first if it's stale.
+shrk graph callers <symbol>            # who calls / references X (path:line)
+shrk graph context <file-or-symbol>    # imports, callers, bridge + framework — is X wired?
+shrk graph impact <file-or-symbol> --full   # what breaks if I change this
+shrk graph why <fromId> <toId>         # shortest-path between two graph nodes
 
 # Will my plan introduce boundary trouble?
 shrk check boundaries --json

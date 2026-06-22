@@ -33,6 +33,7 @@ export type { IFieldSpec } from './table/field-spec.ts';
 export type { ITableCompaction } from './table/table-compaction.ts';
 export { compactObjectArray } from './table/compact-object-array.ts';
 export type { IColumnarTable } from './table/columnar-table.ts';
+export type { IDerivedColumn } from './table/derived-columns.ts';
 export {
   tableToColumnar,
   compactArrayToColumnar,

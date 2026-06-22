@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildFullIndex } from '@shrkcrft/graph';
@@ -160,6 +160,27 @@ describe('r65 graph mcp tools', () => {
       };
       expect(data.directDependents.some((d) => d.path === 'packages/beta/src/index.ts')).toBe(true);
       expect(data.totalReached).toBeGreaterThanOrEqual(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('get_graph_impact drops a deleted dependent and flags staleness', async () => {
+    const root = setupFixture();
+    try {
+      buildFullIndex({ projectRoot: root });
+      // Delete the dependent on disk WITHOUT reindexing — the stale index still
+      // holds it; the blast radius must not list a file that no longer exists.
+      unlinkSync(join(root, 'packages', 'beta', 'src', 'index.ts'));
+      const ctx = await ctxFor(root);
+      const tool = ALL_TOOLS.find((t) => t.name === 'get_graph_impact')!;
+      const result = await tool.handler({ target: 'packages/alpha/src/index.ts' }, ctx as never);
+      const data = result.data as {
+        directDependents: { path?: string }[];
+        stale?: { deleted: string[] };
+      };
+      expect(data.directDependents.some((d) => d.path === 'packages/beta/src/index.ts')).toBe(false);
+      expect(data.stale?.deleted).toContain('packages/beta/src/index.ts');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

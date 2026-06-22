@@ -763,10 +763,20 @@ export async function analyzeImpact(
     inspection.projectRoot,
     files,
   );
+  // Reverse-import graph: any dependent that is itself a test file genuinely
+  // exercises the changed file — including cross-directory tests the filename
+  // conventions miss (e.g. src/__tests__/foo.test.ts importing src/sub/foo.ts).
+  // So the agent's `tests impact` / `impact` returns the exact minimal set to
+  // run instead of falling back to the whole suite.
+  const TEST_FILE_RE = /\.(spec|test)\.[jt]sx?$/;
+  const dependentTests = unique(
+    [...directDependents, ...transitiveDependents].filter((f) => TEST_FILE_RE.test(f)),
+  );
+  const minimalTests = unique([...likelyTests, ...dependentTests]);
 
   // Per-target test suggestion (minimal commands).
   const suggestedTestCommands = unique([
-    ...(likelyTests.length > 0 ? [`bun test ${likelyTests.slice(0, 6).join(' ')}`] : []),
+    ...(minimalTests.length > 0 ? [`bun test ${minimalTests.slice(0, 12).join(' ')}`] : []),
     'bun test',
   ]);
 
@@ -875,7 +885,7 @@ export async function analyzeImpact(
     affectedPipelines: pipelines,
     affectedPresets: presets,
     affectedConstructs: constructs,
-    likelyTests,
+    likelyTests: minimalTests,
     suggestedTestCommands,
     suggestedFullTestCommands,
     suggestedValidationCommands,

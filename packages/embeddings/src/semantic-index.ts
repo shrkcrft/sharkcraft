@@ -384,7 +384,23 @@ export class SemanticIndex {
       hits.push({ path: this.meta.paths[i]!, score: dot });
     }
     hits.sort((a, b) => b.score - a.score);
-    return hits.slice(0, k);
+    // Query-time prune: a stale index can still hold vectors for files that
+    // were deleted on disk; returning them would feed dead paths into
+    // callers (e.g. the smart-context LLM seed). Skip any hit whose file no
+    // longer exists, walking only as far down the ranked list as needed to
+    // fill `k` survivors — so this stays O(k) stats in the common case, not
+    // O(n). A genuinely-changed (but present) file still scores on its old
+    // vector and is still served; `freshnessReport` remains the staleness
+    // signal that nags for a rebuild.
+    const out: ISemanticHit[] = [];
+    for (const hit of hits) {
+      if (out.length >= k) break;
+      const abs = nodePath.isAbsolute(hit.path)
+        ? hit.path
+        : nodePath.join(this.cwd, hit.path);
+      if (existsSync(abs)) out.push(hit);
+    }
+    return out;
   }
 
   async embed(text: string): Promise<Float32Array> {

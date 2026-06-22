@@ -116,6 +116,15 @@ export interface ISyntheticWriteResult {
   written: readonly IFileChange[];
 }
 
+/**
+ * A CCR retrieval marker (`<<ccr:<hex>…>>`) is a pointer into the compress
+ * cache — a LOSSY/compressed view, never apply-grade source. If one ever
+ * reaches a write (e.g. a compressed diff fed into a `create`/`replace` op), it
+ * would corrupt the file. This detector enforces, at the write chokepoint, the
+ * invariant that the compression layer only documents in a comment.
+ */
+const CCR_MARKER_RE = /<<ccr:[0-9a-f]{8,}/;
+
 export function writeSyntheticPlan(
   plan: IGenerationPlan,
 ): Result<ISyntheticWriteResult, AppError> {
@@ -127,6 +136,20 @@ export function writeSyntheticPlan(
         { details: { conflicts: plan.changes.filter((c) => c.type === FileChangeType.Conflict) } },
       ),
     );
+  }
+  // Refuse the WHOLE plan if any writeable change carries a CCR marker — a
+  // compressed/lossy blob must never be written as source.
+  for (const change of plan.changes) {
+    if (!isWriteableSyntheticChange(change.type)) continue;
+    if (CCR_MARKER_RE.test(change.contents)) {
+      return err(
+        new AppErrorImpl(
+          ERROR_CODES.INVALID_INPUT,
+          `Refused to write ${change.relativePath}: contents carry a <<ccr:…>> marker (a compressed/lossy blob is not apply-grade source).`,
+          { details: { path: change.relativePath } },
+        ),
+      );
+    }
   }
   const written: IFileChange[] = [];
   let totalBytes = 0;

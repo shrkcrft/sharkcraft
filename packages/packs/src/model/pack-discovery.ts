@@ -24,6 +24,7 @@ export interface IDiscoveredPack {
     constructFiles: number;
     constructFacetFiles: number;
     playbookFiles: number;
+    delegateRecipeFiles: number;
   };
   /**
    * Number of **resolved objects** loaded from this pack's contributions, after

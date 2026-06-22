@@ -1,6 +1,7 @@
-import { GraphQueryApi, GraphStore, type INode } from '@shrkcrft/graph';
+import { GraphQueryApi, GraphStore, loadGraphApiCached, type INode } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
+import { callGraphLanguageNote, graphResultStaleness } from './graph-staleness.ts';
 
 const NEXT = 'shrk graph index';
 
@@ -12,7 +13,7 @@ interface ICallersInput {
 export const getGraphCallersTool: IToolDefinition = {
   name: 'get_graph_callers',
   description:
-    'Return files that call or reference the given symbol. Mode "call" → calls-symbol edges; mode "reference" → both references-symbol and calls-symbol. Read-only.',
+    'Find who calls/references a symbol (use this instead of grep before changing a function/type). Returns each caller as path:line of the first call site. Mode "call" → calls-symbol edges; mode "reference" → both references-symbol and calls-symbol. Read-only; needs `shrk graph index`.',
   cliCommand: 'graph callers',
   inputSchema: {
     type: 'object',
@@ -45,7 +46,7 @@ export const getGraphCallersTool: IToolDefinition = {
         },
       };
     }
-    const api = GraphQueryApi.fromStore(ctx.inspection.projectRoot);
+    const api = loadGraphApiCached(ctx.inspection.projectRoot) ?? GraphQueryApi.fromStore(ctx.inspection.projectRoot);
     const sym = resolveSymbol(api, target);
     if (!sym) {
       return {
@@ -57,13 +58,25 @@ export const getGraphCallersTool: IToolDefinition = {
         },
       };
     }
-    const hits = mode === 'reference' ? api.referencesOf(sym.id) : api.callersOf(sym.id);
+    const cwd = ctx.inspection.projectRoot;
+    const sites = mode === 'reference' ? api.referenceSitesOf(sym.id) : api.callerSitesOf(sym.id);
+    // Targeted staleness over the result files: drop callers whose file was
+    // deleted on disk, flag those whose content changed since indexing — so a
+    // stale index never silently serves a wrong/dead caller. Read-only.
+    const fresh = graphResultStaleness(api, cwd, [sym.path, ...sites.map((s) => s.node.path)]);
+    const live = sites.filter((s) => !s.node.path || !fresh.deletedSet.has(s.node.path));
+    const note = callGraphLanguageNote(api, sym);
     const data = {
       schema: 'sharkcraft.graph-callers/v1',
       symbol: summarise(sym),
       mode,
-      total: hits.length,
-      callers: hits.slice(0, 200).map(summarise),
+      total: live.length,
+      callers: live.slice(0, 200).map((s) => ({
+        ...summarise(s.node),
+        ...(s.line ? { line: s.line } : {}),
+      })),
+      ...(note ? { note } : {}),
+      ...(fresh.field ?? {}),
     };
     return { data: formatObjectArrays(data, input) };
   },

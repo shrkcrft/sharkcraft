@@ -55,6 +55,22 @@ shrk graph callers <symbol> --mode reference   # any reference (includes calls)
 
 MCP: `get_graph_callers`
 
+## "Is code A actually wired to code B?"
+
+```bash
+shrk graph path <from> <to>          # shortest import/call/implements path A → B
+shrk graph path <from> <to> --json   # hops with edge kind + call-site line
+```
+
+Each endpoint is a file path or a symbol name. The output lists every hop with
+its edge kind (`imports-file`, `calls-symbol`, `implements-symbol`, …) and the
+call-site line, so you see HOW they are wired — not just that they are. If
+`A → B` has no path it reports whether `B → A` is wired (the dependency runs the
+other way), and an honest "no path within N hops, explored M nodes" otherwise.
+This is the deterministic answer to "is X wired to Y" that grep cannot give.
+
+MCP: `get_graph_path`
+
 ## "What does changing this break?"
 
 ```bash
@@ -69,6 +85,20 @@ likelyTests, publicApiTouched, risk (`low | medium | high | critical`)
 + riskReasons + validationScope (`shrk …` commands to run).
 
 MCP: `get_graph_impact_analysis` (the rich v3 payload).
+
+## "What's the load-bearing code (change carefully / understand first)?"
+
+```bash
+shrk graph hubs                          # most-referenced symbols + most-imported files (repo-wide)
+shrk graph hubs --path packages/foo      # scope to one subsystem (onboarding to an area)
+shrk graph hubs --limit 25 --json
+```
+
+The companion to `impact`: impact = the blast radius of ONE node; hubs = the
+nodes with the BIGGEST blast radius. In-degree counts DISTINCT dependent files,
+so the rank reflects blast radius, not call volume.
+
+MCP: `get_graph_hubs`
 
 ## "Give me the right context to start this task"
 
@@ -157,8 +187,10 @@ MCP: `get_framework_entities` (with optional `routes: true`).
 | `shrk graph search <name>` | find files / symbols / packages by name |
 | `shrk graph context <id>` | one-stop file/symbol view (+ bridge + framework auto-enriched) |
 | `shrk graph callers <symbol>` | who calls / references a symbol |
+| `shrk graph path <from> <to>` | is code A wired to code B? shortest import/call/implements path |
 | `shrk graph impact <id>` | reverse dependent closure |
 | `shrk graph impact <id> --full` | full v3 analysis (symbols + bridge + tests + risk) |
+| `shrk graph hubs` | most-depended-on symbols/files (load-bearing code) |
 | `shrk graph why <a> <b>` | shortest path between two nodes (knowledge graph) |
 | `shrk rule-graph index` | build bridge nodes/edges |
 | `shrk rule-graph status` | bridge health |
@@ -179,9 +211,11 @@ pointing at the CLI verb that builds the missing state.
 |---|---|---|
 | `get_graph_status` | code graph | health + counts |
 | `get_graph_search` | code graph | file / symbol / package matches |
-| `get_graph_context` | code graph | neighbours + symbols |
+| `get_graph_context` | code graph | neighbours + symbols + subtypes/supertypes |
 | `get_graph_callers` | code graph | callers / references of a symbol |
+| `get_graph_path` | code graph | is A wired to B? shortest import/call/implements path |
 | `get_graph_impact` | code graph | basic reverse closure |
+| `get_graph_hubs` | code graph | most-depended-on symbols/files (load-bearing code) |
 | `get_graph_impact_analysis` | impact-engine | v3 payload (symbols + bridge + tests + risk) |
 | `get_rules_for_file` | rule-graph | rules + paths + templates for one file |
 | `get_structural_search` | structural-search | declarative AST pattern matches |

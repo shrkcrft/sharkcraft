@@ -13,6 +13,14 @@ export interface ICommandHandler {
   name: string;
   description: string;
   usage: string;
+  /**
+   * Flags that take NO value (e.g. `json`, `no-enhance`). Listed here so the
+   * parser doesn't greedily swallow the following token as the flag's value —
+   * `compress --json <file>` / `smart-context --no-enhance "<task>"` keep the
+   * token as a positional regardless of argument order (the order an LLM
+   * naturally emits). Optional; commands without it parse exactly as before.
+   */
+  booleanFlags?: ReadonlySet<string>;
   run(args: ParsedArgs): Promise<number> | number;
 }
 
@@ -261,6 +269,8 @@ function addMultiFlag(map: Map<string, string[]>, key: string, value: string): v
 export interface ParseArgsOptions {
   /** Global cwd resolved during pre-parse, propagated to the command. */
   globalCwd?: string;
+  /** Flags that take no value — they never consume the following token. */
+  booleanFlags?: ReadonlySet<string>;
 }
 
 export function parseArgs(argv: readonly string[], options: ParseArgsOptions = {}): ParsedArgs {
@@ -284,7 +294,12 @@ export function parseArgs(argv: readonly string[], options: ParseArgsOptions = {
       } else {
         key = arg.slice(2);
         const next = argv[i + 1];
-        if (next !== undefined && !next.startsWith('-')) {
+        // A known boolean flag never consumes the following token, so
+        // flag-first ordering (`--json <file>`, `--no-enhance "<task>"`) keeps
+        // the token as a positional instead of swallowing it as the value.
+        if (options.booleanFlags?.has(key)) {
+          value = true;
+        } else if (next !== undefined && !next.startsWith('-')) {
           value = next;
           i += 1;
         } else {

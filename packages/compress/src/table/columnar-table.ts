@@ -5,6 +5,8 @@
  * while still deduplicating the schema out of every row. This is what shrk's
  * MCP tools emit so JSON-parsing agents keep working.
  */
+import type { IDerivedColumn } from './derived-columns.ts';
+
 export interface IColumnarTable {
   _table: {
     /** Column names, in schema order. */
@@ -19,5 +21,11 @@ export interface IColumnarTable {
      * integer indices into `dict[name]` — deref to recover the real value.
      */
     dict?: Record<string, unknown[]>;
+    /**
+     * Optional reconstruction list for columns dropped because each row's value
+     * is a pure function of another column (`const` | `prefix` | `basename`).
+     * `expandColumnar` rebuilds them losslessly; absent here means none dropped.
+     */
+    derived?: IDerivedColumn[];
   };
 }

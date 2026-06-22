@@ -7,6 +7,7 @@ export * from './ai-provider-plugin.ts';
 export * from './mcp-tool-plugin.ts';
 export * from './pack-manifest.ts';
 export * from './pack-signing.ts';
+export * from './delegate-recipe.ts';
 export * from './scaffold-pattern.ts';
 export * from './construct.ts';
 export * from './playbook.ts';

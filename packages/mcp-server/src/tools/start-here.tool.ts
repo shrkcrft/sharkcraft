@@ -8,13 +8,13 @@ import type { IToolDefinition } from '../server/tool-definition.ts';
 export const getStartHereTool: IToolDefinition = {
   name: 'get_start_here',
   description:
-    'Return the SharkCraft start-here flow list (30-second explanation + 5 primary flows + safety pledge). Read-only.',
+    'Return the SharkCraft start-here flow list (30-second explanation + primary flows incl. "investigate existing code" + safety pledge). Read-only.',
   inputSchema: {
     type: 'object',
     properties: {
       flow: {
         type: 'string',
-        enum: ['onboard', 'brief', 'dev', 'review', 'governance', 'packs', 'release'],
+        enum: ['onboard', 'investigate', 'brief', 'dev', 'review', 'governance', 'packs', 'release'],
       },
     },
     additionalProperties: false,

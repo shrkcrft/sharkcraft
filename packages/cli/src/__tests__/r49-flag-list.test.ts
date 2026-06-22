@@ -103,3 +103,35 @@ describe('flagList()', () => {
     expect(flagList(args, 'verbose')).toEqual([]);
   });
 });
+
+describe('parseArgs booleanFlags', () => {
+  test('without the registry: a flag greedily swallows the next token (legacy)', () => {
+    const args = parseArgs(['--json', '/tmp/x.json']);
+    expect(args.positional).toEqual([]);
+    expect(args.flags.get('json')).toBe('/tmp/x.json');
+  });
+
+  test('a known boolean flag never consumes the following token (flag-first ordering)', () => {
+    const args = parseArgs(['--json', '/tmp/x.json'], {
+      booleanFlags: new Set(['json', 'no-enhance']),
+    });
+    expect(args.positional).toEqual(['/tmp/x.json']);
+    expect(args.flags.get('json')).toBe(true);
+  });
+
+  test('the positional task survives `--no-enhance "<task>"`', () => {
+    const args = parseArgs(['--no-enhance', 'fix auth flow'], {
+      booleanFlags: new Set(['no-enhance']),
+    });
+    expect(args.flags.get('no-enhance')).toBe(true);
+    expect(args.positional).toEqual(['fix auth flow']);
+  });
+
+  test('valued flags still consume their value when a boolean set is present', () => {
+    const args = parseArgs(['--provider', 'ollama', '--json'], {
+      booleanFlags: new Set(['json']),
+    });
+    expect(args.flags.get('provider')).toBe('ollama');
+    expect(args.flags.get('json')).toBe(true);
+  });
+});

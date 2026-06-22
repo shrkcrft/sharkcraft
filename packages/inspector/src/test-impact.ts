@@ -34,8 +34,11 @@ const TEST_PATTERNS: Array<(f: string) => string | null> = [
   (f) => f.replace(/^src\//, 'tests/').replace(/\.(ts|tsx|js|jsx)$/, '.test.$1'),
   (f) => f.replace(/\.([tj]s)$/, '.spec.$1'),
   (f) => f.replace(/\.([tj]s)$/, '.test.$1'),
-  (f) => f.replace(/\.tsx$/, '.test.tsx'),
-  (f) => f.replace(/\.tsx$/, '.spec.tsx'),
+  // Guard on `.tsx`: a bare `.replace(/\.tsx$/, …)` is a no-op on a `.ts`
+  // file, so it would echo the input source file back as its own "test"
+  // (existing on disk → falsely confidence 100%, runs zero tests).
+  (f) => (/\.tsx$/.test(f) ? f.replace(/\.tsx$/, '.test.tsx') : null),
+  (f) => (/\.tsx$/.test(f) ? f.replace(/\.tsx$/, '.spec.tsx') : null),
   (f) => {
     const parsed = nodePath.parse(f);
     if (!parsed.name) return null;

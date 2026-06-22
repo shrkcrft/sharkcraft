@@ -38,6 +38,7 @@ import {
   resolveImport,
   type IImportResolverContext,
 } from './resolve-imports.ts';
+import { resolveReExportedReferenceEdges } from './resolve-reexports.ts';
 
 const SOURCE_EXTS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
@@ -167,7 +168,9 @@ export function buildFullIndex(options: IIndexBuilderOptions): IFullIndexResult 
         const externalId =
           r.kind === ImportResolution.External
             ? `external:${r.specifier}`
-            : `unresolved:${r.specifier}`;
+            : r.kind === ImportResolution.Asset
+              ? `asset:${r.specifier}`
+              : `unresolved:${r.specifier}`;
         edges.push(buildEdge(fp.nodeId, externalId, EdgeKind.ImportsFile, EXTRACT_TS_FILE_SOURCE, data));
       }
     }
@@ -189,16 +192,22 @@ export function buildFullIndex(options: IIndexBuilderOptions): IFullIndexResult 
     for (const e of refEdges) edges.push(e);
   }
 
+  // Resolve barrel re-export chains so reference/call edges that point at a
+  // phantom `symbol:<barrel>#name` are rewritten to the real declaring
+  // symbol — otherwise cross-package consumers (which import from a package
+  // barrel) never show up in `graph callers` / impact.
+  const resolvedEdges = resolveReExportedReferenceEdges(nodes, edges);
+
   // PackageDependsOn aggregates: collapse internal ImportsFile edges to
   // their owning package on both sides.
-  collectPackageDependsOn(edges, packageDirIndex);
+  collectPackageDependsOn(resolvedEdges, packageDirIndex);
 
   // Drop duplicate edges (extractor may emit identical edges for `export
   // { foo } from './foo'` and an `import` re-using the same line — same
-  // hashed id, last write wins). Edge dedupe by id.
+  // hashed id, last write wins; a re-export rewrite can also collide ids).
   const seen = new Set<string>();
   const dedupedEdges: IEdge[] = [];
-  for (const e of edges) {
+  for (const e of resolvedEdges) {
     if (seen.has(e.id)) continue;
     seen.add(e.id);
     dedupedEdges.push(e);

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { GraphQueryApi, GraphStore, NodeKind } from '@shrkcrft/graph';
+import { GraphQueryApi, GraphStore, NodeKind, loadGraphApiCached } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 import { FORMAT_INPUT_PROPERTY, formatObjectArrays, COLUMNAR_LEGEND } from '../server/columnar-format.ts';
 import { fitArrayToBudget } from '../server/fit-array-to-budget.ts';
@@ -38,11 +38,11 @@ export const depsAuditTool: IToolDefinition = {
         data: {
           error: 'no-graph',
           message: 'The SharkCraft graph index is required for deps-audit.',
-          nextCommand: 'shrk graph build',
+          nextCommand: 'shrk graph index',
         },
       };
     }
-    const api = GraphQueryApi.fromStore(ctx.cwd);
+    const api = loadGraphApiCached(ctx.cwd) ?? GraphQueryApi.fromStore(ctx.cwd);
     const packages = listWorkspacePackages(ctx.cwd, onlyPackage);
     const reports = packages.map((p) => buildPackageReport(api, ctx.cwd, p));
     const totals = reports.reduce(

@@ -21,12 +21,13 @@ export function RoutesPage(): JSX.Element {
   const [framework, setFramework] = useState<string>('all');
   const [filter, setFilter] = useState('');
 
-  if (routesApi.loading && !routesApi.data) return <LoadingState label="Loading routes…" />;
-  if (routesApi.error) return <ErrorState error={routesApi.error} onRetry={routesApi.refetch} />;
-  const d = routesApi.data!;
-
+  // Every hook must run on every render: keep useMemo ABOVE the loading/error
+  // early returns below. Calling it after a conditional return changes the
+  // hook count between renders and React throws "Rendered more hooks than
+  // during the previous render" (minified #310). Null-safe for pre-data renders.
+  const routes = routesApi.data?.routes;
   const filtered = useMemo(() => {
-    let rows = d.routes;
+    let rows = routes ?? [];
     if (framework !== 'all') rows = rows.filter((r) => r.framework === framework);
     if (filter) {
       const lc = filter.toLowerCase();
@@ -38,7 +39,11 @@ export function RoutesPage(): JSX.Element {
       );
     }
     return rows;
-  }, [d.routes, framework, filter]);
+  }, [routes, framework, filter]);
+
+  if (routesApi.loading && !routesApi.data) return <LoadingState label="Loading routes…" />;
+  if (routesApi.error) return <ErrorState error={routesApi.error} onRetry={routesApi.refetch} />;
+  const d = routesApi.data!;
 
   const frameworks = Object.keys(d.byFramework).sort();
 

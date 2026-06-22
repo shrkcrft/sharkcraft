@@ -62,15 +62,18 @@ export function recommendPresets(
       }
     }
     if (dq) continue;
+    // A targeted preset (it declares `appliesTo` requirements) that matched
+    // NONE of them is not a recommendation. Without this guard a vanilla JS
+    // repo gets every Angular preset, each "recommended" with the sole reason
+    // `missing profile: has-angular` — the agent then adopts framework
+    // conventions that don't apply. Universal presets (no `appliesTo`) survive.
+    if ((preset.appliesTo?.length ?? 0) > 0 && matchedCount === 0) continue;
     if ((preset.appliesTo?.length ?? 0) === 0 && reasons.length === 0) {
       reasons.push('universal preset');
     }
     const confidence =
       score >= 15 ? 'high' : score >= 9 ? 'medium' : 'low';
     out.push({ preset, score, confidence, reasons });
-    // matchedCount is reserved for future tie-breaking; surface in reasons
-    // for now so the explanation captures it.
-    void matchedCount;
   }
   out.sort((a, b) => b.score - a.score);
   const limit = options.limit ?? 5;

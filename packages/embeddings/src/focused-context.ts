@@ -4,6 +4,7 @@ import {
   type DeclarationKind,
 } from './declaration-extractor.ts';
 import { SemanticIndex, type ISemanticHit } from './semantic-index.ts';
+import { pruneDeletedHits } from './prune-deleted-hits.ts';
 
 export interface IFocusedFile {
   path: string;
@@ -93,7 +94,9 @@ export async function buildFocusedContext(opts: IFocusedContextOptions): Promise
   // When --since is in play we ask for a wider initial pool so the
   // allowlist post-filter has more material to work with.
   const initialPool = opts.pathAllowlist ? fileCandidates * 8 : fileCandidates;
-  let fileHits = await opts.index.searchFiles(opts.task, initialPool);
+  // Drop deleted-file hits BEFORE extracting declarations — a stale index must
+  // not surface a file that no longer exists.
+  let fileHits = pruneDeletedHits(await opts.index.searchFiles(opts.task, initialPool), opts.cwd).hits;
   if (opts.pathAllowlist) {
     const allow = new Set(opts.pathAllowlist);
     fileHits = fileHits.filter((h) => allow.has(h.path)).slice(0, fileCandidates);

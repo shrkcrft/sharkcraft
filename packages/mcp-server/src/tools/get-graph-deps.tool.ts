@@ -1,4 +1,4 @@
-import { EdgeKind, GraphQueryApi, GraphStore } from '@shrkcrft/graph';
+import { EdgeKind, GraphQueryApi, GraphStore, loadGraphApiCached } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
 const NEXT = 'shrk graph index';
@@ -50,7 +50,7 @@ export const getGraphDepsTool: IToolDefinition = {
         },
       };
     }
-    const api = GraphQueryApi.fromStore(ctx.inspection.projectRoot);
+    const api = loadGraphApiCached(ctx.inspection.projectRoot) ?? GraphQueryApi.fromStore(ctx.inspection.projectRoot);
     const pkgId = `package:${target}`;
     const pkgNode = api.neighbours(pkgId)?.node;
     if (!pkgNode) {

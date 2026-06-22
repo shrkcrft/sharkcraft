@@ -56,3 +56,15 @@ packages/*/src/**/*.js.map
 packages/*/src/**/*.d.ts
 packages/*/src/**/*.d.ts.map
 prompts
+
+# >>> sharkcraft local state (managed by `shrk init`)
+.sharkcraft/sessions/
+.sharkcraft/reports/
+.sharkcraft/fixes/
+.sharkcraft/authoring/
+.sharkcraft/memory/
+.sharkcraft/tmp/
+.sharkcraft/cache/
+.sharkcraft/usage/
+.sharkcraft/shape.json
+# <<< sharkcraft local state
