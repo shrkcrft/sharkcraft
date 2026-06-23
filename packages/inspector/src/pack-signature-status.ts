@@ -141,7 +141,23 @@ export function buildPackSignatureStatusReport(
       }
       if (newerFile) break;
     }
-    if (newerFile) {
+    if (newerFile && sig.dev === true) {
+      // Dev packs are signed with the well-known PACK_DEV_SECRET and load fine
+      // locally unsigned/dev — every local `npm run build` re-stales them, so a
+      // standing "stale" warning is pure noise during pack development. Keep
+      // them out of the stale bucket (still counted under summary.dev) and
+      // soften the reason. Production (non-dev) signed packs are untouched.
+      out.push({
+        packageName: pack.packageName,
+        packageVersion: pack.packageVersion,
+        packageRoot: pack.packageRoot,
+        status: PackSignatureStatusKind.Present,
+        signatureSignedAt: sig.signedAt,
+        secretAvailable: secret,
+        dev: true,
+        reason: `dev signature re-staled by a local build ("${newerFile}" newer) — dev packs load fine locally; re-sign before release`,
+      });
+    } else if (newerFile) {
       out.push({
         packageName: pack.packageName,
         packageVersion: pack.packageVersion,

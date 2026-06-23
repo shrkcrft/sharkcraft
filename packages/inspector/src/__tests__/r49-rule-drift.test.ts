@@ -97,6 +97,19 @@ describe('classifyRuleDrift', () => {
     expect(report.entries[0]?.enforcedVerificationCommands).toEqual([]);
   });
 
+  test('rule whose command matches a config command STRING (not id) → ENFORCED', () => {
+    // fakeInspection wires every configured id with command 'echo ok'. A rule
+    // that declares the runnable command string 'echo ok' (rather than the
+    // short config id) must still classify as enforced — this is the field-bug
+    // the drift miscount stemmed from (command-string vs config-id mismatch).
+    const r = rule('repo.x', {
+      actionHints: { verificationCommands: ['echo ok'] },
+    } as Partial<IKnowledgeEntry>);
+    const report = classifyRuleDrift(fakeInspection([r], ['unit-tests']));
+    expect(report.entries[0]?.state).toBe(RuleEnforcementState.Enforced);
+    expect(report.entries[0]?.enforcedVerificationCommands).toEqual(['echo ok']);
+  });
+
   test('rule with action hints but no verifications → MANUAL_ONLY', () => {
     const r = rule('repo.x', {
       actionHints: {

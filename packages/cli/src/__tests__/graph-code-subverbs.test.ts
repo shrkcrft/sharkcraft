@@ -85,6 +85,21 @@ function capture(): { restore: () => string } {
   };
 }
 
+function captureStderr(): { restore: () => string } {
+  const orig = process.stderr.write.bind(process.stderr);
+  let body = '';
+  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+    body += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+    return true;
+  }) as typeof process.stderr.write;
+  return {
+    restore() {
+      process.stderr.write = orig;
+      return body;
+    },
+  };
+}
+
 describe('graph code-intelligence CLI subverbs', () => {
   test('runGraphIndex builds the on-disk store and emits JSON when --json', async () => {
     const root = fixture();
@@ -148,6 +163,46 @@ describe('graph code-intelligence CLI subverbs', () => {
       const json = JSON.parse(out);
       expect(json.total).toBeGreaterThanOrEqual(1);
       expect(json.matches.some((m: { label: string }) => m.label === 'hello')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('read verbs auto-refresh a stale index by default; --no-refresh opts out', async () => {
+    const root = fixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+
+      // Add a NEW source file after indexing — the index is now stale.
+      writeFileSync(
+        join(root, 'packages', 'p', 'src', 'extra.ts'),
+        'export function freshlyAdded() { return 1; }\n',
+      );
+
+      // Default: auto-refresh picks up the new file and prints a stderr notice.
+      const errCap = captureStderr();
+      const cap = capture();
+      const code = await runGraphSearch(withCwd(makeArgs(['search', 'freshlyAdded']), root));
+      const out = cap.restore();
+      const err = errCap.restore();
+      expect(code).toBe(0);
+      expect(JSON.parse(out).total).toBeGreaterThanOrEqual(1);
+      expect(err).toContain('(refreshed,');
+
+      // Opt out: --no-refresh leaves the index stale, so a newly-added symbol
+      // is not seen.
+      writeFileSync(
+        join(root, 'packages', 'p', 'src', 'extra2.ts'),
+        'export function freshlyAdded2() { return 2; }\n',
+      );
+      const noRefreshArgs = withCwd(makeArgs(['search', 'freshlyAdded2']), root);
+      noRefreshArgs.flags.set('no-refresh', true);
+      const cap2 = capture();
+      const code2 = await runGraphSearch(noRefreshArgs);
+      const out2 = cap2.restore();
+      expect(code2).toBe(0);
+      expect(JSON.parse(out2).total).toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -420,6 +475,30 @@ describe('graph code-intelligence CLI subverbs', () => {
       // Callers are reported for ONE chosen `dup`; the note must say there are
       // others, otherwise the agent reads a partial answer as the whole picture.
       expect(json.note).toContain('2 symbols named "dup"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphCallers ignores a non-numeric --limit instead of zeroing the result', async () => {
+    const root = symbolFixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const args = withCwd(makeArgs(['callers', 'hello']), root);
+      // Malformed --limit must not collapse the callers list: `Number('foo')`
+      // is NaN, and a NaN slice bound would silently zero out callers while
+      // `total` still reported the real count.
+      args.flags.set('limit', 'foo');
+      const cap = capture();
+      const code = await runGraphCallers(args);
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      expect(json.total).toBeGreaterThanOrEqual(1);
+      expect(json.callers.length).toBe(json.total);
+      expect(
+        json.callers.some((c: { path?: string }) => c.path === 'packages/p/src/consumer.ts'),
+      ).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -332,6 +332,17 @@ export const knowledgeLintCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
+    // Loud guard: a 0-entry scan is NOT a clean pass — it almost always means
+    // the loader found nothing (wrong cwd / no `sharkcraft/` folder / no
+    // entries), which otherwise reads as "lint passed". Surface it on stderr so
+    // it can't be mistaken for success, while keeping stdout/JSON clean.
+    if (inspection.knowledgeEntries.length === 0) {
+      process.stderr.write(
+        'WARN  knowledge lint scanned 0 entries — there is nothing to lint (this is NOT a clean pass).\n' +
+          '      Likely causes: no `sharkcraft/` folder here, not at the workspace root, or no\n' +
+          '      knowledge entries are defined. Run `shrk doctor` to confirm how many entries load.\n',
+      );
+    }
     const entryIds = flagList(args, 'id');
     const includeAdvisory = !flagBool(args, 'no-advisory');
     const stale = buildKnowledgeStaleReport(inspection);

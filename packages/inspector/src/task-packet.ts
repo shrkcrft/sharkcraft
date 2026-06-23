@@ -13,6 +13,7 @@ import type { IPipelineDefinition } from '@shrkcrft/pipelines';
 import { rankAll, type IRankedItem } from './task-ranker.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { buildProjectOverview, renderOverviewText } from './project-overview.ts';
+import { resolveVerificationCommands } from './resolve-verification-commands.ts';
 
 export interface ITaskPacketRecommendedPipeline {
   pipelineId: string;
@@ -255,6 +256,18 @@ export function buildTaskPacket(
     reasons: r.reasons,
   }));
 
+  // Verification commands: prefer the matched pipeline's declared gates, then
+  // the config's trusted gate set, then the knowledge action-hint defaults —
+  // so the packet tells the agent to run the gates the pack actually declares
+  // (e.g. `bun test` / `bun x tsc … --noEmit`) instead of a generic fallback.
+  const resolvedVerification = resolveVerificationCommands(inspection, {
+    pipelineIds: recommendedPipelines.map((p) => p.pipelineId),
+    knowledgeDefaults: actionHints.verificationCommands,
+  });
+  const verificationCommands = compact
+    ? resolvedVerification.slice(0, COMPACT_CAPS.verificationCommands)
+    : resolvedVerification;
+
   const tokenEstimate =
     contextResult.totalTokens +
     Math.ceil(
@@ -325,7 +338,7 @@ export function buildTaskPacket(
       typeof c === 'string' ? c : c.command,
     ),
     forbiddenActions: actionHints.forbiddenActions,
-    verificationCommands: actionHints.verificationCommands,
+    verificationCommands,
     humanReviewPoints,
     tokenEstimate,
   };

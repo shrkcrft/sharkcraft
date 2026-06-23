@@ -77,19 +77,34 @@ function maybeColumnarize(payload: Record<string, unknown>, args: ParsedArgs): u
 
 const STALE_HINT = `Index is missing or stale. Run 'shrk graph index' to build it.`;
 const STALE_RESULT_HINT =
-  'Some result files changed since the index was built — run `shrk graph index --changed` (or pass --refresh) for fresh results.';
+  'Some result files changed since the index was built — auto-refresh is on by default (you passed --no-refresh / SHRK_GRAPH_NO_REFRESH). Drop the opt-out, or run `shrk graph index --changed`, for fresh results.';
 
 /**
- * `--refresh`: incrementally reindex changed/deleted files BEFORE querying so
- * the agent's just-saved edits are reflected. CLI-only — it writes the
- * gitignored `.sharkcraft` cache; MCP never does this (read-only contract).
+ * Refresh-by-default: incrementally reindex changed/deleted files BEFORE
+ * querying so an agent's just-saved edits are reflected, then print a one-line
+ * `(refreshed, N files)` notice to stderr. The incremental updater is
+ * sub-second on SharkCraft-sized indexes, so this removes the manual `shrk
+ * graph index --changed` step that otherwise leaves every read command
+ * answering from a silently-stale index — the #1 daily-friction tax.
+ *
+ * Opt out with `--no-refresh` or `SHRK_GRAPH_NO_REFRESH=1` (e.g. to keep a read
+ * perfectly side-effect-free, or on a huge repo where the rewrite is felt).
+ * `--refresh` is still accepted as a harmless explicit-on alias.
+ *
+ * CLI-only — it writes the gitignored `.sharkcraft` cache; MCP never calls this
+ * (the read-only contract). When there is no index yet, `detectChangedAndDeleted`
+ * returns nothing, so `updateChanged` (which requires an existing store) is
+ * never reached. The notice goes to stderr so it never corrupts a `--json`
+ * payload on stdout.
  */
 function maybeRefresh(args: ParsedArgs, cwd: string): void {
-  if (!flagBool(args, 'refresh')) return;
+  if (flagBool(args, 'no-refresh')) return;
+  if ((process.env.SHRK_GRAPH_NO_REFRESH ?? '').trim().length > 0) return;
   const d = detectChangedAndDeleted(cwd);
-  if (d.changed.length > 0 || d.deleted.length > 0) {
-    updateChanged({ projectRoot: cwd, changedFiles: d.changed, deletedFiles: d.deleted });
-  }
+  if (d.changed.length === 0 && d.deleted.length === 0) return;
+  const result = updateChanged({ projectRoot: cwd, changedFiles: d.changed, deletedFiles: d.deleted });
+  const n = result.updated.length + result.deleted.length;
+  if (n > 0) process.stderr.write(`(refreshed, ${n} file${n === 1 ? '' : 's'})\n`);
 }
 
 interface IResultStaleness {
@@ -601,6 +616,7 @@ export async function runGraphSearch(args: ParsedArgs): Promise<number> {
   }
   const kindFlag = flagString(args, 'kind') as 'file' | 'symbol' | 'package' | undefined;
   const limit = Number(flagString(args, 'limit') ?? '20');
+  maybeRefresh(args, cwd);
   const api = loadOrFail(cwd, wantJson);
   if (!api) return 1;
 
@@ -1021,10 +1037,16 @@ export async function runGraphCallers(args: ParsedArgs): Promise<number> {
   const wantJson = flagBool(args, 'json');
   const target = args.positional[1];
   if (!target) {
-    process.stderr.write('Usage: shrk graph callers <symbol> [--mode call|reference] [--refresh]\n');
+    process.stderr.write('Usage: shrk graph callers <symbol> [--mode call|reference] [--limit N] [--no-refresh]\n');
     return 2;
   }
   const mode = (flagString(args, 'mode') ?? 'call') as 'call' | 'reference';
+  // --limit N: cap the returned call sites (default 200). `total` still reports
+  // the true uncapped count, so a truncated result stays honest. Guard against
+  // non-numeric input — `Number('foo')` is NaN and `slice(0, NaN)` would zero
+  // the callers list while `total` kept showing the real count.
+  const parsedLimit = Number.parseInt(flagString(args, 'limit') ?? '200', 10);
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 200;
   maybeRefresh(args, cwd);
   const api = loadOrFail(cwd, wantJson);
   if (!api) return 1;
@@ -1059,7 +1081,7 @@ export async function runGraphCallers(args: ParsedArgs): Promise<number> {
     symbol: nodeSummary(sym),
     mode,
     total: liveSites.length,
-    callers: liveSites.slice(0, 200).map((s) => ({
+    callers: liveSites.slice(0, limit).map((s) => ({
       ...nodeSummary(s.node),
       ...(s.line ? { line: s.line } : {}),
     })),
@@ -1075,7 +1097,7 @@ export async function runGraphCallers(args: ParsedArgs): Promise<number> {
   if (note) process.stdout.write(`  ⓘ ${note}\n`);
   // Render `path:line` so the agent jumps straight to the call site instead
   // of having to grep inside each returned file.
-  for (const c of payload.callers.slice(0, 50)) {
+  for (const c of payload.callers.slice(0, Math.min(50, limit))) {
     process.stdout.write(`  ${c.path ?? c.id}${c.line ? ':' + c.line : ''}\n`);
   }
   if (fresh.field) {
@@ -1128,7 +1150,7 @@ export async function runGraphPath(args: ParsedArgs): Promise<number> {
   const fromArg = args.positional[1];
   const toArg = args.positional[2];
   if (!fromArg || !toArg) {
-    process.stderr.write('Usage: shrk graph path <from> <to> [--max-depth N] [--refresh] [--json]\n');
+    process.stderr.write('Usage: shrk graph path <from> <to> [--max-depth N] [--no-refresh] [--json]\n');
     return 2;
   }
   const maxDepth = Math.max(1, Math.min(32, Number(flagString(args, 'max-depth') ?? '16')));

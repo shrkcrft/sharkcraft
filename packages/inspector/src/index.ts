@@ -9,6 +9,7 @@ export * from './action-hint-diagnostics.ts';
 export * from './ai-readiness.ts';
 export * from './pack-doctor.ts';
 export * from './task-packet.ts';
+export * from './resolve-verification-commands.ts';
 export * from './reference-lookup.ts';
 export * from './task-ranker.ts';
 export * from './drift.ts';

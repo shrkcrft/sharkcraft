@@ -13,7 +13,7 @@
 import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { IKnowledgeEntry } from '@shrkcrft/knowledge';
-import { getChangedFiles, isGitRepo } from './git-helpers.ts';
+import { getChangedFiles, getCommitSubjects, isGitRepo } from './git-helpers.ts';
 import { inspectSharkcraft, type ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import {
   buildSymbolIndex,
@@ -51,6 +51,11 @@ export interface IProposedKnowledgeEntry {
   content: string;
   references: readonly IProposedReference[];
   source: { file: string; line: number; kind: string };
+  /**
+   * Recent commits (in the `--since` range) that touched this symbol's file —
+   * the "why this entry now". Present only when proposing over a git range.
+   */
+  commits?: readonly { hash: string; subject: string }[];
 }
 
 export interface IKnowledgeProposeSkip {
@@ -70,6 +75,8 @@ export interface IKnowledgeProposeReport {
   gitChangedOnly: boolean;
   /** Ref used for git-changed scan, when applicable. */
   since?: string;
+  /** Number of proposals dropped by `--max` (0/absent when no cap hit). */
+  truncated?: number;
 }
 
 export interface IKnowledgeProposeInput {
@@ -84,6 +91,11 @@ export interface IKnowledgeProposeInput {
    * Pass `null` to scan the whole workspace.
    */
   since?: string | null;
+  /**
+   * Cap the number of proposals returned (commit-annotated ones first). Guards
+   * against a far-back `--since` flooding hundreds of unreviewable stubs.
+   */
+  max?: number;
 }
 
 const INCLUDED_KINDS = new Set<SymbolDeclarationKind>([
@@ -234,6 +246,7 @@ function findCoverage(
 function buildProposalForExport(
   relPath: string,
   entry: ISymbolEntry,
+  commits: readonly { hash: string; subject: string }[] = [],
 ): IProposedKnowledgeEntry {
   const scopeName = packageOfPath(relPath);
   const feature = nearestFeatureScope(relPath);
@@ -245,6 +258,9 @@ function buildProposalForExport(
   const content = [
     `Auto-proposed by \`shrk knowledge propose\` for the exported ${klabel}`,
     `\`${entry.name}\` declared at \`${relPath}:${entry.line}\`.`,
+    ...(commits.length > 0
+      ? ['', `Surfaced by recent commit(s): ${commits.map((c) => `${c.subject} (${c.hash})`).join('; ')}.`]
+      : []),
     '',
     'Replace this body with the *why*: the contract this symbol provides, the',
     'invariants it preserves, and how callers should reach for it.',
@@ -264,6 +280,7 @@ function buildProposalForExport(
       { kind: 'symbol', symbol: entry.name, path: relPath },
     ],
     source: { file: relPath, line: entry.line, kind: entry.kind },
+    ...(commits.length > 0 ? { commits } : {}),
   };
 }
 
@@ -342,6 +359,21 @@ export async function proposeKnowledge(
   const coverage = buildCoverageIndex(inspection.knowledgeEntries);
   const { files, gitChangedOnly, since } = resolveFileSet(input, root, inspection);
 
+  // When proposing over a real git range, map each file to the commit
+  // subjects that touched it so each draft says WHY it surfaced (instead of
+  // pure boilerplate). `HEAD..HEAD` (the default working-tree compare) yields
+  // nothing, so this only annotates `--since <ref>` runs. Deterministic.
+  const commitsByFile = new Map<string, { hash: string; subject: string }[]>();
+  if (typeof since === 'string' && since !== 'HEAD' && isGitRepo(root)) {
+    for (const c of getCommitSubjects(root, { since })) {
+      for (const f of c.files) {
+        const arr = commitsByFile.get(f) ?? [];
+        if (arr.length < 3) arr.push({ hash: c.shortHash, subject: c.subject });
+        commitsByFile.set(f, arr);
+      }
+    }
+  }
+
   const proposals: IProposedKnowledgeEntry[] = [];
   const skipped: IKnowledgeProposeSkip[] = [];
   let totalExports = 0;
@@ -392,18 +424,30 @@ export async function proposeKnowledge(
         });
         continue;
       }
-      proposals.push(buildProposalForExport(relPath, exp));
+      proposals.push(buildProposalForExport(relPath, exp, commitsByFile.get(relPath)));
     }
+  }
+
+  // --max: cap the flood. Commit-annotated proposals (genuinely touched in the
+  // range) lead, so truncation keeps the most relevant drafts.
+  let finalProposals: readonly IProposedKnowledgeEntry[] = proposals;
+  let truncated = 0;
+  if (typeof input.max === 'number' && input.max >= 0 && proposals.length > input.max) {
+    const annotated = proposals.filter((p) => p.commits && p.commits.length > 0);
+    const rest = proposals.filter((p) => !p.commits || p.commits.length === 0);
+    truncated = proposals.length - input.max;
+    finalProposals = [...annotated, ...rest].slice(0, input.max);
   }
 
   return {
     schema: KNOWLEDGE_PROPOSE_SCHEMA,
-    proposals,
+    proposals: finalProposals,
     skipped,
     scannedFiles: files.length,
     totalExports,
     gitChangedOnly,
     ...(since !== undefined ? { since } : {}),
+    ...(truncated > 0 ? { truncated } : {}),
   };
 }
 
@@ -423,6 +467,11 @@ export function renderKnowledgeProposeMarkdown(
         ? ` (git-changed only since ${report.since})`
         : ''),
   );
+  if (report.truncated && report.truncated > 0) {
+    lines.push(
+      `truncated: ${report.truncated} more proposal(s) dropped by --max (commit-annotated ones kept first)`,
+    );
+  }
   lines.push('');
   if (report.proposals.length === 0) {
     lines.push('No new entries proposed. Every exported binding is either');

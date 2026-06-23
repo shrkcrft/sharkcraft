@@ -21,6 +21,7 @@ import {
 } from '@shrkcrft/inspector';
 import {
   flagBool,
+  flagNumber,
   flagString,
   resolveCwd,
   type ICommandHandler,
@@ -80,13 +81,14 @@ export const knowledgeProposeCommand: ICommandHandler = {
   description:
     'Propose stub knowledge entries for exported top-level constructs that lack coverage. Preview-first; --write materialises drafts under .sharkcraft/authoring/proposed/.',
   usage:
-    'shrk knowledge propose [--path <file>] [--symbol <name>] [--since <ref>|--all] [--json] [--write]',
+    'shrk knowledge propose [--path <file>] [--symbol <name>] [--since <ref>|--all] [--max <n>] [--json] [--write]',
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const path = flagString(args, 'path');
     const symbol = flagString(args, 'symbol');
     const sinceFlag = flagString(args, 'since');
     const all = flagBool(args, 'all');
+    const max = flagNumber(args, 'max');
     const since = path
       ? undefined
       : symbol
@@ -99,6 +101,7 @@ export const knowledgeProposeCommand: ICommandHandler = {
       ...(path ? { path } : {}),
       ...(symbol ? { symbol } : {}),
       ...(since !== undefined ? { since } : {}),
+      ...(max !== undefined && max >= 0 ? { max } : {}),
     });
 
     if (flagBool(args, 'json')) {

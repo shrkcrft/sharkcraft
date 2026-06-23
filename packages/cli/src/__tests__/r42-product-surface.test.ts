@@ -128,30 +128,36 @@ describe('lifecycle metadata', () => {
 });
 
 describe('bare shrk start screen', () => {
-  test('renderStartScreen is the curated ~20-command starter surface', () => {
+  test('renderStartScreen is the curated ~17-command starter surface', () => {
     const out = renderStartScreen();
     const lines = out.split('\n');
-    // ≤ 55 lines including blank lines and section headers. The curated
-    // starter surface organizes ~20 commands into 5 workflow sections;
-    // each `$ shrk <cmd>` line is one verb. If this grows past 55 it
-    // means another verb crept onto the start screen — push it to
-    // --full-help instead.
-    expect(lines.length).toBeLessThanOrEqual(55);
-    // Anchor on the section headers that group the curated 20.
+    // ≤ 40 lines including blank lines and section headers. The curated
+    // starter surface organizes ~17 high-value commands into 5 workflow
+    // sections; each `$ shrk <cmd>` line is one verb. If this grows it means
+    // another verb crept onto the start screen — push it to --full-help
+    // instead (everything stays callable; this screen is just the spotlight).
+    expect(lines.length).toBeLessThanOrEqual(40);
+    // Guard against the long tail leaking back onto the default surface.
+    const verbLines = lines.filter((l) => l.trimStart().startsWith('$ shrk'));
+    expect(verbLines.length).toBeLessThanOrEqual(22);
+    // Anchor on the section headers that group the curated set.
     expect(out).toContain('Bootstrap:');
     expect(out).toContain('Use it for a task:');
     expect(out).toContain('Generate code safely:');
     expect(out).toContain('Browse what shrk knows:');
     expect(out).toContain('Run shrk for an agent:');
-    // Canonical first-touch commands the curated surface MUST include.
+    // Canonical agent-flow commands the curated surface MUST include.
     expect(out).toContain('shrk recommend');
     expect(out).toContain('shrk doctor');
     expect(out).toContain('shrk init');
     expect(out).toContain('shrk context');
-    expect(out).toContain('shrk code-intel');
+    expect(out).toContain('shrk task');
+    expect(out).toContain('shrk why');
+    expect(out).toContain('shrk impact');
     expect(out).toContain('shrk graph status');
     expect(out).toContain('shrk gen');
     expect(out).toContain('shrk apply');
+    expect(out).toContain('shrk quality');
     expect(out).toContain('shrk dashboard');
     expect(out).toContain('shrk mcp serve');
     // Discovery path to the wider surface stays linked.

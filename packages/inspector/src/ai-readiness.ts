@@ -5,6 +5,14 @@ import { diagnoseActionHints } from './action-hint-diagnostics.ts';
 import { runDoctor } from './sharkcraft-inspector.ts';
 
 /**
+ * Entry types that describe a *location* or a *fact* rather than an action, so
+ * they are not expected to carry actionHints and are excluded from the
+ * action-hint coverage metric. Mirrors the skip set in
+ * `action-hint-diagnostics.ts` (keep the two in sync).
+ */
+const HINT_EXEMPT_TYPES: ReadonlySet<string> = new Set(['path', 'overview', 'technical']);
+
+/**
  * Per-dimension applies-to status.
  *
  *   - `core` — dimension applies to this workspace shape; counted in the
@@ -300,19 +308,32 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
   // No recommendation when pipelines is advisory — the old "add a pipeline"
   // exhortation fired on libraries it shouldn't have.
 
-  // 7) Action-hint coverage — fraction of entries that carry hints.
-  const withHints = inspection.knowledgeEntries.filter((e) => hasActionHints(e)).length;
+  // 7) Action-hint coverage — fraction of HINT-ELIGIBLE entries that carry
+  // hints. Path / overview / technical entries describe a location or a fact
+  // rather than an action, so the action-hint quality doctor deliberately
+  // doesn't grade them (see action-hint-diagnostics). Counting them in the
+  // denominator penalised the score for structural non-gaps — an entry that
+  // *can't* meaningfully carry action hints isn't a missing one — so they are
+  // excluded from both numerator and denominator here too.
+  const hintEligible = inspection.knowledgeEntries.filter(
+    (e) => !HINT_EXEMPT_TYPES.has(String(e.type).toLowerCase()),
+  );
+  const eligibleCount = hintEligible.length;
+  const withHints = hintEligible.filter((e) => hasActionHints(e)).length;
   const hintsScore =
-    k === 0 ? 0 : Math.min(10, Math.round((withHints / Math.max(k, 1)) * 20));
+    eligibleCount === 0 ? 0 : Math.min(10, Math.round((withHints / eligibleCount) * 20));
   dims.push({
     id: 'action-hints',
     title: 'Entries with action hints',
     weight: 1.2,
     score: hintsScore,
-    note: `${withHints} of ${k} entries carry actionHints`,
+    note: `${withHints} of ${eligibleCount} hint-eligible entries carry actionHints`,
     applies: 'core',
   });
-  if (hintsScore < 7) recs.push('Add actionHints to high-priority rules (commands, mcpTools, forbiddenActions).');
+  if (hintsScore < 7)
+    recs.push(
+      'Add actionHints to high-priority entries (commands, mcpTools, forbiddenActions, relatedKnowledge).',
+    );
 
   // 8) Verification commands
   const haveVerify = inspection.knowledgeEntries.some(

@@ -101,6 +101,43 @@ export const recommendCommand: ICommandHandler = {
         searchReport = null;
       }
     }
+    // R1 — promote a strongly-matched task-routing hint's recommends.commands
+    // into the HEADLINE for create/build intents. Routing hints are scored by
+    // explainTaskRouting but were previously only shown under --verbose, so the
+    // headline fell back to generic review/report/impact commands even when the
+    // pack declared the right `shrk gen <template>` playbook. When the top hint
+    // clears the threshold AND the query looks like create/build work, its
+    // commands lead and the generic defaults slide to the tail. Deterministic.
+    const topHint = routingMatches[0];
+    const hintCommands = topHint?.hint.recommends.commands ?? [];
+    if (
+      query.length > 0 &&
+      looksLikeCreateBuild(query) &&
+      topHint &&
+      topHint.score >= ROUTING_HINT_PROMOTE_THRESHOLD &&
+      hintCommands.length > 0
+    ) {
+      const promoted = hintCommands.map((command) => ({
+        command,
+        why: `Routing hint "${topHint.hint.id}" matched (score ${topHint.score}) — project playbook for this create/build task.`,
+        safetyLevel: promotedSafetyLevel(command),
+      }));
+      const promotedSet = new Set(promoted.map((p) => p.command));
+      const isGenericDefault = (c: string): boolean =>
+        /^(bun run )?shrk (review|report|impact)\b/i.test(c);
+      const existing = report.recommendations;
+      const keptNonGeneric = existing.filter(
+        (r) => !promotedSet.has(r.command) && !isGenericDefault(r.command),
+      );
+      const keptGeneric = existing.filter(
+        (r) => !promotedSet.has(r.command) && isGenericDefault(r.command),
+      );
+      (report as { recommendations: typeof report.recommendations }).recommendations = [
+        ...promoted,
+        ...keptNonGeneric,
+        ...keptGeneric,
+      ];
+    }
     if (machineJson) {
       process.stdout.write(
         asJson({
@@ -292,6 +329,49 @@ const PLANNING_VERBS: ReadonlySet<string> = new Set([
   'evaluate',
   'assess',
 ]);
+
+/**
+ * Minimum routing-hint score (from `explainTaskRouting`: +2 per keyword, +3 per
+ * phrase, +2 per regex, + confidenceBoost) required to promote a hint's
+ * commands into the recommend headline. 3 ⇒ at least one phrase match or two
+ * keyword/regex hits — a real match, not a single weak keyword.
+ */
+const ROUTING_HINT_PROMOTE_THRESHOLD = 3;
+
+const CREATE_BUILD_VERBS: ReadonlySet<string> = new Set([
+  'create', 'build', 'add', 'generate', 'scaffold', 'implement', 'make', 'new', 'introduce', 'write',
+]);
+
+/**
+ * Does the query look like create/build work (a routing hint's `shrk gen`
+ * playbook is most useful here)? Mirrors {@link looksLikePlanning}: a
+ * create/build verb leading the query or in slots 1–3.
+ */
+export function looksLikeCreateBuild(query: string): boolean {
+  const tokens = query
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0) return false;
+  if (CREATE_BUILD_VERBS.has(tokens[0]!)) return true;
+  for (let i = 1; i < Math.min(4, tokens.length); i++) {
+    if (CREATE_BUILD_VERBS.has(tokens[i]!)) return true;
+  }
+  return false;
+}
+
+/** Conservative safety classification for a promoted routing-hint command. */
+function promotedSafetyLevel(
+  command: string,
+): 'read-only' | 'writes-source' | 'writes-drafts' | 'runs-shell' {
+  if (/^(bun run )?shrk (gen|init|apply|import)\b/i.test(command)) return 'writes-source';
+  if (/^(bun run )?shrk (brief|dev|onboard|simulate|orchestrate|spec)\b/i.test(command)) {
+    return 'writes-drafts';
+  }
+  if (/^(bun|bunx|npm|pnpm|node|git|nx) /i.test(command)) return 'runs-shell';
+  return 'read-only';
+}
 
 export function looksLikePlanning(query: string): boolean {
   const tokens = query

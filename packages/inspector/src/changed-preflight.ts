@@ -11,9 +11,37 @@
  * planner is intentionally conservative: a gate's `skip` decision is always
  * accompanied by a reason so the operator can see what was elided.
  */
+import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 
 export const CHANGED_PREFLIGHT_SCHEMA = 'sharkcraft.changed-preflight/v1';
+
+/**
+ * Cheap, best-effort probe: does this look like a generic JS/TS monorepo
+ * (nx / pnpm workspaces / package.json workspaces / apps+libs)? Used to widen
+ * the "engine source changed" detection beyond SharkCraft's own
+ * `packages/<package-name>/src/` layout. A couple of stat calls — no full inspect.
+ */
+function isMonorepoLike(projectRoot: string): boolean {
+  try {
+    if (existsSync(nodePath.join(projectRoot, 'nx.json'))) return true;
+    if (existsSync(nodePath.join(projectRoot, 'pnpm-workspace.yaml'))) return true;
+    if (
+      existsSync(nodePath.join(projectRoot, 'apps')) ||
+      existsSync(nodePath.join(projectRoot, 'libs'))
+    ) {
+      return true;
+    }
+    const pkgPath = nodePath.join(projectRoot, 'package.json');
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { workspaces?: unknown };
+      if (pkg.workspaces) return true;
+    }
+  } catch {
+    // Best-effort: treat any read/parse failure as "not obviously a monorepo".
+  }
+  return false;
+}
 
 export enum PreflightProfile {
   Quick = 'quick',
@@ -66,10 +94,26 @@ export interface IChangedFilesClassification {
   readonly anyConfigOrDocs: boolean;
 }
 
-function classifyChangedFiles(files: ReadonlyArray<string>): IChangedFilesClassification {
+function classifyChangedFiles(
+  files: ReadonlyArray<string>,
+  opts: { projectRoot?: string; sourceGlobs?: readonly string[] } = {},
+): IChangedFilesClassification {
   const norm = files.map((f) => f.replace(/\\/g, '/'));
   const match = (re: RegExp): boolean => norm.some((p) => re.test(p));
-  const anyEngineSource = match(/^packages\/[^/]+\/src\//);
+  let anyEngineSource = match(/^packages\/[^/]+\/src\//);
+  // Monorepo-aware: on an nx / workspaces / apps+libs repo, source also lives
+  // under apps/*/src, libs/*/src, or a project-root src/ — not only
+  // SharkCraft's own packages/*/src/. Without this, a large nx change is
+  // misclassified as "no engine src changed" and every src-sensitive gate is
+  // skipped. Only widen when a monorepo signal is present, so this repo's own
+  // classification is unchanged.
+  if (!anyEngineSource && opts.projectRoot && isMonorepoLike(opts.projectRoot)) {
+    anyEngineSource = match(/^(apps|libs|packages)\/[^/]+\/(src|lib)\//) || match(/^src\//);
+  }
+  // Caller-supplied source roots (e.g. derived from config) always count.
+  if (!anyEngineSource && opts.sourceGlobs?.length) {
+    anyEngineSource = norm.some((p) => opts.sourceGlobs!.some((g) => p.startsWith(g)));
+  }
   const anyPackages = match(/^packages\//);
   const anyTests = match(/__tests__\/|\.test\.ts$|e2e\//);
   const anySharkcraftAssets = match(/^sharkcraft\//);
@@ -121,9 +165,21 @@ export function planChangedPreflight(options: {
   readonly projectRoot: string;
   readonly changedFiles: ReadonlyArray<string>;
   readonly profile?: PreflightProfile;
+  /** Override the test gate command (defaults to `bun test`). Grounded in the
+   *  project's declared verification commands by the CLI caller. */
+  readonly testCommand?: string;
+  /** Override the typecheck gate command (defaults to the base-tsconfig run). */
+  readonly typecheckCommand?: string;
+  /** Extra path prefixes that count as engine source (e.g. config-declared). */
+  readonly sourceGlobs?: readonly string[];
 }): IChangedPreflightPlan {
   const profile = options.profile ?? PreflightProfile.Standard;
-  const cls = classifyChangedFiles(options.changedFiles);
+  const cls = classifyChangedFiles(options.changedFiles, {
+    projectRoot: options.projectRoot,
+    ...(options.sourceGlobs ? { sourceGlobs: options.sourceGlobs } : {}),
+  });
+  const testCmd = options.testCommand ?? 'bun test';
+  const typecheckCmd = options.typecheckCommand ?? 'bun x tsc -p tsconfig.base.json --noEmit';
   const explanations: string[] = [];
 
   const gates: IPreflightGate[] = [];
@@ -304,7 +360,7 @@ export function planChangedPreflight(options: {
     gates.push({
       id: 'tests',
       title: 'Bun test suite (focused subset where possible)',
-      command: 'bun test',
+      command: testCmd,
       action: PreflightAction.Run,
       reason: 'strict profile + engine src changed',
       canFail: false,
@@ -313,7 +369,7 @@ export function planChangedPreflight(options: {
     gates.push({
       id: 'tests',
       title: 'Bun test suite',
-      command: 'bun test',
+      command: testCmd,
       action: PreflightAction.Recommend,
       reason: 'engine src or tests changed; full suite not auto-run',
       canFail: true,
@@ -322,7 +378,7 @@ export function planChangedPreflight(options: {
     gates.push({
       id: 'tests',
       title: 'Bun test suite',
-      command: 'bun test',
+      command: testCmd,
       action: PreflightAction.Skip,
       reason: 'no engine src or test changes',
       canFail: true,
@@ -335,7 +391,7 @@ export function planChangedPreflight(options: {
       gates.push({
         id: 'typecheck',
         title: 'TypeScript --noEmit',
-        command: 'bun x tsc -p tsconfig.base.json --noEmit',
+        command: typecheckCmd,
         action: PreflightAction.Recommend,
         reason: 'engine src changed; not auto-run on quick profile',
         canFail: true,
@@ -344,7 +400,7 @@ export function planChangedPreflight(options: {
       gates.push({
         id: 'typecheck',
         title: 'TypeScript --noEmit',
-        command: 'bun x tsc -p tsconfig.base.json --noEmit',
+        command: typecheckCmd,
         action: PreflightAction.Run,
         reason: 'engine src changed',
         canFail: false,
@@ -354,7 +410,7 @@ export function planChangedPreflight(options: {
     gates.push({
       id: 'typecheck',
       title: 'TypeScript --noEmit',
-      command: 'bun x tsc -p tsconfig.base.json --noEmit',
+      command: typecheckCmd,
       action: PreflightAction.Skip,
       reason: 'no engine src changed',
       canFail: true,

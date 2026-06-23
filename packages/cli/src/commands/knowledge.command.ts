@@ -106,7 +106,7 @@ ${p.ci.exitNonZero ? `<p style="color:#a40000;font-weight:bold">FAIL: ${esc(p.ci
 export const knowledgeListCommand: ICommandHandler = {
   name: 'list',
   description: 'List knowledge entries.',
-  usage: 'shrk knowledge list [--type rule] [--scope x,y] [--json]',
+  usage: 'shrk knowledge list [--type rule] [--scope x,y] [--top N] [--brief] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const types = flagList(args, 'type');
@@ -116,8 +116,29 @@ export const knowledgeListCommand: ICommandHandler = {
     if (types.length) entries = entries.filter((e) => types.includes(String(e.type)));
     if (scope.length) entries = entries.filter((e) => scope.some((s) => e.scope.includes(s)));
 
+    // --top N: a deterministic, token-bounded slice. Sort by id first so the
+    // "top N" is stable across machines (entries otherwise load in fs-scan
+    // order). Reduce at the source instead of piping through `shrk compress`.
+    const top = flagNumber(args, 'top');
+    if (top !== undefined && top > 0) {
+      entries = [...entries].sort((a, b) => a.id.localeCompare(b.id)).slice(0, top);
+    }
+
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson(entries.map((e) => ({ ...e }))) + '\n');
+      // --brief: project to the high-signal fields, dropping content / examples
+      // / metadata (the bulk of the payload) so an agent pays far fewer tokens.
+      const payload = flagBool(args, 'brief')
+        ? entries.map((e) => ({
+            id: e.id,
+            type: e.type,
+            priority: e.priority,
+            title: e.title,
+            scope: e.scope,
+            tags: e.tags,
+            appliesWhen: e.appliesWhen,
+          }))
+        : entries.map((e) => ({ ...e }));
+      process.stdout.write(asJson(payload) + '\n');
       return 0;
     }
 

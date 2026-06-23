@@ -31,12 +31,29 @@ import {
 export const rulesListCommand: ICommandHandler = {
   name: 'list',
   description: 'List all rules.',
-  usage: 'shrk rules list [--json]',
+  usage: 'shrk rules list [--top N] [--brief] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
-    const rules = inspection.ruleService.list();
+    let rules = inspection.ruleService.list();
+    // --top N: deterministic, token-bounded slice (id-sorted so it's stable).
+    const top = flagNumber(args, 'top');
+    if (top !== undefined && top > 0) {
+      rules = [...rules].sort((a, b) => a.id.localeCompare(b.id)).slice(0, top);
+    }
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson(rules) + '\n');
+      // --brief: project to the high-signal fields (drop content/examples).
+      const payload = flagBool(args, 'brief')
+        ? rules.map((r) => ({
+            id: r.id,
+            type: r.type,
+            priority: r.priority,
+            title: r.title,
+            scope: r.scope,
+            tags: r.tags,
+            appliesWhen: r.appliesWhen,
+          }))
+        : rules;
+      process.stdout.write(asJson(payload) + '\n');
       return 0;
     }
     process.stdout.write(header(`Rules (${rules.length})`));

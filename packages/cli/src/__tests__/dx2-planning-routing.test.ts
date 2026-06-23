@@ -7,7 +7,7 @@
  * classifier; no LLM.
  */
 import { describe, expect, test } from 'bun:test';
-import { looksLikePlanning } from '../commands/recommend.command.ts';
+import { looksLikePlanning, looksLikeCreateBuild } from '../commands/recommend.command.ts';
 
 describe('DX#2 planning-intent classifier', () => {
   test('triggers on leading planning verbs', () => {
@@ -45,5 +45,31 @@ describe('DX#2 planning-intent classifier', () => {
   test('strips punctuation before classification', () => {
     expect(looksLikePlanning('Plan: billing module')).toBe(true);
     expect(looksLikePlanning('"design the api"')).toBe(true);
+  });
+});
+
+describe('R1 create/build-intent classifier (routing-hint promotion gate)', () => {
+  test('triggers on leading create/build verbs', () => {
+    expect(looksLikeCreateBuild('add a pricing-table block kind')).toBe(true);
+    expect(looksLikeCreateBuild('create a new service')).toBe(true);
+    expect(looksLikeCreateBuild('build the checkout flow')).toBe(true);
+    expect(looksLikeCreateBuild('scaffold a plugin')).toBe(true);
+    expect(looksLikeCreateBuild('implement the parser')).toBe(true);
+  });
+
+  test('triggers on create/build verb in slots 1–3', () => {
+    expect(looksLikeCreateBuild('please add a new block kind')).toBe(true);
+    expect(looksLikeCreateBuild('I want to generate a route')).toBe(true);
+  });
+
+  test('does NOT trigger on planning / review intents', () => {
+    expect(looksLikeCreateBuild('plan the billing module')).toBe(false);
+    expect(looksLikeCreateBuild('review the migration')).toBe(false);
+    expect(looksLikeCreateBuild('fix a typo')).toBe(false);
+  });
+
+  test('returns false for empty / verb-late strings', () => {
+    expect(looksLikeCreateBuild('')).toBe(false);
+    expect(looksLikeCreateBuild('the feature we should add later')).toBe(false);
   });
 });

@@ -4,4 +4,5 @@ export * from './context-section.ts';
 export * from './context-builder.ts';
 export * from './token-estimator.ts';
 export * from './relevance-selector.ts';
+export * from './derive-applies-when.ts';
 export * from './ai-context-formatter.ts';

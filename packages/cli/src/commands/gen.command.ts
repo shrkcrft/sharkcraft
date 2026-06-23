@@ -36,7 +36,7 @@ export const genCommand: ICommandHandler = {
   name: 'gen',
   description: 'Generate code from a template. Defaults to dry-run.',
   usage:
-    'shrk gen <templateId> [<name>] [--var key=value ...] [--dry-run] [--write] [--force] [--save-plan <file>] [--json]',
+    'shrk gen <templateId> [<name>] [--var key=value ...] [--dry-run] [--write] [--force] [--save-plan <file>] [--show-content] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const templateId = args.positional[0];
     const name = args.positional[1];
@@ -153,6 +153,18 @@ export const genCommand: ICommandHandler = {
       process.stdout.write(
         `${CHANGE_LABEL[change.type]} ${change.relativePath} (${change.sizeBytes} bytes) — ${change.reason}\n`,
       );
+    }
+    // --show-content: print the already-computed virtual file content so an
+    // agent can review what a template would generate WITHOUT writing to disk
+    // (the saved plan stays content-free). The bytes are identical in dry-run
+    // and --write; this is purely additive.
+    if (flagBool(args, 'show-content')) {
+      process.stdout.write('\nVirtual content (not written to disk):\n');
+      for (const change of plan.changes) {
+        const body = (change as { contents?: string }).contents ?? '';
+        process.stdout.write(`\n----- ${change.relativePath} (${change.sizeBytes} bytes) -----\n`);
+        process.stdout.write(body.endsWith('\n') ? body : body + '\n');
+      }
     }
     if (plan.postGenerationNotes.length) {
       process.stdout.write('\nPost-generation notes:\n');

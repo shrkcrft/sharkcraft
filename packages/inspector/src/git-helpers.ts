@@ -115,6 +115,50 @@ export function getStatusSummary(cwd: string): IGitStatusSummary {
   return out;
 }
 
+export interface ICommitInfo {
+  readonly hash: string;
+  readonly shortHash: string;
+  readonly subject: string;
+  readonly files: readonly string[];
+}
+
+/**
+ * Commit subjects (and the files each touched) in the range `<since>..HEAD`,
+ * newest first. Deterministic (git only; no model). Returns [] outside a git
+ * repo or on any git error. Used by `knowledge propose` to annotate drafted
+ * entries with the commit that surfaced them ("why this entry now").
+ */
+export function getCommitSubjects(cwd: string, opts: { since: string }): ICommitInfo[] {
+  if (!isGitRepo(cwd)) return [];
+  const range = `${opts.since}..HEAD`;
+  // NUL-delimited records: \0<hash>\t<subject> then one file path per line.
+  const r = runGit(cwd, [
+    'log',
+    '--no-merges',
+    '--name-only',
+    '--pretty=format:%x00%H%x09%s',
+    range,
+  ]);
+  if (!r.ok) return [];
+  const out: ICommitInfo[] = [];
+  for (const chunk of r.stdout.split('\0')) {
+    if (!chunk.trim()) continue;
+    const lines = chunk.split('\n');
+    const header = lines[0] ?? '';
+    const tab = header.indexOf('\t');
+    if (tab < 0) continue;
+    const hash = header.slice(0, tab).trim();
+    if (!hash) continue;
+    const subject = header.slice(tab + 1).trim();
+    const files = lines
+      .slice(1)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    out.push({ hash, shortHash: hash.slice(0, 8), subject, files });
+  }
+  return out;
+}
+
 export function parseLines(text: string): string[] {
   return text
     .split('\n')

@@ -1,6 +1,7 @@
 import type { IKnowledgeEntry } from '@shrkcrft/knowledge';
 import { KnowledgeIndex } from '@shrkcrft/knowledge';
 import type { IContextRequest } from './context-request.ts';
+import { deriveAppliesWhen } from './derive-applies-when.ts';
 
 export interface SelectedEntries {
   rules: IKnowledgeEntry[];
@@ -40,11 +41,20 @@ export function selectRelevantEntries(
   if (request.framework) scope.push(request.framework);
   if (request.area) scope.push(request.area);
 
+  // Merge any explicit appliesWhen with tokens derived from the task verbs /
+  // domain so foundational rules that key on `appliesWhen` (e.g.
+  // architecture.layer-order on 'generate-code') earn a match reason for a task
+  // whose wording doesn't overlap the rule. Without this they score 0 reasons
+  // and are dropped before priority matters.
+  const appliesWhen = [
+    ...new Set([...(request.appliesWhen ?? []), ...deriveAppliesWhen(request.task)]),
+  ];
+
   const searchAll = index.search({
     query: request.task,
     scope,
     tags,
-    appliesWhen: request.appliesWhen,
+    appliesWhen,
   });
 
   const buckets: SelectedEntries = {

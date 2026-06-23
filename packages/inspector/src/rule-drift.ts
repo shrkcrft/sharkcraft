@@ -52,17 +52,29 @@ export interface IRuleDriftReport {
   readonly nextCommands: readonly string[];
 }
 
-function configuredVerificationCommandIds(
+/**
+ * The set of verification references a rule can match against to count as
+ * "wired" in `sharkcraft.config.ts`. A rule declares its verification commands
+ * as runnable command strings (e.g. `bun test`), while the config declares
+ * them as `{ id, command }` records (e.g. `{ id: 'unit-tests', command: 'bun
+ * test' }`). A rule is enforced when its declared command matches the config
+ * BY id OR BY command string, so we collect both — otherwise a rule that ships
+ * a genuinely-runnable, genuinely-wired command (matching by `command`) is
+ * mis-classified as unenforced just because it doesn't reference the config's
+ * short id.
+ */
+function configuredVerificationRefs(
   inspection: ISharkcraftInspection,
 ): ReadonlySet<string> {
   const cfg = inspection.config as
-    | { verificationCommands?: ReadonlyArray<{ id?: string }> }
+    | { verificationCommands?: ReadonlyArray<{ id?: string; command?: string }> }
     | null;
-  const ids = new Set<string>();
+  const refs = new Set<string>();
   for (const entry of cfg?.verificationCommands ?? []) {
-    if (entry?.id) ids.add(entry.id);
+    if (entry?.id) refs.add(entry.id.trim());
+    if (entry?.command) refs.add(entry.command.trim());
   }
-  return ids;
+  return refs;
 }
 
 function isRule(entry: IKnowledgeEntry): boolean {
@@ -102,13 +114,15 @@ function staleReason(entry: IKnowledgeEntry, inspection: ISharkcraftInspection):
 export function classifyRuleDrift(
   inspection: ISharkcraftInspection,
 ): IRuleDriftReport {
-  const wiredIds = configuredVerificationCommandIds(inspection);
+  const wiredRefs = configuredVerificationRefs(inspection);
   const entries: IRuleDriftEntry[] = [];
 
   for (const entry of inspection.knowledgeEntries) {
     if (!isRule(entry)) continue;
     const declared = entry.actionHints?.verificationCommands ?? [];
-    const enforced = declared.filter((id) => wiredIds.has(id));
+    // A declared command counts as enforced when it is wired in the config
+    // BY id OR BY command string (the config carries both).
+    const enforced = declared.filter((ref) => wiredRefs.has(ref.trim()));
 
     const advisory = isAdvisory(entry);
     const stale = staleReason(entry, inspection);
@@ -124,13 +138,13 @@ export function classifyRuleDrift(
       reason = 'advisory rule — no enforcement expected';
     } else if (declared.length > 0 && enforced.length === declared.length) {
       state = RuleEnforcementState.Enforced;
-      reason = `all ${declared.length} verification command(s) wired in sharkcraft.config.ts`;
+      reason = `all ${declared.length} verification command(s) wired (by id or command) in sharkcraft.config.ts`;
     } else if (declared.length > 0 && enforced.length > 0) {
       state = RuleEnforcementState.PartiallyEnforced;
-      reason = `${enforced.length}/${declared.length} verification command(s) wired in sharkcraft.config.ts`;
+      reason = `${enforced.length}/${declared.length} verification command(s) wired (by id or command) in sharkcraft.config.ts`;
     } else if (declared.length > 0) {
       state = RuleEnforcementState.PartiallyEnforced;
-      reason = `${declared.length} verification command(s) declared but none wired in sharkcraft.config.ts`;
+      reason = `${declared.length} verification command(s) declared but none wired (by id or command) in sharkcraft.config.ts`;
     } else if (hasHints) {
       state = RuleEnforcementState.ManualOnly;
       reason = 'has action hints (commands/mcpTools/forbiddenActions) but no verificationCommands';

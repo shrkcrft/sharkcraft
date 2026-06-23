@@ -722,6 +722,11 @@ function buildPackContributionsInventorySync(
   for (const pack of inspection.packs.validPacks ?? []) {
     const sig = pack.manifest?.signature;
     if (!sig) continue;
+    // Dev-signed packs are re-staled by every local build and load fine
+    // locally, so suppress the stale-signature conflict for them (mirrors the
+    // dev-aware downgrade in pack-signature-status.ts). Production signed packs
+    // still surface as stale.
+    if (sig.dev === true) continue;
     // The loader already validates HMAC strictly; we only surface stale
     // when the manifest content has obviously been edited without re-signing.
     // Heuristic: signature timestamp older than any contribution file mtime.

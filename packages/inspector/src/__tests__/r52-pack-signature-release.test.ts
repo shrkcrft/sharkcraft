@@ -10,8 +10,12 @@
  *     IS set (re-sign before tagging).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildPackSignatureStatusReport,
+  PackSignatureStatusKind,
 } from '../pack-signature-status.ts';
 import { buildSafetyAuditDeep } from '../safety-audit-deep.ts';
 import { buildPackSignatureReleaseGate } from '../release-readiness.ts';
@@ -101,6 +105,54 @@ describe('pack signature release-readiness', () => {
     expect(devEntry?.dev).toBe(true);
     const releaseEntry = report.packs.find((p) => p.packageName === 'release-pack');
     expect(releaseEntry?.dev).toBeUndefined();
+  });
+
+  test('a dev pack re-staled by a newer contribution downgrades to Present (R4), but a prod pack stays Stale', () => {
+    const oldSig = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago
+
+    // Dev pack: a contribution file newer than the (dev) signature must NOT
+    // surface as Stale — local builds re-stale dev packs constantly.
+    const devRoot = mkdtempSync(join(tmpdir(), 'shrk-devpack-'));
+    writeFileSync(join(devRoot, 'knowledge.ts'), 'export default {};');
+    const devReport = buildPackSignatureStatusReport(
+      makeInspection([
+        {
+          packageName: 'dev-pack',
+          packageVersion: '0.1.0',
+          packageRoot: devRoot,
+          manifest: {
+            signature: { signedAt: oldSig, dev: true },
+            contributions: { knowledgeFiles: ['knowledge.ts'] },
+          },
+        },
+      ]),
+    );
+    const devEntry = devReport.packs.find((p) => p.packageName === 'dev-pack');
+    expect(devEntry?.status).toBe(PackSignatureStatusKind.Present);
+    expect(devEntry?.dev).toBe(true);
+    expect(devReport.summary.stale).toBe(0);
+    rmSync(devRoot, { recursive: true, force: true });
+
+    // Production (non-dev) pack with identical drift still classifies as Stale.
+    const prodRoot = mkdtempSync(join(tmpdir(), 'shrk-prodpack-'));
+    writeFileSync(join(prodRoot, 'knowledge.ts'), 'export default {};');
+    const prodReport = buildPackSignatureStatusReport(
+      makeInspection([
+        {
+          packageName: 'prod-pack',
+          packageVersion: '0.1.0',
+          packageRoot: prodRoot,
+          manifest: {
+            signature: { signedAt: oldSig },
+            contributions: { knowledgeFiles: ['knowledge.ts'] },
+          },
+        },
+      ]),
+    );
+    expect(prodReport.packs.find((p) => p.packageName === 'prod-pack')?.status).toBe(
+      PackSignatureStatusKind.Stale,
+    );
+    rmSync(prodRoot, { recursive: true, force: true });
   });
 
   test('buildSafetyAuditDeep.devSignedPacks enumerates dev-signed packs', async () => {

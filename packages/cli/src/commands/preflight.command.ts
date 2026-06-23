@@ -25,6 +25,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { loadProjectConfig } from '@shrkcrft/config';
 import { asJson, header } from '../output/format-output.ts';
 
 function parseProfile(value: string | undefined): PreflightProfile {
@@ -74,10 +75,27 @@ export const preflightCommand: ICommandHandler = {
       resolveOpts.includeWorktree = true;
     }
     const changed = resolveChangedFiles(resolveOpts);
+
+    // Ground the test/typecheck gates in the project's declared verification
+    // commands when present, rather than the generic `bun test` / tsc defaults.
+    // Best-effort: a repo without sharkcraft/ config keeps the defaults.
+    let testCommand: string | undefined;
+    let typecheckCommand: string | undefined;
+    const loaded = await loadProjectConfig(cwd);
+    if (loaded.ok) {
+      const vcs = loaded.value.config.verificationCommands ?? [];
+      const pick = (...ids: string[]): string | undefined =>
+        vcs.find((v) => ids.includes(v.id))?.command;
+      testCommand = pick('test', 'tests', 'unit', 'unit-tests');
+      typecheckCommand = pick('typecheck', 'tsc', 'types', 'typecheck-all');
+    }
+
     const plan = planChangedPreflight({
       projectRoot: cwd,
       changedFiles: changed.files,
       profile,
+      ...(testCommand ? { testCommand } : {}),
+      ...(typecheckCommand ? { typecheckCommand } : {}),
     });
 
     if (flagBool(args, 'json')) {
