@@ -179,14 +179,19 @@ export function detectContentType(text: string): EContentType {
     if (yamlShaped >= 0.8 && (keyDensity >= 0.3 || blockSeq)) return EContentType.Yaml;
   }
 
-  // 6. Markdown — a marker-dense blob, OR a prose doc with ≥2 ATX headers. The
+  // 6. Markdown — a marker-dense blob, OR a prose doc with ≥1 ATX header. The
   //    header rule is gated so a commented script (Python/shell `# …` lines, or
   //    a `#!`-shebang file) with low code-syntax density isn't mistaken for a doc.
+  //    A single `# ` header is enough: ATX headers require a trailing space
+  //    (`#{1,6}\s`), so a `#!`-shebang never counts, and the `looksLikeScript` +
+  //    `codeRatio` guards already exclude commented scripts — without the
+  //    single-header case, an ordinary prose doc (one title + paragraphs) fell
+  //    through to PlainText and the markdown compressor was never applied.
   const headerCount = lines.reduce((n, l) => (/^#{1,6}\s/.test(l) ? n + 1 : n), 0);
   const looksLikeScript = (lines[0] ?? '').startsWith('#!');
   if (
     lineHitRatio(lines, MARKDOWN_MARKER) >= 0.3 ||
-    (headerCount >= 2 && codeRatio < 0.15 && !looksLikeScript)
+    (headerCount >= 1 && codeRatio < 0.15 && !looksLikeScript)
   ) {
     return EContentType.Markdown;
   }

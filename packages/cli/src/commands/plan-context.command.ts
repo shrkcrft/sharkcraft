@@ -19,7 +19,7 @@ import { asJson, header, kv } from '../output/format-output.ts';
 export const planContextCommand: ICommandHandler = {
   name: 'plan-context',
   description:
-    'Produce a deterministic, token-budgeted context pack (`sharkcraft.context-pack/v1`) for an AI agent: ranked files, applicable rules, likely tests, surfaced risks, do-not-touch zones.',
+    'Produce a deterministic, token-budgeted context pack (`sharkcraft.context-pack/v1`) for an AI agent: ranked files, likely tests, and (shallow) surfaced risks / do-not-touch zones. Rules/paths/templates require the rule-graph bridge (`shrk rule-graph index`); the pack reports per-field `coverage` so empty sections are distinguishable from not-computed ones.',
   usage:
     'shrk plan-context "<task>" [--budget N] [--max-files N] [--hint-file <path>] [--hint-package <prefix>] [--json]',
   async run(args: ParsedArgs): Promise<number> {
@@ -49,11 +49,22 @@ export const planContextCommand: ICommandHandler = {
     process.stdout.write(header(`Context pack: ${task}`));
     process.stdout.write(kv('intent', pack.intent) + '\n');
     process.stdout.write(kv('files', String(pack.files.length)) + '\n');
-    process.stdout.write(kv('rules', String(pack.rules.length)) + '\n');
-    process.stdout.write(kv('paths', String(pack.paths.length)) + '\n');
-    process.stdout.write(kv('templates', String(pack.templates.length)) + '\n');
+    // Distinguish "computed, none apply" from "not computed". When the bridge
+    // is missing, rules/paths/templates are omitted, not empty — say so rather
+    // than printing a misleading `0`.
+    if (pack.coverage.rulesComputed) {
+      process.stdout.write(kv('rules', String(pack.rules.length)) + '\n');
+      process.stdout.write(kv('paths', String(pack.paths.length)) + '\n');
+      process.stdout.write(kv('templates', String(pack.templates.length)) + '\n');
+    } else {
+      process.stdout.write(
+        kv('rules/paths/templates', 'not computed (run `shrk rule-graph index`)') + '\n',
+      );
+    }
     process.stdout.write(kv('tests', String(pack.tests.length)) + '\n');
-    process.stdout.write(kv('risks', String(pack.risks.length)) + '\n');
+    process.stdout.write(
+      kv('risks', pack.coverage.risksComputed ? String(pack.risks.length) : 'not computed') + '\n',
+    );
     process.stdout.write(
       kv('budget', `${pack.budget.used}/${pack.budget.requested} tokens` + (pack.budget.truncated ? ' (truncated)' : '')) + '\n',
     );

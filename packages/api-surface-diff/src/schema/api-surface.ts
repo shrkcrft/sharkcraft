@@ -46,6 +46,13 @@ export interface IApiSurface {
   projectRoot?: string;
   /** When set, only entries under one of these packages are included. */
   packageFilter?: readonly string[];
+  /**
+   * Requested `packageFilter` entries that matched NO known workspace package.
+   * Present (and non-empty) only when a filter was supplied that the extractor
+   * could not resolve — lets callers fail loudly instead of silently emitting a
+   * 0-symbol surface. Absent when every filter matched (deterministic output).
+   */
+  unmatchedFilters?: readonly string[];
   /** Symbols sorted by id ascending. */
   symbols: readonly IPublicSymbol[];
   /** Per-package summary counts. */

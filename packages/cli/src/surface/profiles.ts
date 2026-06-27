@@ -11,6 +11,8 @@
  * adding an entry here (or in a pack manifest).
  */
 
+import { COMMAND_CATALOG } from '../commands/command-catalog.ts';
+
 export interface ISurfaceProfile {
   /** Stable id used by `surface.profile` config + CLI selection. */
   id: string;
@@ -138,21 +140,72 @@ const CI_PROFILE: ISurfaceProfile = {
 };
 
 /**
- * `agent` profile. Optimized for MCP / agent use. Hides interactive
- * verbs; keeps JSON / read-only verbs visible.
+ * Generic machinery categories that are noise for an inline coding agent:
+ * CI / release gates, pack maintenance & signing, bundle replay, provenance,
+ * report generation, schema / governance / ingestion / lifecycle / polyglot /
+ * integration tooling. Commands stay fully CALLABLE — the agent profile just
+ * filters them from the agent-facing listing.
+ */
+const AGENT_HIDDEN_CATEGORIES: ReadonlySet<string> = new Set([
+  'release',
+  'ci',
+  'bundles',
+  'bundle',
+  'packs',
+  'pack-author',
+  'provenance',
+  'reports',
+  'schemas',
+  'governance',
+  'ingestion',
+  'lifecycle',
+  'export',
+  'polyglot',
+  'integrations',
+]);
+
+/** Read-only discovery verbs kept visible even though their category is hidden,
+ *  so an agent can still inspect packs. */
+const AGENT_KEEP_VISIBLE: ReadonlySet<string> = new Set(['packs list', 'packs doctor']);
+
+/** Interactive / write-source verbs hidden from the agent surface. */
+const AGENT_INTERACTIVE_HIDDEN: readonly string[] = [
+  'dev',
+  'dev start',
+  'dev status',
+  'dev report',
+  'orchestrate',
+  'ask',
+];
+
+/**
+ * Derive the hidden command list from machinery categories MECHANICALLY from the
+ * catalogue, so it never drifts as commands are added/removed.
+ */
+function deriveHiddenByCategory(
+  hiddenCats: ReadonlySet<string>,
+  keep: ReadonlySet<string>,
+): string[] {
+  return COMMAND_CATALOG.filter((e) => hiddenCats.has(e.category) && !keep.has(e.command))
+    .map((e) => e.command)
+    .sort();
+}
+
+/**
+ * `agent` profile. Optimized for inline coding-agent / MCP use. Hides
+ * interactive verbs AND CI/release/pack-maintenance machinery; favors JSON-pipe
+ * read surfaces. Every hidden command remains callable (hide != disable).
  */
 const AGENT_PROFILE: ISurfaceProfile = {
   id: 'agent',
   description:
-    'Agent / MCP-friendly default. Hides interactive verbs; favors JSON-pipe surfaces.',
+    'Agent / MCP-friendly default. Hides interactive verbs + CI/release/pack-maintenance machinery from the listing (commands stay callable); favors JSON-pipe read surfaces.',
   source: 'builtin',
   hidden: [
-    'dev',
-    'dev start',
-    'dev status',
-    'dev report',
-    'orchestrate',
-    'ask',
+    ...new Set([
+      ...AGENT_INTERACTIVE_HIDDEN,
+      ...deriveHiddenByCategory(AGENT_HIDDEN_CATEGORIES, AGENT_KEEP_VISIBLE),
+    ]),
   ],
 };
 

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { cliCommandNameSet } from './command-catalog.ts';
 import {
   applyIngestPlan,
   buildContradictionReport,
@@ -492,7 +493,10 @@ export const contradictionsCommand: ICommandHandler = {
     const cwd = resolveCwd(args);
     const format = parseFormat(flagString(args, 'format'));
     const inspection = await inspectSharkcraft({ cwd });
-    const report = buildContradictionReport({ inspection });
+    const report = buildContradictionReport({
+      inspection,
+      cliCommandNames: cliCommandNameSet(),
+    });
     if (format === 'json') process.stdout.write(renderContradictionReportJson(report) + '\n');
     else if (format === 'markdown') process.stdout.write(renderContradictionReportMarkdown(report) + '\n');
     else if (format === 'html') process.stdout.write(renderContradictionReportHtml(report) + '\n');

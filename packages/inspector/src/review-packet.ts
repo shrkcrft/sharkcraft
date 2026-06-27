@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { evaluateBoundaries, loadTsconfigPaths, scanImports } from '@shrkcrft/boundaries';
+import { matchAffectedConventions } from '@shrkcrft/paths';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { resolveVerificationCommands } from './resolve-verification-commands.ts';
 import { rankAll } from './task-ranker.ts';
 
 export interface IReviewPacket {
@@ -88,20 +90,12 @@ export function buildReviewPacket(
   const pseudoTask = buildPseudoTask(changedFiles);
   const ranking = rankAll(inspection, pseudoTask, 8);
 
-  // Affected paths: any path-convention whose title or content mentions any
-  // path segment from the changed files.
-  const segments = new Set<string>();
-  for (const f of changedFiles) {
-    for (const seg of f.split('/')) segments.add(seg.toLowerCase());
-  }
-  const affectedPaths = inspection.pathService
-    .list()
-    .filter((p) =>
-      [...segments].some((s) =>
-        (p.title + ' ' + p.content).toLowerCase().includes(s),
-      ),
-    )
-    .map((p) => p.id);
+  // Affected paths: conventions the changed files structurally fall under
+  // (directory-prefix match against each convention's metadata.path), not a
+  // free-text substring of the description.
+  const affectedPaths = matchAffectedConventions(inspection.pathService.list(), changedFiles).map(
+    (p) => p.id,
+  );
 
   // Boundary violations restricted to changed files.
   let boundaryViolations: IReviewPacket['boundaryViolations'] = [];
@@ -124,12 +118,14 @@ export function buildReviewPacket(
       }));
   }
 
-  const verificationCommands = unique([
-    'shrk doctor',
-    'shrk check boundaries',
-    'bun x tsc -p tsconfig.base.json --noEmit',
-    'bun test',
-  ]);
+  // Verification: prefer the project's configured verificationCommands (resolved
+  // from config + matched pipelines); fall back to the generic tsc/test pair only
+  // when nothing is configured. SharkCraft's own meta-checks stay as a prefix.
+  const resolvedGates = resolveVerificationCommands(inspection, {
+    pipelineIds: ranking.pipelines.slice(0, 3).map((p) => p.item.id),
+    knowledgeDefaults: ['bun x tsc -p tsconfig.base.json --noEmit', 'bun test'],
+  });
+  const verificationCommands = unique(['shrk doctor', 'shrk check boundaries', ...resolvedGates]);
 
   const reviewerInstructions = [
     `# AI reviewer instructions`,

@@ -31,7 +31,7 @@ export const gateCommand: ICommandHandler = {
   description:
     'Aggregator: runs the code-intelligence quality gates (graph freshness, architecture, impact-since-ref) and reports a single pass/fail.',
   usage:
-    'shrk gate [--since <gitref>] [--fail-on critical,high] [--disable arch,impact,api-diff] [--api-baseline <path>] [--no-fail-on-breaking] [--strict] [--no-persist] [--json] [--markdown] [--output <path>]\n         shrk gate scaffold-ci [--provider github|generic] [--force] [--json]\n         shrk gate scaffold-hook [--provider husky|raw] [--force] [--json]',
+    'shrk gate [--since <gitref>] [--fail-on critical,high] [--arch-all] [--disable arch,impact,api-diff] [--api-baseline <path>] [--no-fail-on-breaking] [--strict] [--no-persist] [--json] [--markdown] [--output <path>]\n         (the arch gate is baseline-relative by default once a baseline is frozen — fails only on NEW errors; --arch-all fails on total)\n         shrk gate scaffold-ci [--provider github|generic] [--force] [--json]\n         shrk gate scaffold-hook [--provider husky|raw] [--force] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     if (args.positional[0] === 'scaffold-ci') {
       const sliced = { ...args, positional: args.positional.slice(1) };
@@ -55,8 +55,12 @@ export const gateCommand: ICommandHandler = {
       ? (failOnRaw.split(',').map((s) => s.trim()).filter(Boolean) as readonly ('high' | 'critical')[])
       : undefined;
     const disable = disableRaw ? disableRaw.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+    // --arch-all: fail on TOTAL architecture errors (ignore the frozen baseline).
+    // By default the arch gate is baseline-relative — it fails only on NEW errors.
+    const archAll = flagBool(args, 'arch-all');
     const report = runQualityGates({
       projectRoot: cwd,
+      ...(archAll ? { arch: { baselineRelative: false } } : {}),
       impact: {
         ...(sinceRef ? { sinceRef } : {}),
         ...(failOn ? { failOn } : {}),

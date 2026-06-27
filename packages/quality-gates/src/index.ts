@@ -1,4 +1,5 @@
 export * from './schema/quality-gate.ts';
+export * from './schema/arch-gate-options.ts';
 export * from './gates/graph-fresh-gate.ts';
 export * from './gates/arch-gate.ts';
 export * from './gates/impact-gate.ts';

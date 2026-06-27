@@ -201,10 +201,16 @@ export function extractApiSurfaceWithProgram(
     const key = s.package ?? '<no-package>';
     counts[key] = (counts[key] ?? 0) + 1;
   }
+  // Surface filter entries that matched no known package so callers can fail
+  // loudly instead of returning a silent 0-symbol surface.
+  const knownPackages = new Set(fileToPackage.values());
+  const unmatchedFilters =
+    options.packageFilter?.filter((p) => !knownPackages.has(p)) ?? [];
   const surface: IApiSurface = {
     schema: API_SURFACE_SCHEMA,
     projectRoot: options.projectRoot,
     ...(options.packageFilter && options.packageFilter.length > 0 ? { packageFilter: options.packageFilter } : {}),
+    ...(unmatchedFilters.length > 0 ? { unmatchedFilters } : {}),
     symbols: deduped,
     countsByPackage: counts,
     total: deduped.length,

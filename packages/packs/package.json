@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/packs",
-  "version": "0.1.0-alpha.19",
+  "version": "0.1.0-alpha.20",
   "description": "SharkCraft pack discovery + loading: scan node_modules for sharkcraft manifests and surface contributions.",
   "license": "MIT",
   "author": "SharkCraft contributors",

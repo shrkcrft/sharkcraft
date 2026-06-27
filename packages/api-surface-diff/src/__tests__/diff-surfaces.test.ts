@@ -74,6 +74,29 @@ describe('extractApiSurface', () => {
       const pkgs = new Set(surface.symbols.map((s) => s.package));
       expect(pkgs.has('@demo/alpha')).toBe(true);
       expect(pkgs.has('@demo/beta')).toBe(false);
+      // A filter that matched a real package leaves unmatchedFilters absent.
+      expect(surface.unmatchedFilters).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reports unmatchedFilters when a --packages value matches no known package', () => {
+    const root = setupFixture();
+    try {
+      buildFullIndex({ projectRoot: root });
+      const snap = new GraphStore(root).loadSnapshot();
+      // `@demo/ghost` is not a workspace package — must NOT silently return 0
+      // symbols with no signal.
+      const surface = extractApiSurface(snap, { packageFilter: ['@demo/ghost'] });
+      expect(surface.total).toBe(0);
+      expect(surface.unmatchedFilters).toEqual(['@demo/ghost']);
+      // Partial: one real, one bogus — only the bogus one is reported.
+      const partial = extractApiSurface(snap, {
+        packageFilter: ['@demo/alpha', '@demo/ghost'],
+      });
+      expect(partial.symbols.length).toBeGreaterThan(0);
+      expect(partial.unmatchedFilters).toEqual(['@demo/ghost']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

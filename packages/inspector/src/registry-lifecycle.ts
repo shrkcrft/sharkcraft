@@ -43,6 +43,12 @@ export interface IRegistryLifecycleReport {
   registersFound: number;
   matchedPairs: ReadonlyArray<IRegistryPair>;
   missingRemovers: ReadonlyArray<IRegistryMissingRemover>;
+  /**
+   * `register*` declarations in a file with NO teardown-shaped API — treated as
+   * one-shot / bootstrap registrations that legitimately need no remover. Kept
+   * out of `missingRemovers` so the check isn't a wall of false positives.
+   */
+  oneShotBootstrap: ReadonlyArray<IRegistryIgnored>;
   ignored: ReadonlyArray<IRegistryIgnored>;
   recommendations: ReadonlyArray<string>;
 }
@@ -96,11 +102,66 @@ interface IRegisterMatch {
 const REGISTER_PATTERNS: ReadonlyArray<RegExp> = Object.freeze([
   // export function registerX(
   /(?:export\s+)?(?:async\s+)?function\s+(register[A-Z]\w*)\s*\(/g,
-  // public/private registerX(
-  /(?:public|private|protected)?\s*(?:async\s+)?(register[A-Z]\w*)\s*\(/g,
-  // someRegistry.registerX = (...) =>
-  /\b(register[A-Z]\w*)\s*=\s*\(/g,
+  // class method DECLARATION: requires a body `{` or return-type `:` after the
+  // params, which a bare call site (`registry.registerX(...)`) never has.
+  /(?:^|\n)[\t ]*(?:public|private|protected)?\s*(?:static\s+)?(?:async\s+)?(register[A-Z]\w*)\s*\([^;]*?\)\s*[:{]/g,
+  // assigned arrow / function expression: `registerX = (…) =>` / `registerX = function`
+  /\b(register[A-Z]\w*)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]*)?=>)/g,
 ]);
+
+// Accumulation of removable per-entry state — a registry that ADDS entries one
+// at a time plausibly needs a way to remove them.
+const ACCUMULATION_RE = /\.(?:set|add|push)\s*\(|\[[^\]]+\]\s*=[^=]/;
+// A teardown-shaped API somewhere in the file — evidence the file is in the
+// business of removing things, so a missing per-register remover is suspicious.
+const TEARDOWN_RE = /\b(?:remove|unregister|clear|dispose|unsubscribe)\w*\s*\(|\boff\s*\(/i;
+
+/**
+ * Blank out comments and string / template-literal bodies (preserving newlines
+ * so line numbers stay accurate) before scanning for `register*` declarations.
+ * Deterministic char-scan — no TS parser, consistent with this module's no-AST
+ * posture. Stops `register*` mentions inside comments / strings / docs from
+ * being counted as code.
+ */
+function stripCommentsAndLiterals(content: string): string {
+  const out: string[] = [];
+  const n = content.length;
+  type State = 'code' | 'line' | 'block' | 'sq' | 'dq' | 'tpl';
+  let state: State = 'code';
+  const blank = (ch: string): string => (ch === '\n' ? '\n' : ' ');
+  let i = 0;
+  while (i < n) {
+    const ch = content[i]!;
+    const next = content[i + 1];
+    if (state === 'code') {
+      if (ch === '/' && next === '/') { state = 'line'; out.push('  '); i += 2; continue; }
+      if (ch === '/' && next === '*') { state = 'block'; out.push('  '); i += 2; continue; }
+      if (ch === "'") { state = 'sq'; out.push(' '); i += 1; continue; }
+      if (ch === '"') { state = 'dq'; out.push(' '); i += 1; continue; }
+      if (ch === '`') { state = 'tpl'; out.push(' '); i += 1; continue; }
+      out.push(ch); i += 1; continue;
+    }
+    if (state === 'line') {
+      if (ch === '\n') { state = 'code'; out.push('\n'); i += 1; continue; }
+      out.push(blank(ch)); i += 1; continue;
+    }
+    if (state === 'block') {
+      if (ch === '*' && next === '/') { state = 'code'; out.push('  '); i += 2; continue; }
+      out.push(blank(ch)); i += 1; continue;
+    }
+    // string / template literal body
+    const quote = state === 'sq' ? "'" : state === 'dq' ? '"' : '`';
+    if (ch === '\\') {
+      out.push(' ');
+      out.push(next === undefined ? '' : blank(next));
+      i += 2;
+      continue;
+    }
+    if (ch === quote) { state = 'code'; out.push(' '); i += 1; continue; }
+    out.push(blank(ch)); i += 1; continue;
+  }
+  return out.join('');
+}
 
 function findRegistersInFile(content: string): IRegisterMatch[] {
   const out: IRegisterMatch[] = [];
@@ -143,10 +204,17 @@ function findIgnoreAnnotations(
 }
 
 function expectedRemoverNames(registerName: string): string[] {
-  // registerX → removeX / unregisterX / clearX
-  // registerXByScope → removeXByScope / unregisterXByScope / clearXByScope
+  // registerX → removeX / unregisterX / clearX / disposeX / unsubscribeX / Xoff
+  // registerXByScope → removeXByScope / … (stem carries the scope suffix)
   const stem = registerName.slice('register'.length);
-  return [`remove${stem}`, `unregister${stem}`, `clear${stem}`];
+  return [
+    `remove${stem}`,
+    `unregister${stem}`,
+    `clear${stem}`,
+    `dispose${stem}`,
+    `unsubscribe${stem}`,
+    `${stem}Off`,
+  ];
 }
 
 function findRemoverInContent(content: string, candidates: ReadonlyArray<string>): {
@@ -177,6 +245,7 @@ export function buildRegistryLifecycleReport(input: {
   const scanFiles = files.slice(0, limit);
   const matchedPairs: IRegistryPair[] = [];
   const missingRemovers: IRegistryMissingRemover[] = [];
+  const oneShotBootstrap: IRegistryIgnored[] = [];
   const ignored: IRegistryIgnored[] = [];
   let registersFound = 0;
   for (const file of scanFiles) {
@@ -187,7 +256,15 @@ export function buildRegistryLifecycleReport(input: {
       continue;
     }
     if (isGeneratedFile(file, content)) continue;
-    const registers = findRegistersInFile(content);
+    // Scan declarations on code with comments/strings blanked out; keep the raw
+    // content only for the comment-based @shrkcrft annotations.
+    const code = stripCommentsAndLiterals(content);
+    const registers = findRegistersInFile(code);
+    // Per-file lifecycle evidence: only a file that BOTH accumulates removable
+    // state AND has a teardown-shaped API plausibly owes a per-register remover.
+    const hasAccumulation = ACCUMULATION_RE.test(code);
+    const hasTeardown = TEARDOWN_RE.test(code);
+    const ownsLifecycle = hasAccumulation && hasTeardown;
     for (const reg of registers) {
       registersFound += 1;
       const ann = findIgnoreAnnotations(content, reg.name);
@@ -202,7 +279,7 @@ export function buildRegistryLifecycleReport(input: {
         continue;
       }
       const candidates = expectedRemoverNames(reg.name);
-      const remover = findRemoverInContent(content, candidates);
+      const remover = findRemoverInContent(code, candidates);
       if (remover) {
         matchedPairs.push({
           registerName: reg.name,
@@ -211,13 +288,21 @@ export function buildRegistryLifecycleReport(input: {
           registerLine: reg.line,
           removerLine: remover.line,
         });
-      } else {
+      } else if (ownsLifecycle) {
         missingRemovers.push({
           registerName: reg.name,
           expectedRemoverNames: candidates,
           file: relative(projectRoot, file),
           line: reg.line,
           suggestion: `Add ${candidates[0]}() / ${candidates[1]}() / ${candidates[2]}() — or annotate with \`@shrkcrft lifecycle-ignore <reason>\` / \`@shrkcrft lifecycle-managed-by <name>\` if cleanup is owned elsewhere.`,
+        });
+      } else {
+        // No teardown-shaped API in the file → one-shot / bootstrap registration.
+        oneShotBootstrap.push({
+          registerName: reg.name,
+          file: relative(projectRoot, file),
+          line: reg.line,
+          reason: 'no teardown-shaped API in file — treated as one-shot bootstrap',
         });
       }
     }
@@ -234,6 +319,7 @@ export function buildRegistryLifecycleReport(input: {
     registersFound,
     matchedPairs,
     missingRemovers,
+    oneShotBootstrap,
     ignored,
     recommendations,
   };
@@ -246,6 +332,7 @@ export function renderRegistryLifecycleReportText(report: IRegistryLifecycleRepo
   lines.push(`  registers found   ${report.registersFound}`);
   lines.push(`  matched pairs     ${report.matchedPairs.length}`);
   lines.push(`  missing removers  ${report.missingRemovers.length}`);
+  lines.push(`  one-shot bootstrap ${report.oneShotBootstrap.length}`);
   lines.push(`  ignored           ${report.ignored.length}`);
   lines.push('');
   if (report.missingRemovers.length > 0) {

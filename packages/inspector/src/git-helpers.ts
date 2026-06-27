@@ -61,11 +61,17 @@ export function getChangedFiles(cwd: string, opts: IGitChangedOptions = {}): str
   const set = new Set<string>(parseLines(a.stdout));
   if (opts.includeWorktree && !opts.staged && !opts.since) {
     // Include untracked + working-tree changes via `git status --porcelain`.
-    const s = runGit(cwd, ['status', '--porcelain']);
+    // `-uall` expands untracked directories to individual files (default
+    // `--porcelain` collapses them to a single `dir/` entry, which undercounts);
+    // `.gitignore` is still honored.
+    const s = runGit(cwd, ['status', '--porcelain', '-uall']);
     if (s.ok) {
       for (const line of s.stdout.split('\n')) {
-        const trimmed = line.slice(3).trim();
-        if (trimmed) set.add(trimmed);
+        // Strip the two-char XY status + leading space, then take the new path
+        // for rename/copy entries (`R  old -> new`).
+        const raw = line.slice(3).trim();
+        const path = raw.includes(' -> ') ? raw.slice(raw.indexOf(' -> ') + 4).trim() : raw;
+        if (path) set.add(path);
       }
     }
   }

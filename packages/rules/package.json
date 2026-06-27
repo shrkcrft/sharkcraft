@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/rules",
-  "version": "0.1.0-alpha.19",
+  "version": "0.1.0-alpha.20",
   "description": "SharkCraft rules service: typed rule entries, relevance lookup, AI formatting.",
   "license": "MIT",
   "author": "SharkCraft contributors",

@@ -58,6 +58,10 @@ export function rewriteFile(s: string): string {
 }
 
 export function rewriteTypes(s: string): string {
+  // Idempotent: a path already ending in .d.ts (dual-runtime package.json
+  // shape) must only have its ./src/ prefix rebased, never re-suffixed —
+  // otherwise the trailing .ts matches /\.tsx?$/ and we emit `.d.d.ts`.
+  if (s.endsWith('.d.ts')) return s.replace(/^\.\/src\//, './dist/');
   return s.replace(/^\.\/src\//, './dist/').replace(/\.tsx?$/, '.d.ts');
 }
 

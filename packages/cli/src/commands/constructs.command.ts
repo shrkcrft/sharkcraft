@@ -27,6 +27,7 @@ import {
   type ConstructAdoptionIncludes,
   type IConstruct,
 } from '@shrkcrft/inspector';
+import { GraphQueryApi, GraphStore } from '@shrkcrft/graph';
 import {
   flagBool,
   flagNumber,
@@ -45,6 +46,90 @@ async function loadAll(args: ParsedArgs): Promise<{
   const inspection = await inspectSharkcraft({ cwd });
   const constructs = await loadConstructs(inspection);
   return { constructs, inspection };
+}
+
+/**
+ * Graph-derived verification of a construct's HAND-DECLARED inventory.
+ *
+ * `traceConstruct` echoes the author-typed `files` / `publicApi` / `tokens`
+ * arrays verbatim — so a glob in `files` is never expanded and a file's extra
+ * symbols are never surfaced (the "lists 4 of 10 tokens" / "Files (0) +
+ * unresolved glob" complaints). This enriches the declared inventory against
+ * the code-intelligence graph WITHOUT mutating the declared fields (so
+ * `constructs impact`'s file-count risk heuristic stays consistent): it expands
+ * file globs, flags globs that match nothing, and lists real symbols defined in
+ * the construct's files that the construct did not declare.
+ */
+interface ITraceGraphEnrichment {
+  /** Whether the code graph was available. */
+  graphState: 'fresh' | 'missing';
+  /** Declared file globs/paths resolved to real graph file paths. */
+  resolvedFiles: readonly string[];
+  /** Declared `files` glob entries that matched zero files in the graph. */
+  unresolvedGlobs: readonly string[];
+  /** Symbols defined in the resolved files but NOT declared on the construct. */
+  undeclaredSymbols: readonly string[];
+}
+
+const GLOB_MAGIC = /[*?[\]{}]/;
+
+function globToRegExp(glob: string): RegExp {
+  // Compile a minimal file glob (`**`, `*`, `?`) to an anchored RegExp. Mark the
+  // wildcards with control-char placeholders BEFORE regex-escaping the rest, so
+  // the escape pass and the wildcard expansion can never clobber each other (an
+  // earlier space-sentinel version was corrupted by editor whitespace handling).
+  const DSTAR_SLASH = '\u0000';
+  const DSTAR = '\u0001';
+  const STAR = '\u0002';
+  const QMARK = '\u0003';
+  const marked = glob
+    .replace(/\*\*\//g, DSTAR_SLASH)
+    .replace(/\*\*/g, DSTAR)
+    .replace(/\*/g, STAR)
+    .replace(/\?/g, QMARK);
+  const pattern = marked
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replaceAll(DSTAR_SLASH, '(?:.*/)?')
+    .replaceAll(DSTAR, '.*')
+    .replaceAll(STAR, '[^/]*')
+    .replaceAll(QMARK, '[^/]');
+  return new RegExp(`^${pattern}$`);
+}
+
+function enrichTraceWithGraph(
+  declaredFiles: readonly string[],
+  declaredNames: ReadonlySet<string>,
+  cwd: string,
+): ITraceGraphEnrichment {
+  if (!new GraphStore(cwd).exists()) {
+    return { graphState: 'missing', resolvedFiles: [], unresolvedGlobs: [], undeclaredSymbols: [] };
+  }
+  const api = GraphQueryApi.fromStore(cwd);
+  const allPaths = [...api.allFiles()].map((n) => n.path).filter((p): p is string => !!p);
+  const resolved = new Set<string>();
+  const unresolvedGlobs: string[] = [];
+  for (const entry of declaredFiles) {
+    if (GLOB_MAGIC.test(entry)) {
+      const re = globToRegExp(entry);
+      const matches = allPaths.filter((p) => re.test(p));
+      if (matches.length === 0) unresolvedGlobs.push(entry);
+      for (const m of matches) resolved.add(m);
+    } else if (api.findFile(entry)) {
+      resolved.add(entry);
+    }
+  }
+  const undeclared = new Set<string>();
+  for (const path of resolved) {
+    for (const sym of api.symbolsIn(`file:${path}`)) {
+      if (sym.label && !declaredNames.has(sym.label)) undeclared.add(sym.label);
+    }
+  }
+  return {
+    graphState: 'fresh',
+    resolvedFiles: [...resolved].sort(),
+    unresolvedGlobs,
+    undeclaredSymbols: [...undeclared].sort(),
+  };
 }
 
 export const constructsListCommand: ICommandHandler = {
@@ -126,7 +211,8 @@ export const constructsGetCommand: ICommandHandler = {
 
 export const constructsTraceCommand: ICommandHandler = {
   name: 'trace',
-  description: 'Trace all files / publicApi / events / tokens belonging to a construct. --deep adds related / test pointers when present.',
+  description:
+    'Trace a construct\'s declared files / publicApi / events / tokens, verified against the code graph (expands file globs, flags globs that match nothing, lists undeclared symbols defined in those files). --deep adds related / test pointers.',
   usage: 'shrk constructs trace <id> [--deep] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const id = args.positional[0];
@@ -142,6 +228,10 @@ export const constructsTraceCommand: ICommandHandler = {
     }
     const trace = traceConstruct(c);
     const deep = flagBool(args, 'deep');
+    // Verify the hand-declared inventory against the code graph (additive — does
+    // not change the declared files/tokens the other subverbs rely on).
+    const declaredNames = new Set<string>([...trace.publicApi, ...trace.tokens, ...trace.events]);
+    const graph = enrichTraceWithGraph(trace.files, declaredNames, resolveCwd(args));
     const relatedAll = [
       ...(c.relatedKnowledge ?? []),
       ...(c.relatedRules ?? []),
@@ -157,7 +247,7 @@ export const constructsTraceCommand: ICommandHandler = {
         }
       : undefined;
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson({ ...trace, ...(deepBlock ? { deep: deepBlock } : {}) }) + '\n');
+      process.stdout.write(asJson({ ...trace, graph, ...(deepBlock ? { deep: deepBlock } : {}) }) + '\n');
       return 0;
     }
     process.stdout.write(header(`Trace: ${id}`));
@@ -176,6 +266,27 @@ export const constructsTraceCommand: ICommandHandler = {
     if (trace.warnings.length > 0) {
       process.stdout.write('Warnings:\n');
       for (const w of trace.warnings) process.stdout.write(`  ! ${w}\n`);
+    }
+    // Graph-verified view: this is the part that makes the declared inventory
+    // trustworthy rather than a hand-typed partial map.
+    if (graph.graphState === 'missing') {
+      process.stdout.write(
+        '\n(declared inventory only — run `shrk graph index` for a graph-verified inventory)\n',
+      );
+    } else {
+      if (graph.unresolvedGlobs.length > 0) {
+        process.stdout.write('Unresolved file globs (matched 0 files in the graph):\n');
+        for (const g of graph.unresolvedGlobs) process.stdout.write(`  ! ${g}\n`);
+      }
+      if (graph.undeclaredSymbols.length > 0) {
+        process.stdout.write(
+          `Graph found ${graph.undeclaredSymbols.length} symbol(s) defined in these files but NOT declared on the construct:\n`,
+        );
+        for (const s of graph.undeclaredSymbols.slice(0, 30)) process.stdout.write(`  + ${s}\n`);
+        if (graph.undeclaredSymbols.length > 30) {
+          process.stdout.write(`  … (${graph.undeclaredSymbols.length - 30} more)\n`);
+        }
+      }
     }
     if (deepBlock) {
       process.stdout.write('\nDeep:\n');

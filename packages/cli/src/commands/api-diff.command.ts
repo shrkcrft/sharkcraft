@@ -30,7 +30,7 @@ export const apiDiffCommand: ICommandHandler = {
   description:
     'Compare the current public API surface to a saved baseline. Reports added / removed / kind-changed / moved symbols, with breaking-change severity.',
   usage:
-    'shrk api-diff capture --output <path> [--packages a,b] [--with-signatures] | shrk api-diff <baseline.json> [--packages a,b] [--with-signatures] [--json] [--fail-on-breaking]',
+    'shrk api-diff capture --output <path> [--packages @scope/a,@scope/b] [--with-signatures] | shrk api-diff <baseline.json> [--packages @scope/a,@scope/b] [--with-signatures] [--json] [--fail-on-breaking]   (--packages takes EXACT workspace package names, comma-separated or repeated)',
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const wantJson = flagBool(args, 'json');
@@ -117,6 +117,7 @@ async function runDiff(
 function readSurfaceFromCwd(cwd: string, args: ParsedArgs): IApiSurface | undefined {
   const packages = flagList(args, 'packages');
   const withSignatures = flagBool(args, 'with-signatures');
+  let surface: IApiSurface;
   if (withSignatures) {
     const result = extractApiSurfaceWithProgram({
       projectRoot: cwd,
@@ -125,13 +126,46 @@ function readSurfaceFromCwd(cwd: string, args: ParsedArgs): IApiSurface | undefi
     for (const d of result.diagnostics.slice(0, 5)) {
       process.stderr.write(`! ${d}\n`);
     }
-    return result.surface;
+    surface = result.surface;
+  } else {
+    const store = new GraphStore(cwd);
+    if (!store.exists()) {
+      process.stderr.write("Code-graph store missing. Run 'shrk graph index' first.\n");
+      return undefined;
+    }
+    const snap = store.loadSnapshot();
+    surface = extractApiSurface(snap, {
+      ...(packages.length > 0 ? { packageFilter: packages } : {}),
+    });
   }
-  const store = new GraphStore(cwd);
-  if (!store.exists()) {
-    process.stderr.write("Code-graph store missing. Run 'shrk graph index' first.\n");
+  return applyPackageFilterGuard(surface, packages);
+}
+
+/**
+ * A `--packages` filter that resolves to no known workspace package is a quiet
+ * footgun: the extractor silently returns a 0-symbol surface (exit 0) that is
+ * indistinguishable from a package that genuinely exports nothing. When EVERY
+ * requested filter is unknown, abort loudly; when only some are, warn and keep
+ * the partial result.
+ */
+function applyPackageFilterGuard(
+  surface: IApiSurface,
+  packages: readonly string[],
+): IApiSurface | undefined {
+  const unmatched = surface.unmatchedFilters ?? [];
+  if (packages.length === 0 || unmatched.length === 0) return surface;
+  const matched = Object.keys(surface.countsByPackage).filter((k) => k !== '<no-package>');
+  if (unmatched.length === packages.length) {
+    process.stderr.write(
+      `--packages matched no known workspace package: ${unmatched.join(', ')}\n` +
+        '  Pass exact package names (npm "name", e.g. @shrkcrft/core), comma-separated or repeated.\n',
+    );
     return undefined;
   }
-  const snap = store.loadSnapshot();
-  return extractApiSurface(snap, { ...(packages.length > 0 ? { packageFilter: packages } : {}) });
+  process.stderr.write(
+    `! --packages: ignoring unknown package(s): ${unmatched.join(', ')}` +
+      (matched.length > 0 ? ` (matched: ${matched.join(', ')})` : '') +
+      '\n',
+  );
+  return surface;
 }

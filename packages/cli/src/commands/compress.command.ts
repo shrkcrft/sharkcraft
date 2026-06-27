@@ -19,6 +19,11 @@ import { ccrDir, openCcrStore } from '../output/ccr-store-config.ts';
 
 const CONTENT_TYPES = new Set<string>(Object.values(EContentType));
 
+// Below this size a passthrough no-op isn't worth a warning (tiny snippets
+// legitimately have nothing to compress). Above it, a silent `−0%` re-emit is
+// the opposite of the tool's purpose — nudge the user toward `--type`.
+const PASSTHROUGH_HINT_MIN_BYTES = 128;
+
 function readInput(args: ParsedArgs): string {
   const positional = args.positional[0];
   const useStdin = flagBool(args, 'stdin') || positional === undefined || positional === '-';
@@ -118,6 +123,20 @@ export const compressCommand: ICommandHandler = {
     process.stderr.write(
       `${result.strategy}: ~${result.savings.before} → ~${result.savings.after} tokens (−${pct}%, est.)${cached}\n`,
     );
+    // Token-economy guard: when auto-detect declines to compress a non-trivial
+    // input, a silent `−0%` re-emit looks like success. Nudge toward `--type`
+    // (stdout stays the verbatim blob; exit code unchanged).
+    const inputBytes = Buffer.byteLength(content, 'utf8');
+    if (
+      result.strategy === ECompressionStrategy.Passthrough &&
+      inputBytes >= PASSTHROUGH_HINT_MIN_BYTES &&
+      !flagBool(args, 'lossless')
+    ) {
+      process.stderr.write(
+        `hint: nothing was compressed — auto-detect classified this as ${result.contentType} and found no win. ` +
+          'Try `--type <content-type>` to force a strategy (json, git-diff, search-results, build-log, source-code, markdown).\n',
+      );
+    }
     return 0;
   },
 };

@@ -282,6 +282,50 @@ describe('graph code-intelligence CLI subverbs', () => {
     }
   });
 
+  test('runGraphImpact discloses truncation when the blast radius exceeds --limit', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-graph-cli-impact-cap-'));
+    try {
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'demo', workspaces: ['packages/*'] }, null, 2),
+      );
+      mkdirSync(join(root, 'packages', 'p', 'src'), { recursive: true });
+      writeFileSync(
+        join(root, 'packages', 'p', 'package.json'),
+        JSON.stringify({ name: '@demo/p', main: 'src/core.ts' }, null, 2),
+      );
+      writeFileSync(join(root, 'packages', 'p', 'src', 'core.ts'), 'export const core = 1;');
+      for (const u of ['u1', 'u2', 'u3']) {
+        writeFileSync(
+          join(root, 'packages', 'p', 'src', `${u}.ts`),
+          `import { core } from './core.ts';\nexport const ${u} = core;`,
+        );
+      }
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      // Non-JSON: the truncation note must be emitted.
+      const args = withCwd(makeArgs(['impact', 'packages/p/src/core.ts']), root);
+      args.flags.delete('json');
+      args.flags.set('limit', '1');
+      const cap = capture();
+      const code = await runGraphImpact(args);
+      const out = cap.restore();
+      expect(code).toBe(0);
+      expect(out).toContain('Showing');
+      expect(out).toContain('--limit 1');
+      // JSON still carries the honest truncated flag.
+      const jsonArgs = withCwd(makeArgs(['impact', 'packages/p/src/core.ts']), root);
+      jsonArgs.flags.set('limit', '1');
+      const cap2 = capture();
+      await runGraphImpact(jsonArgs);
+      const json = JSON.parse(cap2.restore());
+      expect(json.truncated).toBe(true);
+      expect(json.limit).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('runGraphCycles reports missing before index', async () => {
     const root = fixture();
     try {

@@ -3758,3 +3758,23 @@ export function renderCommandSafetyMatrixMarkdown(
   }
   return lines.join('\n') + '\n';
 }
+
+/**
+ * The set of TOP-LEVEL command verbs in the catalogue (the first token of each
+ * entry's `command`). The single source of truth for "is `shrk <verb>` a real
+ * command" checks — e.g. the contradictions doc-vs-CLI scan, which lives in the
+ * inspector layer and so receives this set by injection rather than importing
+ * the CLI.
+ */
+export function cliCommandNameSet(): Set<string> {
+  const out = new Set<string>();
+  for (const entry of COMMAND_CATALOG) {
+    const top = entry.command.split(/\s+/)[0];
+    if (top) out.add(top);
+    for (const alias of entry.aliases) {
+      const aliasTop = alias.split(/\s+/)[0];
+      if (aliasTop) out.add(aliasTop);
+    }
+  }
+  return out;
+}

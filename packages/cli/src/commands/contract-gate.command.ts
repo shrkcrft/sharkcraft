@@ -169,7 +169,11 @@ export const contractStatusCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const contractFile = args.positional[0];
     if (!contractFile) {
-      process.stderr.write('Usage: shrk contract status <contract.json>\n');
+      // `contract status` inspects a SAVED contract file — it is not a zero-arg
+      // project-health command. Point at the canonical task form so the verb
+      // doesn't read as a broken status command.
+      process.stderr.write('Usage: shrk contract status <contract.json>   (inspect a saved contract file)\n');
+      process.stderr.write('To build/inspect a contract for a task, run:  shrk contract "<task>"\n');
       return 2;
     }
     const cwd = resolveCwd(args);

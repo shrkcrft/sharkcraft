@@ -43,6 +43,30 @@ describe('buildPublishPkg', () => {
     expect(out.bin).toEqual({ x: './dist/main.js' });
   });
 
+  test('is idempotent on dual-runtime package.json (types already ./dist/*.d.ts)', () => {
+    // Committed package.json files use the dual-runtime shape: main/types
+    // point at ./dist already, with `bun` resolving to ./src. Rewriting must
+    // not double-suffix the .d.ts into .d.d.ts.
+    const orig: IPackageJson = {
+      name: '@x/dual',
+      version: '0.1.0-alpha.2',
+      main: './dist/index.js',
+      types: './dist/index.d.ts',
+      exports: {
+        '.': {
+          types: './dist/index.d.ts',
+          bun: './src/index.ts',
+          import: './dist/index.js',
+          default: './dist/index.js',
+        },
+      },
+      files: ['dist'],
+    };
+    const out = buildPublishPkg(orig, new Map());
+    expect(out.main).toBe('./dist/index.js');
+    expect(out.types).toBe('./dist/index.d.ts');
+  });
+
   test('files is overridden to dist/README/LICENSE (no src)', () => {
     const orig = { ...pkg('@x/a'), files: ['src'] };
     const out = buildPublishPkg(orig, new Map());

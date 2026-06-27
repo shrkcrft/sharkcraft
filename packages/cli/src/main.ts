@@ -922,7 +922,15 @@ async function runCliInner(argv: readonly string[]): Promise<number> {
  * Exported for tests.
  */
 export function looksLikeFreeFormTask(tokens: readonly string[]): boolean {
-  const clean = tokens.filter((t) => t.length > 0 && !t.startsWith('-'));
+  // Flatten on internal whitespace so the canonical *quoted* form
+  // (`shrk "refactor the auth module"`) — which the shell delivers as ONE argv
+  // element — is counted by word, exactly like the unquoted multi-token form.
+  // Without this, the documented quoted form was a single token (length 1) and
+  // fell through to the did-you-mean matcher instead of routing to `recommend`.
+  const clean = tokens
+    .filter((t) => t.length > 0 && !t.startsWith('-'))
+    .flatMap((t) => t.trim().split(/\s+/))
+    .filter((w) => w.length > 0);
   if (clean.length < 2) return false;
   // 3+ tokens is almost always a sentence, not a command — `shrk` only has
   // 2 levels (top + sub), so anything beyond that has no chance of being a

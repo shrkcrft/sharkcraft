@@ -128,6 +128,10 @@ function classifyArea(file: string): ChangeArea {
   if (/(?:^|\/)[\w-]*sharkcraft-pack\//.test(file)) {
     return ChangeArea.PackContrib;
   }
+  // Extension fallback so the summary stays useful in non-SharkCraft repos
+  // (e.g. a foreign monorepo's `architecture/*.md`) instead of bucketing every
+  // doc as `unknown`.
+  if (/\.mdx?$/i.test(file)) return ChangeArea.Docs;
   return ChangeArea.Unknown;
 }
 
@@ -275,7 +279,11 @@ export async function buildChangesSummary(
     source = 'since';
     ref = options.since;
   } else {
-    changedFiles = getChangedFiles(cwd, {});
+    // Default working-tree view must include untracked files — otherwise a
+    // brand-new (never-staged) file is invisible to the summary, which made
+    // `totalFiles` undercount whole untracked directories. Mirrors every other
+    // working-tree caller (boundaries / propose-knowledge / architecture).
+    changedFiles = getChangedFiles(cwd, { includeWorktree: true });
     source = 'working-tree';
   }
   const classified = changedFiles.map(classifyFile);

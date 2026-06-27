@@ -61,6 +61,41 @@ describe('context builder surfaces action hints', () => {
     expect(section?.entryIds).toContain('rule.safety');
   });
 
+  test('Agent Actions survives budget pruning; a lower-priority section drops first', () => {
+    const big = 'detail '.repeat(400);
+    const corpus = [
+      entries[0]!, // rule.safety — Warning + actionHints, drives Agent Actions
+      defineKnowledgeEntry({
+        id: 'tech.a',
+        title: 'Tech A',
+        type: KnowledgeType.Technical,
+        priority: KnowledgePriority.Low,
+        scope: ['ts'],
+        tags: ['stack'],
+        appliesWhen: ['generate-code'],
+        content: big,
+      }),
+      defineKnowledgeEntry({
+        id: 'tech.b',
+        title: 'Tech B',
+        type: KnowledgeType.Technical,
+        priority: KnowledgePriority.Low,
+        scope: ['ts'],
+        tags: ['stack'],
+        appliesWhen: ['generate-code'],
+        content: big,
+      }),
+    ];
+    const result = buildContext(corpus, { task: 'generate code', maxTokens: 400 });
+    const titles = result.sections.map((s) => s.title);
+    // Agent Actions (priority 92) survives; the low-priority Technical Stack
+    // section (priority 50) is the one dropped — under the old append-after-loop
+    // ordering, Agent Actions was the first thing cut.
+    expect(titles).toContain('Agent Actions');
+    expect(result.omittedSections.length).toBeGreaterThan(0);
+    expect(result.omittedSections).not.toContain('Agent Actions');
+  });
+
   test('no Agent Actions section when no entry has hints', () => {
     const noHints = [
       defineKnowledgeEntry({

@@ -14,8 +14,10 @@ import {
   parseCustomCheckReportFromFile,
   renderCodemodAssistMarkdown,
 } from '@shrkcrft/inspector';
+import { formatRuleCompact } from '@shrkcrft/rules';
 import {
   flagBool,
+  flagNumber,
   flagString,
   flagList,
   resolveCwd,
@@ -27,17 +29,36 @@ import { asJson, header } from '../output/format-output.ts';
 async function loadRule(args: ParsedArgs) {
   const ruleId = flagString(args, 'rule');
   if (!ruleId) {
-    process.stderr.write('Missing --rule <ruleId>\n');
+    process.stderr.write('Missing --rule <ruleId>. Run `shrk codemod list` to see available rule ids.\n');
     return null;
   }
   const cwd = resolveCwd(args);
   const inspection = await inspectSharkcraft({ cwd });
   const rule = inspection.ruleService.get(ruleId);
   if (!rule) {
-    process.stderr.write(`No rule with id "${ruleId}".\n`);
+    process.stderr.write(`No rule with id "${ruleId}". Run \`shrk codemod list\` to see available rule ids.\n`);
     return null;
   }
   return { rule, cwd };
+}
+
+/** `shrk codemod list` — enumerate the rule ids codemod-assist accepts. */
+async function listRules(args: ParsedArgs): Promise<number> {
+  const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
+  let rules = inspection.ruleService.list();
+  const top = flagNumber(args, 'top');
+  if (top !== undefined && top > 0) {
+    rules = [...rules].sort((a, b) => a.id.localeCompare(b.id)).slice(0, top);
+  }
+  if (flagBool(args, 'json')) {
+    process.stdout.write(
+      asJson(rules.map((r) => ({ id: r.id, type: r.type, priority: r.priority, title: r.title }))) + '\n',
+    );
+    return 0;
+  }
+  process.stdout.write(header(`Codemod rules (${rules.length})`));
+  for (const r of rules) process.stdout.write(formatRuleCompact(r) + '\n');
+  return 0;
 }
 
 async function gatherAffected(args: ParsedArgs): Promise<readonly { path: string; note?: string }[]> {
@@ -78,14 +99,16 @@ export const codemodCommand: ICommandHandler = {
   description:
     'Codemod-assist (NOT a codemod engine). Inventory + risk grouping + checklist + project-script template. Never rewrites source.',
   usage:
-    'shrk codemod <inventory|plan|checklist> --rule <ruleId> [--from-report <path>] [--targets a,b,c] [--write-preview] [--json]',
+    'shrk codemod <list|inventory|plan|checklist> --rule <ruleId> [--from-report <path>] [--targets a,b,c] [--write-preview] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0] ?? 'plan';
-    if (!['inventory', 'plan', 'checklist'].includes(sub)) {
-      process.stderr.write('Usage: shrk codemod <inventory|plan|checklist> --rule <ruleId>\n');
+    if (!['list', 'inventory', 'plan', 'checklist'].includes(sub)) {
+      process.stderr.write('Usage: shrk codemod <list|inventory|plan|checklist> --rule <ruleId>\n');
       return 2;
     }
     const inner: ParsedArgs = { ...args, positional: args.positional.slice(1) };
+    // `list` enumerates rule ids and needs no --rule.
+    if (sub === 'list') return listRules(inner);
     const loaded = await loadRule(inner);
     if (!loaded) return 1;
     const { rule, cwd } = loaded;

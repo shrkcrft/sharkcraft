@@ -4,6 +4,7 @@ import {
   entrypointBanner,
   explainTaskRouting,
   inspectSharkcraft,
+  rankAll,
   recommendCommands,
   renderUncertaintyReportText,
 } from '@shrkcrft/inspector';
@@ -89,6 +90,10 @@ export const recommendCommand: ICommandHandler = {
     const machineJson = flagBool(args, 'json') || flagBool(args, 'machine-json');
     let routingMatches: Awaited<ReturnType<typeof explainTaskRouting>> = [];
     let searchReport: Awaited<ReturnType<typeof buildUniversalSearch>> | null = null;
+    // Reconcile with `brief`/`task`: those route through the SAME shared ranker
+    // (`rankAll`). Consult it here so `recommend` never claims a "coverage gap"
+    // for a task the rest of the engine confidently matches to a template/pipeline.
+    let ranking: ReturnType<typeof rankAll> | null = null;
     if (query.length > 0) {
       try {
         routingMatches = await explainTaskRouting(inspection, query);
@@ -100,7 +105,17 @@ export const recommendCommand: ICommandHandler = {
       } catch {
         searchReport = null;
       }
+      try {
+        ranking = rankAll(inspection, query);
+      } catch {
+        ranking = null;
+      }
     }
+    const topTemplate = ranking?.templates[0];
+    const topPipeline = ranking?.pipelines[0];
+    const engineHasMatch =
+      (topTemplate?.score ?? 0) >= TEMPLATE_MATCH_THRESHOLD ||
+      (topPipeline?.score ?? 0) >= PIPELINE_MATCH_THRESHOLD;
     // R1 — promote a strongly-matched task-routing hint's recommends.commands
     // into the HEADLINE for create/build intents. Routing hints are scored by
     // explainTaskRouting but were previously only shown under --verbose, so the
@@ -145,6 +160,12 @@ export const recommendCommand: ICommandHandler = {
           routingMatches,
           search: searchReport,
           gated,
+          rankerMatch: ranking
+            ? {
+                topTemplate: topTemplate ? { id: topTemplate.item.id, score: topTemplate.score } : null,
+                topPipeline: topPipeline ? { id: topPipeline.item.id, score: topPipeline.score } : null,
+              }
+            : null,
         }) + '\n',
       );
       return 0;
@@ -188,12 +209,13 @@ export const recommendCommand: ICommandHandler = {
         }
       }
     }
-    // Coverage gap — explicit if recommendations look thin and no routing hint fired.
-    if (
-      report.recommendations.length <= 1 &&
-      routingMatches.length === 0 &&
-      query.length > 0
-    ) {
+    // Coverage gap — explicit if recommendations look thin AND no routing hint
+    // fired AND the shared ranker (the engine `brief`/`task` use) also found no
+    // template/pipeline. The last clause stops `recommend` from contradicting
+    // `task`/`brief`, which would confidently route the same task.
+    const thinResult =
+      report.recommendations.length <= 1 && routingMatches.length === 0 && query.length > 0;
+    if (thinResult && !engineHasMatch) {
       process.stdout.write(
         `\n⚠ Coverage gap — no recipe, no routing hint, and no helper/template matched "${query}".\n` +
         `  Suggest:\n` +
@@ -201,6 +223,20 @@ export const recommendCommand: ICommandHandler = {
         `    shrk feedback actions\n` +
         `    (or contribute a pack template / helper / routing hint)\n`,
       );
+    } else if (thinResult && engineHasMatch && !actionsOnly) {
+      // The recipe/routing surface was thin, but the shared ranker DID match —
+      // surface that concrete next step instead of a misleading gap.
+      process.stdout.write('\nEngine match (shared ranker — same as `shrk task` / `shrk brief`):\n');
+      if (topTemplate && topTemplate.score >= TEMPLATE_MATCH_THRESHOLD) {
+        process.stdout.write(
+          `  $ shrk gen ${topTemplate.item.id} <name> --dry-run  [writes-source] — template "${topTemplate.item.name}" matched (score ${topTemplate.score}).\n`,
+        );
+      }
+      if (topPipeline && topPipeline.score >= PIPELINE_MATCH_THRESHOLD) {
+        process.stdout.write(
+          `  Pipeline: ${topPipeline.item.id} — run \`shrk task "${query}"\` for the full packet.\n`,
+        );
+      }
     }
     if (gated.length > 0 && !actionsOnly) {
       process.stdout.write(`\nGated (experimental, not enabled in this repo):\n`);
@@ -337,6 +373,16 @@ const PLANNING_VERBS: ReadonlySet<string> = new Set([
  * keyword/regex hits — a real match, not a single weak keyword.
  */
 const ROUTING_HINT_PROMOTE_THRESHOLD = 3;
+
+/**
+ * Minimum `rankAll` score for a template / pipeline to count as a real engine
+ * match — used only to suppress a false "coverage gap" verdict (and surface the
+ * match) when the recipe/routing surface is thin but the shared ranker, which
+ * `brief`/`task` also use, found project coverage. Conservative: a single weak
+ * token hit scores below this.
+ */
+const TEMPLATE_MATCH_THRESHOLD = 3;
+const PIPELINE_MATCH_THRESHOLD = 3;
 
 const CREATE_BUILD_VERBS: ReadonlySet<string> = new Set([
   'create', 'build', 'add', 'generate', 'scaffold', 'implement', 'make', 'new', 'introduce', 'write',

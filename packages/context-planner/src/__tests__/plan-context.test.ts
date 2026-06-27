@@ -135,4 +135,37 @@ describe('planContext', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('coverage distinguishes "not computed" (bridge missing) from "empty"', () => {
+    const root = setupFixture();
+    try {
+      // Graph only — the rule-graph bridge is NOT indexed.
+      buildFullIndex({ projectRoot: root });
+      const pack = planContext({ projectRoot: root, task: 'add a feature to alpha' });
+      // rules/paths/templates were OMITTED (bridge missing), not genuinely empty.
+      expect(pack.coverage.rulesComputed).toBe(false);
+      expect(pack.rules).toEqual([]);
+      expect(pack.diagnostics.some((d) => d.includes('bridge store missing'))).toBe(true);
+      // risks/doNotTouch ARE computed from the graph (present), so an empty array
+      // there means "none surfaced", not "skipped".
+      expect(pack.coverage.risksComputed).toBe(true);
+      expect(pack.coverage.doNotTouchComputed).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('coverage is all-false when the code-graph is missing', () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-ctx-empty-cov-'));
+    try {
+      const pack = planContext({ projectRoot: root, task: 'do anything' });
+      expect(pack.coverage).toEqual({
+        rulesComputed: false,
+        risksComputed: false,
+        doNotTouchComputed: false,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,5 +1,6 @@
 import { apiDiffGate, type IApiDiffGateOptions } from '../gates/api-diff-gate.ts';
 import { archGate } from '../gates/arch-gate.ts';
+import type { IArchGateOptions } from '../schema/arch-gate-options.ts';
 import { graphCyclesGate, type IGraphCyclesGateOptions } from '../gates/graph-cycles-gate.ts';
 import { graphFreshGate } from '../gates/graph-fresh-gate.ts';
 import {
@@ -28,6 +29,8 @@ import {
 
 export interface IRunGatesOptions {
   projectRoot: string;
+  /** Optional architecture-gate config (baseline-relative toggle). */
+  arch?: IArchGateOptions;
   /** Optional impact-gate config (sinceRef, failOn). */
   impact?: IImpactGateOptions;
   /**
@@ -82,7 +85,7 @@ export function runQualityGates(options: IRunGatesOptions): IQualityGateReport {
     gates.push(graphFreshGate(options.projectRoot));
   }
   if (!disabled.has('arch')) {
-    gates.push(archGate(options.projectRoot));
+    gates.push(archGate(options.projectRoot, options.arch ?? {}));
   }
   if (!disabled.has('impact')) {
     gates.push(impactGate(options.projectRoot, options.impact ?? {}));

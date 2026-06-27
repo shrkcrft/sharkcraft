@@ -92,7 +92,7 @@ export function buildWhyReport(input: IBuildWhyReportInput): IWhyReport {
   const inferredLayer = inferLayer(target.relativePath);
 
   const pathConventions = matchPathConventions(input.inspection, target);
-  const rules = matchRules(input.inspection, target, limit);
+  const rules = matchRules(input.inspection, target, limit, inferredPackage, inferredLayer);
   const boundaries = matchBoundaries(input.inspection, target);
   const knowledge = matchKnowledge(input.inspection, target, limit);
   const suggestedNext = buildSuggestions(target, rules, knowledge);
@@ -144,6 +144,13 @@ function inferLayer(relPath: string): string | undefined {
   return undefined;
 }
 
+/** Does `targetRel` equal, or live under, the canonical directory/file path? */
+function pathCovers(targetRel: string, canonical: string): boolean {
+  const normalized = canonical.replace(/^\.\//, '').replace(/\/+$/, '');
+  if (!normalized) return false;
+  return targetRel === normalized || targetRel.startsWith(`${normalized}/`);
+}
+
 function matchPathConventions(
   inspection: ISharkcraftInspection,
   target: IWhyTarget,
@@ -152,8 +159,7 @@ function matchPathConventions(
   for (const p of inspection.pathService.list()) {
     const canonical = (p.metadata?.path as string | undefined) ?? '';
     if (!canonical) continue;
-    const normalized = canonical.replace(/^\.\//, '');
-    if (target.relativePath === normalized || target.relativePath.startsWith(normalized.endsWith('/') ? normalized : `${normalized}/`)) {
+    if (pathCovers(target.relativePath, canonical)) {
       out.push({
         id: p.id,
         title: p.title,
@@ -165,40 +171,94 @@ function matchPathConventions(
   return out;
 }
 
+interface IRuleLike {
+  readonly id: string;
+  readonly title: string;
+  readonly priority?: string;
+  readonly scope?: readonly string[];
+  readonly tags?: readonly string[];
+  readonly appliesWhen?: readonly string[];
+  readonly references?: readonly { kind?: string; path?: string; id?: string }[];
+  readonly anchors?: readonly { kind?: string; path?: string }[];
+}
+
+/**
+ * Precise PATH evidence that a rule applies to a file — not topical token
+ * overlap (scope/tags/appliesWhen are free-form labels, so the old
+ * intersection attached nearly every rule to every file). Priority order:
+ * explicit file/dir references → path-glob scope/tag → package reference →
+ * scope/tag equal to the inferred package or layer.
+ */
+function ruleReasonForFile(
+  r: IRuleLike,
+  target: IWhyTarget,
+  inferredPackage: string | undefined,
+  inferredLayer: string | undefined,
+): string | undefined {
+  const rel = target.relativePath;
+  // 1. Explicit file/directory references that cover the target.
+  for (const ref of r.references ?? []) {
+    const p = (ref.path ?? '').replace(/^\.\//, '');
+    if ((ref.kind === 'file' || ref.kind === 'directory') && p && pathCovers(rel, p)) {
+      return ref.kind === 'directory' ? `directory reference ${p}` : `file reference ${p}`;
+    }
+  }
+  // 1b. Anchors that point at a covering path.
+  for (const a of r.anchors ?? []) {
+    const p = (a.path ?? '').replace(/^\.\//, '');
+    if (p && pathCovers(rel, p)) return `anchor path ${p}`;
+  }
+  // 2. Scope/tag values that are themselves path globs matching the target.
+  const pathish = [...(r.scope ?? []), ...(r.tags ?? [])].filter((s) => /[/*?[]/.test(s));
+  if (pathish.length > 0) {
+    const hit = pathish.find((g) => matchesAny(rel, [g]));
+    if (hit) return `path pattern ${hit}`;
+  }
+  // 3. Package reference / scope-or-tag equal to the inferred package or layer.
+  const labels = [...(r.scope ?? []), ...(r.tags ?? [])];
+  if (inferredPackage) {
+    for (const ref of r.references ?? []) {
+      if (ref.kind === 'package' && ref.id && samePath(ref.id, inferredPackage)) {
+        return `package reference ${ref.id}`;
+      }
+    }
+    if (labels.some((l) => samePath(l, inferredPackage))) return `scoped to package ${inferredPackage}`;
+  }
+  if (inferredLayer && labels.some((l) => l.toLowerCase() === inferredLayer.toLowerCase())) {
+    return `scoped to layer ${inferredLayer}`;
+  }
+  return undefined;
+}
+
+function samePath(a: string, b: string): boolean {
+  const n = (s: string): string => s.replace(/^\.?\/+/, '').replace(/\/+$/, '').toLowerCase();
+  return n(a) === n(b);
+}
+
 function matchRules(
   inspection: ISharkcraftInspection,
   target: IWhyTarget,
   limit: number,
+  inferredPackage: string | undefined,
+  inferredLayer: string | undefined,
 ): readonly IWhyRule[] {
-  const tokens = pathTokens(target.relativePath);
   const out: IWhyRule[] = [];
   for (const rule of inspection.ruleService.list()) {
-    const r = rule as unknown as {
-      id: string;
-      title: string;
-      priority?: string;
-      scope?: readonly string[];
-      tags?: readonly string[];
-      appliesWhen?: readonly string[];
-    };
-    const scope = r.scope ?? [];
-    const tags = r.tags ?? [];
-    const appliesWhen = r.appliesWhen ?? [];
-    const allTokens = new Set([...scope, ...tags, ...appliesWhen].map((t) => t.toLowerCase()));
-    const hits = tokens.filter((t) => allTokens.has(t.toLowerCase()));
-    if (hits.length === 0) continue;
+    const r = rule as unknown as IRuleLike;
+    const reason = ruleReasonForFile(r, target, inferredPackage, inferredLayer);
+    if (!reason) continue;
     out.push({
       id: r.id,
       title: r.title,
       priority: r.priority ?? 'medium',
-      scope,
-      tags,
-      appliesWhen,
-      reason: `Matches on: ${hits.join(', ')}`,
+      scope: r.scope ?? [],
+      tags: r.tags ?? [],
+      appliesWhen: r.appliesWhen ?? [],
+      reason,
       ...sourceField(inspection, r.id),
     });
   }
-  // Sort by priority weight desc, then by hit count desc.
+  // Sort by priority weight desc (stable for equal weights).
   const weight: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
   out.sort((a, b) => (weight[b.priority] ?? 2) - (weight[a.priority] ?? 2));
   return out.slice(0, limit);
@@ -273,13 +333,6 @@ function buildSuggestions(
   out.push(`shrk check boundaries --since origin/main`);
   out.push(`shrk impact "${target.relativePath}"`);
   return out;
-}
-
-function pathTokens(relPath: string): string[] {
-  return relPath
-    .replace(/\.[^./]+$/, '') // drop extension
-    .split(/[/\\.\-_]/)
-    .filter((t) => t.length > 0);
 }
 
 function sourceField(

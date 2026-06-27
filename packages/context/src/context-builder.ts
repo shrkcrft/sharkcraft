@@ -11,6 +11,11 @@ interface SectionPlan {
   title: string;
   priority: number;
   entries: IKnowledgeEntry[];
+  /**
+   * Precomputed body for COMPOSITE sections (e.g. "Agent Actions") that
+   * aggregate across buckets rather than mapping a single bucket's entries.
+   */
+  body?: string;
 }
 
 export function buildContext(
@@ -53,6 +58,19 @@ export function buildContext(
     sectionPlans.push({ title: 'Reference Docs', priority: 10, entries: buckets.docs });
   }
 
+  // Agent Actions: aggregate action hints (recommended MCP tools / CLI commands
+  // / forbidden actions / verification commands / human-review points) from
+  // every included entry into ONE composite section. Register it in the SAME
+  // priority-sorted pipeline with a HIGH priority so it survives budget pruning
+  // — it is the most agent-actionable section and was previously appended after
+  // the loop with leftover budget, so it was the first thing dropped.
+  const allIncludedEntries = sectionPlans.flatMap((p) => p.entries);
+  const aggregated = aggregateActionHints(allIncludedEntries);
+  const hintsBody = formatAggregatedHints(aggregated, { level: '###', compact: true });
+  if (hintsBody && hintsBody.length > 0) {
+    sectionPlans.push({ title: 'Agent Actions', priority: 92, entries: [], body: hintsBody });
+  }
+
   sectionPlans.sort((a, b) => b.priority - a.priority);
 
   const sections: IContextSection[] = [];
@@ -83,6 +101,12 @@ export function buildContext(
       tryAddSection('Project Overview', r.projectOverview.trim(), []);
       continue;
     }
+    // Composite section with a precomputed body (e.g. Agent Actions) — added in
+    // priority order with its contributing-entry ids.
+    if (plan.body !== undefined) {
+      if (plan.body.length > 0) tryAddSection(plan.title, plan.body, aggregated.contributingEntries);
+      continue;
+    }
     if (plan.entries.length === 0) continue;
     const body = formatSectionBody(plan.entries, {
       includeExamples: r.includeExamples,
@@ -90,15 +114,6 @@ export function buildContext(
     });
     const ids = plan.entries.map((e) => e.id);
     tryAddSection(plan.title, body, ids);
-  }
-
-  // Action hints: aggregate from every included entry and emit a single
-  // composite "Agent Actions" section. Skipped when no entry contributes.
-  const allIncludedEntries = sectionPlans.flatMap((p) => p.entries);
-  const aggregated = aggregateActionHints(allIncludedEntries);
-  const hintsBody = formatAggregatedHints(aggregated, { level: '###', compact: true });
-  if (hintsBody && hintsBody.length > 0) {
-    tryAddSection('Agent Actions', hintsBody, aggregated.contributingEntries);
   }
 
   const fullBody = sections

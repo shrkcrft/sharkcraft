@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { cliCommandNameSet } from './command-catalog.ts';
 import {
   analyzeImportGraph,
   buildAgentBrief,
@@ -137,7 +138,10 @@ export const validateChangeCommand: ICommandHandler = {
     // Fallback path through getStatusSummary not necessary — getChangedFiles already covers it.
     void getStatusSummary;
 
-    const contradictions = buildContradictionReport({ inspection });
+    const contradictions = buildContradictionReport({
+      inspection,
+      cliCommandNames: cliCommandNameSet(),
+    });
     const generated = buildGeneratedCodeReport({ inspection });
     const generatedPaths = new Set(generated.generatedFiles.map((f) => f.path));
 

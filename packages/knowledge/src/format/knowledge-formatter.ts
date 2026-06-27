@@ -16,6 +16,38 @@ export function formatEntryCompact(entry: IKnowledgeEntry): string {
   return `${entry.id} (${entry.type}, ${entry.priority}) — ${entry.title}${tags}${scope}${appliesWhen}`;
 }
 
+/**
+ * Project an entry to a plain JSON-serialisable object by reading each declared
+ * `IKnowledgeEntry` field by DIRECT property access.
+ *
+ * Spreading (`{ ...entry }`) copies only own-enumerable properties, so a
+ * pack-contributed entry whose fields are getters / non-enumerable /
+ * prototype-backed would serialise to `{ id, source }` only — the JSON looked
+ * "empty" while the text form (which reads fields directly) was complete.
+ * Direct access matches the text path and is robust to the entry's property
+ * descriptors. Undefined optionals drop out of `JSON.stringify` naturally.
+ */
+export function projectKnowledgeEntryForJson(entry: IKnowledgeEntry): Record<string, unknown> {
+  return {
+    id: entry.id,
+    title: entry.title,
+    type: entry.type,
+    priority: entry.priority,
+    scope: entry.scope,
+    tags: entry.tags,
+    appliesWhen: entry.appliesWhen,
+    content: entry.content,
+    summary: entry.summary,
+    examples: entry.examples,
+    related: entry.related,
+    source: entry.source,
+    metadata: entry.metadata,
+    actionHints: entry.actionHints,
+    references: entry.references,
+    anchors: entry.anchors,
+  };
+}
+
 export function formatEntryFull(
   entry: IKnowledgeEntry,
   options: FormatEntryOptions = {},

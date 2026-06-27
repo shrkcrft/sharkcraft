@@ -964,6 +964,13 @@ export async function runGraphImpact(args: ParsedArgs): Promise<number> {
   for (const d of liveDirect.slice(0, 30)) {
     process.stdout.write(`  ${d.path ?? d.id}\n`);
   }
+  // No silent caps: when the reverse closure hit the limit, say so explicitly so
+  // the reader knows the blast radius is larger than what's shown.
+  if (closure.truncated) {
+    process.stdout.write(
+      `\n  ⓘ Showing ${liveDirect.length + liveTransitive.length} of ${payload.totalReached} dependents (capped at --limit ${limit}); raise --limit to see the full blast radius.\n`,
+    );
+  }
   if (fresh.field) {
     process.stdout.write(
       `\n  ⚠ ${fresh.modified.length} dependent file(s) changed, ${fresh.deleted.length} deleted since indexing — run \`shrk graph index --changed\`.\n`,
@@ -1075,7 +1082,12 @@ export async function runGraphCallers(args: ParsedArgs): Promise<number> {
     alsoNamed > 0
       ? `${alsoNamed + 1} symbols named "${sym.label}"; showing callers of the one at ${sym.path ?? sym.id}${sym.line ? ':' + sym.line : ''}. Pass a symbol: id to disambiguate.`
       : undefined;
-  const note = [ambiguityNote, langNote].filter(Boolean).join(' ');
+  // `total` is distinct caller FILES: at index time the graph collapses many
+  // call/reference sites in one file to a single edge. Say so, otherwise `total`
+  // reads as a raw invocation count and under-reports.
+  const dedupNote =
+    'total counts distinct caller files — multiple sites within one file collapse to a single entry.';
+  const note = [ambiguityNote, langNote, dedupNote].filter(Boolean).join(' ');
   const payload = {
     schema: 'sharkcraft.graph-callers/v1',
     symbol: nodeSummary(sym),

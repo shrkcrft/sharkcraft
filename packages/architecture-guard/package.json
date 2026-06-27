@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/architecture-guard",
-  "version": "0.1.0-alpha.19",
+  "version": "0.1.0-alpha.20",
   "description": "SharkCraft architecture guard: semantic architecture checks on top of the code graph — public-API misuse, barrel risks, cycle severity, project-specific architecture contracts.",
   "license": "MIT",
   "author": "SharkCraft contributors",

@@ -6,6 +6,8 @@
  *
  * Schema: sharkcraft.context-pack/v1.
  */
+import type { IPackCoverage } from './pack-coverage.ts';
+
 export const CONTEXT_PACK_SCHEMA = 'sharkcraft.context-pack/v1' as const;
 
 export type TaskIntent =
@@ -75,6 +77,12 @@ export interface IContextPack {
    * vendored code, lock files, dist/build outputs.
    */
   doNotTouch: readonly string[];
+  /**
+   * Per-field provenance: which sections were actually computed vs. omitted
+   * for lack of a prerequisite index. Lets a consumer tell "empty because
+   * none apply" from "empty because not computed".
+   */
+  coverage: IPackCoverage;
   /** Token budget summary. */
   budget: {
     requested: number;

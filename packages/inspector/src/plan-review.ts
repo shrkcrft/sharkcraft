@@ -12,6 +12,7 @@ import {
   type IFileChange,
   type ISavedPlan,
 } from '@shrkcrft/generator';
+import { matchAffectedConventions } from '@shrkcrft/paths';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
 export interface IPlanReviewFile {
@@ -154,17 +155,13 @@ export function reviewSavedPlan(
     }
   }
 
-  // Affected paths heuristic.
-  const segments = new Set<string>();
-  for (const f of files) {
-    for (const seg of f.relativePath.split('/')) segments.add(seg.toLowerCase());
-  }
-  const affectedPaths = inspection.pathService
-    .list()
-    .filter((p) =>
-      [...segments].some((s) => (p.title + ' ' + p.content).toLowerCase().includes(s)),
-    )
-    .map((p) => p.id);
+  // Affected paths: conventions the plan's files structurally fall under
+  // (directory-prefix match against each convention's metadata.path), not a
+  // free-text substring of the description (which matched nearly the whole set).
+  const affectedPaths = matchAffectedConventions(
+    inspection.pathService.list(),
+    files.map((f) => f.relativePath),
+  ).map((p) => p.id);
 
   // Missing-tests heuristic.
   const missingTestsHeuristic: string[] = [];

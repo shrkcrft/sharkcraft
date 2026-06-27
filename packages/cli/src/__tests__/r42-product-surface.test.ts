@@ -186,6 +186,15 @@ describe('free-form task heuristic', () => {
   test('looksLikeFreeFormTask returns false for "doctor"-style 2-token cmd', () => {
     expect(looksLikeFreeFormTask(['doctor', 'watch'])).toBe(false);
   });
+
+  test('looksLikeFreeFormTask treats a single quoted multi-word arg as a task', () => {
+    // `shrk "refactor the auth module"` arrives as ONE argv element with internal
+    // spaces — it must still route to recommend, not the did-you-mean matcher.
+    expect(looksLikeFreeFormTask(['refactor the auth module'])).toBe(true);
+    expect(looksLikeFreeFormTask(['add dark mode toggle'])).toBe(true);
+    // A single bare word is still not a task (plausibly a mistyped command).
+    expect(looksLikeFreeFormTask(['asdf'])).toBe(false);
+  });
 });
 
 describe('error footer', () => {

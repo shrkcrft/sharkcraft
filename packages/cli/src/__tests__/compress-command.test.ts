@@ -36,6 +36,39 @@ function capture(fn: () => number): { code: number; out: string; err: string } {
 }
 
 describe('shrk compress / expand', () => {
+  test('passthrough on non-trivial plain text WARNs and suggests --type', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
+    try {
+      // >128 bytes of unique prose with no structure the auto-detector recognises.
+      const prose =
+        'He went to the market today and bought apples and oranges. ' +
+        'She stayed home reading a long book about gardening and weather. ' +
+        'They later met for dinner and talked about the upcoming trip north.';
+      const file = join(dir, 'prose.txt');
+      writeFileSync(file, prose, 'utf8');
+      const r = capture(() => compressCommand.run(makeArgs([file], {}, dir)) as number);
+      expect(r.code).toBe(0);
+      expect(r.err).toContain('nothing was compressed');
+      expect(r.err).toContain('--type');
+      // stdout stays the verbatim blob (passthrough).
+      expect(r.out).toBe(prose + '\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('trivial input passthrough does NOT warn', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
+    try {
+      const file = join(dir, 'tiny.txt');
+      writeFileSync(file, 'hi', 'utf8');
+      const r = capture(() => compressCommand.run(makeArgs([file], {}, dir)) as number);
+      expect(r.err).not.toContain('--type');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('compresses a JSON array into a lossless table', () => {
     const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
     try {

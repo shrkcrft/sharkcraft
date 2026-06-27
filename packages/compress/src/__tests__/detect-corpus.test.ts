@@ -72,6 +72,18 @@ const CORPUS: Array<{ name: string; text: string; expect: EContentType }> = [
     expect: EContentType.Markdown,
   },
   {
+    // Regression: a prose-heavy doc with a SINGLE `# ` header (and no code) used
+    // to fall through to PlainText (the old headerCount >= 2 gate) and silently
+    // no-op compress. The `!looksLikeScript` + low-codeRatio guards still keep
+    // commented scripts out.
+    name: 'single-header prose markdown → markdown',
+    text:
+      '# Release Notes\n\nThe release introduces improvements across the toolkit.\n' +
+      'Performance was tuned and startup latency is lower.\n' +
+      'The loader reports clearer validation errors now.',
+    expect: EContentType.Markdown,
+  },
+  {
     name: 'ini config stays plain (equals, not colon)',
     text: 'display_errors = On\nerror_reporting = E_ALL\nmemory_limit = 128M',
     expect: EContentType.PlainText,

@@ -10,7 +10,12 @@ import {
   resolveChangedFiles,
   type IChangedScopeOptions,
 } from '@shrkcrft/inspector';
-import { formatEntryCompact, formatEntryFull, searchKnowledge } from '@shrkcrft/knowledge';
+import {
+  formatEntryCompact,
+  formatEntryFull,
+  projectKnowledgeEntryForJson,
+  searchKnowledge,
+} from '@shrkcrft/knowledge';
 import {
   flagBool,
   flagNumber,
@@ -137,7 +142,10 @@ export const knowledgeListCommand: ICommandHandler = {
             tags: e.tags,
             appliesWhen: e.appliesWhen,
           }))
-        : entries.map((e) => ({ ...e }));
+        : // Project the declared IKnowledgeEntry fields by direct access rather
+          // than spreading (`{ ...e }`), which copies only own-enumerable props
+          // and would strip pack entries whose fields are getters/non-enumerable.
+          entries.map(projectKnowledgeEntryForJson);
       process.stdout.write(asJson(payload) + '\n');
       return 0;
     }

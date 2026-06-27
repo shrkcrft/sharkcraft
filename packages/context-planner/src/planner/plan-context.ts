@@ -89,6 +89,7 @@ export function planContext(options: IPlanContextOptions): IContextPack {
   let paths: IPathHit[] = [];
   let templates: ITemplateHit[] = [];
   const bridgeStore = new BridgeStore(options.projectRoot);
+  const rulesComputed = bridgeStore.exists();
   if (bridgeStore.exists()) {
     const bridgeApi = RuleGraphQueryApi.fromStores(options.projectRoot);
     const seenRule = new Set<string>();
@@ -143,6 +144,10 @@ export function planContext(options: IPlanContextOptions): IContextPack {
     tests,
     risks,
     doNotTouch,
+    // risks/doNotTouch are graph-derived; once past the graph-missing early
+    // return they are always computed. rules/paths/templates depend on the
+    // rule-graph bridge.
+    coverage: { rulesComputed, risksComputed: true, doNotTouchComputed: true },
     budget: { requested: budgetTokens, used, truncated },
     diagnostics,
   };
@@ -247,6 +252,8 @@ function emptyPack(task: string, budget: number, diagnostics: readonly string[])
     tests: [],
     risks: [],
     doNotTouch: [],
+    // Graph store was missing — nothing was computed.
+    coverage: { rulesComputed: false, risksComputed: false, doNotTouchComputed: false },
     budget: { requested: budget, used: 0, truncated: false },
     diagnostics,
   };

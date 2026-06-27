@@ -47,13 +47,23 @@ export interface IContradictionReport {
 
 export interface IBuildContradictionReportOptions {
   inspection: ISharkcraftInspection;
-  /** Max doc files to scan. Default 80. */
+  /** Max doc files to scan. Default 5000 (effectively the whole docs tree). */
   docScanLimit?: number;
   /** Max bytes per doc. Default 200_000. */
   bytesPerDoc?: number;
+  /**
+   * Authoritative set of CLI command names (top-level verbs) used to flag
+   * `shrk <verb>` references to non-existent commands. Injected by the CLI from
+   * its own command catalogue (inspector must not import cli). When omitted,
+   * missing-command findings are suppressed — the safe failure mode.
+   */
+  cliCommandNames?: ReadonlySet<string>;
 }
 
-const DEFAULT_DOC_SCAN_LIMIT = 80;
+// High ceiling, not a sampling cap: docs are byte-bounded already, so scanning
+// the whole tree is cheap and avoids the silent "scanned an arbitrary 80-file
+// prefix" failure mode.
+const DEFAULT_DOC_SCAN_LIMIT = 5000;
 const DEFAULT_BYTES_PER_DOC = 200_000;
 
 const DOC_EXTS = new Set(['.md', '.mdx', '.rst', '.txt']);
@@ -96,7 +106,7 @@ export function buildContradictionReport(
   const knownScripts = new Set<string>();
   for (const script of Object.keys(inspection.workspace.scripts ?? {})) knownScripts.add(script);
 
-  const cliCommandNames = collectShrkCommandNames();
+  const cliCommandNames = options.cliCommandNames ?? new Set<string>();
 
   for (const doc of docs) {
     let body = '';
@@ -135,19 +145,32 @@ export function buildContradictionReport(
         const cleaned = ref.replace(/[.,;:!\)\]`]+$/g, '').replace(/^[`(\[]+/, '');
         if (!cleaned) continue;
         if (cleaned.startsWith('http://') || cleaned.startsWith('https://')) continue;
-        const probe = cleaned.startsWith('./') ? cleaned.slice(2) : cleaned;
-        if (seenOnLine.has(probe)) continue;
-        seenOnLine.add(probe);
-        const abs = nodePath.join(projectRoot, probe);
-        if (!existsSync(abs)) {
+        // Strip a trailing source-location suffix (`:91`, `:91-125`, `#L91`,
+        // `#L91-L99`) — a `file.ts:91` reference is about file.ts, not a path
+        // literally named "file.ts:91".
+        const bare = (cleaned.startsWith('./') ? cleaned.slice(2) : cleaned).replace(
+          /[:#]L?\d+(?:[-:]L?\d+)?$/i,
+          '',
+        );
+        if (!bare) continue;
+        if (seenOnLine.has(bare)) continue;
+        seenOnLine.add(bare);
+        // Resolve against the project root OR — for bare sibling links that
+        // aren't source-tree-prefixed (e.g. a `./a.md` link inside docs/) —
+        // relative to the referencing doc's directory.
+        const resolvesAtRoot = existsSync(nodePath.join(projectRoot, bare));
+        const resolvesDocRelative =
+          !SOURCE_PREFIX_RE.test(bare) &&
+          existsSync(nodePath.resolve(nodePath.dirname(doc.abs), bare));
+        if (!resolvesAtRoot && !resolvesDocRelative) {
           findings.push({
-            id: `missing-path:${doc.rel}:${i + 1}:${probe}`,
+            id: `missing-path:${doc.rel}:${i + 1}:${bare}`,
             kind: ContradictionKind.MissingPath,
             severity: ContradictionSeverity.Warning,
-            message: `Doc references missing path \`${probe}\`.`,
+            message: `Doc references missing path \`${bare}\`.`,
             source: doc.rel,
             line: i + 1,
-            reference: probe,
+            reference: bare,
             suggestion: 'Update the doc or restore the file.',
             reason: 'Doc-vs-tree consistency.',
           });
@@ -198,7 +221,19 @@ export function buildContradictionReport(
         // npm/bun script references.
         if ((head === 'bun' || head === 'npm' || head === 'pnpm' || head === 'yarn') && (next === 'run' || next === 'x')) {
           const script = tokens[2];
-          if (script && !script.startsWith('-') && next === 'run' && knownScripts.size > 0 && !knownScripts.has(script)) {
+          // A real `bun run <script>` target is a bare script id, never a path.
+          // Skip path-shaped candidates (`bun run ../scripts/x.ts`) to avoid the
+          // false positive of treating a script-path as a missing package script.
+          const scriptLooksLikePath =
+            !!script && (script.includes('/') || script.startsWith('.') || script.includes('.'));
+          if (
+            script &&
+            !script.startsWith('-') &&
+            !scriptLooksLikePath &&
+            next === 'run' &&
+            knownScripts.size > 0 &&
+            !knownScripts.has(script)
+          ) {
             findings.push({
               id: `missing-command:${doc.rel}:${i + 1}:${script}`,
               kind: ContradictionKind.MissingCommand,
@@ -310,6 +345,8 @@ function extractPathReferences(line: string): string[] {
 function looksLikePath(s: string): boolean {
   if (!s) return false;
   if (s.startsWith('http')) return false;
+  if (/^[a-z][\w.+-]*:/i.test(s)) return false; // URI scheme (file:, mailto:, …), not a tree path
+  if (/\/:[A-Za-z]/.test(s)) return false; // URL route param (`/api/:id/…`)
   if (s.includes(' ')) return false;
   if (/[<>{}]/.test(s)) return false; // placeholders / brace-expansions
   if (s.endsWith('/')) return false; // generic dir reference
@@ -324,31 +361,6 @@ function looksLikePath(s: string): boolean {
   // Reject pseudo-paths that contain literal globs/wildcards.
   if (/[*?]/.test(s)) return false;
   return true;
-}
-
-function collectShrkCommandNames(): Set<string> {
-  // Hard-coded list of well-known top-level commands. Importing the CLI here
-  // would create a layering violation (inspector → cli) — instead we mirror
-  // the catalogue that `shrk commands` would print. Missing entries simply
-  // suppress contradiction findings for those commands, which is the safe
-  // failure mode.
-  return new Set<string>([
-    'init', 'inspect', 'doctor', 'context', 'gen', 'apply', 'export', 'import',
-    'task', 'next', 'find', 'explain', 'check', 'watch', 'drift', 'graph',
-    'coverage', 'review', 'onboard', 'test', 'plan', 'session', 'dev', 'ask',
-    'mcp', 'version', 'quality', 'ci', 'commands', 'safety', 'infer', 'report',
-    'dashboard', 'bundle', 'impact', 'search', 'brief', 'demo', 'release',
-    'start-here', 'handoff', 'map', 'intent', 'orchestrate', 'simulate', 'view',
-    'recommend', 'risk', 'migration', 'contract', 'languages', 'help',
-    'memory', 'heal', 'agent', 'docs', 'examples', 'self', 'install',
-    'diagnostics', 'intelligence', 'architecture', 'decisions', 'compliance',
-    'policy', 'product', 'reposet', 'packs', 'upgrade', 'api', 'boundaries',
-    'repo', 'owners', 'ownership', 'runtime', 'constructs', 'playbooks',
-    'presets', 'pipelines', 'paths', 'rules', 'templates', 'knowledge',
-    'schemas', 'scaffolds', 'tests',
-    // Additions
-    'ingest', 'understand-task', 'validate-change', 'contradictions', 'generated', 'stability',
-  ]);
 }
 
 export function renderContradictionReportText(report: IContradictionReport): string {
