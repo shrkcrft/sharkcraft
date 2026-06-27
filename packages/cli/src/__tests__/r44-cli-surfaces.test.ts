@@ -27,6 +27,11 @@ const REPO_ROOT = nodePath.resolve(__dirname, '..', '..', '..', '..');
 function shrk(args: readonly string[], cwd: string = REPO_ROOT): { code: number; out: string; err: string } {
   const r = spawnSync('bun', [CLI, ...args], {
     cwd,
+    // Close the child's stdin (immediate EOF). Without this the CLI can block
+    // reading stdin in a foreign cwd, and the spawn hangs the full 60s timeout
+    // — which under suite load cascades 5s timeouts onto other spawn tests.
+    // Matches the established helper pattern (e.g. graph-export.test.ts).
+    stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
     env: { ...process.env, NO_COLOR: '1' },
     timeout: 60_000,
