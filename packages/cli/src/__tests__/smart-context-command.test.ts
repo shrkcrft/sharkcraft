@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { buildFullIndex, GraphStore } from '@shrkcrft/graph';
 import {
   smartContextCommand,
   smartContextListCommand,
@@ -17,6 +18,18 @@ const ORIGINAL_FETCH = globalThis.fetch;
 // Disable auto-refresh + plan-cache in tests; otherwise running against
 // REPO_ROOT would try to load the real embedding model and OOM Bun.
 process.env.SHRK_DISABLE_AUTO_AI = '1';
+
+// Stage-1 file briefs — and therefore the export-signature lines the
+// "enriched seed" suite asserts on — are only emitted when the code graph
+// index exists. That index lives under the gitignored `.sharkcraft/graph/`,
+// so a fresh CI checkout has none (a dev machine usually does from prior
+// runs). Build it once here so the assertions are deterministic in CI and
+// locally alike. `buildFullIndex` persists the snapshot under REPO_ROOT.
+beforeAll(() => {
+  if (!new GraphStore(REPO_ROOT).exists()) {
+    buildFullIndex({ projectRoot: REPO_ROOT });
+  }
+}, 120_000);
 
 const writeOut = process.stdout.write.bind(process.stdout);
 const writeErr = process.stderr.write.bind(process.stderr);
