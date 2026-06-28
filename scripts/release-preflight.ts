@@ -42,7 +42,13 @@ const STEPS: readonly IStep[] = [
   // R58 — every doctor verb must emit parseable JSON on --json, including
   // error paths. Regressions surface here.
   { name: 'doctor-json-audit', cmd: 'bun', args: ['run', 'audit:doctor-json'], required: true },
-  { name: 'tests', cmd: 'bun', args: ['test'], required: true },
+  // --timeout 30000: spawn-based integration tests shell out to a full
+  // `bun main.ts <cmd>` (the helpers cap that at 60s via spawnSync). Under the
+  // load of a full release run those spawns can exceed Bun's default 5s
+  // per-test timeout, producing flaky "timed out after 5000ms" failures that
+  // are not real regressions. 30s gives ample headroom while still catching a
+  // genuine hang. Keep in sync with the `test` script + ci.yml.
+  { name: 'tests', cmd: 'bun', args: ['test', '--timeout', '30000'], required: true },
   { name: 'build-dist', cmd: 'bun', args: ['run', 'build:dist'], required: true },
   { name: 'dashboard-build', cmd: 'bun', args: ['run', 'dashboard:build'], required: true },
   { name: 'publish-dry-run', cmd: 'bun', args: ['run', 'publish:dry-run'], required: true },

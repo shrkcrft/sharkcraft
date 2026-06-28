@@ -42,7 +42,7 @@
     "delegate:token-eval": "bun run scripts/delegate-token-eval.ts",
     "bump-versions": "bun run scripts/bump-versions.ts",
     "typecheck": "tsc -p tsconfig.base.json --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 30000",
     "lint": "bun run scripts/lint.ts",
     "format": "bun run scripts/format.ts",
     "dev": "bun run packages/cli/src/main.ts",

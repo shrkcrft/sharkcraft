@@ -45,7 +45,10 @@ jobs:
         run: bun run lint
 
       - name: Bun tests
-        run: bun test
+        # --timeout 30000: spawn-based integration tests shell out to a full
+        # CLI; under CI load those spawns can exceed Bun's default 5s per-test
+        # timeout and flake. 30s gives headroom while still catching real hangs.
+        run: bun test --timeout 30000
 
       - name: Build dist
         run: bun run build:dist
