@@ -11,6 +11,9 @@
       "@shrkcrft/boundaries": [
         "../boundaries/dist/index.d.ts"
       ],
+      "@shrkcrft/rules": [
+        "../rules/dist/index.d.ts"
+      ],
       "@shrkcrft/graph": [
         "../graph/dist/index.d.ts"
       ],
