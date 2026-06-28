@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { COMMAND_CATALOG, SafetyLevel } from '../commands/command-catalog.ts';
-import { COMMAND_CATALOG_EXPORT } from '../../../mcp-server/src/tools/command-catalog.tool.ts';
+// Import via the package entry, not the private internal tool file: a deep
+// cross-package import of an unexported module is a public-api-misuse arch
+// violation (it kept the bare `shrk gate` perpetually red on this repo). The
+// symbol is re-exported from the package root.
+import { COMMAND_CATALOG_EXPORT } from '@shrkcrft/mcp-server';
 
 const VALID_SAFETY: ReadonlySet<string> = new Set(Object.values(SafetyLevel));
 

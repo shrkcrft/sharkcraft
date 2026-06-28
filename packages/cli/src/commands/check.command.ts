@@ -33,9 +33,11 @@ import { FileChangeType, planGeneration } from '@shrkcrft/generator';
 import {
   evaluateBoundaries,
   loadTsconfigPaths,
+  runWiring,
   scanImports,
   summarizeImports,
 } from '@shrkcrft/boundaries';
+import { loadProjectConfig } from '@shrkcrft/config';
 
 interface IGroupResult {
   name: string;
@@ -600,6 +602,106 @@ async function checkBoundariesOnce(args: ParsedArgs): Promise<number> {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
+// Subcommand: wiring — "declared but not wired" completeness checks
+// ────────────────────────────────────────────────────────────────────────
+async function checkWiring(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json');
+  const changedOnly = flagBool(args, 'changed-only');
+  const since = flagString(args, 'since');
+  const only = flagString(args, 'only');
+
+  // Distinguish "config is invalid" from "config valid with no wiring rules":
+  // an invalid config (e.g. a malformed wiringRule) must NOT fail open with a
+  // misleading "no rules configured" + exit 0.
+  const loaded = await loadProjectConfig(cwd);
+  if (!loaded.ok) {
+    const msg = loaded.error.message;
+    if (wantJson) {
+      process.stdout.write(
+        asJson({ schema: 'sharkcraft.wiring/v1', error: msg, rules: [], violations: [], diagnostics: [msg], verdict: 'errors' }) + '\n',
+      );
+      return 1;
+    }
+    process.stdout.write(header('Wiring check'));
+    process.stdout.write(`  ✗ Could not load config: ${msg}\n  Run \`shrk doctor\` for details.\n`);
+    return 1;
+  }
+  const rules = loaded.value.config.wiringRules ?? [];
+
+  if (rules.length === 0) {
+    if (wantJson) {
+      process.stdout.write(
+        asJson({ schema: 'sharkcraft.wiring/v1', rules: [], violations: [], verdict: 'pass' }) + '\n',
+      );
+      return 0;
+    }
+    process.stdout.write(header('Wiring check'));
+    process.stdout.write(
+      '  No wiring rules configured. Declare `wiringRules[]` in sharkcraft.config.ts to enable\n' +
+        '  cross-file "declared but not wired" checks (see docs/wiring.md).\n',
+    );
+    return 0;
+  }
+
+  let changedFiles: readonly string[] | undefined;
+  if (changedOnly || since) {
+    const changed = resolveChangedFiles({
+      projectRoot: cwd,
+      ...(since ? { since } : {}),
+      ...(changedOnly && !since ? { includeWorktree: true } : {}),
+    });
+    changedFiles = changed.files;
+  }
+
+  const report = runWiring(cwd, rules, {
+    ...(changedOnly || since ? { changedOnly: true, changedFiles: changedFiles ?? [] } : {}),
+    ...(only ? { only: only.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
+  });
+
+  if (wantJson) {
+    process.stdout.write(asJson(report) + '\n');
+    return report.verdict === 'errors' ? 1 : 0;
+  }
+
+  process.stdout.write(header('Wiring check'));
+  process.stdout.write(kv('rules evaluated', String(report.rules.length)) + '\n');
+  const errors = report.violations.filter((v) => v.severity === 'error').length;
+  const warnings = report.violations.filter((v) => v.severity === 'warning').length;
+  process.stdout.write(kv('violations', `${errors} error(s), ${warnings} warning(s)`) + '\n');
+  // Misconfigured rules (uncompilable pattern / no capture group) — surface
+  // them loudly; a broken rule must never read as a silent green.
+  if (report.diagnostics.length > 0) {
+    process.stdout.write('\nMisconfigured rules:\n');
+    for (const d of report.diagnostics) process.stdout.write(`  ! ${d}\n`);
+  }
+  if (report.violations.length === 0 && report.diagnostics.length === 0) {
+    process.stdout.write('\nNo wiring violations — every declared token is registered. ✓\n');
+    return 0;
+  }
+  if (report.violations.length === 0) {
+    return report.verdict === 'errors' ? 1 : 0;
+  }
+  // Group by rule for a readable report.
+  for (const r of report.rules) {
+    if (r.violations.length === 0) continue;
+    process.stdout.write(`\n[${r.severity}] ${r.ruleId}${r.description ? ' — ' + r.description : ''}\n`);
+    process.stdout.write(
+      `  declared ${r.declaredCount} / registered ${r.registeredCount} — ${r.violations.length} not wired:\n`,
+    );
+    for (const v of r.violations.slice(0, 50)) {
+      process.stdout.write(`    • ${v.token}  (${v.file}:${v.line})\n`);
+    }
+    if (r.violations.length > 50) {
+      process.stdout.write(`    … (${r.violations.length - 50} more)\n`);
+    }
+    const hint = r.violations.find((v) => v.hint)?.hint;
+    if (hint) process.stdout.write(`    → ${hint}\n`);
+  }
+  return report.verdict === 'errors' ? 1 : 0;
+}
+
 // Main shrk check + subcommands
 // ────────────────────────────────────────────────────────────────────────
 export const checkCommand: ICommandHandler = {
@@ -607,12 +709,13 @@ export const checkCommand: ICommandHandler = {
   description:
     'Run SharkCraft-level validation across knowledge / rules / templates / pipelines / packs / action hints / doctor. `check boundaries [--watch [--paths a,b] [--debounce N] [--once]]` re-runs the boundary scan on file changes.',
   usage:
-    'shrk [--cwd <dir>] check [packs|pipelines|knowledge|generation|boundaries|imports] [--strict] [--min-score <0-100>] [--json] [--watch [--paths <list>] [--debounce N] [--once]]',
+    'shrk [--cwd <dir>] check [packs|pipelines|knowledge|generation|boundaries|imports|wiring] [--strict] [--min-score <0-100>] [--changed-only] [--since <ref>] [--only <ids>] [--json] [--watch [--paths <list>] [--debounce N] [--once]]',
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
     if (sub === 'generation') return checkGeneration(args);
     if (sub === 'boundaries') return checkBoundaries(args);
     if (sub === 'imports' || sub === 'import-hygiene') return checkImports(args);
+    if (sub === 'wiring') return checkWiring(args);
     if (sub === 'registry-lifecycle') {
       const cwd = resolveCwd(args);
       const { buildRegistryLifecycleReport, renderRegistryLifecycleReportText } = await import('@shrkcrft/inspector');

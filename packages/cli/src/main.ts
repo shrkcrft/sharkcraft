@@ -141,6 +141,8 @@ import { archCommand } from './commands/arch.command.ts';
 import { frameworkCommand } from './commands/framework.command.ts';
 import { apiDiffCommand } from './commands/api-diff.command.ts';
 import { gateCommand } from './commands/gate.command.ts';
+import { policyLintCommand } from './commands/policy-lint.command.ts';
+import { reuseCommand } from './commands/reuse.command.ts';
 import { migrateCommand } from './commands/migrate.command.ts';
 import { coverageCommand } from './commands/coverage.command.ts';
 import { statsCommand } from './commands/stats.command.ts';
@@ -438,6 +440,8 @@ export function buildRegistry(): CommandRegistry {
   registry.register(frameworkCommand);
   registry.register(apiDiffCommand);
   registry.register(gateCommand);
+  registry.register(policyLintCommand);
+  registry.register(reuseCommand);
   registry.register(migrateCommand);
   registry.register(coverageCommand);
   registry.register(statsCommand);

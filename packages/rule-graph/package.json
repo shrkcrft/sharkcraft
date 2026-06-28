@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/rule-graph",
-  "version": "0.1.0-alpha.21",
+  "version": "0.1.0-alpha.22",
   "description": "SharkCraft rule-graph: bridges code-graph file nodes to rules / paths / templates / boundaries so 'which assets apply to this file?' is a 1-hop query.",
   "license": "MIT",
   "author": "SharkCraft contributors",
@@ -45,6 +45,7 @@
   "dependencies": {
     "@shrkcrft/core": "workspace:*",
     "@shrkcrft/boundaries": "workspace:*",
+    "@shrkcrft/rules": "workspace:*",
     "@shrkcrft/graph": "workspace:*",
     "@shrkcrft/inspector": "workspace:*"
   },

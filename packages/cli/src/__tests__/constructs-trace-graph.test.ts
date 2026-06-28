@@ -3,7 +3,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildFullIndex } from '@shrkcrft/graph';
-import { constructsTraceCommand } from '../commands/constructs.command.ts';
+import {
+  constructsTraceCommand,
+  constructsImpactCommand,
+  constructsFilesCommand,
+} from '../commands/constructs.command.ts';
 
 /**
  * A construct that DECLARES only 4 of the 10 `*_TOKEN` constants in its file,
@@ -60,6 +64,85 @@ function capture(): { restore: () => string } {
   };
 }
 
+/**
+ * A construct declaring ONE glob that covers 6 real files. The declared list is
+ * length 1 (would score risk='low'); the graph-resolved set is 6 (risk='medium').
+ */
+function setupMultiFileFixture(): string {
+  const root = mkdtempSync(join(tmpdir(), 'shrk-constructs-multi-'));
+  writeFileSync(
+    join(root, 'package.json'),
+    JSON.stringify({ name: 'demo', workspaces: ['packages/*'] }, null, 2),
+  );
+  mkdirSync(join(root, 'packages', 'p', 'src'), { recursive: true });
+  writeFileSync(
+    join(root, 'packages', 'p', 'package.json'),
+    JSON.stringify({ name: '@demo/p', main: 'src/index.ts' }, null, 2),
+  );
+  for (let i = 0; i < 6; i += 1) {
+    writeFileSync(join(root, 'packages', 'p', 'src', `m${i}.ts`), `export const v${i} = ${i};\n`);
+  }
+  mkdirSync(join(root, 'sharkcraft'), { recursive: true });
+  writeFileSync(
+    join(root, 'sharkcraft', 'constructs.ts'),
+    `export default [{
+  id: 'demo.svc',
+  type: 'service',
+  title: 'Demo service',
+  files: ['packages/p/src/**/*.ts'],
+}];\n`,
+  );
+  return root;
+}
+
+describe('constructs impact / files — graph-resolved file set', () => {
+  test('impact risk + file count reflect the EXPANDED glob (not the 1 declared entry)', async () => {
+    const root = setupMultiFileFixture();
+    try {
+      buildFullIndex({ projectRoot: root });
+      const cap = capture();
+      await constructsImpactCommand.run(makeArgs(['demo.svc'], root));
+      const json = JSON.parse(cap.restore());
+      expect(json.files.length).toBe(6);
+      expect(json.files).toContain('packages/p/src/m0.ts');
+      expect(json.files).not.toContain('packages/p/src/**/*.ts');
+      // 6 files > 4 → medium (the declared length-1 glob would have been 'low').
+      expect(json.risk).toBe('medium');
+      expect(json.humanReviewRequired).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('files subverb emits resolved paths, not the raw glob', async () => {
+    const root = setupMultiFileFixture();
+    try {
+      buildFullIndex({ projectRoot: root });
+      const cap = capture();
+      await constructsFilesCommand.run(makeArgs(['demo.svc'], root));
+      const json = JSON.parse(cap.restore());
+      expect(json.files.length).toBe(6);
+      expect(json.files).not.toContain('packages/p/src/**/*.ts');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('without a graph index, impact falls back to the declared list (offline determinism)', async () => {
+    const root = setupMultiFileFixture();
+    try {
+      const cap = capture();
+      await constructsImpactCommand.run(makeArgs(['demo.svc'], root));
+      const json = JSON.parse(cap.restore());
+      // No index: declared glob is the only entry → length 1, risk low.
+      expect(json.files).toEqual(['packages/p/src/**/*.ts']);
+      expect(json.risk).toBe('low');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('constructs trace — graph-backed verification', () => {
   test('expands file globs and surfaces undeclared symbols', async () => {
     const root = setupFixture();
@@ -81,6 +164,21 @@ describe('constructs trace — graph-backed verification', () => {
       for (const i of [0, 1, 2, 3]) {
         expect(json.graph.undeclaredSymbols).not.toContain(`FOO${i}_TOKEN`);
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('trace effectiveFiles expands the declared glob to real files', async () => {
+    const root = setupFixture();
+    try {
+      buildFullIndex({ projectRoot: root });
+      const cap = capture();
+      await constructsTraceCommand.run(makeArgs(['demo.tokens'], root));
+      const json = JSON.parse(cap.restore());
+      // effectiveFiles is the resolved set, not the raw declared glob.
+      expect(json.effectiveFiles).toContain('packages/p/src/index.ts');
+      expect(json.effectiveFiles).not.toContain('packages/p/src/**/*.ts');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

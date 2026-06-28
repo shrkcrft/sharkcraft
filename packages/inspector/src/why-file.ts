@@ -17,6 +17,7 @@
 import { existsSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { matchesAny } from '@shrkcrft/boundaries';
+import { deriveApplicability } from '@shrkcrft/rules';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
 export const WHY_FILE_SCHEMA = 'sharkcraft.why/v1';
@@ -180,6 +181,7 @@ interface IRuleLike {
   readonly appliesWhen?: readonly string[];
   readonly references?: readonly { kind?: string; path?: string; id?: string }[];
   readonly anchors?: readonly { kind?: string; path?: string }[];
+  readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -213,6 +215,17 @@ function ruleReasonForFile(
   if (pathish.length > 0) {
     const hit = pathish.find((g) => matchesAny(rel, [g]));
     if (hit) return `path pattern ${hit}`;
+  }
+  // 2b. Tag / metadata applicability — the SAME mapping `shrk rule-graph for
+  // <file>` uses (deriveApplicability): `metadata.appliesTo` globs
+  // (authoritative) or a conservative tag→path table (e.g. an `imports`-tagged
+  // rule → packages/**/*.ts). This is what makes `why` surface topical-but-real
+  // per-file rules that carry no explicit path reference, instead of an empty
+  // rules section. Kept consistent with the bridge so the two never diverge.
+  const appl = deriveApplicability({ tags: r.tags, metadata: r.metadata });
+  if (appl.source !== 'none') {
+    const hit = appl.patterns.find((g) => matchesAny(rel, [g]));
+    if (hit) return appl.source === 'metadata' ? `appliesTo glob ${hit}` : `tag-mapped path ${hit}`;
   }
   // 3. Package reference / scope-or-tag equal to the inferred package or layer.
   const labels = [...(r.scope ?? []), ...(r.tags ?? [])];

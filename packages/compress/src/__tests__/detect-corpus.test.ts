@@ -62,6 +62,29 @@ const CORPUS: Array<{ name: string; text: string; expect: EContentType }> = [
     expect: EContentType.BuildLog,
   },
   {
+    // Timestamped logs must NOT misroute to search-results just because a
+    // `HH:MM:SS` clock looks like the `token:digits:` search shape.
+    name: 'build log (ISO-T timestamp)',
+    text:
+      '2026-06-27T10:00:00 INFO starting\n2026-06-27T10:00:01 WARN slow query detected\n' +
+      '2026-06-27T10:00:02 ERROR boom\n2026-06-27T10:00:03 INFO retrying\n2026-06-27T10:00:04 INFO done',
+    expect: EContentType.BuildLog,
+  },
+  {
+    name: 'build log (bracketed clock)',
+    text:
+      '[10:00:00] INFO starting\n[10:00:01] WARN slow query detected\n' +
+      '[10:00:02] ERROR boom\n[10:00:03] INFO retrying\n[10:00:04] INFO done',
+    expect: EContentType.BuildLog,
+  },
+  {
+    name: 'build log (bare clock, no level word)',
+    text:
+      '10:00:00 starting the run\n10:00:01 slow query detected\n' +
+      '10:00:02 boom happened\n10:00:03 retrying now\n10:00:04 all done',
+    expect: EContentType.BuildLog,
+  },
+  {
     name: 'source code',
     text: 'export function f(x) {\n  this.handler(x);\n  result.value = x;\n  return x;\n}',
     expect: EContentType.SourceCode,

@@ -152,7 +152,11 @@ describe('surface lockdown holds', () => {
     // subcommand catalog is then reconciled with the runtime handler:
     // `dev status`, `dev next`, and `dev continue` were real subcommands
     // missing from the catalog (surface-drift fix) — +3 entries, ceiling 395.
-    expect(COMMAND_CATALOG.length).toBeLessThan(395);
+    // The completeness plane adds `check wiring` (data-driven "declared but not
+    // wired" cross-file checks) — +1 entry, ceiling 396. The reuse plane adds
+    // `policy-lint` (template/style/ts content lint) and `reuse` (intent →
+    // canonical primitive) — +2 entries, ceiling 398.
+    expect(COMMAND_CATALOG.length).toBeLessThan(398);
     // Sanity: not absurdly small.
     expect(COMMAND_CATALOG.length).toBeGreaterThan(250);
   });

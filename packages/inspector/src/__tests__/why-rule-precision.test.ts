@@ -10,6 +10,7 @@ interface IStubRule {
   tags?: readonly string[];
   appliesWhen?: readonly string[];
   references?: readonly { kind: string; path?: string; id?: string }[];
+  metadata?: Readonly<Record<string, unknown>>;
 }
 
 function inspectionWith(rules: readonly IStubRule[]): ISharkcraftInspection {
@@ -76,6 +77,25 @@ describe('why-file rule precision', () => {
     ]);
     expect(rulesFor(insp, 'packages/x/src/a.ts').map((r) => r.id)).toEqual(['glob']);
     expect(rulesFor(insp, 'packages/y/src/a.ts')).toEqual([]);
+  });
+
+  test('a known tag maps to a path glob (shared with rule-graph) and attaches per-file', () => {
+    const insp = inspectionWith([
+      { id: 'imp', title: 'Imports rule', tags: ['imports'] }, // imports -> packages/**/*.ts
+    ]);
+    expect(rulesFor(insp, 'packages/cli/src/main.ts').map((r) => r.id)).toEqual(['imp']);
+    expect(rulesFor(insp, 'packages/cli/src/main.ts')[0]!.reason).toContain('tag-mapped path');
+    // Does NOT over-attach to a file outside the tag's pattern.
+    expect(rulesFor(insp, 'docs/overview.md')).toEqual([]);
+  });
+
+  test('explicit metadata.appliesTo globs are authoritative', () => {
+    const insp = inspectionWith([
+      { id: 'meta', title: 'Meta rule', tags: ['service'], metadata: { appliesTo: ['docs/**/*.md'] } },
+    ]);
+    expect(rulesFor(insp, 'docs/overview.md').map((r) => r.id)).toEqual(['meta']);
+    expect(rulesFor(insp, 'docs/overview.md')[0]!.reason).toContain('appliesTo glob');
+    expect(rulesFor(insp, 'packages/x/src/a.ts')).toEqual([]);
   });
 
   test('reasons never use the old "Matches on:" phrasing', () => {

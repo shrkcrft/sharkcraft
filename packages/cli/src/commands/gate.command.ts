@@ -3,6 +3,7 @@ import {
   renderGateReportMarkdown,
   runQualityGates,
 } from '@shrkcrft/quality-gates';
+import { loadProjectConfig } from '@shrkcrft/config';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
@@ -58,9 +59,20 @@ export const gateCommand: ICommandHandler = {
     // --arch-all: fail on TOTAL architecture errors (ignore the frozen baseline).
     // By default the arch gate is baseline-relative — it fails only on NEW errors.
     const archAll = flagBool(args, 'arch-all');
+    // Wiring rules come from the project config; the gate is skipped (never red)
+    // when none are declared, so this is inert for projects that don't opt in.
+    // An INVALID config is surfaced (warn) rather than silently disabling wiring.
+    const loadedConfig = await loadProjectConfig(cwd);
+    const wiringRules = loadedConfig.ok ? loadedConfig.value.config.wiringRules ?? [] : [];
+    const wiringConfigError = loadedConfig.ok ? undefined : loadedConfig.error.message;
     const report = runQualityGates({
       projectRoot: cwd,
       ...(archAll ? { arch: { baselineRelative: false } } : {}),
+      ...(wiringConfigError
+        ? { wiring: { configError: wiringConfigError } }
+        : wiringRules.length > 0
+          ? { wiring: { rules: wiringRules } }
+          : {}),
       impact: {
         ...(sinceRef ? { sinceRef } : {}),
         ...(failOn ? { failOn } : {}),

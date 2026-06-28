@@ -477,6 +477,33 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     taskRole: CommandTaskRole.Validate,
   }),
   entry({
+    command: 'check wiring',
+    description:
+      'Completeness checks: flags config-defined "declared but not wired" tokens (a declared value/identifier set that must be a subset of a registered set). Generic + deterministic; rules from sharkcraft.config.ts wiringRules[]. [--changed-only] [--only <ids>] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'policy-lint',
+    description:
+      'Lint template/markup, stylesheet, and AOT-invisible TS surfaces against config-defined policyRules[] — sees `.html` files AND inline `template:` strings that tsc/AOT cannot. Deterministic; no AI. [--surface template|style|ts] [--changed-only] [--only <ids>] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'reuse',
+    description:
+      'Intent → the canonical primitive to reuse: matches your intent against config reusePrimitives[] then resolves the symbol through the code graph (transitive star-barrels) to its import path, sibling exports, and real consumer files to copy. Read-only; no AI.',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Search,
+  }),
+  entry({
     command: 'diff-check',
     description: 'Self-check current git diff against boundary + import-hygiene rules. Single-call composite for agents to validate edits before declaring done. Read-only.',
     category: 'core',

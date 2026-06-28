@@ -18,8 +18,14 @@ const YAML_INDENTED_SEQ = /^\s{2,}-\s/;
 // Log levels must appear as a LINE PREFIX (optionally after a leading
 // timestamp / bracket), not anywhere on the line — otherwise common code
 // identifiers (`const ERROR = 500`, `enum { INFO, DEBUG }`) misroute to logs.
+// A bare clock timestamp (`HH:MM:SS`, optionally bracketed / with millis) is
+// also a valid log prefix: it appears as the optional leading-prefix before a
+// level keyword AND as a standalone line-start (a timestamp-led log line with
+// no level word). Without these, `[10:00:00] INFO` / `10:00:00 ...` lines match
+// SEARCH_LINE (the `HH:MM:` shape looks like `token:digits:`) and the blob
+// misroutes to search-results — a lossy compressor for what is really a log.
 const LOG_MARKER =
-  /^\s*(?:(?:\[?\d{4}-\d{2}-\d{2}[T ][\d:.,]+\]?|\S+\[\d+\]:)\s+)?\[?(?:ERROR|FATAL|FAIL(?:ED|URE)?|WARN(?:ING)?|INFO|DEBUG|NOTICE|TRACE)\b|^\S+\[\d+\]:\s|^\s*Traceback\b|^\s+at\s+\S+\s*\(|^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+  /^\s*(?:(?:\[?\d{4}-\d{2}-\d{2}[T ][\d:.,]+\]?|\S+\[\d+\]:|\[?\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\]?)\s+)?\[?(?:ERROR|FATAL|FAIL(?:ED|URE)?|WARN(?:ING)?|INFO|DEBUG|NOTICE|TRACE)\b|^\S+\[\d+\]:\s|^\s*Traceback\b|^\s+at\s+\S+\s*\(|^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|^\s*\[?\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\]?\s/;
 const MARKDOWN_MARKER = /^(?:#{1,6}\s|\s*[-*]\s|\s*\d+\.\s|```|>\s|\|)/;
 // Code signals: declaration keywords + structural/statement shapes that real
 // code has but prose / markdown / INI / env / TOML / nginx do NOT (each new
@@ -126,8 +132,13 @@ export function detectContentType(text: string): EContentType {
   }
 
   // 3. grep / ripgrep search output (`path:line:` prefix) OR compiler
-  //    diagnostics (`path(line,col):`). Count either shape toward the ratio.
-  if (lineHitRatio(lines, (l) => SEARCH_LINE.test(l) || DIAGNOSTIC_LINE.test(l)) >= 0.6) {
+  //    diagnostics (`path(line,col):`). Count either shape toward the ratio,
+  //    but EXCLUDE log-shaped lines: a `HH:MM:SS` clock satisfies the
+  //    `token:digits:` SEARCH_LINE shape, so timestamped logs would otherwise
+  //    win here (ratio ≥ 0.6) before the BuildLog check below ever runs.
+  if (
+    lineHitRatio(lines, (l) => (SEARCH_LINE.test(l) || DIAGNOSTIC_LINE.test(l)) && !LOG_MARKER.test(l)) >= 0.6
+  ) {
     return EContentType.SearchResults;
   }
 

@@ -56,6 +56,27 @@ export interface ISharkCraftConfig {
   agentTestFiles?: readonly string[];
 
   /**
+   * Wiring/completeness rules — the "declared but not wired" plane. Each rule is
+   * a data-defined cross-file set-membership check (a declared token set must be
+   * a subset of a registered token set). Run via `shrk check wiring` and the
+   * `wiring` quality gate. The engine is generic — projects supply the patterns.
+   */
+  wiringRules?: readonly IWiringRule[];
+
+  /**
+   * Policy-lint rules — the template/style/ts content plane (markup + inline
+   * `template:` strings, stylesheets, AOT-invisible TS shapes). Run via
+   * `shrk policy-lint`. Generic + deterministic; projects supply the patterns.
+   */
+  policyRules?: readonly IPolicyRule[];
+
+  /**
+   * Reuse primitives — role-keyed canonical symbols surfaced by `shrk reuse
+   * <intent>` (resolved through the code graph to import path + consumers).
+   */
+  reusePrimitives?: readonly IReusePrimitive[];
+
+  /**
    * Adaptive surface gating.
    *
    *   - `enabled`: experimental commands the project opts into.
@@ -97,6 +118,13 @@ export interface ISharkCraftConfig {
 // can share it; re-export it here for `import { IDelegateRecipe } from '@shrkcrft/config'`.
 export type { IDelegateRecipe, IDelegateRecipeMatch } from '@shrkcrft/core';
 import type { IDelegateRecipe } from '@shrkcrft/core';
+// Wiring rules live in core so config (validation) + boundaries (engine) share
+// one contract; re-export for `import { IWiringRule } from '@shrkcrft/config'`.
+export type { IWiringRule, IWiringSource } from '@shrkcrft/core';
+import type { IWiringRule } from '@shrkcrft/core';
+// Policy-lint + reuse contracts also live in core; re-export for consumers.
+export type { IPolicyRule, PolicySurface, IReusePrimitive } from '@shrkcrft/core';
+import type { IPolicyRule, IReusePrimitive } from '@shrkcrft/core';
 
 /**
  * Per-recipe override, keyed by recipe id. Lets a project tune a PACK-contributed

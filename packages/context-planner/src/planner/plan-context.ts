@@ -64,6 +64,16 @@ export function planContext(options: IPlanContextOptions): IContextPack {
     ...(options.hintedPackages ? { hintedPackages: options.hintedPackages } : {}),
   });
 
+  // The graph exists but nothing scored: the pack would be silently empty.
+  // Tell the caller WHY (almost always a too-short / all-stop-word task, a
+  // typo, or a stale index) instead of returning a blank result with no hint.
+  if (scored.length === 0) {
+    diagnostics.push(
+      'no indexed file matched this task — it may be too short or all stop-words. ' +
+        'Try a more specific task, pass --hint-file/--hint-package, or refresh with `shrk graph index`.',
+    );
+  }
+
   // 2. Estimate tokens (deterministic, BPE-ish approximation).
   const ranked: IRankedFile[] = scored
     .slice(0, maxFiles * 3) // start with a generous pre-pool before budget pruning

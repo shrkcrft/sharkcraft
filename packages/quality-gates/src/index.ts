@@ -9,6 +9,7 @@ export * from './gates/graph-unresolved-gate.ts';
 export * from './gates/impact-baseline-gate.ts';
 export * from './gates/structural-patterns-gate.ts';
 export * from './gates/intent-classifier-gate.ts';
+export * from './gates/wiring-gate.ts';
 export * from './runner/run-gates.ts';
 export * from './runner/report-store.ts';
 export * from './runner/render-markdown.ts';

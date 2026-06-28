@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/graph",
-  "version": "0.1.0-alpha.21",
+  "version": "0.1.0-alpha.22",
   "description": "SharkCraft code intelligence graph: files, symbols, packages, imports and exports. Persistent JSONL store; on-disk index queried by every other code-intelligence package.",
   "license": "MIT",
   "author": "SharkCraft contributors",

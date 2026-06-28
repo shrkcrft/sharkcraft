@@ -20,6 +20,7 @@ import {
   structuralPatternsGate,
   type IStructuralPatternsGateOptions,
 } from '../gates/structural-patterns-gate.ts';
+import { wiringGate, type IWiringGateOptions } from '../gates/wiring-gate.ts';
 import {
   QUALITY_GATE_SCHEMA,
   type GateStatus,
@@ -48,6 +49,8 @@ export interface IRunGatesOptions {
   structuralPatterns?: IStructuralPatternsGateOptions;
   /** Optional intent-classifier gate config. */
   intentClassifier?: IIntentClassifierGateOptions;
+  /** Optional wiring gate config (the project's wiringRules + change scope). */
+  wiring?: IWiringGateOptions;
   /** Disable specific gates by id. */
   disable?: readonly string[];
 }
@@ -104,6 +107,9 @@ export function runQualityGates(options: IRunGatesOptions): IQualityGateReport {
   }
   if (!disabled.has('intent-classifier')) {
     gates.push(intentClassifierGate(options.projectRoot, options.intentClassifier ?? {}));
+  }
+  if (!disabled.has('wiring')) {
+    gates.push(wiringGate(options.projectRoot, options.wiring ?? {}));
   }
   if (!disabled.has('api-diff') && options.apiDiff) {
     gates.push(apiDiffGate(options.projectRoot, options.apiDiff));

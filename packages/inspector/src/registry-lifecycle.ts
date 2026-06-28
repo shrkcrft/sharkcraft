@@ -104,7 +104,17 @@ const REGISTER_PATTERNS: ReadonlyArray<RegExp> = Object.freeze([
   /(?:export\s+)?(?:async\s+)?function\s+(register[A-Z]\w*)\s*\(/g,
   // class method DECLARATION: requires a body `{` or return-type `:` after the
   // params, which a bare call site (`registry.registerX(...)`) never has.
-  /(?:^|\n)[\t ]*(?:public|private|protected)?\s*(?:static\s+)?(?:async\s+)?(register[A-Z]\w*)\s*\([^;]*?\)\s*[:{]/g,
+  // NOTE: every modifier carries its OWN single-line (`[ \t]`) trailing space
+  // and the leading whitespace class is single-line too — no two newline-
+  // spanning (`\s`) quantifiers sit adjacent. The old form had `[\t ]*` then
+  // `\s*` then `(?:static\s+)?` then `(?:async\s+)?` all touching, so from each
+  // `\n` anchor the engine re-partitioned the whole whitespace block looking for
+  // `register`: O(block^2) catastrophic backtracking that dominated the scan
+  // (~90% of runtime on a stripped source full of blanked comment/string runs).
+  // The only newline-spanning class is the final one, after the required `)`,
+  // where it cannot backtrack against a neighbour. Match-equivalent to the old
+  // pattern on real TS (modifiers always sit on the same line as `registerX(`).
+  /(?:^|\n)[ \t]*(?:(?:public|private|protected)[ \t]+)?(?:static[ \t]+)?(?:async[ \t]+)?(register[A-Z]\w*)[ \t]*\([^;]*?\)[ \t\r\n]*[:{]/g,
   // assigned arrow / function expression: `registerX = (…) =>` / `registerX = function`
   /\b(register[A-Z]\w*)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]*)?=>)/g,
 ]);

@@ -132,6 +132,23 @@ function enrichTraceWithGraph(
   };
 }
 
+/**
+ * The AUTHORITATIVE file set for a construct: declared globs replaced by their
+ * graph-resolved matches, declared concrete files kept as-is. This is what the
+ * counts, the `files` subverb, and the impact risk heuristic should use — the
+ * declared list under-counts because a single `src/**` glob is one entry that
+ * really covers N files. Falls back to the raw declared list when the graph is
+ * missing, preserving offline/no-index determinism.
+ */
+function effectiveConstructFiles(
+  declaredFiles: readonly string[],
+  graph: ITraceGraphEnrichment,
+): string[] {
+  if (graph.graphState !== 'fresh') return [...declaredFiles];
+  const concrete = declaredFiles.filter((f) => !GLOB_MAGIC.test(f));
+  return [...new Set([...concrete, ...graph.resolvedFiles])].sort();
+}
+
 export const constructsListCommand: ICommandHandler = {
   name: 'list',
   description: 'List registered constructs.',
@@ -246,13 +263,22 @@ export const constructsTraceCommand: ICommandHandler = {
           registryHints: c.tags?.filter((t) => /(registry|barrel)/i.test(t)) ?? [],
         }
       : undefined;
+    const effectiveFiles = effectiveConstructFiles(trace.files, graph);
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson({ ...trace, graph, ...(deepBlock ? { deep: deepBlock } : {}) }) + '\n');
+      process.stdout.write(
+        asJson({ ...trace, effectiveFiles, graph, ...(deepBlock ? { deep: deepBlock } : {}) }) + '\n',
+      );
       return 0;
     }
     process.stdout.write(header(`Trace: ${id}`));
-    process.stdout.write(`Files (${trace.files.length}):\n`);
-    for (const f of trace.files) process.stdout.write(`  • ${f}\n`);
+    // Show the graph-resolved file set (globs expanded) as the count, not the
+    // raw declared list — otherwise a single `src/**` glob reads as "1 file".
+    process.stdout.write(`Files (${effectiveFiles.length}):\n`);
+    for (const f of effectiveFiles) process.stdout.write(`  • ${f}\n`);
+    const declaredGlobs = trace.files.filter((f) => GLOB_MAGIC.test(f));
+    if (graph.graphState === 'fresh' && declaredGlobs.length > 0) {
+      process.stdout.write(`  (expanded from declared glob(s): ${declaredGlobs.join(', ')})\n`);
+    }
     if (trace.publicApi.length > 0) {
       process.stdout.write(`Public API:\n`);
       for (const a of trace.publicApi) process.stdout.write(`  → ${a}\n`);
@@ -330,13 +356,19 @@ export const constructsImpactCommand: ICommandHandler = {
     ];
     const verCfg = inspection.config?.verificationCommands ?? [];
     for (const v of verCfg.slice(0, 3)) verificationCommands.push(v.command);
-    const fileCount = trace.files.length;
+    // Risk must be computed from the graph-resolved file set: a glob-declared
+    // construct (`src/**`) is one declared entry but really touches N files, so
+    // the old `trace.files.length` under-counted it to risk='low'.
+    const declaredNames = new Set<string>([...trace.publicApi, ...trace.tokens, ...trace.events]);
+    const graph = enrichTraceWithGraph(trace.files, declaredNames, resolveCwd(args));
+    const effectiveFiles = effectiveConstructFiles(trace.files, graph);
+    const fileCount = effectiveFiles.length;
     const risk: 'low' | 'medium' | 'high' = fileCount > 12 ? 'high' : fileCount > 4 ? 'medium' : 'low';
     const humanReview = risk !== 'low';
     const report = {
       schema: 'sharkcraft.construct-impact/v1',
       id,
-      files: trace.files,
+      files: effectiveFiles,
       publicApi: trace.publicApi,
       events: trace.events,
       tokens: trace.tokens,
@@ -423,18 +455,23 @@ export const constructsFilesCommand: ICommandHandler = {
       return 1;
     }
     const trace = traceConstruct(c);
+    // Emit the graph-resolved files (globs expanded), not the raw declared
+    // globs — consumers piping `constructs files` expect real paths.
+    const graph = enrichTraceWithGraph(trace.files, new Set<string>(), resolveCwd(args));
+    const effectiveFiles = effectiveConstructFiles(trace.files, graph);
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson({ id, files: trace.files }) + '\n');
+      process.stdout.write(asJson({ id, files: effectiveFiles }) + '\n');
       return 0;
     }
-    for (const f of trace.files) process.stdout.write(`${f}\n`);
+    for (const f of effectiveFiles) process.stdout.write(`${f}\n`);
     return 0;
   },
 };
 
 export const constructsApiCommand: ICommandHandler = {
   name: 'api',
-  description: 'Show public-API entries for a construct. --public-only emits the raw list with no header.',
+  description:
+    'Show the DECLARED public-API entries for a construct (the hand-authored list, not an exhaustive scan — run `shrk constructs trace <id>` for graph-verified symbols defined in the files). --public-only emits the raw list with no header.',
   usage: 'shrk constructs api <id> [--public-only] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const id = args.positional[0];
@@ -488,7 +525,8 @@ export const constructsEventsCommand: ICommandHandler = {
 
 export const constructsTokensCommand: ICommandHandler = {
   name: 'tokens',
-  description: 'List tokens contributed by constructs.',
+  description:
+    'List the DECLARED tokens contributed by constructs (the hand-authored list, not an exhaustive scan).',
   usage: 'shrk constructs tokens [<id>] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const id = args.positional[0];
