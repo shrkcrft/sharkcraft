@@ -133,7 +133,6 @@ const CI_PROFILE: ISurfaceProfile = {
     'dev start',
     'dev status',
     'dev report',
-    'session',
     'ask',
     'orchestrate',
   ],

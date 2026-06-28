@@ -69,7 +69,7 @@ are still callable but no longer promoted.
 ## When to run the validation loop
 
 ```bash
-shrk dev cycle                # dev session walkthrough
+shrk preflight                # change-aware read-only gate orchestrator
 shrk doctor                   # workspace doctor — first thing in CI
 shrk self-config doctor       # cross-reference graph doctor
 shrk safety audit --deep      # before tagging a release

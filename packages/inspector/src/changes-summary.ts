@@ -12,6 +12,7 @@
  * Read-only; no AI; deterministic. Schema: sharkcraft.changes-summary/v1.
  */
 import { getChangedFiles } from './git-helpers.ts';
+import { resolveVerificationCommands } from './resolve-verification-commands.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
 export const CHANGES_SUMMARY_SCHEMA = 'sharkcraft.changes-summary/v1';
@@ -220,10 +221,19 @@ function computeRisk(files: readonly IChangedFileSummary[]): {
   return { risk: 'low', reasons };
 }
 
-function suggestValidationCommands(files: readonly IChangedFileSummary[]): string[] {
-  const out = new Set<string>();
-  out.add('bun x tsc -p tsconfig.base.json --noEmit');
-  out.add('bun test');
+function suggestValidationCommands(
+  files: readonly IChangedFileSummary[],
+  inspection: ISharkcraftInspection,
+): string[] {
+  // Project-aware base gates: prefer the repo's OWN configured
+  // verificationCommands (e.g. `nx build <app>` on an Nx repo) over the generic
+  // tsc/test pair, matching plan-simulate / review-packet / task-packet. The
+  // file-type conditional adds below are shrk meta-checks valid on any repo.
+  const out = new Set<string>(
+    resolveVerificationCommands(inspection, {
+      knowledgeDefaults: ['bun x tsc -p tsconfig.base.json --noEmit', 'bun test'],
+    }),
+  );
   if (files.some((f) => f.isMcpTool)) {
     out.add('shrk safety audit --deep');
     out.add('shrk commands doctor');
@@ -314,7 +324,7 @@ export async function buildChangesSummary(
     safetyRelevantFiles,
     risk,
     riskReasons: reasons,
-    suggestedValidationCommands: suggestValidationCommands(classified),
+    suggestedValidationCommands: suggestValidationCommands(classified, inspection),
     likelyPrSummary: buildPrSummary(classified),
   };
 }

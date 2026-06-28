@@ -202,6 +202,12 @@ MCP: `get_framework_entities` (with optional `routes: true`).
 | `shrk framework list` | enumerate framework entities |
 | `shrk framework routes` | NestJS route table |
 
+> Incremental indexing (`--changed` / `--since`) cost scales with the **number
+> of changed files**, not the repo size: a handful re-indexes in well under a
+> second, but a large changeset (100+ files, a branch switch, a generated-file
+> sweep) approaches a full rebuild — it is "cheap per changed file", not
+> "always cheap".
+
 ## MCP tools in one table
 
 All read-only. Missing-state errors carry `details.nextCommand`

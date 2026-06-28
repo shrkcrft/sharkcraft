@@ -1087,7 +1087,26 @@ export async function runGraphCallers(args: ParsedArgs): Promise<number> {
   // reads as a raw invocation count and under-reports.
   const dedupNote =
     'total counts distinct caller files — multiple sites within one file collapse to a single entry.';
-  const note = [ambiguityNote, langNote, dedupNote].filter(Boolean).join(' ');
+  // A class/type used only via `new`, a type annotation, or DI has ZERO call
+  // sites but real references. In the default `call` mode that surfaces as a
+  // bare `0`, which reads as "unused" — detect the case and point at
+  // `--mode reference` so the result is actionable instead of misleading.
+  let referenceHint: string | undefined;
+  if (mode === 'call' && liveSites.length === 0) {
+    // Filter by the same deleted-file set as liveSites so the hint can never
+    // contradict the call-mode result or the `--mode reference` total — without
+    // this, stale Calls/References edges in files deleted since indexing would
+    // fire a false "0 calls but N references" hint. referenceSitesOf dedups by
+    // file, so the count is distinct referencing files (matches --mode reference
+    // total), hence "file(s)" not "site(s)".
+    const refCount = api
+      .referenceSitesOf(sym.id)
+      .filter((s) => !s.node.path || !fresh.deletedSet.has(s.node.path)).length;
+    if (refCount > 0) {
+      referenceHint = `0 call sites, but ${refCount} file(s) reference it (new/type/DI usage) — run \`shrk graph callers ${sym.label} --mode reference\` to see them.`;
+    }
+  }
+  const note = [ambiguityNote, langNote, dedupNote, referenceHint].filter(Boolean).join(' ');
   const payload = {
     schema: 'sharkcraft.graph-callers/v1',
     symbol: nodeSummary(sym),

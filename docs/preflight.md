@@ -2,8 +2,9 @@
 
 `shrk preflight` orchestrates the right read-only gates for the
 current change-set instead of running everything unconditionally.
-It's the pre-commit / `--since <ref>` adapter that pairs with
-`shrk dev cycle` (a fixed-sequence steady-state loop).
+It's the pre-commit / `--since <ref>` adapter and the CLI orchestrator
+for the dev-cycle gate plan (read-only via the `get_dev_cycle_plan` MCP
+tool — see [dev-cycle.md](./dev-cycle.md)).
 
 ## Quick start
 

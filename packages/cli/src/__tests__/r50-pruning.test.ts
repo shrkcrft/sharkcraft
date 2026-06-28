@@ -148,8 +148,11 @@ describe('surface lockdown holds', () => {
     // out the delegatable-task surface — ceiling 386. The token-compression
     // layer adds four deterministic, reversible commands — `compress` / `expand`
     // (Compress-Cache-Retrieve) and `align` / `unalign` (KV-cache alignment) —
-    // raising the ceiling to 392 (see docs/compression.md).
-    expect(COMMAND_CATALOG.length).toBeLessThan(392);
+    // raising the ceiling to 392 (see docs/compression.md). The dev
+    // subcommand catalog is then reconciled with the runtime handler:
+    // `dev status`, `dev next`, and `dev continue` were real subcommands
+    // missing from the catalog (surface-drift fix) — +3 entries, ceiling 395.
+    expect(COMMAND_CATALOG.length).toBeLessThan(395);
     // Sanity: not absurdly small.
     expect(COMMAND_CATALOG.length).toBeGreaterThan(250);
   });

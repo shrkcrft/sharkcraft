@@ -126,20 +126,61 @@ export function resolveImport(
   return { specifier, kind: ImportResolution.External };
 }
 
+/**
+ * TS NodeNext / ESM resolution requires import specifiers to carry a JS-family
+ * extension even though the file on disk is TypeScript (`import './x.js'` →
+ * `x.ts`). Map each JS extension to the TS source extension(s) the compiler
+ * would have emitted it from. Without this, every `.js`-suffixed relative import
+ * in a NodeNext project is a false "unresolved import" — the single biggest
+ * source of under-counted graph dependents.
+ */
+const JS_TO_TS_EXTS: Record<string, readonly string[]> = {
+  '.js': ['.ts', '.tsx'],
+  '.jsx': ['.tsx', '.ts'],
+  '.mjs': ['.mts'],
+  '.cjs': ['.cts'],
+};
+
+/**
+ * The declaration extension. It cannot live in `PROBE_EXTS` because
+ * `extname('x.d.ts') === '.ts'` (so the `includes(ext)` literal-path guard would
+ * never match it), and it must always be tried LAST — a real implementation file
+ * wins over a declaration. But a declaration-only module (a hand-authored
+ * `.d.ts` with no sibling impl) is still a resolvable graph target, not an
+ * unresolved import, so it is appended as the final candidate everywhere.
+ */
+const DECL_EXT = '.d.ts';
+
 function probeCandidate(absPathNoExt: string): string | undefined {
   // If the path already has a known extension and exists, return it.
   const ext = nodePath.extname(absPathNoExt);
-  if (PROBE_EXTS.includes(ext) && existsSafe(absPathNoExt) && isFile(absPathNoExt)) {
-    return absPathNoExt;
+  if (PROBE_EXTS.includes(ext)) {
+    // A real file on disk at the literal path wins (a genuine `.js` next to no
+    // `.ts`, an asset, etc.).
+    if (existsSafe(absPathNoExt) && isFile(absPathNoExt)) {
+      return absPathNoExt;
+    }
+    // NodeNext: rewrite the JS-family extension to its TS source extension and
+    // probe those (then a declaration-only sibling) before giving up.
+    const tsExts = JS_TO_TS_EXTS[ext];
+    if (tsExts) {
+      const base = absPathNoExt.slice(0, -ext.length);
+      for (const e of tsExts) {
+        const cand = base + e;
+        if (existsSafe(cand) && isFile(cand)) return cand;
+      }
+      const dts = base + DECL_EXT;
+      if (existsSafe(dts) && isFile(dts)) return dts;
+    }
   }
-  // Try appending each known extension.
-  for (const e of PROBE_EXTS) {
+  // Try appending each known extension (extensionless specifier), then `.d.ts`.
+  for (const e of [...PROBE_EXTS, DECL_EXT]) {
     const cand = absPathNoExt + e;
     if (existsSafe(cand) && isFile(cand)) return cand;
   }
-  // Try as a directory with index.<ext>.
+  // Try as a directory with index.<ext> (then index.d.ts).
   if (existsSafe(absPathNoExt) && isDir(absPathNoExt)) {
-    for (const e of PROBE_EXTS) {
+    for (const e of [...PROBE_EXTS, DECL_EXT]) {
       const cand = nodePath.join(absPathNoExt, `index${e}`);
       if (existsSafe(cand) && isFile(cand)) return cand;
     }

@@ -247,7 +247,9 @@ const SCHEMA_ENTRIES: ReadonlyArray<ISchemaInventoryEntry> = [
     ],
     currentVersion: 'v1',
     summary: 'Dev-cycle gate plan (sequence of read-only validation gates).',
-    emittedBy: 'shrk dev cycle --explain',
+    // The `shrk dev cycle` CLI verb was removed; the plan is now read-only via
+    // the MCP tool. `shrk preflight` is the CLI orchestrator that runs gates.
+    emittedBy: 'mcp: get_dev_cycle_plan',
   },
   {
     id: 'sharkcraft.apply-dispatch-trace',

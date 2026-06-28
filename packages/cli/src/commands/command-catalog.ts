@@ -675,6 +675,26 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     writesFiles: true,
   }),
   entry({
+    command: 'dev status',
+    description: 'Show session phase, progress, and next action. Read-only.',
+    category: 'dev',
+    safetyLevel: SafetyLevel.ReadOnly,
+  }),
+  entry({
+    command: 'dev next',
+    description: 'Show (and persist) the next recommended action for a session.',
+    category: 'dev',
+    safetyLevel: SafetyLevel.WritesSessionOnly,
+    writesFiles: true,
+  }),
+  entry({
+    command: 'dev continue',
+    description: 'Alias of dev next — advance the session to its next action.',
+    category: 'dev',
+    safetyLevel: SafetyLevel.WritesSessionOnly,
+    writesFiles: true,
+  }),
+  entry({
     command: 'dev mark-applied',
     description: 'Metadata-only: mark a session plan applied. No source writes.',
     category: 'dev',

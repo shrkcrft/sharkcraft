@@ -616,6 +616,13 @@ export const checkCommand: ICommandHandler = {
     if (sub === 'registry-lifecycle') {
       const cwd = resolveCwd(args);
       const { buildRegistryLifecycleReport, renderRegistryLifecycleReportText } = await import('@shrkcrft/inspector');
+      // The scan is a single synchronous pass with no streamed output; on a
+      // large repo it can run for tens of seconds. Without a heartbeat that
+      // silence reads as a hang, so announce the work first (human path only —
+      // JSON consumers want a clean stdout).
+      if (!flagBool(args, 'json')) {
+        process.stderr.write('⏳ Scanning source + registries for lifecycle coverage (can take a while on large repos)…\n');
+      }
       const report = buildRegistryLifecycleReport({ projectRoot: cwd });
       if (flagBool(args, 'json')) {
         process.stdout.write(asJson(report) + '\n');

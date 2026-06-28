@@ -23,6 +23,7 @@ import {
   type ISavedPlan,
 } from '@shrkcrft/generator';
 import { reviewSavedPlan, type IPlanReviewReport } from './plan-review.ts';
+import { resolveVerificationCommands } from './resolve-verification-commands.ts';
 import { loadOwnershipRules, impactFor as ownershipImpactFor } from './ownership.ts';
 import { listConstructs, loadConstructs } from './construct-registry.ts';
 import { listPlaybooks, recommendPlaybooks } from './playbook-registry.ts';
@@ -585,13 +586,22 @@ export async function simulatePlan(
     }
   }
 
-  // Required validations.
-  const requiredValidations = new Set<string>([
-    'bun x tsc -p tsconfig.base.json --noEmit',
-    'bun test',
-    'shrk doctor',
-    'shrk check boundaries',
-  ]);
+  // Required validations. Prefer the project's OWN configured verification
+  // commands (config.verificationCommands), so on e.g. an Nx repo that lists
+  // `nx build <app>` plan-simulate emits that instead of misleading generic
+  // gates. Falls back to the engine defaults only when nothing is configured.
+  // No pipelineIds are passed: a saved plan carries no task query to rank
+  // pipelines against, so resolution is config-driven, not pipeline-matched.
+  const requiredValidations = new Set<string>(
+    resolveVerificationCommands(inspection, {
+      knowledgeDefaults: [
+        'bun x tsc -p tsconfig.base.json --noEmit',
+        'bun test',
+        'shrk doctor',
+        'shrk check boundaries',
+      ],
+    }),
+  );
   if (publicApiTouched || barrelExportTouched) requiredValidations.add('shrk api report --all --public-only');
   if (pluginKeysTouched) requiredValidations.add('shrk packs doctor --release');
   if (adapterBoundaryTouched) requiredValidations.add('shrk architecture violations');

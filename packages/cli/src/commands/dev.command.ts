@@ -74,7 +74,6 @@ const SUBCOMMANDS = new Set([
   'plans',
   'reports',
   'commands',
-  'cycle',
 ]);
 
 function slugify(s: string): string {

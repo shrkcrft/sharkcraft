@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/config",
-  "version": "0.1.0-alpha.20",
+  "version": "0.1.0-alpha.21",
   "description": "SharkCraft config loader: sharkcraft.config.ts discovery, defaults, zod-validated schema.",
   "license": "MIT",
   "author": "SharkCraft contributors",
