@@ -60,10 +60,14 @@ export class GeminiProvider extends AbstractAiProvider {
     }
 
     try {
-      const url = `${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      // Pass the API key via the `x-goog-api-key` header rather than a
+      // `?key=` query param (mirrors ClaudeProvider's `x-api-key` form). A
+      // key in the URL leaks into proxy logs, server access logs, and the
+      // `catch` below (which reports `e.message`, often containing the URL).
+      const url = `${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`;
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify(body),
       });
       if (!res.ok) {

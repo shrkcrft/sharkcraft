@@ -1,4 +1,9 @@
-import { inspectSharkcraft, buildProjectOverview, renderOverviewText } from '@shrkcrft/inspector';
+import {
+  inspectSharkcraft,
+  buildProjectOverview,
+  renderOverviewText,
+  contextTuningBoostFor,
+} from '@shrkcrft/inspector';
 import { buildContext } from '@shrkcrft/context';
 import {
   findNextStep,
@@ -106,6 +111,7 @@ export const pipelinesContextCommand: ICommandHandler = {
       scope,
       maxTokens,
       projectOverview: renderOverviewText(overview),
+      boostFor: contextTuningBoostFor(inspection, task),
     });
 
     if (flagBool(args, 'json')) {

@@ -14,6 +14,7 @@ import {
   GraphQueryApi,
   GraphStore,
   hasCallGraphReferences,
+  isGraphStoreCorruptError,
   NodeKind,
   updateChanged,
 } from '@shrkcrft/graph';
@@ -24,7 +25,7 @@ import { FrameworkQueryApi, FrameworkStore } from '@shrkcrft/framework-scanners'
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { compactArrayToColumnar } from '@shrkcrft/compress';
-import { flagBool, flagString, resolveCwd, type ParsedArgs } from '../command-registry.ts';
+import { flagBool, flagPositiveInt, flagString, resolveCwd, type ParsedArgs } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { maybeRunInWatchMode } from '../output/watch-loop.ts';
 
@@ -78,6 +79,15 @@ function maybeColumnarize(payload: Record<string, unknown>, args: ParsedArgs): u
 const STALE_HINT = `Index is missing or stale. Run 'shrk graph index' to build it.`;
 const STALE_RESULT_HINT =
   'Some result files changed since the index was built — auto-refresh is on by default (you passed --no-refresh / SHRK_GRAPH_NO_REFRESH). Drop the opt-out, or run `shrk graph index --changed`, for fresh results.';
+const CORRUPT_HINT = 'code graph store is corrupt — run `shrk graph index` to rebuild.';
+
+/**
+ * Per-list display cap for `graph context`. The JSON payload always reports the
+ * true pre-slice count (`total<List>`) and a `<list>Truncated` flag so a
+ * high-fan-in node is never silently capped (mirrors runGraphCycles /
+ * runGraphCallers). Kept in sync with the MCP `get_graph_context` tool.
+ */
+const CONTEXT_LIST_CAP = 50;
 
 /**
  * Refresh-by-default: incrementally reindex changed/deleted files BEFORE
@@ -151,9 +161,32 @@ function indexBehindHint(cwd: string): string | null {
   return `Index is ${behind} file(s) behind (${f.modified.length} modified, ${f.added.length} new, ${f.deleted.length} deleted) — run \`shrk graph index --changed\` and retry.`;
 }
 
+/**
+ * Reject a stray positional on a subverb that takes NO file argument
+ * (status/cycles/unresolved/index). These previously printed a byte-identical
+ * global report for any/no/bogus arg, so `shrk graph status foo` silently
+ * swallowed `foo`. Returns the exit code to use (2) when an unexpected
+ * positional[1+] is present, or null when the args are clean. `subverb` is
+ * positional[0]; anything at positional[1] is the offending extra.
+ */
+function strayPositionalError(args: ParsedArgs, subverb: string): number | null {
+  const extra = args.positional[1];
+  if (extra === undefined) return null;
+  if (flagBool(args, 'json')) {
+    process.stdout.write(asJson({ ok: false, error: 'unexpected-argument', argument: extra }) + '\n');
+  } else {
+    process.stderr.write(
+      `'shrk graph ${subverb}' takes no positional argument (got "${extra}"). Usage: shrk graph ${subverb} [--json]\n`,
+    );
+  }
+  return 2;
+}
+
 // ─── shrk graph index ─────────────────────────────────────────────────
 
 export async function runGraphIndex(args: ParsedArgs): Promise<number> {
+  const stray = strayPositionalError(args, 'index');
+  if (stray !== null) return stray;
   // --watch: run the index once, then re-run on file changes. Every
   // tick after the first uses the incremental updater so a 5-file edit
   // takes < 100ms. Default watch path is the project root; pass
@@ -264,6 +297,8 @@ async function runGraphIndexOnce(args: ParsedArgs): Promise<number> {
 export async function runGraphCycles(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const wantJson = flagBool(args, 'json');
+  const stray = strayPositionalError(args, 'cycles');
+  if (stray !== null) return stray;
   const limit = parseLimit(args);
   const minSize = parseMinSize(args);
 
@@ -283,7 +318,8 @@ export async function runGraphCycles(args: ParsedArgs): Promise<number> {
     process.stderr.write(STALE_HINT + '\n');
     return 1;
   }
-  const api = GraphQueryApi.fromStore(cwd);
+  const api = loadGuarded(() => GraphQueryApi.fromStore(cwd), wantJson);
+  if (!api) return 1;
   const allCycles = api.cycles();
   const filtered = allCycles.filter((c) => c.size >= minSize);
   const limited = filtered.slice(0, limit);
@@ -344,6 +380,8 @@ function parseMinSize(args: ParsedArgs): number {
 export async function runGraphUnresolved(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const wantJson = flagBool(args, 'json');
+  const stray = strayPositionalError(args, 'unresolved');
+  if (stray !== null) return stray;
   const limit = parseLimit(args);
 
   const store = new GraphStore(cwd);
@@ -362,7 +400,8 @@ export async function runGraphUnresolved(args: ParsedArgs): Promise<number> {
     process.stderr.write(STALE_HINT + '\n');
     return 1;
   }
-  const snap = store.loadSnapshot();
+  const snap = loadGuarded(() => store.loadSnapshot(), wantJson);
+  if (!snap) return 1;
   // Group unresolved edges by source file.
   type Group = { from: string; path?: string; specifiers: string[] };
   const groups = new Map<string, Group>();
@@ -461,7 +500,8 @@ export async function runGraphDeps(args: ParsedArgs): Promise<number> {
     process.stderr.write(STALE_HINT + '\n');
     return 1;
   }
-  const api = GraphQueryApi.fromStore(cwd);
+  const api = loadGuarded(() => GraphQueryApi.fromStore(cwd), wantJson);
+  if (!api) return 1;
   const pkgId = `package:${pkg}`;
   // Existence guard (mirrors the MCP tool): without it, an unknown package
   // name returns a confidently-wrong empty `dependsOn/dependedOnBy` that reads
@@ -518,6 +558,8 @@ export async function runGraphDeps(args: ParsedArgs): Promise<number> {
 export async function runGraphStatus(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const wantJson = flagBool(args, 'json');
+  const stray = strayPositionalError(args, 'status');
+  if (stray !== null) return stray;
   const store = new GraphStore(cwd);
   if (!store.exists()) {
     const payload = {
@@ -533,8 +575,18 @@ export async function runGraphStatus(args: ParsedArgs): Promise<number> {
     process.stderr.write(STALE_HINT + '\n');
     return 1;
   }
-  const verify = store.verifyDigest();
-  const snap = store.loadSnapshot();
+  // A corrupt store (a truncated/garbled JSONL row) must surface as a `corrupt`
+  // status line + non-zero exit, NOT a raw `Fatal: JSON Parse error` crash.
+  let verify: ReturnType<GraphStore['verifyDigest']>;
+  let snap: ReturnType<GraphStore['loadSnapshot']>;
+  try {
+    verify = store.verifyDigest();
+    snap = store.loadSnapshot();
+  } catch (err) {
+    const code = emitCorruptStore(err, wantJson);
+    if (code !== null) return code;
+    throw err;
+  }
   const manifestNodeCount = sumValues(snap.manifest.nodesByKind);
   const manifestEdgeCount = sumValues(snap.manifest.edgesByKind);
   // Honest freshness vs the working tree. `corrupt` (store self-integrity) and
@@ -615,40 +667,63 @@ export async function runGraphSearch(args: ParsedArgs): Promise<number> {
     return 2;
   }
   const kindFlag = flagString(args, 'kind') as 'file' | 'symbol' | 'package' | undefined;
-  const limit = Number(flagString(args, 'limit') ?? '20');
+  // NaN-safe --limit: a fat-fingered `--limit abc` must fall back to the default,
+  // not become `Number('abc') === NaN` (which zeroed the result via a NaN slice).
+  const limit = flagPositiveInt(args, 'limit', 20);
   maybeRefresh(args, cwd);
   const api = loadOrFail(cwd, wantJson);
   if (!api) return 1;
 
-  let matches: INode[];
+  // Compute the TRUE pre-slice match count so `total`/`truncated` stay honest —
+  // the old code reported the post-cap length as the total, so 285 matches read
+  // as `total: 20` with no signal there was more.
+  let page: INode[];
+  let total: number;
   if (hasUnresolved) {
     const all = api.filesWithUnresolvedImports();
-    matches = (query
+    const filtered = query
       ? all.filter((n) => (n.path ?? '').toLowerCase().includes(query.toLowerCase()))
-      : [...all]
-    ).slice(0, limit);
+      : [...all];
+    total = filtered.length;
+    page = filtered.slice(0, limit);
   } else {
-    matches = collectSearchMatches(api, query!, kindFlag, limit);
+    const res = collectSearchMatches(api, query!, kindFlag, limit);
+    page = res.matches;
+    total = res.total;
   }
+
+  // Targeted staleness over the displayed page (parity with MCP / callers): drop
+  // deleted result files, flag modified ones, and reduce `total` by the
+  // deletions we observed so a dead file is never counted.
+  const summarised = page.map(toSearchHit);
+  const fresh = resultStaleness(api, cwd, summarised.map((m) => m.path));
+  const live = summarised.filter((m) => !m.path || !fresh.deletedSet.has(m.path));
+  const adjustedTotal = total - (summarised.length - live.length);
+  const truncated = adjustedTotal > limit;
 
   if (wantJson) {
     process.stdout.write(asJson({
       schema: 'sharkcraft.graph-search/v1',
       query,
       kind: kindFlag ?? 'any',
-      total: matches.length,
-      matches: matches.map(toSearchHit),
+      total: adjustedTotal,
+      truncated,
+      matches: live,
+      ...(fresh.field ?? {}),
     }) + '\n');
     return 0;
   }
   const headerLabel = query ?? (hasUnresolved ? 'files with unresolved imports' : '');
-  if (matches.length === 0) {
+  if (live.length === 0) {
     process.stdout.write(`No matches for "${headerLabel}".\n`);
     return 0;
   }
   process.stdout.write(header(`Graph search: ${headerLabel}`));
-  for (const m of matches) {
+  for (const m of live) {
     process.stdout.write(`  ${m.kind.padEnd(8)} ${m.label}${m.path ? '  ' + m.path : ''}${m.line ? ':' + m.line : ''}\n`);
+  }
+  if (truncated) {
+    process.stdout.write(`\n(${adjustedTotal - live.length} more — pass --limit ${adjustedTotal} to see all)\n`);
   }
   return 0;
 }
@@ -663,7 +738,7 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
     process.stderr.write('Usage: shrk graph context <fileOrSymbol> [--depth N] [--no-bridge] [--no-framework]\n');
     return 2;
   }
-  const depth = Math.max(1, Math.min(3, Number(flagString(args, 'depth') ?? '1')));
+  const depth = Math.min(3, flagPositiveInt(args, 'depth', 1));
   const includeBridge = !flagBool(args, 'no-bridge');
   const includeFramework = !flagBool(args, 'no-framework');
   maybeRefresh(args, cwd);
@@ -706,16 +781,18 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
     ? FrameworkQueryApi.fromStore(cwd).forFile(anchorFile.path)
     : [];
 
-  const importsFromList = neighbours.out
-    .filter((o) => o.edge.kind === 'imports-file')
-    .slice(0, 50)
+  // Pre-slice the homogeneous filtered arrays so the payload can report the TRUE
+  // count + a truncated flag instead of silently capping each list at 50.
+  const importsFromAll = neighbours.out.filter((o) => o.edge.kind === 'imports-file');
+  const importedByAll = neighbours.in.filter((i) => i.edge.kind === 'imports-file');
+  const importsFromList = importsFromAll
+    .slice(0, CONTEXT_LIST_CAP)
     .map((o) => ('target' in o ? targetSummary(o.target) : { id: 'unknown', resolved: false }));
-  const importedByList = neighbours.in
-    .filter((i) => i.edge.kind === 'imports-file')
-    .slice(0, 50)
+  const importedByList = importedByAll
+    .slice(0, CONTEXT_LIST_CAP)
     .map((i) => ('source' in i ? sourceSummary(i.source) : { id: 'unknown', resolved: false }));
-  const referencedByList = references.slice(0, 50).map(nodeSummary);
-  const calledByList = callers.slice(0, 50).map(nodeSummary);
+  const referencedByList = references.slice(0, CONTEXT_LIST_CAP).map(nodeSummary);
+  const calledByList = callers.slice(0, CONTEXT_LIST_CAP).map(nodeSummary);
   // Staleness over the anchor + every referenced file: drop dead paths from the
   // usage lists, flag changed ones.
   const ctxPathOf = (x: { path?: string }): string | undefined => x.path;
@@ -734,10 +811,18 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
     declaredIn: anchor.kind === NodeKind.Symbol && anchorFile ? nodeSummary(anchorFile) : null,
     depth,
     importsFrom: ctxDropDel(importsFromList),
+    totalImportsFrom: importsFromAll.length,
+    importsFromTruncated: importsFromAll.length > CONTEXT_LIST_CAP,
     importedBy: ctxDropDel(importedByList),
+    totalImportedBy: importedByAll.length,
+    importedByTruncated: importedByAll.length > CONTEXT_LIST_CAP,
     symbols: symbols.slice(0, 50).map(nodeSummary),
     referencedBy: ctxDropDel(referencedByList),
+    totalReferencedBy: references.length,
+    referencedByTruncated: references.length > CONTEXT_LIST_CAP,
     calledBy: ctxDropDel(calledByList),
+    totalCalledBy: callers.length,
+    calledByTruncated: callers.length > CONTEXT_LIST_CAP,
     ...(subtypes.length > 0 ? { subtypes: subtypes.slice(0, 50).map(nodeSummary) } : {}),
     ...(supertypes.length > 0 ? { supertypes: supertypes.slice(0, 50).map(nodeSummary) } : {}),
     ...(fresh.field ?? {}),
@@ -862,8 +947,8 @@ export async function runGraphImpact(args: ParsedArgs): Promise<number> {
     );
     return 2;
   }
-  const maxDepth = Math.max(1, Math.min(10, Number(flagString(args, 'max-depth') ?? '5')));
-  const limit = Math.max(1, Number(flagString(args, 'limit') ?? '200'));
+  const maxDepth = Math.min(10, flagPositiveInt(args, 'max-depth', 5));
+  const limit = flagPositiveInt(args, 'limit', 200);
   maybeRefresh(args, cwd);
 
   // --full → delegate to the impact-engine for a richer v3 payload.
@@ -991,8 +1076,25 @@ export async function runGraphImpact(args: ParsedArgs): Promise<number> {
 export async function runGraphHubs(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const wantJson = flagBool(args, 'json');
-  const limit = Math.max(1, Math.min(100, Number(flagString(args, 'limit') ?? '15')));
-  const pathScope = flagString(args, 'path');
+  const limit = Math.min(100, flagPositiveInt(args, 'limit', 15));
+  // A positional scope (`shrk graph hubs packages/cli`) is honoured the same as
+  // --path; passing BOTH is ambiguous, so error rather than silently ignoring
+  // the positional (which previously yielded a byte-identical global report).
+  const pathFlag = flagString(args, 'path');
+  const positionalPath = args.positional[1];
+  if (pathFlag && positionalPath) {
+    if (wantJson) {
+      process.stdout.write(
+        asJson({ ok: false, error: 'ambiguous-path', positional: positionalPath, flag: pathFlag }) + '\n',
+      );
+    } else {
+      process.stderr.write(
+        `Pass the scope path either as a positional or with --path, not both (got "${positionalPath}" and --path ${pathFlag}).\n`,
+      );
+    }
+    return 2;
+  }
+  const pathScope = pathFlag ?? positionalPath;
   maybeRefresh(args, cwd);
   const api = loadOrFail(cwd, wantJson);
   if (!api) return 1;
@@ -1184,7 +1286,7 @@ export async function runGraphPath(args: ParsedArgs): Promise<number> {
     process.stderr.write('Usage: shrk graph path <from> <to> [--max-depth N] [--no-refresh] [--json]\n');
     return 2;
   }
-  const maxDepth = Math.max(1, Math.min(32, Number(flagString(args, 'max-depth') ?? '16')));
+  const maxDepth = Math.min(32, flagPositiveInt(args, 'max-depth', 16));
   maybeRefresh(args, cwd);
   const api = loadOrFail(cwd, wantJson);
   if (!api) return 1;
@@ -1291,6 +1393,45 @@ export async function runGraphPath(args: ParsedArgs): Promise<number> {
 
 // ─── helpers ──────────────────────────────────────────────────────────
 
+/**
+ * Convert the typed corrupt-store error (one bad JSONL line) into a
+ * deterministic "rebuild the index" message + non-zero exit, instead of letting
+ * an unhandled `Fatal: JSON Parse error` escape the CLI. Returns the exit code
+ * (1) when `err` is a corrupt-store error, or null to signal "not mine — rethrow".
+ */
+function emitCorruptStore(err: unknown, wantJson: boolean): number | null {
+  if (!isGraphStoreCorruptError(err)) return null;
+  if (wantJson) {
+    process.stdout.write(
+      asJson({
+        ok: false,
+        state: 'corrupt',
+        nextCommand: 'shrk graph index',
+        message: CORRUPT_HINT,
+        ...(err.details ?? {}),
+      }) + '\n',
+    );
+  } else {
+    process.stderr.write(CORRUPT_HINT + '\n');
+  }
+  return 1;
+}
+
+/**
+ * Run a store-loading thunk, mapping a corrupt store to a clean rebuild hint.
+ * Returns the loaded value, or undefined when the store was corrupt (the
+ * message + exit have already been emitted; the caller should `return 1`). Any
+ * other error is rethrown unchanged.
+ */
+function loadGuarded<T>(load: () => T, wantJson: boolean): T | undefined {
+  try {
+    return load();
+  } catch (err) {
+    if (emitCorruptStore(err, wantJson) !== null) return undefined;
+    throw err;
+  }
+}
+
 function loadOrFail(cwd: string, wantJson: boolean): GraphQueryApi | undefined {
   const store = new GraphStore(cwd);
   if (!store.exists()) {
@@ -1308,7 +1449,7 @@ function loadOrFail(cwd: string, wantJson: boolean): GraphQueryApi | undefined {
     }
     return undefined;
   }
-  return GraphQueryApi.fromStore(cwd);
+  return loadGuarded(() => GraphQueryApi.fromStore(cwd), wantJson);
 }
 
 function resolveAnchor(api: GraphQueryApi, target: string): INode | undefined {
@@ -1328,43 +1469,19 @@ function resolveAnchor(api: GraphQueryApi, target: string): INode | undefined {
   return undefined;
 }
 
+/**
+ * Delegate to the shared {@link GraphQueryApi.searchNodes} so the CLI and the
+ * MCP `get_graph_search` tool can never disagree on results OR the honest
+ * pre-slice `total` (the two surfaces used to maintain divergent copies of this
+ * fuzzy-match logic). Returns the display page + the true match count.
+ */
 function collectSearchMatches(
   api: GraphQueryApi,
   query: string,
   kind: 'file' | 'symbol' | 'package' | undefined,
   limit: number,
-): INode[] {
-  const out: INode[] = [];
-  if (!kind || kind === 'file') {
-    const f = api.findFile(query);
-    if (f) out.push(f);
-    // Fuzzy fallback: substring match on path/basename so `shrk graph
-    // search Foo --kind file` finds `libs/x/y/Foo.ts` without forcing the
-    // caller to type the full path. Skips the node if exact match already
-    // included it.
-    if (out.length < limit) {
-      const q = query.toLowerCase();
-      const seen = new Set(out.map((n) => n.id));
-      for (const node of api.allFiles()) {
-        if (seen.has(node.id)) continue;
-        const p = node.path?.toLowerCase() ?? '';
-        const base = p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p;
-        if (base.includes(q) || p.includes(q)) {
-          out.push(node);
-          seen.add(node.id);
-          if (out.length >= limit) break;
-        }
-      }
-    }
-  }
-  if (!kind || kind === 'symbol') {
-    for (const s of api.findSymbol(query, { exact: false, limit })) out.push(s);
-  }
-  if (!kind || kind === 'package') {
-    const p = api.neighbours(`package:${query}`);
-    if (p) out.push(p.node);
-  }
-  return out.slice(0, limit);
+): { matches: INode[]; total: number } {
+  return api.searchNodes(query, { ...(kind ? { kind } : {}), limit });
 }
 
 function reverseClosure(

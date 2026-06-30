@@ -71,6 +71,14 @@ export const graphCommand: ICommandHandler = {
     const graph = buildKnowledgeGraph(inspection);
     const sub = args.positional[0];
     const typeFlag = flagString(args, 'type') as GraphNodeKind | undefined;
+    // A typo'd `--type` would otherwise silently match zero nodes and return an
+    // empty summary / "no node" at exit 0/1. Reject loudly with the valid list.
+    if (typeFlag && !KNOWN_KINDS.includes(typeFlag)) {
+      process.stderr.write(
+        `Unknown --type ${typeFlag}. Valid: ${KNOWN_KINDS.join(', ')}\n`,
+      );
+      return 2;
+    }
     const formatFlag = (flagString(args, 'format') ?? 'text') as
       | 'text'
       | 'json'

@@ -133,6 +133,28 @@ describe('extractKotlinFile', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('captures extension functions with dotted / generic receivers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-kt-ext-'));
+    try {
+      const file = join(root, 'Extensions.kt');
+      writeFileSync(
+        file,
+        [
+          'fun plain(): Int = 1',
+          'fun String.reversedWords(): String = ""',
+          'fun List<Int>.second(): Int = this[1]',
+        ].join('\n'),
+      );
+      const fp = fingerprintFile(file, root);
+      const ex = extractKotlinFile(fp, file);
+      const names = ex.symbolNodes.map((s) => s.label).sort();
+      // The receiver is dropped; the final identifier is the function name.
+      expect(names).toEqual(['plain', 'reversedWords', 'second']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('dispatcher — Rust + Kotlin end-to-end', () => {

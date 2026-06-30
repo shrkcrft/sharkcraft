@@ -40,10 +40,13 @@ Without `SHARKCRAFT_PLAN_SECRET` the plan is unsigned and `apply
 --verify-signature` refuses; without `--verify-signature` an unsigned plan
 applies (matching the existing `shrk apply` policy).
 
-## MCP
+## Previewing read-only
 
-`preview_ingest_adoption_plan` is read-only. It returns the plan body
-(including byte-counted `expectedChanges`) and refuses to persist.
+The standalone `preview_ingest_adoption_plan` MCP tool was retired. To
+preview without persisting, run the ingest planner in dry-run on the CLI
+(`shrk ingest … --dry-run`): it returns the plan body (including
+byte-counted `expectedChanges`) and writes nothing. Applying the plan is
+always the human-run CLI step (`shrk apply`), never an MCP write.
 
 ## Schema
 

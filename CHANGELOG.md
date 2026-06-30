@@ -5,6 +5,80 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [0.1.0-alpha.23] — Correctness, gate trust, security & pack-distributable invariants
+
+A large hardening release across four themes: keep the code graph honest, keep
+the gates trustworthy, close real safety/security holes in the write + signing
+paths, and let packs distribute project invariants as data. All changes ship
+with tests; the suite grew by ~240 tests.
+
+### Code-graph correctness (the substrate)
+
+- **Incremental reindex no longer drops inbound edges.** Editing a symbol's
+  declaring file silently deleted every inbound caller/reference/heritage edge
+  from *unchanged* files, so `graph callers X` returned 0 until a full reindex.
+  Removal is now outbound-only with a referrer re-stitch pass.
+- **Renamed barrel re-exports resolve.** `export { X as Y } from './x'` now
+  resolves callers/impact to the real symbol (previously a confident empty
+  result); `export { default as Y }` handled too.
+- `graph context`/`search`/`callers`/`impact` report a true `total` + a
+  `truncated` flag instead of a silent per-file cap; a corrupt graph store now
+  yields a "run `shrk graph index` to rebuild" hint instead of a JSON-parse crash.
+- Polyglot extractors fixed: Ruby methods inside a class (were all dropped),
+  Kotlin extension functions, Go same-named methods across receivers, Swift
+  `extension` colliding with its type, React anonymous/arrow default-export
+  components.
+
+### Gate & CLI trustworthiness
+
+- Wiring **and** policy gates now distinguish "evaluated and clean" from
+  "evaluated nothing" (a loud `skipped`, not a green pass); policy `--changed-only`
+  no longer reports debt in files the diff never touched.
+- `shrk gate --fail-on` is threshold-based (so `--fail-on high` also fails
+  `critical`) and rejects unknown values; the impact gate honors the changeset.
+- New composite changeset-scoped run + `shrk impact --deleted` orphan check.
+- A second sweep of CLI honesty: many commands that silently accepted an unknown
+  `--type`/`--kind`/`--source`/filter (returning empty + exit 0) now reject it
+  with a valid-value list; NaN `--limit`/`--budget` guarded; dead flags removed.
+
+### Safety & security (write + signing paths)
+
+- **Pack signatures fail closed.** Dev signatures are no longer accepted as
+  release-trusted (forgeable "verified" packs) — opt in with
+  `--allow-dev-signature`; `packs verify --required` now FAILS when the secret is
+  missing instead of printing "all signatures OK".
+- **Folder ops can't escape the project root through a symlink** (was a
+  recursive delete of external data reported as success); file writes hardened
+  the same way.
+- Multi-op synthetic plans no longer silently lose data (overlay compose);
+  `apply --force` no longer doubles as an undocumented divergence bypass.
+- `--provider auto` stays local-first even when `AI_PROVIDER` is exported
+  (was leaking repo context off-machine); Gemini key moved out of the URL.
+
+### Config-as-data
+
+- New wiring primitives: `arrayProperty`, `groupBy`, union-of-N `registered`,
+  and a direction-aware `parity` mode.
+- **`shrk registry <name> list | exists | where`** — declarable registry
+  inventory (alias-resolved "is this id taken / where is it").
+- **Packs can now ship `wiringRules` / `registries` / `policyRules` /
+  `reusePrimitives`** via new contribution slots, merged local-wins in the
+  inspector layer — a framework pack can distribute "every `@Injectable` must be
+  registered in a module" as data.
+- Knowledge-reference integrity wired into the composite gate; pack
+  verification commands and template `requiredValidations` are project-derived.
+
+### Honesty & hygiene
+
+- Onboarding/inference: `tsconfig extends` is resolved (no more confidently-wrong
+  "strict mode is OFF" rule written into configs); monorepo discovery honors
+  `workspaces` globs and surfaces boundary candidates.
+- `shrk context`/`task` no longer drop half the knowledge types by default.
+- Repo-wide doc/skill command honesty pass + a `docs-command-honesty` guard;
+  five registered command groups added to the catalog; a real
+  `bun run check:circular-deps`; dead code and retired-tool drift reconciled with
+  registry-drift guards.
+
 ## [Unreleased — staged after 0.1.0-alpha.8] — One-shot code-intel view, round 8
 
 After rounds 1–7 built and exposed every doctor check, gate signal,

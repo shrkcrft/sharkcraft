@@ -11,6 +11,7 @@ import {
   renderTuningExplainMarkdown,
   searchIndex,
   SearchKind,
+  SearchResultKind,
   SearchSource,
   type ISearchOptions,
 } from '@shrkcrft/inspector';
@@ -27,6 +28,14 @@ import { asJson } from '../output/format-output.ts';
 
 const VALID_KINDS = new Set(Object.values(SearchKind));
 const VALID_SOURCES = new Set(Object.values(SearchSource));
+
+// Universal-search (v2) filter vocabularies. `--kind` is one of the
+// `SearchResultKind` enum values; `--source` is the local/pack origin the
+// engine actually filters hits by (`makeHit` only ever emits these two). Both
+// are validated up front so a typo'd value rejects loudly instead of silently
+// filtering every hit out and returning an empty result with exit 0.
+const VALID_RESULT_KINDS: readonly string[] = Object.values(SearchResultKind);
+const VALID_RESULT_SOURCES: readonly string[] = ['local', 'pack'];
 
 function parseKinds(args: ParsedArgs): readonly SearchKind[] | undefined {
   const list = flagList(args, 'type').concat(flagList(args, 'kind'));
@@ -80,6 +89,21 @@ export const searchCommand: ICommandHandler = {
       } = await import('@shrkcrft/inspector');
       const kindFilter = flagString(args, 'kind');
       const sourceFilter = flagString(args, 'source');
+      // Validate the filter vocabularies BEFORE building opts — universal-search
+      // silently drops every non-matching hit, so an unknown `--kind`/`--source`
+      // would otherwise return an empty result with exit 0.
+      if (kindFilter && !VALID_RESULT_KINDS.includes(kindFilter)) {
+        process.stderr.write(
+          `Unknown --kind ${kindFilter}. Valid: ${VALID_RESULT_KINDS.join(', ')}\n`,
+        );
+        return 2;
+      }
+      if (sourceFilter && !VALID_RESULT_SOURCES.includes(sourceFilter)) {
+        process.stderr.write(
+          `Unknown --source ${sourceFilter}. Valid: ${VALID_RESULT_SOURCES.join(', ')}\n`,
+        );
+        return 2;
+      }
       const limit = flagNumber(args, 'limit');
       const opts: {
         kind?: unknown;

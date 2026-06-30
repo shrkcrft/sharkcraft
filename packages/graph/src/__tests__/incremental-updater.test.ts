@@ -239,3 +239,121 @@ describe('updateChanged', () => {
     }
   });
 });
+
+// ── GR1: inbound caller / reference / heritage edges must survive an
+// incremental reindex of the DECLARING file. Re-indexing `lib` must not wipe
+// the calls/implements edges that ORIGINATE in unchanged `app`.
+const LIB = 'packages/lib/src/index.ts';
+const APP = 'packages/app/src/index.ts';
+
+function setupTwoPackageFixture(libBody: string, appBody: string): string {
+  const root = mkdtempSync(join(tmpdir(), 'shrk-graph-gr1-'));
+  writeFileSync(
+    join(root, 'package.json'),
+    JSON.stringify({ name: 'demo', workspaces: ['packages/*'] }, null, 2),
+  );
+  mkdirSync(join(root, 'packages', 'lib', 'src'), { recursive: true });
+  mkdirSync(join(root, 'packages', 'app', 'src'), { recursive: true });
+  writeFileSync(
+    join(root, 'packages', 'lib', 'package.json'),
+    JSON.stringify({ name: '@demo/lib', main: 'src/index.ts' }, null, 2),
+  );
+  writeFileSync(
+    join(root, 'packages', 'app', 'package.json'),
+    JSON.stringify({ name: '@demo/app', main: 'src/index.ts' }, null, 2),
+  );
+  writeFileSync(join(root, 'packages', 'lib', 'src', 'index.ts'), libBody);
+  writeFileSync(join(root, 'packages', 'app', 'src', 'index.ts'), appBody);
+  return root;
+}
+
+describe('updateChanged inbound edges (GR1)', () => {
+  test('caller edge from an unchanged file survives a reindex of the callee file', () => {
+    const root = setupTwoPackageFixture(
+      'export function foo() { return 1; }\n',
+      "import { foo } from '@demo/lib';\nexport function run() { return foo(); }\n",
+    );
+    try {
+      buildFullIndex({ projectRoot: root });
+      const q0 = GraphQueryApi.fromStore(root);
+      const foo0 = q0.findSymbol('foo', { exact: true })[0]!;
+      expect(q0.callersOf(foo0.id).map((n) => n.path)).toEqual([APP]);
+
+      // Edit ONLY lib: `foo` is byte-identical, but a sibling symbol is added so
+      // the file fingerprint changes and lib is genuinely re-extracted.
+      writeFileSync(
+        join(root, 'packages', 'lib', 'src', 'index.ts'),
+        'export function foo() { return 1; }\nexport function helper() { return 2; }\n',
+      );
+      const r = updateChanged({ projectRoot: root, changedFiles: [LIB] });
+      expect(r.updated).toContain(LIB);
+
+      const q1 = GraphQueryApi.fromStore(root);
+      const foo1 = q1.findSymbol('foo', { exact: true })[0]!;
+      // Without the fix this is [] — the inbound call edge was silently deleted.
+      expect(q1.callersOf(foo1.id).map((n) => n.path)).toEqual([APP]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('implements (subtype) edge from an unchanged file survives a reindex', () => {
+    const root = setupTwoPackageFixture(
+      'export interface IShape { area(): number; }\n',
+      "import type { IShape } from '@demo/lib';\nexport class Circle implements IShape { area() { return 1; } }\n",
+    );
+    try {
+      buildFullIndex({ projectRoot: root });
+      const q0 = GraphQueryApi.fromStore(root);
+      const shape0 = q0.findSymbol('IShape', { exact: true })[0]!;
+      expect(q0.subtypesOf(shape0.id).map((n) => n.label)).toEqual(['Circle']);
+
+      writeFileSync(
+        join(root, 'packages', 'lib', 'src', 'index.ts'),
+        'export interface IShape { area(): number; }\nexport interface IExtra { tag: string; }\n',
+      );
+      updateChanged({ projectRoot: root, changedFiles: [LIB] });
+
+      const q1 = GraphQueryApi.fromStore(root);
+      const shape1 = q1.findSymbol('IShape', { exact: true })[0]!;
+      expect(q1.subtypesOf(shape1.id).map((n) => n.label)).toEqual(['Circle']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('renaming a called symbol drops the stale edge and re-stitches the referrer', () => {
+    const root = setupTwoPackageFixture(
+      'export function foo() { return 1; }\n',
+      "import { foo } from '@demo/lib';\nexport function run() { return foo(); }\n",
+    );
+    try {
+      buildFullIndex({ projectRoot: root });
+      const oldFooId = `symbol:${LIB}#foo`;
+      const q0 = GraphQueryApi.fromStore(root);
+      expect(q0.callersOf(oldFooId).map((n) => n.path)).toEqual([APP]);
+
+      // Rename foo -> bar in BOTH files, but report ONLY lib as changed. The
+      // referrer (app) must still be re-stitched against the new symbol table.
+      writeFileSync(
+        join(root, 'packages', 'lib', 'src', 'index.ts'),
+        'export function bar() { return 1; }\n',
+      );
+      writeFileSync(
+        join(root, 'packages', 'app', 'src', 'index.ts'),
+        "import { bar } from '@demo/lib';\nexport function run() { return bar(); }\n",
+      );
+      updateChanged({ projectRoot: root, changedFiles: [LIB] });
+
+      const q1 = GraphQueryApi.fromStore(root);
+      // foo no longer exists — no node and no phantom inbound caller edge.
+      expect(q1.findSymbol('foo', { exact: true })).toHaveLength(0);
+      expect(q1.callersOf(oldFooId)).toEqual([]);
+      // The caller was rebuilt against the renamed symbol.
+      const bar1 = q1.findSymbol('bar', { exact: true })[0]!;
+      expect(q1.callersOf(bar1.id).map((n) => n.path)).toEqual([APP]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

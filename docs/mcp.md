@@ -136,7 +136,7 @@ have to run on the CLI.
 |---|---|---|
 | `list_feature_bundles` / `get_feature_bundle` | Feature workflow bundles (R8/R10). | `id` |
 | `list_dev_sessions` / `get_dev_session` / `get_dev_status` / `get_dev_next_action` / `get_dev_report` / `start_dev_session_preview` | Dev-session metadata, read-only. | `id?`, `task?` |
-| `get_session_html_report` / `get_quality_html_report` / `get_safety_html_report` / `get_review_html_report` / `get_coverage_report_rendered` / `get_drift_report_rendered` / `get_adoption_report` | Render the corresponding report. | format-specific |
+| `get_coverage_report_rendered` / `get_drift_report_rendered` / `get_adoption_report` | Render the corresponding report. | format-specific |
 | `get_dashboard_summary` | One-call workspace summary (quality + safety + coverage + drift + bundles + sessions + constructs + playbooks + nextCommands). See [`mcp-dashboard-summary.md`](mcp-dashboard-summary.md). | `includeRecentSessions?`, `includeRecentBundles?`, `maxItems?` |
 
 ### Search, briefs, constructs, playbooks (R11/R12)

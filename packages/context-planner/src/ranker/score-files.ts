@@ -29,11 +29,14 @@ export interface IRankerWeights {
   hintedFile: number;
   /** File belongs to a hinted package. */
   hintedPackage: number;
-  /** File is a test for a ranked source file (followed-up only). */
-  testFollowup: number;
   /** Penalty for generated files (subtract). */
   generatedPenalty: number;
-  /** Penalty for test files when intent != bug-fix. */
+  /**
+   * Test-file weight, applied as a SIGNED term (`score -= testPenalty`). A
+   * positive value penalises test files (the default for non-bug-fix intents);
+   * a negative value boosts them (bug-fix sets `-0.2`, turning the term into a
+   * `+0.2` boost so a co-located test survives the cut).
+   */
   testPenalty: number;
 }
 
@@ -42,7 +45,6 @@ const DEFAULT_WEIGHTS: IRankerWeights = {
   symbolKeyword: 0.7,
   hintedFile: 2.0,
   hintedPackage: 0.5,
-  testFollowup: 0.4,
   generatedPenalty: 0.6,
   testPenalty: 0.3,
 };
@@ -101,10 +103,13 @@ export function scoreFiles(api: GraphQueryApi, input: IScoreInput): readonly ISc
       reasons.push('generated (penalty)');
     }
     if ((node.tags ?? []).includes('test')) {
-      if (input.intent !== 'bug-fix') {
-        score -= weights.testPenalty;
-        reasons.push('test (intent-mismatched penalty)');
-      }
+      // Apply the test weight as a SIGNED term unconditionally. For most intents
+      // `testPenalty` is positive, so this subtracts (a real penalty). bug-fix
+      // tuning sets it negative, so `score -= (-0.2)` becomes a `+0.2` boost —
+      // previously the boost lived inside an `intent !== 'bug-fix'` guard and so
+      // never ran, leaving the bug-fix knob dead.
+      score -= weights.testPenalty;
+      reasons.push(weights.testPenalty < 0 ? 'test (intent-relevant boost)' : 'test (intent-mismatched penalty)');
     }
     if (score <= 0) continue;
     candidates.push({ node, score, reasons });
@@ -116,7 +121,7 @@ export function scoreFiles(api: GraphQueryApi, input: IScoreInput): readonly ISc
 function applyIntentTuning(intent: TaskIntent): Partial<IRankerWeights> {
   switch (intent) {
     case 'bug-fix':
-      return { testFollowup: 0.6, testPenalty: -0.2 }; // negative penalty = boost
+      return { testPenalty: -0.2 }; // negative weight = boost for co-located tests
     case 'refactor':
       return { symbolKeyword: 0.9 };
     case 'docs':

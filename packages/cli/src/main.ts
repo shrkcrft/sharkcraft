@@ -870,7 +870,22 @@ async function runCliInner(argv: readonly string[]): Promise<number> {
   // (`shrk doctor`, `shrk packs list`, `shrk pack author status`). The
   // resolver stops when it hits a flag or a token that isn't a child of the
   // current node, returning the deepest handler + the leftover tokens.
-  const { handler, matchedPath, rest: leftover, node } = registry.resolve(cleanArgv);
+  let { handler, matchedPath, rest: leftover, node } = registry.resolve(cleanArgv);
+
+  // A multi-word command passed as a SINGLE quoted token (`shrk "graph status"`)
+  // arrives as one argv element with internal whitespace. The trie has no atomic
+  // `graph status` node, so the first descent misses (handler undefined) — yet
+  // did-you-mean would still list `graph status` as the #1 closest match, a
+  // self-contradiction. Re-split the lone token on whitespace and retry so the
+  // quoted form behaves identically to the unquoted `shrk graph status`.
+  // Genuinely unknown tokens leave `handler` undefined and fall through to the
+  // existing unknown-command path unchanged.
+  if (!handler && cleanArgv.length === 1 && /\s/.test(cleanArgv[0]!)) {
+    const retry = registry.resolve(cleanArgv[0]!.trim().split(/\s+/));
+    if (retry.handler) {
+      ({ handler, matchedPath, rest: leftover, node } = retry);
+    }
+  }
 
   // `--help` / `-h` immediately after a (sub)group → render help for that
   // path. This works at any depth.

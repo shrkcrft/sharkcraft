@@ -1,4 +1,4 @@
-import type { IWiringRule } from '@shrkcrft/core';
+import type { IWiringRule, IWiringSource } from '@shrkcrft/core';
 import { matchesAny } from '../scan/glob.ts';
 import { readMatchingFiles } from '../util/walk-files.ts';
 import {
@@ -6,6 +6,15 @@ import {
   type IWiringFileEntry,
   type IWiringReport,
 } from './evaluate-wiring.ts';
+
+/** All file globs a rule references: its declared side + every registered source (union). */
+function ruleGlobs(rule: IWiringRule): string[] {
+  const reg = rule.registered;
+  const sources: readonly IWiringSource[] = Array.isArray(reg)
+    ? (reg as readonly IWiringSource[])
+    : [reg as IWiringSource];
+  return [...rule.declared.files, ...sources.flatMap((s) => [...s.files])];
+}
 
 export interface IRunWiringOptions {
   /** Only run rules touched by these (project-relative) changed files. */
@@ -36,18 +45,23 @@ export function runWiring(
   if (options.changedOnly) {
     const changed = options.changedFiles ?? [];
     selected = selected.filter((r) => {
-      const globs = [...r.declared.files, ...r.registered.files];
+      const globs = ruleGlobs(r);
       return changed.some((c) => matchesAny(c, globs));
     });
   }
   if (selected.length === 0) {
-    return { schema: 'sharkcraft.wiring/v1', rules: [], violations: [], diagnostics: [], verdict: 'pass' };
+    return {
+      schema: 'sharkcraft.wiring/v1',
+      rules: [],
+      violations: [],
+      diagnostics: [],
+      evaluated: 0,
+      verdict: 'pass',
+    };
   }
 
   // Union of all globs across selected rules → one tree walk, cached reads.
-  const allGlobs = [
-    ...new Set(selected.flatMap((r) => [...r.declared.files, ...r.registered.files])),
-  ];
+  const allGlobs = [...new Set(selected.flatMap(ruleGlobs))];
   const cache = readMatchingFiles(projectRoot, allGlobs, new Set(options.excludeDirs ?? []));
   const entries: IWiringFileEntry[] = [...cache.entries()].map(([path, content]) => ({ path, content }));
 

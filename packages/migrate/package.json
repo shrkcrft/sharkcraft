@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/migrate",
-  "version": "0.1.0-alpha.22",
+  "version": "0.1.0-alpha.23",
   "description": "SharkCraft migrations: orchestrate multi-step refactors (structural rewrites + shell + checkpoints) as one replayable migration. The safe path for big cross-cutting refactors.",
   "license": "MIT",
   "author": "SharkCraft contributors",

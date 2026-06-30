@@ -107,6 +107,38 @@ describe('swift extractor', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('extension does not overwrite the public base type', () => {
+    const root = setup();
+    try {
+      const file = join(root, 'User.swift');
+      writeFileSync(
+        file,
+        [
+          'public struct User {}',
+          'extension User: Codable {}',
+        ].join('\n'),
+      );
+      const fp = fingerprintFile(file, root);
+      const ex = extractSwiftFile(fp, file);
+      const users = ex.symbolNodes.filter((s) => s.label === 'User');
+      // The public struct must survive with its own line + export visibility.
+      const base = users.find((s) => s.data?.['declKind'] === 'class')!;
+      expect(base).toBeDefined();
+      expect(base.data?.['visibility']).toBe('export');
+      expect(base.data?.['isExported']).toBe(true);
+      expect(base.line).toBe(1);
+      // The extension, if emitted, must carry a distinct id (so dedupeById
+      // last-write-wins can never clobber the base type with it).
+      const ext = users.find((s) => s.data?.['declKind'] === 'extension');
+      if (ext) {
+        expect(ext.id).not.toBe(base.id);
+        expect(ext.line).toBe(2);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('flutter framework extractor', () => {

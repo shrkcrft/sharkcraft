@@ -71,6 +71,55 @@ export default definePackManifest({
 });
 ```
 
+## Cross-file invariant planes (wiring / registries / policy / reuse)
+
+Four planes encode a cross-file invariant as **pure data** rather than a
+template or a boundary rule:
+
+| Plane | Slot | Default export | Merge key |
+|---|---|---|---|
+| Wiring / completeness (`shrk check wiring`) | `wiringRuleFiles` | `readonly IWiringRule[]` | `id` |
+| Registry inventories (`shrk registry`) | `registryFiles` | `readonly IRegistryDeclaration[]` | `name` |
+| Policy-lint (`shrk policy-lint`) | `policyRuleFiles` | `readonly IPolicyRule[]` | `id` |
+| Reuse primitives (`shrk reuse`) | `reusePrimitiveFiles` | `readonly IReusePrimitive[]` | `symbol` |
+
+These can be authored inline in a repo's `sharkcraft.config.ts`, **or shipped
+by a pack** so a framework pack can ship an invariant once instead of every
+consuming repo hand-copying it. For example, a NestJS pack can ship "every
+`@Injectable` must be registered in a module" as a wiring rule:
+
+```ts
+// src/assets/wiring.ts — default-exports readonly IWiringRule[]
+export default [
+  {
+    id: 'nestjs.injectable-registered',
+    description: 'Every @Injectable must be listed in a module providers[].',
+    declared:   { files: ['src/**/*.ts'], pattern: "@Injectable\\(\\)\\s*export class (\\w+)" },
+    registered: { files: ['src/**/*.module.ts'], arrayProperty: 'providers' },
+  },
+];
+
+// src/sharkcraft.plugin.ts
+contributions: { wiringRuleFiles: ['./src/assets/wiring.ts'] }
+```
+
+**Precedence is LOCAL-WINS.** The merge happens in the inspector (the lowest
+layer that can see both the config and the discovered packs — config itself
+cannot import packs), surfaced through `shrk check wiring`, `shrk registry`,
+`shrk policy-lint`, `shrk reuse`, and `shrk gate`:
+
+- The repo's own declarations are seeded first.
+- A pack element is added only if its merge key is free; a key that collides
+  with a local declaration (or an earlier pack) is **dropped** with a
+  diagnostic naming the pack.
+- Every pack element is validated with the **same** schema the config loader
+  uses; a malformed element is skipped with a diagnostic rather than crashing.
+- A missing pack file is reported as a diagnostic, not a hard failure.
+
+> `policyRuleFiles` (regex-over-surfaces data, read by `policy-lint`) is a
+> different plane from `policyCheckFiles` (an executable `evaluate()` callback).
+> A pack may ship either or both.
+
 ## Discovery + resolved counts
 
 `shrk packs list` shows both the declared file counts and the **resolved**

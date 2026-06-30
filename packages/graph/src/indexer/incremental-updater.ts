@@ -146,65 +146,49 @@ export function updateChanged(
       continue;
     }
 
-    // Remove the file's previous contribution.
-    if (oldFp) removeFileFromGraph(newFp.path, nodes, edges, files);
-
-    // Re-extract.
-    files.set(newFp.path, newFp);
-    const extracted =
-      newFp.language === 'python' ? extractPythonFile(newFp, abs)
-      : newFp.language === 'go' ? extractGoFile(newFp, abs)
-      : newFp.language === 'java' ? extractJavaFile(newFp, abs)
-      : newFp.language === 'rust' ? extractRustFile(newFp, abs)
-      : newFp.language === 'kotlin' ? extractKotlinFile(newFp, abs)
-      : newFp.language === 'ruby' ? extractRubyFile(newFp, abs)
-      : newFp.language === 'csharp' ? extractCsharpFile(newFp, abs)
-      : newFp.language === 'elixir' ? extractElixirFile(newFp, abs)
-      : newFp.language === 'php' ? extractPhpFile(newFp, abs)
-      : newFp.language === 'dart' ? extractDartFile(newFp, abs)
-      : newFp.language === 'swift' ? extractSwiftFile(newFp, abs)
-      : extractTsFile(newFp, abs);
-    nodes.set(extracted.fileNode.id, extracted.fileNode);
-    for (const sym of extracted.symbolNodes) nodes.set(sym.id, sym);
-    for (const e of extracted.edges) edges.set(e.id, e);
-
-    const pkg = findOwningPackage(newFp.path, packageDirIndex);
-    if (pkg) {
-      const e = buildEdge(
-        newFp.nodeId,
-        `package:${pkg.name}`,
-        EdgeKind.BelongsToPackage,
-        EXTRACT_TS_FILE_SOURCE,
-      );
-      edges.set(e.id, e);
-    }
-
-    const resolvedSpec = new Map<string, string | undefined>();
-    for (const raw of extracted.rawImportSpecifiers) {
-      const r = resolveImport(raw.specifier, abs, resolverCtx);
-      resolvedSpec.set(raw.specifier, r.targetPath);
-      const data = {
-        specifier: r.specifier,
-        line: raw.line,
-        importKind: raw.kind,
-        resolutionKind: r.kind,
-      } as Record<string, unknown>;
-      const targetId = r.targetPath
-        ? `file:${r.targetPath}`
-        : r.kind === ImportResolution.External
-          ? `external:${r.specifier}`
-          : `unresolved:${r.specifier}`;
-      const e = buildEdge(
-        newFp.nodeId,
-        targetId,
-        EdgeKind.ImportsFile,
-        EXTRACT_TS_FILE_SOURCE,
-        data,
-      );
-      edges.set(e.id, e);
-    }
-    reExtracted.set(newFp.path, { extracted, resolvedSpec });
+    reExtractFile({
+      newFp,
+      abs,
+      nodes,
+      edges,
+      files,
+      resolverCtx,
+      packageDirIndex,
+      reExtracted,
+    });
     updated.push(newFp.path);
+  }
+
+  // Re-stitch referrer files. `removeFileFromGraph` is outbound-only, so every
+  // inbound caller/reference/heritage edge that targets a symbol in a file we
+  // just re-extracted or deleted still sits in `edges`, owned by — and pointing
+  // out of — an unchanged referrer file. Those edges now reference a symbol
+  // table that may have changed (a renamed/removed symbol). Force-re-extract
+  // each distinct referrer so its reference edges are rebuilt against the new
+  // table: the edge is recreated when the symbol still exists and dropped when
+  // it was renamed/removed (symbol ids are stable: `symbol:<path>#<name>`).
+  // Without this, `graph callers X` is silently wrong after editing X.
+  const actuallyChanged = new Set<string>([...updated, ...deleted]);
+  if (actuallyChanged.size > 0) {
+    for (const rel of collectReferrerFiles(edges, actuallyChanged)) {
+      if (actuallyChanged.has(rel) || reExtracted.has(rel)) continue;
+      const abs = nodePath.resolve(projectRoot, rel);
+      if (!existsSync(abs) || !isFile(abs)) continue;
+      if (!SOURCE_EXTS.has(nodePath.extname(rel).toLowerCase())) continue;
+      const newFp = fingerprintFile(abs, projectRoot);
+      // Intentionally NOT pushed to `updated`: a referrer is an internal
+      // re-stitch, not one of the caller's reported `changedFiles`.
+      reExtractFile({
+        newFp,
+        abs,
+        nodes,
+        edges,
+        files,
+        resolverCtx,
+        packageDirIndex,
+        reExtracted,
+      });
+    }
   }
 
   // Stitch references / calls for re-extracted files. Build the default
@@ -438,18 +422,148 @@ function removeFileFromGraph(
       nodes.delete(id);
     }
   }
-  // Drop every edge that touches this file or any of its symbols.
+  // Drop only the edges this file OWNS — its OUTBOUND contribution, i.e. edges
+  // whose `from` is the file node or one of its symbols (imports-file,
+  // declares-symbol, belongs-to-package, and the file's own
+  // calls/references/extends/implements edges).
+  //
+  // INBOUND edges (`e.to` is this file or one of its symbols — another file
+  // calling/referencing/extending a symbol declared here, or importing this
+  // file) are owned by those OTHER files and must NOT be dropped here. Deleting
+  // them was the GR1 bug: re-indexing a declaring file silently removed every
+  // inbound caller/reference/heritage edge from unchanged referrer files, so
+  // `graph callers X` returned nothing right after editing X. Those inbound
+  // edges are instead refreshed by re-extracting the referrer files (see
+  // collectReferrerFiles in updateChanged), which rebuilds them against the new
+  // symbol table — recreating an edge when the symbol still exists and dropping
+  // it when the symbol was renamed/removed.
   for (const id of [...edges.keys()]) {
     const e = edges.get(id)!;
-    if (
-      e.from === fileId ||
-      e.to === fileId ||
-      e.from.startsWith(symbolPrefix) ||
-      e.to.startsWith(symbolPrefix)
-    ) {
+    if (e.from === fileId || e.from.startsWith(symbolPrefix)) {
       edges.delete(id);
     }
   }
+}
+
+/**
+ * Re-extract a single file into the in-memory graph: drop its previous
+ * (outbound) contribution, then re-add its file node, symbol nodes,
+ * declares/re-export edges, belongs-to-package edge, and imports-file edges,
+ * and record the extracted result + resolved import map so the post-pass can
+ * stitch its reference / call / heritage edges. Shared by the changed-file
+ * loop and the referrer re-stitch loop.
+ */
+function reExtractFile(args: {
+  newFp: IFileFingerprint;
+  abs: string;
+  nodes: Map<string, INode>;
+  edges: Map<string, IEdge>;
+  files: Map<string, IFileFingerprint>;
+  resolverCtx: ReturnType<typeof createImportResolverContext>;
+  packageDirIndex: IPackageDirIndex;
+  reExtracted: Map<
+    string,
+    { extracted: IExtractedFile; resolvedSpec: Map<string, string | undefined> }
+  >;
+}): void {
+  const { newFp, abs, nodes, edges, files, resolverCtx, packageDirIndex, reExtracted } = args;
+
+  // Remove the file's previous (outbound) contribution before re-adding.
+  if (files.has(newFp.path)) removeFileFromGraph(newFp.path, nodes, edges, files);
+
+  files.set(newFp.path, newFp);
+  const extracted =
+    newFp.language === 'python' ? extractPythonFile(newFp, abs)
+    : newFp.language === 'go' ? extractGoFile(newFp, abs)
+    : newFp.language === 'java' ? extractJavaFile(newFp, abs)
+    : newFp.language === 'rust' ? extractRustFile(newFp, abs)
+    : newFp.language === 'kotlin' ? extractKotlinFile(newFp, abs)
+    : newFp.language === 'ruby' ? extractRubyFile(newFp, abs)
+    : newFp.language === 'csharp' ? extractCsharpFile(newFp, abs)
+    : newFp.language === 'elixir' ? extractElixirFile(newFp, abs)
+    : newFp.language === 'php' ? extractPhpFile(newFp, abs)
+    : newFp.language === 'dart' ? extractDartFile(newFp, abs)
+    : newFp.language === 'swift' ? extractSwiftFile(newFp, abs)
+    : extractTsFile(newFp, abs);
+  nodes.set(extracted.fileNode.id, extracted.fileNode);
+  for (const sym of extracted.symbolNodes) nodes.set(sym.id, sym);
+  for (const e of extracted.edges) edges.set(e.id, e);
+
+  const pkg = findOwningPackage(newFp.path, packageDirIndex);
+  if (pkg) {
+    const e = buildEdge(
+      newFp.nodeId,
+      `package:${pkg.name}`,
+      EdgeKind.BelongsToPackage,
+      EXTRACT_TS_FILE_SOURCE,
+    );
+    edges.set(e.id, e);
+  }
+
+  const resolvedSpec = new Map<string, string | undefined>();
+  for (const raw of extracted.rawImportSpecifiers) {
+    const r = resolveImport(raw.specifier, abs, resolverCtx);
+    resolvedSpec.set(raw.specifier, r.targetPath);
+    const data = {
+      specifier: r.specifier,
+      line: raw.line,
+      importKind: raw.kind,
+      resolutionKind: r.kind,
+    } as Record<string, unknown>;
+    const targetId = r.targetPath
+      ? `file:${r.targetPath}`
+      : r.kind === ImportResolution.External
+        ? `external:${r.specifier}`
+        : `unresolved:${r.specifier}`;
+    const e = buildEdge(
+      newFp.nodeId,
+      targetId,
+      EdgeKind.ImportsFile,
+      EXTRACT_TS_FILE_SOURCE,
+      data,
+    );
+    edges.set(e.id, e);
+  }
+  reExtracted.set(newFp.path, { extracted, resolvedSpec });
+}
+
+/**
+ * The set of "referrer files": every distinct file that owns an outbound
+ * calls / references / extends / implements edge whose target is a symbol
+ * declared in one of `changedOrDeleted`. For caller/reference edges the owner
+ * is `e.from = file:<path>`; for heritage edges it is `e.from = symbol:<path>#<sub>`.
+ * Sorted for deterministic processing.
+ */
+function collectReferrerFiles(
+  edges: ReadonlyMap<string, IEdge>,
+  changedOrDeleted: ReadonlySet<string>,
+): readonly string[] {
+  const referrers = new Set<string>();
+  for (const e of edges.values()) {
+    if (
+      e.kind !== EdgeKind.CallsSymbol &&
+      e.kind !== EdgeKind.ReferencesSymbol &&
+      e.kind !== EdgeKind.ExtendsSymbol &&
+      e.kind !== EdgeKind.ImplementsSymbol
+    ) {
+      continue;
+    }
+    const targetPath = symbolOwnerPath(e.to);
+    if (!targetPath || !changedOrDeleted.has(targetPath)) continue;
+    const fromPath = e.from.startsWith('file:')
+      ? e.from.slice('file:'.length)
+      : symbolOwnerPath(e.from);
+    if (fromPath) referrers.add(fromPath);
+  }
+  return [...referrers].sort((a, b) => a.localeCompare(b));
+}
+
+/** Declaring file path of a `symbol:<path>#<name>` id (undefined otherwise). */
+function symbolOwnerPath(id: string): string | undefined {
+  if (!id.startsWith('symbol:')) return undefined;
+  const rest = id.slice('symbol:'.length);
+  const hash = rest.indexOf('#');
+  return hash === -1 ? undefined : rest.slice(0, hash);
 }
 
 function isFile(p: string): boolean {

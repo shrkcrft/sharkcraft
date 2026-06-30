@@ -93,15 +93,38 @@ export function buildMonorepoSummary(
     libs: [],
   };
   let scanned = 0;
-  for (const g of GROUPS) {
-    const children = subDirs.get(g.dir) ?? [];
-    for (const child of children) {
-      if (scanned >= PACKAGE_LIMIT) break;
-      const rel = nodePath.posix.join(g.dir, child);
-      const full = nodePath.join(ws.projectRoot, g.dir, child);
-      if (!statSafeIsDir(full)) continue;
-      groups[g.key].push(describePackage(full, rel, g.key));
-      scanned += 1;
+  if (workspacesArr.length > 0) {
+    // Drive discovery from the declared `workspaces` globs so non-standard
+    // layouts (modules/*) and grouped layouts (packages/*/*) resolve to the
+    // real package directories rather than the hardcoded apps|packages|libs
+    // immediate children.
+    const seenPaths = new Set<string>();
+    outer: for (const glob of workspacesArr) {
+      const leadSegment =
+        glob.replace(/\\/g, '/').split('/').filter((s) => s.length > 0)[0] ?? '';
+      const groupKey = classifyGroup(leadSegment);
+      for (const rel of expandWorkspaceGlob(ws.projectRoot, glob)) {
+        if (scanned >= PACKAGE_LIMIT) break outer;
+        if (seenPaths.has(rel)) continue;
+        seenPaths.add(rel);
+        const full = nodePath.join(ws.projectRoot, ...rel.split('/'));
+        groups[groupKey].push(describePackage(full, rel, groupKey));
+        scanned += 1;
+      }
+    }
+  } else {
+    // No `workspaces` field (e.g. Nx) — fall back to scanning the
+    // conventional apps|packages|libs immediate children.
+    for (const g of GROUPS) {
+      const children = subDirs.get(g.dir) ?? [];
+      for (const child of children) {
+        if (scanned >= PACKAGE_LIMIT) break;
+        const rel = nodePath.posix.join(g.dir, child);
+        const full = nodePath.join(ws.projectRoot, g.dir, child);
+        if (!statSafeIsDir(full)) continue;
+        groups[g.key].push(describePackage(full, rel, g.key));
+        scanned += 1;
+      }
     }
   }
 
@@ -140,6 +163,89 @@ export function buildMonorepoSummary(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
+
+const WORKSPACE_IGNORE_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  '.cache',
+  '.nx',
+  '.turbo',
+  'coverage',
+]);
+
+/** Classify a workspace glob into a group by its leading path segment. */
+function classifyGroup(leadSegment: string): 'apps' | 'packages' | 'libs' {
+  if (leadSegment === 'apps') return 'apps';
+  if (leadSegment === 'libs') return 'libs';
+  return 'packages';
+}
+
+function listChildDirs(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !WORKSPACE_IGNORE_DIRS.has(e.name))
+      .map((e) => e.name)
+      .sort(); // deterministic regardless of filesystem order
+  } catch {
+    return [];
+  }
+}
+
+function hasPackageJson(dir: string): boolean {
+  try {
+    return existsSync(nodePath.join(dir, 'package.json'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Expand a `workspaces` glob to the directories that actually contain a
+ * `package.json`. Handles the simple cases the overwhelming majority of
+ * monorepos use: an exact path, a one-level wildcard ("dir" + slash + star),
+ * and a two-level wildcard (grouped packages). Returns relative posix-style
+ * paths. Anything more exotic (recursive globstars, or fixed segments after a
+ * wildcard) is skipped rather than guessed.
+ */
+function expandWorkspaceGlob(projectRoot: string, glob: string): string[] {
+  const segments = glob
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .split('/')
+    .filter((s) => s.length > 0);
+  if (segments.length === 0) return [];
+  const starIdx = segments.findIndex((s) => s.includes('*'));
+  if (starIdx === -1) {
+    // Exact path, e.g. "packages/core".
+    const rel = segments.join('/');
+    return hasPackageJson(nodePath.join(projectRoot, ...segments)) ? [rel] : [];
+  }
+  const wildcardSegments = segments.slice(starIdx);
+  // Only the pure trailing-wildcard cases `dir/*` and `dir/*/*`.
+  if (wildcardSegments.length > 2 || !wildcardSegments.every((s) => s === '*')) {
+    return [];
+  }
+  const baseSegments = segments.slice(0, starIdx);
+  const baseDir = nodePath.join(projectRoot, ...baseSegments);
+  const out: string[] = [];
+  for (const first of listChildDirs(baseDir)) {
+    if (wildcardSegments.length === 1) {
+      if (hasPackageJson(nodePath.join(baseDir, first))) {
+        out.push([...baseSegments, first].join('/'));
+      }
+      continue;
+    }
+    const mid = nodePath.join(baseDir, first);
+    for (const second of listChildDirs(mid)) {
+      if (hasPackageJson(nodePath.join(mid, second))) {
+        out.push([...baseSegments, first, second].join('/'));
+      }
+    }
+  }
+  return out;
+}
 
 function statSafeIsDir(p: string): boolean {
   try {
@@ -308,7 +414,9 @@ function buildNotes(
     out.push('package.json workspaces detected.');
   }
   if (groups.apps.length === 0 && groups.packages.length === 0 && groups.libs.length === 0) {
-    out.push('Monorepo signals detected but no apps/packages/libs directories — keep onboarding bounded.');
+    // Discovery truly found nothing — no workspace package carried a
+    // package.json under any declared glob (or the GROUPS fallback scan).
+    out.push('Monorepo signals detected but no workspace packages with a package.json were discovered — keep onboarding bounded.');
   }
   return out;
 }

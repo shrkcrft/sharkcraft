@@ -1,6 +1,13 @@
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
-import { hasActionHints, type IKnowledgeEntry } from '@shrkcrft/knowledge';
+import { hasActionHints, type IActionHints, type IKnowledgeEntry } from '@shrkcrft/knowledge';
+import {
+  PackageManager,
+  WorkspaceProfile,
+  type IWorkspaceSummary,
+} from '@shrkcrft/workspace';
+import { PipelineStepType } from '@shrkcrft/pipelines';
 import { resolvePreset, resolvePresetReferences } from '@shrkcrft/presets';
+import { PACK_SECRET_ENV, verifyPackManifest } from '@shrkcrft/plugin-api';
 import { inspectionReferenceLookup } from './reference-lookup.ts';
 import { runPackReleaseCheck, type IPackReleaseCheck } from './pack-release-check.ts';
 
@@ -19,10 +26,13 @@ export interface IPackDoctorIssue {
     | 'docs-file-missing'
     | 'unsigned-pack'
     | 'tampered-pack'
+    | 'signature-unverifiable'
+    | 'dev-signature-not-trusted'
     | 'preset-composition-cycle'
     | 'preset-composed-not-found'
     | 'preset-missing-ref'
     | 'preset-no-includes'
+    | 'pack-verification-pm-mismatch'
     | 'release-manifest-issue'
     | 'release-contribution-issue'
     | 'release-signature-issue'
@@ -51,6 +61,13 @@ export interface IPackDoctorReport {
 export interface IPackDoctorOptions {
   /** When true, unsigned packs surface as `unsigned-pack` warnings. */
   requireSignatures?: boolean;
+  /**
+   * Opt in to trusting dev signatures. By default a dev-signed pack fails
+   * `--require-signatures` with `dev-signature-not-trusted`; when true, dev
+   * signatures are re-verified against the well-known dev secret and accepted
+   * (a tampered dev signature still surfaces as `tampered-pack`).
+   */
+  allowDevSignatures?: boolean;
   /** When true, also run pack-release-check per pack and fold findings into issues. */
   release?: boolean;
   /** When true, release-check warnings escalate to errors. */
@@ -68,6 +85,58 @@ function appliesToGeneration(e: IKnowledgeEntry): boolean {
 function isCriticalOrHigh(e: IKnowledgeEntry): boolean {
   const p = String(e.priority);
   return p === 'critical' || p === 'high';
+}
+
+/** A leading package-manager / runner literal a pack verification command may
+ *  bake in. Order longest-first is not required — these tokens are disjoint. */
+const PM_LITERAL_MANAGERS: ReadonlyArray<readonly [string, PackageManager]> = [
+  ['bun ', PackageManager.Bun],
+  ['pnpm ', PackageManager.Pnpm],
+  ['yarn ', PackageManager.Yarn],
+  ['npm ', PackageManager.Npm],
+];
+
+/** The package manager a command hard-codes as its leading runner, or null when
+ *  it uses none (e.g. `make test`, a `<pm-run> test` placeholder, `shrk ...`). */
+function literalPackageManager(command: string): PackageManager | null {
+  const c = command.trim();
+  for (const [literal, manager] of PM_LITERAL_MANAGERS) {
+    if (c.startsWith(literal)) return manager;
+  }
+  return null;
+}
+
+/** The project's detected package manager (concrete only). Returns Unknown when
+ *  no lockfile / packageManager field / bun profile signal is present — in that
+ *  case we cannot claim a mismatch, so the lint stays silent. */
+function detectedProjectManager(ws: IWorkspaceSummary | undefined): PackageManager {
+  const m = ws?.packageManager?.manager;
+  if (m && m !== PackageManager.Unknown) return m;
+  if (ws?.profiles?.includes(WorkspaceProfile.HasBun)) return PackageManager.Bun;
+  return PackageManager.Unknown;
+}
+
+/** Push a warning when `command` bakes in a runner that disagrees with the
+ *  project's detected toolchain. No-op when the command is templated, runner-
+ *  agnostic, or already agrees with the detected manager. */
+function pushPmMismatch(
+  issues: IPackDoctorIssue[],
+  packageName: string,
+  origin: string,
+  command: string,
+  detected: PackageManager,
+): void {
+  if (detected === PackageManager.Unknown) return;
+  const literal = literalPackageManager(command);
+  if (!literal || literal === detected) return;
+  issues.push({
+    severity: 'warning',
+    packageName,
+    code: 'pack-verification-pm-mismatch',
+    message: `Verification command in ${origin} hard-codes \`${literal}\` but this project uses \`${detected}\`: "${command}".`,
+    suggestion:
+      'Use the `<pm-run>`/`<pm>` placeholder (resolved to the detected package manager at consume time) instead of a hard-coded runner.',
+  });
 }
 
 /**
@@ -88,6 +157,7 @@ export function buildPackDoctorReport(
       .filter((e) => inspection.entrySources.get(e.id)?.type === 'local')
       .map((e) => e.id),
   );
+  const detectedPm = detectedProjectManager(inspection.workspace);
 
   for (const pack of inspection.packs.invalidPacks) {
     issues.push({
@@ -179,6 +249,34 @@ export function buildPackDoctorReport(
       }
     }
 
+    // Verification commands that bake in a *foreign* package manager / runner.
+    // A pack playbook that ships `bun test` contradicts an npm/pnpm/yarn target;
+    // prefer the `<pm-run>`/`<pm>` placeholder. Warning, never a hard fail.
+    for (const entry of inspection.knowledgeEntries) {
+      const src = inspection.entrySources.get(entry.id);
+      if (src?.type !== 'pack' || src.packageName !== pack.packageName) continue;
+      const hints = (entry as { actionHints?: IActionHints }).actionHints;
+      for (const cmd of hints?.verificationCommands ?? []) {
+        pushPmMismatch(issues, pack.packageName, `knowledge "${entry.id}"`, cmd, detectedPm);
+      }
+    }
+    for (const p of inspection.pipelines) {
+      const src = inspection.pipelineSources.get(p.id);
+      if (src?.type !== 'pack' || src.packageName !== pack.packageName) continue;
+      for (const step of p.steps ?? []) {
+        if (step.type !== PipelineStepType.Command) continue;
+        for (const cmd of step.cliCommands ?? []) {
+          pushPmMismatch(
+            issues,
+            pack.packageName,
+            `pipeline "${p.id}" step "${step.id}"`,
+            cmd,
+            detectedPm,
+          );
+        }
+      }
+    }
+
     // Local-vs-pack duplicate ids.
     for (const entry of inspection.knowledgeEntries) {
       const src = inspection.entrySources.get(entry.id);
@@ -194,9 +292,18 @@ export function buildPackDoctorReport(
     }
 
     // Signature gating.
+    //
+    // The inspector verifies with dev signatures DISALLOWED, so a dev-signed
+    // pack arrives here as `dev-signature`. With --allow-dev-signature we
+    // re-run the HMAC against the well-known dev secret so a *tampered* dev
+    // signature still surfaces as invalid rather than being blindly trusted.
+    let sigStatus = pack.signatureStatus;
+    if (sigStatus === 'dev-signature' && options.allowDevSignatures && pack.manifest) {
+      const v = verifyPackManifest(pack.manifest, { allowDev: true });
+      sigStatus = v.ok ? 'verified' : v.status;
+    }
     if (options.requireSignatures) {
-      const status = pack.signatureStatus;
-      if (!status || status === 'missing-signature' || status === 'not-checked') {
+      if (!sigStatus || sigStatus === 'missing-signature' || sigStatus === 'not-checked') {
         issues.push({
           severity: 'warning',
           packageName: pack.packageName,
@@ -204,9 +311,34 @@ export function buildPackDoctorReport(
           message: 'Pack has no signature; --require-signatures was set.',
           suggestion: 'Run `shrk packs sign <pack-dir>` and ship the signed manifest.',
         });
+      } else if (sigStatus === 'missing-secret') {
+        // S3-2: required verification that COULD NOT RUN is a failure, not a
+        // pass. A signed pack whose secret is unavailable is unverifiable —
+        // never report it as OK.
+        issues.push({
+          severity: 'error',
+          packageName: pack.packageName,
+          code: 'signature-unverifiable',
+          message:
+            `Pack is signed but ${PACK_SECRET_ENV} is not set, so the signature could not be verified — required verification failed.`,
+          suggestion: `Set ${PACK_SECRET_ENV} (or pass --secret) and re-run with --require-signatures.`,
+          suggestedCommand: `${PACK_SECRET_ENV}=<secret> shrk packs doctor --require-signatures`,
+        });
+      } else if (sigStatus === 'dev-signature') {
+        // S3-1: a dev signature is verified only against the public dev secret
+        // and is NOT release-trusted; under --require-signatures it must fail.
+        issues.push({
+          severity: 'error',
+          packageName: pack.packageName,
+          code: 'dev-signature-not-trusted',
+          message:
+            'Pack carries a dev signature (not release-trusted) and --require-signatures was set.',
+          suggestion:
+            'Re-sign with the release secret (`shrk packs sign <pack-dir>`), or pass --allow-dev-signature to accept dev signatures for local-only flows.',
+        });
       }
     }
-    if (pack.signatureStatus === 'invalid-signature') {
+    if (sigStatus === 'invalid-signature') {
       issues.push({
         severity: 'error',
         packageName: pack.packageName,

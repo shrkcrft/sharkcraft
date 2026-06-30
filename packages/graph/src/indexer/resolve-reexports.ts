@@ -6,6 +6,12 @@ import { NodeKind } from '../schema/node-kind.ts';
 
 interface IReExport {
   name: string;
+  /**
+   * Original name in the target module for a renamed re-export
+   * (`export { Orig as Exposed }` → `Orig`). `default` for
+   * `export { default as Exposed }`. Absent when exposed === original.
+   */
+  localName?: string;
   star: boolean;
   specifier: string;
 }
@@ -28,9 +34,13 @@ interface IReExport {
  *     considered; every valid edge is returned untouched.
  *   - Re-export chains are followed with a visited-set cycle guard, so a
  *     re-export cycle terminates instead of looping.
- *   - Renamed re-exports (`export { a as b } from './x'`) are intentionally
- *     left unresolved — the exposed name differs from the declaration, so
- *     there is no safe deterministic match.
+ *   - Renamed re-exports (`export { Orig as Exposed } from './x'`) ARE
+ *     resolved: the extractor threads the ORIGINAL name (`localName`) onto the
+ *     re-export edge, so the chain recurses with `Orig` and lands on the real
+ *     `symbol:<x>#Orig` instead of giving up on a name that never existed
+ *     there. `export { default as Foo } from './x'` is handled too — the
+ *     `default` placeholder maps to the target file's actual default-export
+ *     name (the same per-file default map the binder uses).
  *
  * Target file paths come from the `ImportsFile` edges the barrel already
  * emits for its `export … from` specifiers, so this is a pure pass over
@@ -43,7 +53,17 @@ export function resolveReExportedReferenceEdges(
   edges: readonly IEdge[],
 ): IEdge[] {
   const symbolIds = new Set<string>();
-  for (const n of nodes) if (n.kind === NodeKind.Symbol) symbolIds.add(n.id);
+  // file path → its declared default-export name (where one is identifiable).
+  // Lets a `export { default as Foo } from './x'` re-export map the `default`
+  // placeholder to the real declaration name — same source the binder uses.
+  const defaultExportNameByPath = new Map<string, string>();
+  for (const n of nodes) {
+    if (n.kind === NodeKind.Symbol) symbolIds.add(n.id);
+    else if (n.kind === NodeKind.File && typeof n.path === 'string') {
+      const dflt = n.data?.['defaultExportName'];
+      if (typeof dflt === 'string') defaultExportNameByPath.set(n.path, dflt);
+    }
+  }
 
   // file path → (re-export specifier → resolved target file path).
   const importTargets = new Map<string, Map<string, string>>();
@@ -66,30 +86,44 @@ export function resolveReExportedReferenceEdges(
       const name = e.data?.['name'];
       const specifier = e.data?.['specifier'];
       if (typeof name !== 'string' || typeof specifier !== 'string') continue;
+      const localNameRaw = e.data?.['localName'];
+      const localName = typeof localNameRaw === 'string' ? localNameRaw : undefined;
       const from = e.from.slice('file:'.length);
       let arr = reExportsByFile.get(from);
       if (!arr) {
         arr = [];
         reExportsByFile.set(from, arr);
       }
-      arr.push({ name, star: e.data?.['star'] === true, specifier });
+      arr.push({ name, ...(localName ? { localName } : {}), star: e.data?.['star'] === true, specifier });
     }
   }
 
   const resolve = (file: string, name: string, visited: Set<string>): string | undefined => {
-    const key = `${file}#${name}`;
+    // A `default` placeholder (from `export { default as Foo } from './x'`,
+    // threaded as the re-export's `localName`) names no declared symbol
+    // directly — map it to THIS file's actual default-export name first.
+    let resolveName = name;
+    if (resolveName === 'default') {
+      const dflt = defaultExportNameByPath.get(file);
+      if (dflt) resolveName = dflt;
+    }
+    const key = `${file}#${resolveName}`;
     if (visited.has(key)) return undefined;
     visited.add(key);
-    const direct = `symbol:${file}#${name}`;
+    const direct = `symbol:${file}#${resolveName}`;
     if (symbolIds.has(direct)) return direct;
     const reExports = reExportsByFile.get(file);
     const specMap = importTargets.get(file);
     if (!reExports || !specMap) return undefined;
     for (const re of reExports) {
-      if (!re.star && re.name !== name) continue;
+      if (!re.star && re.name !== resolveName) continue;
       const targetPath = specMap.get(re.specifier);
       if (!targetPath) continue;
-      const r = resolve(targetPath, name, visited);
+      // Star re-exports forward the SAME name; a named re-export recurses with
+      // the ORIGINAL name (`localName`) so `export { FooImpl as Foo }` lands on
+      // `symbol:<x>#FooImpl` rather than a `Foo` that was never declared there.
+      const nextName = re.star ? resolveName : (re.localName ?? re.name);
+      const r = resolve(targetPath, nextName, visited);
       if (r) return r;
     }
     return undefined;

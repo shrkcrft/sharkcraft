@@ -14,6 +14,12 @@ import {
 import type { ISharkcraftInspection } from '../sharkcraft-inspector.ts';
 import { validateSpecAgainstWorkspace } from './spec-cross-validate.ts';
 
+// Surface the deterministic checklist→changeset evidence analyzer through
+// the package barrel. `index.ts` re-exports this module (`export *`), so
+// `spec verify --coverage` can import `mapChecklistToEvidence` from
+// `@shrkcrft/inspector` without a new top-level barrel edit.
+export * from './spec-evidence.ts';
+
 export const SPEC_REVIEW_SCHEMA = 'sharkcraft.spec-review/v1';
 
 export interface ISpecReviewReport {

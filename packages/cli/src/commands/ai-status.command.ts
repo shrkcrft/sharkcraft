@@ -52,10 +52,17 @@ export const aiStatusCommand: ICommandHandler = {
         : { ok: false, reason: 'no provider reachable — nothing to ping', elapsedMs: 0 };
     }
 
+    // Freshness-shaped signal, consistent with the other status commands:
+    // the LLM wiring is `fresh` when a provider is reachable (and the optional
+    // ping succeeded), else `stale` — i.e. shrk is on the deterministic
+    // baseline and the setup hints apply.
+    const state: 'fresh' | 'stale' = ai.reachable && (!ping || ping.ok) ? 'fresh' : 'stale';
+
     if (json) {
       process.stdout.write(
         asJson({
           ai,
+          state,
           ...(ping ? { ping } : {}),
         }) + '\n',
       );
@@ -66,6 +73,12 @@ export const aiStatusCommand: ICommandHandler = {
     process.stdout.write(kv('reachable', ai.reachable ? 'yes' : 'no') + '\n');
     process.stdout.write(kv('requested provider', ai.requestedProvider) + '\n');
     process.stdout.write(kv('resolved provider', ai.providerId ?? '(none)') + '\n');
+    process.stdout.write(kv('state', state) + '\n');
+    if (state === 'stale') {
+      process.stdout.write(
+        '! stale — no AI provider reachable; running on the deterministic baseline. See the setup hints below.\n',
+      );
+    }
     if (ping) {
       process.stdout.write(
         kv(

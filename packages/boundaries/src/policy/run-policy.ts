@@ -56,9 +56,15 @@ export function runPolicyLint(
     selected = selected.filter((r) => changed.some((c) => matchesAny(c, globsFor(r))));
   }
   if (selected.length === 0) {
-    return { schema: 'sharkcraft.policy-lint/v1', rules: [], findings: [], diagnostics: [], verdict: 'pass' };
+    return { schema: 'sharkcraft.policy-lint/v1', rules: [], findings: [], diagnostics: [], evaluated: 0, verdict: 'pass' };
   }
 
+  // Under --changed-only, restrict the SCANNED files to the changed set too (not
+  // just rule selection). Per-file regex findings have no cross-file dependency,
+  // so a pre-existing violation in a file the diff never touched is out of scope
+  // — this mirrors how `check boundaries`/wiring restrict to the changeset and
+  // stops the gate failing RED on untouched legacy debt.
+  const changedSet = options.changedOnly ? new Set(options.changedFiles ?? []) : undefined;
   const allGlobs = [...new Set(selected.flatMap((r) => [...globsFor(r)]))];
   const cache = readMatchingFiles(projectRoot, allGlobs, new Set(options.excludeDirs ?? []));
 
@@ -66,6 +72,7 @@ export function runPolicyLint(
     const globs = globsFor(rule);
     const units: IPolicyUnit[] = [];
     for (const [path, content] of cache) {
+      if (changedSet && !changedSet.has(path)) continue;
       if (!matchesAny(path, globs)) continue;
       const ext = nodePath.extname(path).toLowerCase();
       if (rule.surface === 'template' && SOURCE_EXT.has(ext)) {

@@ -15,14 +15,16 @@ export const EXTRACT_RUBY_FILE_SOURCE = 'extract-ruby-file@v1';
 /**
  * Regex-based Ruby extractor.
  *
- * Top-level constructs only (column-0):
+ * Each regex is `^`-anchored on the trimmed line, so constructs nested
+ * inside a class/module body (i.e. virtually every method) are captured
+ * at any indentation — not just column-0:
  *   - `class Name` / `class Name < Base` → class symbol
  *   - `module Name` → module symbol
  *   - `def name` / `def self.name` → function symbol
  *   - `NAME = …` (uppercase identifier) → const symbol
  *
  * Ruby has no public/private declarations at the top level — every
- * top-level symbol is reachable. All emitted symbols have
+ * symbol is treated as reachable. All emitted symbols have
  * `isExported: true` for graph consumers; the `visibility` data field
  * preserves the explicit modifier (`private` / `protected`) when one
  * precedes the def, otherwise defaults to `export`.
@@ -50,8 +52,8 @@ export function extractRubyFile(
   for (let i = 0; i < lines.length; i += 1) {
     const raw = lines[i]!;
     if (raw.length === 0) continue;
-    if (raw.startsWith(' ') || raw.startsWith('\t')) continue;
     const trimmed = raw.trimStart();
+    if (trimmed.length === 0) continue;
     if (trimmed.startsWith('#')) continue;
     // class Name [< Base]
     let m = /^class\s+([A-Z][\w:]*)/.exec(trimmed);

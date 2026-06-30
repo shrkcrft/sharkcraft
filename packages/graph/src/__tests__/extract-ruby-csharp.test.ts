@@ -21,6 +21,15 @@ describe('extractRubyFile', () => {
           "load 'config.rb'",
           '',
           'module App',
+          '  module Inner',
+          '    def nested_helper; end',
+          '  end',
+          '',
+          '  class Calculator',
+          '    def add(a, b); end',
+          '    def subtract(a, b); end',
+          '    def multiply(a, b); end',
+          '  end',
           'end',
           '',
           'class User < ActiveRecord::Base',
@@ -42,7 +51,19 @@ describe('extractRubyFile', () => {
       expect(fp.language).toBe('ruby');
       const ex = extractRubyFile(fp, file);
       const names = ex.symbolNodes.map((s) => s.label).sort();
-      expect(names).toEqual(['App', 'MAX', 'Profile', 'User', 'helper']);
+      // Methods inside class bodies (previously dropped by the column-0
+      // guard) are now captured at any indentation.
+      expect(names).toEqual([
+        'App', 'Calculator', 'Inner', 'MAX', 'Profile', 'User',
+        'add', 'find', 'helper', 'multiply', 'name', 'nested_helper', 'subtract',
+      ]);
+      // Class with 3 methods: the class + all 3 methods.
+      expect(names).toEqual(
+        expect.arrayContaining(['Calculator', 'add', 'subtract', 'multiply']),
+      );
+      // Nested module/class methods are captured too.
+      expect(names).toContain('Inner');
+      expect(names).toContain('nested_helper');
       const specs = ex.rawImportSpecifiers.map((r) => r.specifier).sort();
       expect(specs).toEqual(['config.rb', 'helpers', 'json']);
     } finally {

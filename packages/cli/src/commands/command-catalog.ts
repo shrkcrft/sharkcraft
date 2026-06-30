@@ -3342,6 +3342,207 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     intendedAudience: [CommandAudience.Human, CommandAudience.Maintainer],
     taskRole: CommandTaskRole.Inspect,
   }),
+  // ── D3-2: registered command groups that resolved live but had ZERO
+  // catalog entries, so `shrk commands doctor` was blind to them and
+  // `shrk help <group>` had no metadata. One canonical row per registered
+  // sub-verb. Everything is ReadOnly except `checks run --execute`
+  // (RunsShell) and `audit project-coupling` (RunsShell, advanced).
+  // `mcpAvailable` mirrors a real read-only MCP tool where one exists.
+  //
+  // paths — path-convention registry
+  // (MCP: list_path_conventions / get_path_convention / search_path_conventions).
+  entry({
+    command: 'paths list',
+    description: 'List path conventions.',
+    category: 'paths',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'paths get',
+    description: 'Get one path convention by id.',
+    category: 'paths',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'paths search',
+    description: 'Search path conventions by scope / query.',
+    category: 'paths',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    taskRole: CommandTaskRole.Search,
+  }),
+  entry({
+    command: 'paths best',
+    description: 'Pick the best path convention for a task.',
+    category: 'paths',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  // pipelines — pipeline registry
+  // (MCP: list_pipelines / get_pipeline / get_pipeline_context / create_pipeline_plan).
+  entry({
+    command: 'pipelines list',
+    description: 'List available pipelines.',
+    category: 'pipelines',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'pipelines get',
+    description: 'Show one pipeline by id.',
+    category: 'pipelines',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'pipelines context',
+    description: 'Token-budgeted context for a pipeline + task.',
+    category: 'pipelines',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    taskRole: CommandTaskRole.Context,
+  }),
+  entry({
+    command: 'pipelines plan',
+    description: 'Render a pipeline as an ordered step plan for a task.',
+    category: 'pipelines',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    taskRole: CommandTaskRole.Context,
+  }),
+  entry({
+    command: 'pipelines script',
+    description: 'Render a pipeline as a runnable bash-style preview script (no execution).',
+    category: 'pipelines',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Context,
+  }),
+  entry({
+    command: 'pipelines next',
+    description: 'Show the next recommended step in a pipeline for a task.',
+    category: 'pipelines',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'pipelines vars',
+    description: 'List the variables a pipeline consumes.',
+    category: 'pipelines',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  // checks — custom-check registry declared by rules (metadata.checks[]).
+  entry({
+    command: 'checks list',
+    description: 'List custom checks declared by rules (metadata.checks[]). Read-only.',
+    category: 'checks',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'checks doctor',
+    description: 'Validate custom-check descriptors (missing fields, duplicate ids).',
+    category: 'checks',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Diagnose,
+  }),
+  entry({
+    command: 'checks run',
+    description: 'Preview a custom check. Read-only by default — pass --execute to run it.',
+    category: 'checks',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'checks run --execute',
+    description: 'Actually invoke the custom check command (runs the configured shell command).',
+    category: 'checks',
+    safetyLevel: SafetyLevel.RunsShell,
+    runsShell: true,
+    requiresReview: true,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'checks parse-report',
+    description: 'Parse a check report file into the canonical finding shape. Read-only.',
+    category: 'checks',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'checks import',
+    description: 'Import an external tool report into the universal check-result protocol. Read-only.',
+    category: 'checks',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'checks aggregate',
+    description: 'Aggregate multiple check reports into one verdict. Read-only.',
+    category: 'checks',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'checks report',
+    description: 'Render aggregated check results in the chosen format. Read-only.',
+    category: 'checks',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'checks convert',
+    description: 'Convert a check report between supported formats. Read-only.',
+    category: 'checks',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  // audit — project-specific coupling audit (MCP: get_project_coupling_report).
+  // RunsShell/advanced per the brief: the report/plan modes materialise
+  // artifacts and the audit is a heavyweight, opt-in surface.
+  entry({
+    command: 'audit project-coupling',
+    description:
+      'Audit / plan / report project-specific coupling. Pass --token to scan for identifiers; the engine ships zero built-in tokens.',
+    category: 'analysis',
+    safetyLevel: SafetyLevel.RunsShell,
+    runsShell: true,
+    mcpAvailable: true,
+    surface: CommandSurface.Advanced,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent],
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  // ownership — CODEOWNERS / sharkcraft ownership registry
+  // (MCP: get_ownership / match_owners).
+  entry({
+    command: 'ownership list',
+    description: 'List ownership rules from CODEOWNERS / sharkcraft/ownership.ts.',
+    category: 'ownership',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'ownership for',
+    description: 'Show the ownership match for a single file.',
+    category: 'ownership',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: true,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'ownership affected',
+    description: 'Show owners affected by --since <ref>, --bundle <id>, or --files a,b.',
+    category: 'ownership',
+    safetyLevel: SafetyLevel.ReadOnly,
+    taskRole: CommandTaskRole.Inspect,
+  }),
 ]);
 
 /** Return every canonical command string in the catalog. */

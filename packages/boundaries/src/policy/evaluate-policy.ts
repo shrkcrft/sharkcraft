@@ -42,6 +42,14 @@ export interface IPolicyReport {
   readonly rules: readonly IPolicyRuleResult[];
   readonly findings: readonly IPolicyFinding[];
   readonly diagnostics: readonly string[];
+  /**
+   * Count of rules that actually scanned ≥1 unit. A rule whose globs matched 0
+   * files (e.g. a `style` rule in a project with no stylesheets) is NOT
+   * evaluated — a silent no-op the gate surfaces as `skipped` rather than a
+   * green pass. Misconfigured rules count as evaluated so their error is not
+   * swallowed by the gate's `evaluated === 0` skip path.
+   */
+  readonly evaluated: number;
   readonly verdict: 'pass' | 'errors' | 'warnings';
 }
 
@@ -72,6 +80,7 @@ export function evaluatePolicy(rules: readonly IPolicyRule[], resolve: PolicyUni
   const ruleResults: IPolicyRuleResult[] = [];
   const findings: IPolicyFinding[] = [];
   const diagnostics: string[] = [];
+  let evaluated = 0;
   let misconfigError = false;
   let misconfigWarn = false;
 
@@ -84,12 +93,17 @@ export function evaluatePolicy(rules: readonly IPolicyRule[], resolve: PolicyUni
       if (severity === 'error') misconfigError = true;
       else misconfigWarn = true;
       ruleResults.push({ ruleId: rule.id, surface: rule.surface, severity, findingCount: 0, error: msg });
+      // A misconfigured rule attempted to run — count it as evaluated so its
+      // error isn't swallowed by the gate's `evaluated === 0` skip path.
+      evaluated += 1;
       continue;
     }
 
+    const units = resolve(rule);
+    if (units.length > 0) evaluated += 1;
     let count = 0;
     let zeroWidth = false;
-    for (const unit of resolve(rule)) {
+    for (const unit of units) {
       re.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = re.exec(unit.content)) !== null) {
@@ -134,6 +148,7 @@ export function evaluatePolicy(rules: readonly IPolicyRule[], resolve: PolicyUni
     rules: ruleResults,
     findings,
     diagnostics,
+    evaluated,
     verdict: hasError ? 'errors' : hasWarn ? 'warnings' : 'pass',
   };
 }

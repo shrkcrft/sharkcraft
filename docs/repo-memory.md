@@ -43,12 +43,15 @@ shrk memory reset [--write]    # default dry-run; --write deletes only .sharkcra
 
 - `shrk risk --include-memory` **adjusts the score** (R24). Output carries
   `baseScore` / `adjustedScore` and a `memory` block with signals + reasons.
-- `shrk orchestrate --risk-aware` and `shrk view <role> --task` surface
-  memory-driven warnings when the index has overlap with the task.
+- `shrk orchestrate --risk-aware` and `shrk contract --role <role> --task`
+  surface memory-driven warnings when the index has overlap with the task
+  (the standalone `view` verb was retired into `shrk contract`).
 - `shrk contract` includes memory-driven risks via `taskRisk.memory`.
 - `shrk brief --include-memory` folds memory warnings into the unified
   agent brief (R46 renamed `handoff` → `brief`).
-- `shrk agent graph` adds a `memory` node when an index exists.
+- The task execution graph (the `shrk agent graph` CLI verb was retired —
+  it is now the MCP-only `create_execution_graph` tool) adds a `memory`
+  node when an index exists.
 
 ## Memory-weighted risk rules (R24)
 

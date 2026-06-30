@@ -1,4 +1,9 @@
 import { PipelineStepType } from '@shrkcrft/pipelines';
+import {
+  PackageManager,
+  WorkspaceProfile,
+  type IWorkspaceSummary,
+} from '@shrkcrft/workspace';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
 /**
@@ -19,6 +24,13 @@ import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
  * keeping the real post-change gates. Rules carry no verification field, so
  * they are intentionally not a source here.
  *
+ * Package-manager templating: any command may use a `<pm-run>` or `<pm>`
+ * placeholder that is substituted with the project's detected package manager
+ * at consume time (e.g. a pack playbook ships `<pm-run> test` and it resolves
+ * to `bun run test` / `npm run test` / `pnpm test` per the target repo). The
+ * substitution runs before the placeholder-exclusion check, so a templated
+ * gate survives while a truly generative `<task>` step is still dropped.
+ *
  * Deterministic, order-preserving, deduped. No commands are executed.
  */
 export function resolveVerificationCommands(
@@ -28,6 +40,7 @@ export function resolveVerificationCommands(
     readonly knowledgeDefaults?: readonly string[];
   } = {},
 ): string[] {
+  const ws = inspection.workspace;
   const fromPipelines: string[] = [];
   for (const id of options.pipelineIds ?? []) {
     const pipeline = inspection.pipelineRegistry.get(id);
@@ -36,7 +49,7 @@ export function resolveVerificationCommands(
       if (step.type !== PipelineStepType.Command) continue;
       if (step.required === false) continue;
       for (const raw of step.cliCommands ?? []) {
-        const cmd = raw.trim();
+        const cmd = substitutePmPlaceholders(raw.trim(), ws);
         if (cmd.length > 0 && !cmd.includes('<')) fromPipelines.push(cmd);
       }
     }
@@ -48,12 +61,58 @@ export function resolveVerificationCommands(
     | null;
   const fromConfig: string[] = [];
   for (const vc of cfg?.verificationCommands ?? []) {
-    const cmd = vc?.command?.trim();
-    if (cmd && cmd.length > 0) fromConfig.push(cmd);
+    const cmd = substitutePmPlaceholders(vc?.command?.trim() ?? '', ws);
+    if (cmd.length > 0) fromConfig.push(cmd);
   }
   if (fromConfig.length > 0) return dedupe(fromConfig);
 
-  return dedupe(options.knowledgeDefaults ?? []);
+  return dedupe(
+    (options.knowledgeDefaults ?? []).map((c) => substitutePmPlaceholders(c, ws)),
+  );
+}
+
+/**
+ * Replace package-manager placeholders in a single command with the project's
+ * detected toolchain. `<pm-run>` → the run-prefix (`bun run`, `npm run`,
+ * `pnpm`, `yarn`); `<pm>` → the bare manager name (`bun`, `npm`, `pnpm`,
+ * `yarn`). A no-op (and zero workspace access) when the command carries no
+ * `<pm` token, so non-templated callers and stubbed inspections are unaffected.
+ */
+function substitutePmPlaceholders(
+  command: string,
+  ws: IWorkspaceSummary | undefined,
+): string {
+  if (!command.includes('<pm')) return command;
+  const manager = effectivePackageManager(ws);
+  return command
+    .replaceAll('<pm-run>', packageManagerRunPrefix(manager))
+    .replaceAll('<pm>', bareManager(manager));
+}
+
+function effectivePackageManager(ws: IWorkspaceSummary | undefined): PackageManager {
+  const detected = ws?.packageManager?.manager;
+  if (detected && detected !== PackageManager.Unknown) return detected;
+  if (ws?.profiles?.includes(WorkspaceProfile.HasBun)) return PackageManager.Bun;
+  return PackageManager.Npm;
+}
+
+function packageManagerRunPrefix(manager: PackageManager): string {
+  switch (manager) {
+    case PackageManager.Bun:
+      return 'bun run';
+    case PackageManager.Pnpm:
+      return 'pnpm';
+    case PackageManager.Yarn:
+      return 'yarn';
+    case PackageManager.Npm:
+      return 'npm run';
+    default:
+      return 'npm run';
+  }
+}
+
+function bareManager(manager: PackageManager): string {
+  return manager === PackageManager.Unknown ? 'npm' : manager;
 }
 
 function dedupe(items: readonly string[]): string[] {

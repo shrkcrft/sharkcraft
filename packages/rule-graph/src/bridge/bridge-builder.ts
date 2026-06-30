@@ -9,6 +9,7 @@ import {
 } from '@shrkcrft/graph';
 import {
   inspectSharkcraft,
+  listConventions,
   type ISharkcraftInspection,
 } from '@shrkcrft/inspector';
 import { BridgeStore } from '../store/bridge-store.ts';
@@ -124,6 +125,42 @@ export async function buildBridge(
           source: 'knowledge',
           severity,
           via: pathMatch ? 'path' : 'tag',
+        }),
+      );
+      sourceCounts['rule']! += 1;
+      filesWithRule.add(f.id);
+    }
+  }
+
+  // ── Conventions (IConvention.appliesTo.fileGlobs) ──────────────────
+  // Conventions are the richest file-anchored policy a pack ships (the
+  // knowledge rules are task-intent / file-agnostic, so they almost never
+  // anchor files). Count their fileGlobs toward `filesWithRule` so the
+  // "files covered by rules" metric reflects the real file-anchored policy
+  // surface (boundaries + conventions), not a misleading 0.
+  const conventions = await listConventions(inspection);
+  for (const entry of conventions) {
+    const c = entry.convention;
+    const globs = c.appliesTo?.fileGlobs ?? [];
+    if (globs.length === 0) continue;
+    nodes.push({
+      id: `convention:${c.id}`,
+      kind: NodeKind.Rule,
+      label: c.title ?? c.id,
+      data: {
+        applicabilitySource: 'convention',
+        conventionKind: c.kind,
+        ...(c.tags ? { tags: [...c.tags] } : {}),
+      },
+    });
+    const regexes = globs.map((g) => globToRegex(g));
+    const severity = c.severity === 'error' ? 'error' : 'warning';
+    for (const f of files) {
+      if (!regexes.some((re) => re.test(f.path!))) continue;
+      edges.push(
+        edge(f.id, `convention:${c.id}`, EdgeKind.AppliesRule, {
+          source: 'convention',
+          severity,
         }),
       );
       sourceCounts['rule']! += 1;

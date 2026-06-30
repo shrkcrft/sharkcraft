@@ -1,6 +1,7 @@
 import { GraphQueryApi, GraphStore, loadGraphApiCached, type INode } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
+import { dropDeleted, graphResultStaleness } from './graph-staleness.ts';
 
 const NEXT = 'shrk graph index';
 
@@ -51,41 +52,30 @@ export const getGraphSearchTool: IToolDefinition = {
     }
     const api = loadGraphApiCached(ctx.inspection.projectRoot) ?? GraphQueryApi.fromStore(ctx.inspection.projectRoot);
     const exact = args.exact ?? false;
-    const matches: INode[] = [];
-    if (!args.kind || args.kind === 'file') {
-      const f = api.findFile(query);
-      if (f) matches.push(f);
-      // Fuzzy fallback (mirrors the CLI): substring match on path/basename so a
-      // bare name like `Foo` finds `packages/x/Foo.ts` without the full path —
-      // otherwise the MCP returned an empty list where the CLI found the file.
-      if (!exact && matches.length < limit) {
-        const q = query.toLowerCase();
-        const seen = new Set(matches.map((n) => n.id));
-        for (const node of api.allFiles()) {
-          if (seen.has(node.id)) continue;
-          const p = node.path?.toLowerCase() ?? '';
-          const base = p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p;
-          if (base.includes(q) || p.includes(q)) {
-            matches.push(node);
-            seen.add(node.id);
-            if (matches.length >= limit) break;
-          }
-        }
-      }
-    }
-    if (!args.kind || args.kind === 'symbol') {
-      for (const s of api.findSymbol(query, { exact, limit })) matches.push(s);
-    }
-    if (!args.kind || args.kind === 'package') {
-      const p = api.neighbours(`package:${query}`);
-      if (p) matches.push(p.node);
-    }
+    // The shared query method returns the display page AND the TRUE pre-slice
+    // match count, so `total`/`truncated` stay honest (the old `Math.min(len,
+    // limit)` could NEVER exceed `limit`, hiding 285 matches behind `total: 20`).
+    const { matches, total } = api.searchNodes(query, {
+      ...(args.kind ? { kind: args.kind } : {}),
+      limit,
+      exact,
+    });
+    // Prune deleted result files + flag modified ones (parity with
+    // get_graph_callers): a stale index must never serve a hit for a file the
+    // agent already deleted. `total` is reduced by the deletions we observed on
+    // the page so it never over-counts dead files.
+    const summarised = matches.map(summarise);
+    const fresh = graphResultStaleness(api, ctx.inspection.projectRoot, summarised.map((m) => m.path));
+    const live = dropDeleted(summarised, fresh.deletedSet);
+    const adjustedTotal = total - (summarised.length - live.length);
     const data = {
       schema: 'sharkcraft.graph-search/v1',
       query,
       kind: args.kind ?? 'any',
-      total: Math.min(matches.length, limit),
-      matches: matches.slice(0, limit).map(summarise),
+      total: adjustedTotal,
+      truncated: adjustedTotal > limit,
+      matches: live,
+      ...(fresh.field ?? {}),
     };
     return { data: formatObjectArrays(data, input) };
   },

@@ -1,4 +1,4 @@
-import type { IGraphImpactAnalysis, RiskLevel } from '../schema/impact-analysis.ts';
+import type { RiskLevel } from '../schema/impact-analysis.ts';
 
 interface IRiskInputs {
   directCount: number;
@@ -68,13 +68,3 @@ export function classifyRisk(input: IRiskInputs): { risk: RiskLevel; reasons: re
 
 /** Re-export so callers can read the (partial) inputs back for tests. */
 export type { IRiskInputs };
-
-/** Defensive constructor used by analyzer tests. */
-export function emptyImpactAnalysis(): Partial<IGraphImpactAnalysis> {
-  return {
-    risk: 'low',
-    riskReasons: [],
-    truncations: {},
-    diagnostics: [],
-  };
-}

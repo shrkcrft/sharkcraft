@@ -21,6 +21,10 @@ export const PRIMARY_MCP_TOOLS: ReadonlySet<string> = new Set([
   'get_agent_instructions',
   'get_start_here',
   // Context / task routing
+  // `prepare_agent_task` is the canonical first-call entrypoint — several
+  // other PRIMARY descriptions say "Prefer `prepare_agent_task`" / its own
+  // says "call this FIRST", so it must be advertised in the default surface.
+  'prepare_agent_task',
   'get_relevant_context',
   'get_task_packet',
   'get_action_hints',
@@ -74,6 +78,13 @@ export const PRIMARY_MCP_TOOLS: ReadonlySet<string> = new Set([
   'retrieve_original',
   'align_cache',
   'restore_cache',
+  // Compression-bearing surfaces: each emits a token-efficient columnar /
+  // minified shape (`get_knowledge_graph format:"table"`, deps_audit, the
+  // smart-context bundle). Documented as compression surfaces, so they belong
+  // in the default tool list rather than hidden behind SHRK_MCP_FULL_TOOLS.
+  'get_knowledge_graph',
+  'deps_audit',
+  'smart_context_bundle',
 ]);
 
 /**

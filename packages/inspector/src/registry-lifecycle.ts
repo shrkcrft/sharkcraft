@@ -40,6 +40,12 @@ export interface IRegistryIgnored {
 export interface IRegistryLifecycleReport {
   schema: 'sharkcraft.registry-lifecycle/v1';
   filesScanned: number;
+  /** Total candidate files found before the cap (>= filesScanned). */
+  totalFiles: number;
+  /** True when the scan hit the file cap and did NOT see every candidate file. */
+  truncated: boolean;
+  /** Project-relative subtree the scan was scoped to, when `--scope` was used. */
+  scope?: string;
   registersFound: number;
   matchedPairs: ReadonlyArray<IRegistryPair>;
   missingRemovers: ReadonlyArray<IRegistryMissingRemover>;
@@ -247,10 +253,14 @@ function findRemoverInContent(content: string, candidates: ReadonlyArray<string>
 export function buildRegistryLifecycleReport(input: {
   projectRoot: string;
   limit?: number;
+  /** Project-relative subtree to scope the scan to (sub-second on a subtree). */
+  scope?: string;
 }): IRegistryLifecycleReport {
   const { projectRoot } = input;
+  const scope = input.scope && input.scope.length > 0 ? input.scope : undefined;
+  const walkRoot = scope ? join(projectRoot, scope) : projectRoot;
   const files: string[] = [];
-  walk(projectRoot, projectRoot, files);
+  walk(walkRoot, projectRoot, files);
   const limit = input.limit ?? 2000;
   const scanFiles = files.slice(0, limit);
   const matchedPairs: IRegistryPair[] = [];
@@ -326,6 +336,9 @@ export function buildRegistryLifecycleReport(input: {
   return {
     schema: 'sharkcraft.registry-lifecycle/v1',
     filesScanned: scanFiles.length,
+    totalFiles: files.length,
+    truncated: files.length > scanFiles.length,
+    ...(scope ? { scope } : {}),
     registersFound,
     matchedPairs,
     missingRemovers,
@@ -338,7 +351,11 @@ export function buildRegistryLifecycleReport(input: {
 export function renderRegistryLifecycleReportText(report: IRegistryLifecycleReport): string {
   const lines: string[] = [];
   lines.push('=== Registry lifecycle ===');
-  lines.push(`  files scanned     ${report.filesScanned}`);
+  if (report.scope) lines.push(`  scope             ${report.scope}`);
+  lines.push(
+    `  files scanned     ${report.filesScanned}` +
+      (report.truncated ? ` ! capped (${report.totalFiles} candidates — re-run with --scope <dir> for the rest)` : ''),
+  );
   lines.push(`  registers found   ${report.registersFound}`);
   lines.push(`  matched pairs     ${report.matchedPairs.length}`);
   lines.push(`  missing removers  ${report.missingRemovers.length}`);

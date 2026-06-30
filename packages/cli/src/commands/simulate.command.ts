@@ -15,12 +15,14 @@ import {
 } from '../command-registry.ts';
 import { asJson } from '../output/format-output.ts';
 
+const VALID_SIMULATION_MODES: readonly string[] = ['conservative', 'balanced', 'aggressive'];
+
 export const simulateCommand: ICommandHandler = {
   name: 'simulate',
   description:
     'Predict what a workflow would do without executing anything. Read-only. Optionally takes a playbook or pipeline id.',
   usage:
-    'shrk simulate "<task>" [--playbook <id>] [--pipeline <id>] [--bundle] [--mode conservative|balanced|aggressive] [--json] [--output <file>]',
+    'shrk simulate "<task>" [--playbook <id>] [--pipeline <id>] [--mode conservative|balanced|aggressive] [--json] [--output <file>]',
   async run(args: ParsedArgs): Promise<number> {
     const task = args.positional.join(' ').trim();
     if (!task) {
@@ -32,6 +34,12 @@ export const simulateCommand: ICommandHandler = {
     const playbookId = flagString(args, 'playbook');
     const pipelineId = flagString(args, 'pipeline');
     const modeRaw = (flagString(args, 'mode') ?? '').toLowerCase();
+    // Warn on a typo'd --mode rather than silently treating it as balanced.
+    if (modeRaw && !VALID_SIMULATION_MODES.includes(modeRaw)) {
+      process.stderr.write(
+        `Unknown --mode ${modeRaw}. Valid: ${VALID_SIMULATION_MODES.join(', ')} (defaulting to balanced).\n`,
+      );
+    }
     const mode =
       modeRaw === 'conservative'
         ? OrchestrationMode.Conservative

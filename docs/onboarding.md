@@ -55,7 +55,9 @@ See [inference.md](./inference.md) for the full inference rules. A summary:
 ## Readiness estimate
 
 The plan reports a current and expected AI-readiness grade. The current grade
-comes from `shrk ai-readiness`. The expected grade is a conservative bump
+comes from `shrk doctor` (the standalone `ai-readiness` verb was retired; the
+same report is also available over MCP as `get_ai_readiness_report`). The
+expected grade is a conservative bump
 based on the size of the inferred plan — capped at +20 points so we don't
 over-promise.
 

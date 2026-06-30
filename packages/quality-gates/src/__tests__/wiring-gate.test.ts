@@ -64,4 +64,27 @@ describe('wiringGate', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('skipped (loud) when rules are configured but match no files (evaluated:0)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-wiring-empty-'));
+    try {
+      const r = wiringGate(root, { rules: [RULE] });
+      expect(r.status).toBe('skipped');
+      expect(r.message).toContain('nothing evaluated');
+      expect(r.details?.evaluated).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('surfaces the evaluated count in details on pass', () => {
+    const root = setup(true);
+    try {
+      const r = wiringGate(root, { rules: [RULE] });
+      expect(r.status).toBe('pass');
+      expect(r.details?.evaluated).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

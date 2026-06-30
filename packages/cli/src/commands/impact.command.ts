@@ -30,6 +30,8 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { fuzzyImpactAmbiguousHints, renderFailureHints } from '../output/failure-hints.ts';
+import { collectChangedPaths } from '../diff/collect-changed-paths.ts';
 
 function collectFiles(
   args: ParsedArgs,
@@ -374,12 +376,97 @@ async function runViaGraph(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+/**
+ * `shrk impact --deleted`: deleted-symbol orphan check. Reads the
+ * working-tree diff's DELETED files (relative to `--since <ref>` or the
+ * default branch) and queries the graph for surviving files that still
+ * import them or reference a symbol they declared (alias-resolved, incl.
+ * barrel re-exports). Any surviving importer is reported with `file:line`
+ * and the command exits non-zero; with none it exits 0 with
+ * "no orphaned importers". Mirrors `--via-graph`'s flag/JSON style.
+ *
+ * The graph is queried against the CURRENT index snapshot — a not-yet-
+ * reindexed delete still carries its inbound edges, which is exactly what
+ * lets the check see the broken importers before they hit the build.
+ */
+async function runDeletedOrphans(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json') || flagString(args, 'format') === 'json';
+  const sinceRef = flagString(args, 'since');
+  const changed = collectChangedPaths({ cwd, ...(sinceRef ? { ref: sinceRef } : {}) });
+  if (!changed.isAvailable) {
+    if (wantJson) {
+      process.stdout.write(asJson({ ok: false, error: changed.error }) + '\n');
+    } else {
+      process.stderr.write(`Cannot resolve diff: ${changed.error ?? 'unknown'}\n`);
+    }
+    return 2;
+  }
+  const deleted = changed.deleted;
+  if (deleted.length === 0) {
+    if (wantJson) {
+      process.stdout.write(
+        asJson({
+          schema: 'sharkcraft.deleted-orphans/v1',
+          resolvedDeleted: [],
+          unresolvedDeleted: [],
+          orphans: [],
+          diagnostics: [`no deleted files in diff vs ${changed.ref}`],
+        }) + '\n',
+      );
+      return 0;
+    }
+    process.stdout.write(header('Deleted-symbol orphans'));
+    process.stdout.write(`No deleted files in diff vs ${changed.ref}.\n`);
+    return 0;
+  }
+
+  const { GraphStore, GraphQueryApi } = await import('@shrkcrft/graph');
+  if (!new GraphStore(cwd).exists()) {
+    const msg = 'code-graph store missing — run `shrk graph index` first.';
+    if (wantJson) {
+      process.stdout.write(asJson({ ok: false, error: msg }) + '\n');
+    } else {
+      process.stderr.write(msg + '\n');
+    }
+    return 2;
+  }
+  const { findDeletedOrphans } = await import('@shrkcrft/impact-engine');
+  const report = findDeletedOrphans(GraphQueryApi.fromStore(cwd), deleted);
+
+  if (wantJson) {
+    process.stdout.write(asJson(report) + '\n');
+    return report.orphans.length > 0 ? 1 : 0;
+  }
+
+  process.stdout.write(header('Deleted-symbol orphans'));
+  process.stdout.write(`Deleted files (vs ${changed.ref}): ${deleted.length}\n`);
+  if (report.orphans.length === 0) {
+    process.stdout.write('no orphaned importers\n');
+    for (const d of report.diagnostics.slice(0, 5)) process.stdout.write(`! ${d}\n`);
+    return 0;
+  }
+  process.stdout.write(
+    `\n${report.orphans.length} surviving importer(s) still reference deleted code:\n`,
+  );
+  for (const o of report.orphans) {
+    const loc = o.path ? `${o.path}${o.line ? `:${o.line}` : ''}` : o.id;
+    const detail =
+      o.via === 'reference' && o.symbol
+        ? `references \`${o.symbol}\``
+        : 'imports';
+    process.stdout.write(`  ✗ ${loc} ${detail} from deleted ${o.deletedFile}\n`);
+  }
+  for (const d of report.diagnostics.slice(0, 5)) process.stdout.write(`! ${d}\n`);
+  return 1;
+}
+
 export const impactCommand: ICommandHandler = {
   name: 'impact',
   description:
     'Architecture impact analysis: direct + transitive dependents, risk + suggested commands. Supports fuzzy <query> resolution. Read-only.',
   usage:
-    'shrk impact <fileOrQuery> | --file <path> | --specifier <spec> | --since <ref> | --staged | --files a,b | --plan <plan.json> | --bundle <id> [--max-depth N] [--limit N] [--format text|markdown|html|json] [--output <path>] [--tree|--no-tree] [--json] [--html] [--resolve|--resolve-only|--explain-resolution|--no-resolve]',
+    'shrk impact <fileOrQuery> | --file <path> | --specifier <spec> | --since <ref> | --staged | --files a,b | --plan <plan.json> | --bundle <id> | --deleted [--since <ref>] [--max-depth N] [--limit N] [--format text|markdown|html|json] [--output <path>] [--tree|--no-tree] [--json] [--html] [--resolve|--resolve-only|--explain-resolution|--no-resolve]',
   async run(args: ParsedArgs): Promise<number> {
     if (args.positional[0] === 'tests') {
       return runImpactTests({ ...args, positional: args.positional.slice(1) });
@@ -396,6 +483,13 @@ export const impactCommand: ICommandHandler = {
     // consumers don't shift.
     if (args.flags.has('via-graph')) {
       return runViaGraph(args);
+    }
+    // --deleted: reverse-of-impact orphan check. Reads the working-tree
+    // diff's DELETED files and asks the graph which surviving files still
+    // import them or reference a symbol they declared. Any surviving
+    // importer is an error (its build breaks once the delete lands).
+    if (args.flags.has('deleted')) {
+      return runDeletedOrphans(args);
     }
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
@@ -591,6 +685,7 @@ export const impactCommand: ICommandHandler = {
           }
           for (const d of fuzzyResolution.diagnostics)
             process.stdout.write(`  ! ${d}\n`);
+          process.stdout.write(renderFailureHints(fuzzyImpactAmbiguousHints()));
         }
         return 1;
       }

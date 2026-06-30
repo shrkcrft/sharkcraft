@@ -17,9 +17,13 @@ import type { IGateResult } from '../schema/quality-gate.ts';
  * This stops the gate from being a perpetual red on baseline debt the current
  * diff never introduced (an agent learns to ignore a gate that's always red).
  *
- * When no baseline is frozen (or `baselineRelative: false`), it preserves the
- * legacy behavior — fail on ANY error — so nothing regresses for projects that
- * never opted in, and a clean-tree CI demand stays expressible.
+ * When no baseline is frozen, errors are reported as `warn` (not `fail`) so the
+ * gate isn't a perpetual red on inherited debt the current diff never
+ * introduced — an agent learns to ignore a gate that's always red. `--strict`
+ * still escalates the warn to a failure for CI, and freezing a baseline switches
+ * on NEW-only gating. When `baselineRelative: false` (the `--arch-all` opt-in),
+ * the gate fails on ANY error regardless of the baseline, keeping a clean-tree
+ * CI demand expressible.
  *
  * Warnings never fail the gate; they are reported as `warn`.
  */
@@ -85,16 +89,34 @@ export function archGate(projectRoot: string, options: IArchGateOptions = {}): I
     };
   }
 
-  // No baseline (or baseline-relative disabled): fail on any error (legacy), but
-  // hint how to opt into NEW-only gating.
+  // No baseline available: either none is frozen (the default state of a fresh
+  // repo) or the caller disabled baseline-relative gating via `--arch-all`.
   if (errors > 0) {
+    if (options.baselineRelative === false) {
+      // Explicit opt-in (`--arch-all`): fail on TOTAL errors so a clean-tree CI
+      // demand stays expressible.
+      return {
+        id: 'arch',
+        label: 'Architecture',
+        status: 'fail',
+        message: `${errors} architecture error(s).`,
+        details: { errors, warnings, kinds: report.countsByKind },
+        nextCommands: ['shrk arch check', 'shrk arch baseline write'],
+        durationMs: Date.now() - start,
+      };
+    }
+    // Default: no baseline frozen. Don't hard-fail on pre-existing debt the
+    // current diff never introduced — warn (so the signal stays visible) and
+    // point at freezing a baseline to switch on NEW-only gating. `--strict`
+    // still turns this warn into a hard failure for CI, and `--arch-all` fails
+    // on the total.
     return {
       id: 'arch',
       label: 'Architecture',
-      status: 'fail',
-      message: `${errors} architecture error(s).`,
-      details: { errors, warnings, kinds: report.countsByKind },
-      nextCommands: ['shrk arch check', 'shrk arch baseline write'],
+      status: 'warn',
+      message: `${errors} architecture error(s), no baseline frozen — not failing the gate (freeze one with \`shrk arch baseline write\` to track regressions; use \`--arch-all\` or \`--strict\` to fail).`,
+      details: { errors, warnings, kinds: report.countsByKind, noBaseline: true },
+      nextCommands: ['shrk arch baseline write', 'shrk arch check'],
       durationMs: Date.now() - start,
     };
   }

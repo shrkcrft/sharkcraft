@@ -5,8 +5,9 @@ that an AI agent — or a human — should follow when working on the task.
 
 ## Why
 
-R20 already gave us `shrk risk` (a number) and R18 gave us `shrk view <role>`
-(a role manual). R23 ties those into a single per-task contract that an
+R20 already gave us `shrk risk` (a number) and R18 gave us a per-role manual
+(the standalone `view` verb was retired into `shrk contract --role <role>`).
+R23 ties those into a single per-task contract that an
 agent can read once and then drive the rest of its workflow from.
 
 ## Usage

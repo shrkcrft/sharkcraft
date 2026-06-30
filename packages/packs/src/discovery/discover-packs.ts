@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'n
 import * as nodePath from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
+  CONTRIBUTION_FILE_KEYS,
   PACK_SECRET_ENV,
   validatePackManifest,
   verifyPackManifest,
@@ -36,39 +37,29 @@ function resolveManifestPath(packageRoot: string, manifestField: unknown): strin
 }
 
 function emptyCounts(): IDiscoveredPack['contributionCounts'] {
-  return {
-    knowledgeFiles: 0,
-    ruleFiles: 0,
-    pathFiles: 0,
-    templateFiles: 0,
-    pipelineFiles: 0,
-    docsFiles: 0,
-    presetFiles: 0,
-    scaffoldPatternFiles: 0,
-    policyCheckFiles: 0,
-    constructFiles: 0,
-    constructFacetFiles: 0,
-    playbookFiles: 0,
-    delegateRecipeFiles: 0,
-  };
+  // Initialise EVERY canonical contribution key to 0 so an extended-only pack
+  // (conventions / helpers / framework extractors / …) still reports its kinds
+  // rather than silently dropping them.
+  const out: Record<string, number> = {};
+  for (const key of CONTRIBUTION_FILE_KEYS) out[key] = 0;
+  return out as IDiscoveredPack['contributionCounts'];
 }
 
-function countContributions(c: ISharkCraftPackContributions | undefined): IDiscoveredPack['contributionCounts'] {
+/**
+ * Count declared contribution files per kind, driven by the canonical
+ * `CONTRIBUTION_FILE_KEYS`. Exported so callers (quality scoring, tests) can
+ * derive the same honest totals without re-implementing the slot list.
+ */
+export function countContributions(
+  c: ISharkCraftPackContributions | undefined,
+): IDiscoveredPack['contributionCounts'] {
   const out = emptyCounts();
   if (!c) return out;
-  out.knowledgeFiles = c.knowledgeFiles?.length ?? 0;
-  out.ruleFiles = c.ruleFiles?.length ?? 0;
-  out.pathFiles = c.pathFiles?.length ?? 0;
-  out.templateFiles = c.templateFiles?.length ?? 0;
-  out.pipelineFiles = c.pipelineFiles?.length ?? 0;
-  out.docsFiles = c.docsFiles?.length ?? 0;
-  out.presetFiles = c.presetFiles?.length ?? 0;
-  out.scaffoldPatternFiles = c.scaffoldPatternFiles?.length ?? 0;
-  out.policyCheckFiles = c.policyCheckFiles?.length ?? 0;
-  out.constructFiles = c.constructFiles?.length ?? 0;
-  out.constructFacetFiles = c.constructFacetFiles?.length ?? 0;
-  out.playbookFiles = c.playbookFiles?.length ?? 0;
-  out.delegateRecipeFiles = c.delegateRecipeFiles?.length ?? 0;
+  const counts = out as Record<string, number>;
+  const contrib = c as Record<string, readonly string[] | undefined>;
+  for (const key of CONTRIBUTION_FILE_KEYS) {
+    counts[key] = contrib[key]?.length ?? 0;
+  }
   return out;
 }
 
@@ -145,6 +136,13 @@ export interface DiscoverPacksOptions {
   verifySignatures?: boolean;
   /** Override the secret used for signature verification. */
   packSecret?: string;
+  /**
+   * Opt in to trusting dev signatures (`sig.dev === true`, verified against
+   * the well-known public dev secret). Defaults to false, so a dev-signed
+   * pack reports `signatureStatus: 'dev-signature'` rather than 'verified'.
+   * Surfaced as `--allow-dev-signature` on `shrk packs verify` / `doctor`.
+   */
+  allowDevSignatures?: boolean;
   /**
    * Skip the process-level discovery cache. The cache is keyed by
    * projectRoot + lockfile mtime, so installs/upgrades invalidate it
@@ -329,11 +327,15 @@ export async function discoverPacks(options: DiscoverPacksOptions): Promise<IPac
           discovered.valid = v.valid;
 
           if (options.verifySignatures) {
-            const verifyResult = verifyPackManifest(manifest, { secret: options.packSecret });
+            const verifyResult = verifyPackManifest(manifest, {
+              secret: options.packSecret,
+              ...(options.allowDevSignatures ? { allowDev: true } : {}),
+            });
             discovered.signatureStatus = verifyResult.ok ? 'verified' : verifyResult.status;
             discovered.signatureMessage = verifyResult.ok
               ? 'Signature verified.'
               : verifyResult.message;
+            if (verifyResult.dev === true) discovered.signatureDev = true;
             if (!verifyResult.ok && verifyResult.status === 'invalid-signature') {
               // Tampered manifest — strip validity.
               discovered.valid = false;
@@ -345,6 +347,7 @@ export async function discoverPacks(options: DiscoverPacksOptions): Promise<IPac
           } else if (manifest.signature) {
             discovered.signatureStatus = 'not-checked';
             discovered.signatureMessage = `Signed but not verified. Set ${PACK_SECRET_ENV} and run packs verify.`;
+            if (manifest.signature.dev === true) discovered.signatureDev = true;
           }
         }
       } catch (e) {

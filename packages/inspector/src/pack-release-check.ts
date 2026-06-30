@@ -1,6 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { validatePackManifest, type ISharkCraftPackManifest } from '@shrkcrft/plugin-api';
+import {
+  CONTRIBUTION_FILE_KEYS,
+  validatePackManifest,
+  type ISharkCraftPackManifest,
+} from '@shrkcrft/plugin-api';
 import { importModuleViaLoader } from '@shrkcrft/core';
 
 export const PACK_RELEASE_CHECK_SCHEMA = 'sharkcraft.pack-release-check/v1';
@@ -189,27 +193,17 @@ export async function runPackReleaseCheck(packPath: string): Promise<IPackReleas
     }
   }
   // Contribution file existence + load.
+  //
+  // Iterate the canonical CONTRIBUTION_FILE_KEYS (single source of truth in
+  // @shrkcrft/plugin-api) so EVERY consuming contribution slot is verified — a
+  // pack shipping a broken framework extractor / convention / helper / decision
+  // / etc. now fails the gate instead of slipping through. The two `Future`
+  // no-op slots (mcpToolFiles / aiProviderFiles) are intentionally excluded via
+  // FUTURE_CONTRIBUTION_FILE_KEYS: nothing loads them yet, so verifying them
+  // would be dishonest.
   let contributionsFound = 0;
   const c = manifest.contributions ?? {};
-  const allBuckets: (keyof typeof c)[] = [
-    'knowledgeFiles',
-    'ruleFiles',
-    'pathFiles',
-    'templateFiles',
-    'pipelineFiles',
-    'docsFiles',
-    'presetFiles',
-    'boundaryFiles',
-    'contextTestFiles',
-    'agentTestFiles',
-    'scaffoldPatternFiles',
-    'policyCheckFiles',
-    'constructFiles',
-    'constructFacetFiles',
-    'playbookFiles',
-    'searchTuningFiles',
-  ];
-  for (const key of allBuckets) {
+  for (const key of CONTRIBUTION_FILE_KEYS) {
     const list = (c as Record<string, readonly string[] | undefined>)[key];
     if (!list || list.length === 0) continue;
     for (const rel of list) {
@@ -262,6 +256,20 @@ export async function runPackReleaseCheck(packPath: string): Promise<IPackReleas
       message:
         'Manifest has no HMAC signature. Consumers who run `shrk packs verify` will see signature status "missing-signature".',
       suggestedFix: 'Run `shrk packs sign <manifest.ts> --output ...signed.json` with SHARKCRAFT_PACK_SECRET set.',
+      suggestedCommand: 'shrk packs sign ' + manifestFile + ' --verify-after-sign',
+      file: manifestFile,
+    });
+  } else if (manifest.signature.dev === true) {
+    // Dev signatures verify only against the well-known public dev secret and
+    // are NOT release-trusted — shipping one in a release is almost certainly a
+    // mistake. Warn (not a hard error) so the author re-signs before tagging.
+    findings.push({
+      code: 'dev-signature',
+      severity: 'warning',
+      message:
+        'Manifest carries a dev signature (sig.dev = true) — verified only against the public dev secret and NOT release-trusted. Re-sign with the release secret before publishing.',
+      suggestedFix:
+        'Run `shrk packs sign <manifest.ts>` with SHARKCRAFT_PACK_SECRET set (no --dev) and ship the re-signed manifest.',
       suggestedCommand: 'shrk packs sign ' + manifestFile + ' --verify-after-sign',
       file: manifestFile,
     });

@@ -170,7 +170,6 @@ export function buildOnboardingPlan(
 
   const inferredPathConventions = inferPathConventions(ws, subDirs);
   const inferredVerificationCommands = inferVerificationCommands(ws);
-  const inferredBoundaryRules = inferBoundaryRules(ws, subDirs);
   const inferredTemplateCandidates = inferTemplateCandidates(ws, {
     scaffoldTemplates: options.scaffoldTemplates === true,
   });
@@ -178,6 +177,16 @@ export function buildOnboardingPlan(
   const inferredPipelines = inferPipelines(ws, inferredVerificationCommands);
   const detectedInstructionFiles = detectInstructionFiles(ws.projectRoot);
   const monorepoSummary = buildMonorepoSummary(ws, subDirs);
+
+  // Boundary rules: the non-monorepo guess intentionally returns [] (SharkCraft
+  // does not invent boundaries from folder structure). Monorepo layouts, by
+  // contrast, surface real enforceable candidates (e.g. packages/* must not
+  // import apps/*) — merge them in so they reach the boundaries draft and
+  // `init --infer`.
+  const inferredBoundaryRules = mergeMonorepoBoundaryRules(
+    inferBoundaryRules(ws, subDirs),
+    monorepoSummary,
+  );
 
   // RecommendPresets now applies a miss penalty (-3 per missing
   // appliesTo profile), so a preferred preset that previously ranked just
@@ -434,10 +443,41 @@ export function inferBoundaryRules(
   _ws: IWorkspaceSummary,
   _subDirs: ReadonlyMap<string, readonly string[]>,
 ): IInferredBoundaryRule[] {
-  // SharkCraft does not guess your boundary rules. Author them
-  // explicitly in `sharkcraft/boundaries.ts` once the repo's actual
-  // import directions are known.
+  // SharkCraft does not guess your boundary rules from folder structure.
+  // Author them explicitly in `sharkcraft/boundaries.ts` once the repo's
+  // actual import directions are known. Monorepo-derived candidates are
+  // merged in separately via `mergeMonorepoBoundaryRules`.
   return [];
+}
+
+/**
+ * Merge the monorepo summary's computed boundary candidates into the
+ * inferred boundary-rule list. These candidates are derived from the actual
+ * workspace layout (apps / packages / libs), so they are enforceable and
+ * should reach the boundaries draft + `init --infer`. Deduped by id;
+ * existing entries win.
+ */
+function mergeMonorepoBoundaryRules(
+  base: readonly IInferredBoundaryRule[],
+  monorepoSummary: IMonorepoSummary | null,
+): IInferredBoundaryRule[] {
+  const out: IInferredBoundaryRule[] = [...base];
+  if (!monorepoSummary) return out;
+  const seen = new Set(out.map((b) => b.id));
+  for (const c of monorepoSummary.boundaryCandidates) {
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    out.push({
+      id: c.id,
+      title: c.title,
+      severity: 'warning',
+      from: c.from,
+      forbiddenImports: c.forbiddenImports,
+      suggestedFix: `Author this boundary in sharkcraft/boundaries.ts: ${c.from.join(', ')} must not import ${c.forbiddenImports.join(', ')}.`,
+      reason: c.reason,
+    });
+  }
+  return out;
 }
 
 // ─── Template candidates ─────────────────────────────────────────────────────
@@ -555,21 +595,50 @@ export function inferRules(ws: IWorkspaceSummary): IInferredRule[] {
       reason: evidence,
     });
   }
-  // TypeScript.
+  // TypeScript. Resolve strict as a tri-state: confirmed-on, confirmed-off,
+  // or unknown (the tsconfig extends a base we cannot resolve — e.g. an npm
+  // package — so we must NOT assert that strict is off and bake a wrong rule).
   if (ws.hasTypeScript) {
-    const strict = !!ws.tsConfig?.strict;
-    out.push({
-      id: 'typescript.strict-mode',
-      title: strict
-        ? 'TypeScript strict mode enabled'
-        : 'Enable TypeScript strict mode',
-      content: strict
-        ? 'TypeScript strict mode is enabled. Keep it that way — do not weaken `strict` to land code.'
-        : 'TypeScript strict mode is OFF. Turning it on is a one-line tsconfig change and significantly improves type safety. Plan a separate task for the cleanup.',
-      priority: strict ? 'high' : 'medium',
-      source: 'tsconfig',
-      reason: `tsconfig strict=${strict}`,
-    });
+    const ts = ws.tsConfig;
+    const strictState: 'on' | 'off' | 'unknown' =
+      ts && ts.strictResolvable
+        ? ts.strict === true
+          ? 'on'
+          : 'off'
+        : 'unknown';
+    if (strictState === 'on') {
+      out.push({
+        id: 'typescript.strict-mode',
+        title: 'TypeScript strict mode enabled',
+        content:
+          'TypeScript strict mode is enabled. Keep it that way — do not weaken `strict` to land code.',
+        priority: 'high',
+        source: 'tsconfig',
+        reason: 'tsconfig strict=true',
+      });
+    } else if (strictState === 'off') {
+      out.push({
+        id: 'typescript.strict-mode',
+        title: 'Enable TypeScript strict mode',
+        content:
+          'TypeScript strict mode is OFF. Turning it on is a one-line tsconfig change and significantly improves type safety. Plan a separate task for the cleanup.',
+        priority: 'medium',
+        source: 'tsconfig',
+        reason: 'tsconfig strict=false',
+      });
+    } else {
+      // Unknown: advisory only — do NOT emit the imperative "turn it on"
+      // rule (low priority keeps it out of high-confidence auto-adoption).
+      out.push({
+        id: 'typescript.strict-mode-unconfirmed',
+        title: 'Could not confirm TypeScript strict mode — verify manually',
+        content:
+          'TypeScript `strict` is not set directly and the extended base config could not be resolved (it may be an npm package such as `@tsconfig/strictest`). Confirm whether strict is enabled before relying on it; do not assume it is off.',
+        priority: 'low',
+        source: 'tsconfig',
+        reason: 'tsconfig strict unresolved (extends a non-relative / missing base)',
+      });
+    }
   }
   // Test runner.
   if (ws.profiles.includes(WorkspaceProfile.HasBunTest)) {

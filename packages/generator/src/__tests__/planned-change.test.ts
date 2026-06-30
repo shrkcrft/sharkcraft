@@ -385,6 +385,76 @@ describe('evaluatePlannedChange — insert-array-entry', () => {
     expect(out.type).toBe(FileChangeType.InsertBefore);
     expect(out.contents).toContain('first()');
   });
+
+  test('arrayNameAlternatives: resolves against an alternately-named array', () => {
+    // Primary name `entries` is absent; the project names its registration
+    // array `registry`. The alternative resolves and the element is inserted.
+    const existing = [
+      'export const registry: IEntry[] = [',
+      '  makeA(),',
+      '];',
+      '',
+    ].join('\n');
+    const out = evaluatePlannedChange({
+      change: {
+        targetPath: 'registry.ts',
+        operation: {
+          kind: 'insert-array-entry',
+          arrayName: 'entries',
+          arrayNameAlternatives: ['panels', 'registry'],
+          entryValue: 'makeC()',
+        },
+      },
+      absolutePath: '/abs/registry.ts',
+      relativePath: 'registry.ts',
+      existing,
+    });
+    expect(out.type).toBe(FileChangeType.InsertBefore);
+    expect(out.contents).toContain('makeC()');
+    expect(out.contents.indexOf('makeC()')).toBeLessThan(out.contents.indexOf('];'));
+  });
+
+  test('unresolved: emits an actionable manual-step conflict message', () => {
+    const out = evaluatePlannedChange({
+      change: {
+        targetPath: 'registry.ts',
+        operation: {
+          kind: 'insert-array-entry',
+          arrayName: 'entries',
+          arrayNameAlternatives: ['registry'],
+          entryValue: 'makeC()',
+        },
+      },
+      absolutePath: '/abs/registry.ts',
+      relativePath: 'registry.ts',
+      existing: 'export const unrelated = 1;\n',
+    });
+    expect(out.type).toBe(FileChangeType.Conflict);
+    // Actionable, not opaque: tells the human exactly what to wire by hand.
+    expect(out.reason).toContain('wire makeC() into entries manually');
+    expect(out.reason).toContain('"entries"');
+    expect(out.reason).toContain('"registry"');
+  });
+
+  test('manualStepInstruction overrides the synthesized message when unresolved', () => {
+    const out = evaluatePlannedChange({
+      change: {
+        targetPath: 'registry.ts',
+        operation: {
+          kind: 'insert-array-entry',
+          arrayName: 'entries',
+          entryValue: 'makeC()',
+          manualStepInstruction: 'Add makeC() to your plugin bootstrap list.',
+        },
+      },
+      absolutePath: '/abs/registry.ts',
+      relativePath: 'registry.ts',
+      existing: 'export const unrelated = 1;\n',
+    });
+    expect(out.type).toBe(FileChangeType.Conflict);
+    expect(out.reason).toContain('MANUAL');
+    expect(out.reason).toContain('Add makeC() to your plugin bootstrap list.');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

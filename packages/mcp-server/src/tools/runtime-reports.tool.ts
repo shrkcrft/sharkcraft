@@ -2,29 +2,24 @@
  * Read-only MCP tools that mirror `shrk report ...`. Each returns the rendered
  * body (or structured JSON) without writing to disk and without running shell
  * commands. SharkCraft's MCP contract: data only, plus a `nextCommand` hint.
+ *
+ * NOTE: the four HTML-report tools (`get_session_html_report`,
+ * `get_quality_html_report`, `get_safety_html_report`, `get_review_html_report`)
+ * were intentionally retired — the local dashboard already renders that HTML.
+ * They are deleted here (not merely de-registered) so the dead exports cannot
+ * silently drift back into `ALL_TOOLS`. The guard is
+ * `__tests__/tool-registry-drift.test.ts`.
  */
-import { existsSync, readFileSync } from 'node:fs';
-import * as nodePath from 'node:path';
 import {
   buildAdoptionReport,
   buildCoverageReport,
   buildDriftReport,
   buildOnboardingAdoptionPlan,
   buildOnboardingPlan,
-  buildQualityReport,
-  buildSafetyAudit,
   readAdoptionState,
   renderAdoptionReportHtml,
   renderAdoptionReportMarkdown,
   renderAdoptionReportText,
-  renderDevSessionHtml,
-  renderDevSessionFinalReport,
-  renderReviewComment,
-  renderReviewHtml,
-  renderQualityHtml,
-  renderSafetyHtml,
-  scanDevSession,
-  type IReviewPacket,
 } from '@shrkcrft/inspector';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
@@ -59,110 +54,6 @@ export const getAdoptionReportTool: IToolDefinition = {
     if (format === 'markdown') return { text: renderAdoptionReportMarkdown(report), data: { format, nextCommand: 'shrk report adoption --format markdown' } };
     if (format === 'text') return { text: renderAdoptionReportText(report), data: { format } };
     return { data: { format: 'json', report, nextCommand: 'shrk report adoption --format json', note: READ_ONLY_NOTE } };
-  },
-};
-
-export const getSessionHtmlReportTool: IToolDefinition = {
-  name: 'get_session_html_report',
-  description:
-    'Render an HTML / markdown / json report for a dev session. Read-only.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string' },
-      format: { type: 'string', description: 'html|markdown|json (default: html)' },
-    },
-    required: ['id'],
-    additionalProperties: false,
-  },
-  handler(input, ctx) {
-    const id = String(input.id ?? '');
-    const load = scanDevSession(ctx.cwd, id);
-    if (!load || !load.state) return { isError: true, data: { error: `no session "${id}"` } };
-    const format = pickFormat(input, 'html');
-    if (format === 'json') return { data: { id, format: 'json', state: load.state, nextCommand: 'shrk report session ' + id + ' --format json', note: READ_ONLY_NOTE } };
-    if (format === 'markdown') return { text: renderDevSessionFinalReport(load, {}), data: { format } };
-    return { text: renderDevSessionHtml(load), data: { format, schema: 'sharkcraft.dev-session/v1', nextCommand: `shrk dev open ${id} --html` } };
-  },
-};
-
-export const getQualityHtmlReportTool: IToolDefinition = {
-  name: 'get_quality_html_report',
-  description:
-    'Render the quality report (html / markdown / json / text). Gates that would run shell commands are recorded as skipped. Read-only.',
-  inputSchema: {
-    type: 'object',
-    properties: { format: { type: 'string' } },
-    additionalProperties: false,
-  },
-  async handler(input, ctx) {
-    const report = await buildQualityReport({ inspection: ctx.inspection, config: {}, skipShell: true });
-    const format = pickFormat(input, 'html');
-    if (format === 'json') return { data: { format, report, nextCommand: 'shrk report quality --format json' } };
-    if (format === 'markdown' || format === 'text') return { text: JSON.stringify(report, null, 2) };
-    return { text: renderQualityHtml(report), data: { format, schema: 'sharkcraft.quality-report/v1', nextCommand: 'shrk report quality --format html --output quality.html', note: READ_ONLY_NOTE } };
-  },
-};
-
-export const getSafetyHtmlReportTool: IToolDefinition = {
-  name: 'get_safety_html_report',
-  description: 'Render the safety audit (html / markdown / json / text). Read-only.',
-  inputSchema: {
-    type: 'object',
-    properties: { format: { type: 'string' } },
-    additionalProperties: false,
-  },
-  handler(input, ctx) {
-    const audit = buildSafetyAudit({
-      inspection: ctx.inspection,
-      catalog: [],
-      mcpTools: (ctx.allTools ?? []).map((t) => ({ name: t.name, description: t.description, canWrite: false })),
-      planSecretEnv: 'SHARKCRAFT_PLAN_SECRET',
-      planSecretConfigured: typeof process.env.SHARKCRAFT_PLAN_SECRET === 'string' && process.env.SHARKCRAFT_PLAN_SECRET.length > 0,
-    });
-    const format = pickFormat(input, 'html');
-    if (format === 'json') return { data: { format, audit, nextCommand: 'shrk report safety --format json' } };
-    if (format === 'markdown' || format === 'text') return { text: JSON.stringify(audit, null, 2) };
-    return { text: renderSafetyHtml(audit), data: { format, schema: 'sharkcraft.safety-audit/v1', nextCommand: 'shrk report safety --format html --output safety.html', note: READ_ONLY_NOTE } };
-  },
-};
-
-export const getReviewHtmlReportTool: IToolDefinition = {
-  name: 'get_review_html_report',
-  description:
-    'Render a review packet as HTML / markdown / json. Pass `packetPath` (relative to cwd) or `packet` (inline object).',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      packetPath: { type: 'string' },
-      packet: { type: 'object' },
-      format: { type: 'string' },
-      collapseLongSections: { type: 'boolean' },
-      maxItems: { type: 'integer' },
-    },
-    additionalProperties: false,
-  },
-  handler(input, ctx) {
-    let packet: IReviewPacket | null = null;
-    if (typeof input.packetPath === 'string') {
-      const abs = nodePath.isAbsolute(input.packetPath) ? input.packetPath : nodePath.resolve(ctx.cwd, input.packetPath);
-      if (!existsSync(abs)) return { isError: true, data: { error: `packet not found: ${abs}` } };
-      packet = JSON.parse(readFileSync(abs, 'utf8')) as IReviewPacket;
-    } else if (input.packet && typeof input.packet === 'object') {
-      packet = input.packet as IReviewPacket;
-    } else {
-      return { isError: true, data: { error: 'provide packetPath or packet' } };
-    }
-    const format = pickFormat(input, 'html');
-    if (format === 'json') return { data: { format, packet, nextCommand: 'shrk report review <packet.json> --format json' } };
-    if (format === 'markdown' || format === 'text') return { text: renderReviewComment(packet, {}), data: { format } };
-    return {
-      text: renderReviewHtml(packet, {
-        ...(input.collapseLongSections ? { collapseLongSections: true } : {}),
-        ...(typeof input.maxItems === 'number' ? { maxItems: input.maxItems } : {}),
-      }),
-      data: { format, schema: 'sharkcraft.review-packet/v1', nextCommand: 'shrk report review <packet.json> --format html' },
-    };
   },
 };
 

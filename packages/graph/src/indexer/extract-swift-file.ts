@@ -43,6 +43,10 @@ export function extractSwiftFile(
   const fileNode = makeFileNode(fingerprint);
   const symbolNodes: INode[] = [];
   const edges: IEdge[] = [];
+  // Tracks symbol ids already emitted in this file so a later same-named
+  // decl never overwrites an earlier one once dedupeById (last-write-wins)
+  // runs downstream.
+  const emittedIds = new Set<string>();
 
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i += 1) {
@@ -65,37 +69,40 @@ export function extractSwiftFile(
     );
     let m = /^class\s+([A-Za-z_]\w*)/.exec(noModifiers);
     if (m) {
-      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, m[1]!, 'class', i + 1, explicitlyExported);
+      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, emittedIds, m[1]!, 'class', i + 1, explicitlyExported);
       continue;
     }
     m = /^struct\s+([A-Za-z_]\w*)/.exec(noModifiers);
     if (m) {
-      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, m[1]!, 'class', i + 1, explicitlyExported);
+      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, emittedIds, m[1]!, 'class', i + 1, explicitlyExported);
       continue;
     }
     m = /^enum\s+([A-Za-z_]\w*)/.exec(noModifiers);
     if (m) {
-      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, m[1]!, 'enum', i + 1, explicitlyExported);
+      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, emittedIds, m[1]!, 'enum', i + 1, explicitlyExported);
       continue;
     }
     m = /^protocol\s+([A-Za-z_]\w*)/.exec(noModifiers);
     if (m) {
-      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, m[1]!, 'interface', i + 1, explicitlyExported);
+      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, emittedIds, m[1]!, 'interface', i + 1, explicitlyExported);
       continue;
     }
     m = /^extension\s+([A-Za-z_]\w*)/.exec(noModifiers);
     if (m) {
-      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, m[1]!, 'class', i + 1, explicitlyExported);
+      // Extensions get a DISTINCT id+declKind so they never overwrite the
+      // base type they extend (e.g. a `public struct User` must not be
+      // clobbered by a later `extension User: Codable`).
+      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, emittedIds, m[1]!, 'extension', i + 1, explicitlyExported);
       continue;
     }
     m = /^typealias\s+([A-Za-z_]\w*)/.exec(noModifiers);
     if (m) {
-      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, m[1]!, 'type-alias', i + 1, explicitlyExported);
+      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, emittedIds, m[1]!, 'type-alias', i + 1, explicitlyExported);
       continue;
     }
     m = /^func\s+([A-Za-z_]\w*)/.exec(noModifiers);
     if (m) {
-      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, m[1]!, 'function', i + 1, explicitlyExported);
+      pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, emittedIds, m[1]!, 'function', i + 1, explicitlyExported);
     }
   }
 
@@ -114,13 +121,26 @@ function pushSymbol(
   nodes: INode[],
   edges: IEdge[],
   fileId: string,
+  emittedIds: Set<string>,
   name: string,
   declKind: string,
   line: number,
   isExported: boolean,
 ): void {
+  // Extensions never share an id with the base type — they get a distinct
+  // `<Name>+ext@<line>` id and `extension` declKind, preserving the info
+  // without clobbering the declaration they extend.
+  const baseId =
+    declKind === 'extension'
+      ? `symbol:${fp.path}#${name}+ext@${line}`
+      : `symbol:${fp.path}#${name}`;
+  // Harden against intra-file id collisions generally (two same-named
+  // decls): suffix `@<line>` when the id was already emitted so the
+  // earlier decl survives last-write-wins dedup downstream.
+  const id = emittedIds.has(baseId) ? `${baseId}@${line}` : baseId;
+  emittedIds.add(id);
   const sym: INode = {
-    id: `symbol:${fp.path}#${name}`,
+    id,
     kind: NodeKind.Symbol,
     label: name,
     path: fp.path,

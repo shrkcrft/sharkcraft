@@ -182,6 +182,10 @@ export function extractTsFile(
         specifier: re.from,
         name: re.name,
         star: re.star,
+        // Carry the ORIGINAL name for a RENAMED re-export so the re-export
+        // resolver recurses with it (`export { FooImpl as Foo }` → localName
+        // `FooImpl`); omitted when it equals the exposed name.
+        ...(re.localName && re.localName !== re.name ? { localName: re.localName } : {}),
         line: re.line,
       }),
     );

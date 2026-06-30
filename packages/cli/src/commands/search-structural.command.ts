@@ -16,6 +16,7 @@ import {
 } from '@shrkcrft/structural-search';
 import {
   flagBool,
+  flagPositiveInt,
   flagString,
   resolveCwd,
   type ICommandHandler,
@@ -70,7 +71,7 @@ export const searchStructuralCommand: ICommandHandler = {
       process.stderr.write(`Pattern parse error: ${(e as Error).message}\n`);
       return 2;
     }
-    const limit = Number(flagString(args, 'limit') ?? '200');
+    const limit = flagPositiveInt(args, 'limit', 200);
 
     // Rewrite path?
     const recipeInline = flagString(args, 'rewrite');

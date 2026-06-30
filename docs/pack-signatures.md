@@ -50,7 +50,9 @@ explicitly (`secret env NOT set (no fake-signing — re-sign manually)`).
 
 | State | Meaning |
 | --- | --- |
-| `valid` | HMAC verified at inspection time, or signature timestamp is newer than every contribution file. |
+| `valid` | HMAC **verified** at inspection time. Reserved strictly for a real verifier pass — freshness alone never earns `valid`. |
+| `present-unverified` | Signature present and newer than every contribution file, but the HMAC was **not** checked this run. Freshness is not verification — run `shrk packs verify --required`. |
+| `dev-signature` | Manifest carries a dev signature (`sig.dev = true`) — verified only against the well-known public dev secret, NOT release-trusted. |
 | `unsigned` | Manifest has no signature block. |
 | `stale` | Signature exists but at least one contribution file's mtime is newer. |
 | `invalid` | Manifest signature failed HMAC verification — pack contents may have been tampered with. |
@@ -58,13 +60,17 @@ explicitly (`secret env NOT set (no fake-signing — re-sign manually)`).
 | `not-required` | Signatures are not required in this run (no `--require-signatures`). |
 | `unknown` | Verifier did not run; rerun with `--verify-signatures`. |
 
+`--signature-explain` implies `--verify-signatures`, so the states above are
+backed by a real HMAC check (a bogus-HMAC-but-fresh-timestamp pack reports
+`invalid`, never `present-unverified`).
+
 The engine never fake-signs. When the secret is missing, the command
 prints (or, with `--write-todo`, writes) the exact `SHARKCRAFT_PACK_SECRET=… shrk packs sign …` line a human or a follow-up
 session needs to run.
 
 ## R44 — combined pending view
 
-`shrk pack-author pending` (alias: `shrk packs pending`) composes the
+`shrk pack author pending` (alias: `shrk packs pending`) composes the
 four pending signals into a single report:
 
 - modified pack asset files (mtime > signature),
@@ -86,13 +92,43 @@ agent-friendly explanation plus the exact next command. Pass
 iterating on a pack and needs the signature to verify so the rest of
 `shrk` keeps working, without holding the release secret. The dev
 signature carries `sig.dev = true` on the manifest. **A dev signature
-verifies locally but is never release-trusted.**
+is never release-trusted.**
+
+The dev secret (`PACK_DEV_SECRET`) is **well-known and public**, so a dev
+signature proves nothing about publisher identity. The verifier therefore
+**rejects a `dev: true` signature by default** — reporting `signatureStatus:
+'dev-signature'` — *even when your own `SHARKCRAFT_PACK_SECRET` is set*. To
+accept a dev signature for a local-only flow, pass `--allow-dev-signature`:
+
+```bash
+shrk packs verify --allow-dev-signature           # trust dev signatures (local only)
+shrk packs verify --required                       # dev-signed pack FAILS the gate
+shrk packs doctor --require-signatures --allow-dev-signature
+```
+
+Under `--required` / `--require-signatures` a dev-signed pack fails unless
+`--allow-dev-signature` is given. Even with `--allow-dev-signature`, a
+*tampered* dev signature still fails (the HMAC is actually re-checked, not
+blindly trusted).
 
 | Form | Secret needed | `sig.dev` | When to use |
 | --- | --- | --- | --- |
 | `shrk packs sign <pack>` | `SHARKCRAFT_PACK_SECRET` (release) | absent / false | Before tagging — produces a release signature. |
 | `shrk packs sign <pack> --dev` | `PACK_DEV_SECRET` (or ephemeral) | `true` | Inner-loop work without the release secret. |
 | `shrk packs sign <pack> --if-needed` | release or dev (matching current state) | preserved | Re-sign only when stale. |
+
+### Fail-closed when verification cannot run
+
+`shrk packs verify --required` (and `packs doctor --require-signatures`) treat
+a *signed* pack that could not be verified as a **failure**, not a pass:
+
+- a real signed pack with no `SHARKCRAFT_PACK_SECRET` reports
+  `signatureStatus: 'missing-secret'` → unverifiable → the gate fails and the
+  verdict says so;
+- a dev-signed pack (without `--allow-dev-signature`) → unverifiable → fails.
+
+"all signatures OK" is printed only when **every** signed pack reached
+`verified`.
 
 ### Release-preflight contract (R52)
 

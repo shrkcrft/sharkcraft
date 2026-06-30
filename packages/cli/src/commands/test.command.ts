@@ -17,6 +17,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { agentTestMissingExpectedHints, renderFailureHints } from '../output/failure-hints.ts';
 import { maybeRunInWatchMode } from '../output/watch-loop.ts';
 
 async function runContextTests(args: ParsedArgs): Promise<number> {
@@ -134,6 +135,25 @@ async function runAgentTests(args: ParsedArgs): Promise<number> {
     }
   }
   process.stdout.write(`\nSummary: ${results.length - failed.length}/${results.length} passed.\n`);
+  // Surface explain/why hints when a failure lists an expected construct the
+  // packet didn't include — that's the case the `shrk why`/`why-not` family
+  // is built to diagnose.
+  const anyMissingExpected = failed.some(
+    (r) =>
+      (r.missingTemplates ?? []).length > 0 ||
+      (r.missingRules ?? []).length > 0 ||
+      (r.missingForbiddenActions ?? []).length > 0 ||
+      (r.missingVerificationCommands ?? []).length > 0 ||
+      (r.missingHelpers ?? []).length > 0 ||
+      (r.missingPlaybooks ?? []).length > 0 ||
+      (r.missingPolicies ?? []).length > 0 ||
+      (r.missingConstructs ?? []).length > 0 ||
+      (r.missingCommands ?? []).length > 0 ||
+      (r.missingKnowledge ?? []).length > 0,
+  );
+  if (anyMissingExpected) {
+    process.stdout.write(renderFailureHints(agentTestMissingExpectedHints()));
+  }
   return failed.length > 0 ? 1 : 0;
 }
 

@@ -19,7 +19,19 @@ export interface IPlaybookStep {
   mcpTools?: readonly string[];
   /** When true, this step requires explicit human review before continuing. */
   humanReview?: boolean;
-  /** Commands the human should run to validate the step's effect. */
+  /**
+   * Commands the human should run to validate the step's effect.
+   *
+   * To stay package-manager-agnostic, prefer the templating placeholders over
+   * hard-coding a runner: `<pm-run>` is substituted with the consuming
+   * project's run-prefix (`bun run` / `npm run` / `pnpm` / `yarn`) and `<pm>`
+   * with the bare manager name (`bun` / `npm` / `pnpm` / `yarn`) at consume
+   * time. For example, ship `<pm-run> test` rather than `bun test` so the
+   * command resolves to the target repo's real toolchain instead of whichever
+   * ecosystem the pack author happened to use. Hard-coded literals that
+   * disagree with the detected toolchain are flagged (non-fatally) by
+   * `shrk doctor packs`.
+   */
   verificationCommands?: readonly string[];
   /** Free-form safety notes. */
   safetyNotes?: readonly string[];

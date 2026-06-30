@@ -68,6 +68,41 @@ function setupFixture(): string {
   return root;
 }
 
+/**
+ * A snapshot where one exported symbol (`alpha`) is referenced by `consumerCount`
+ * distinct files — used to exercise the caller-file display cap and ensure risk
+ * reflects the UNCAPPED blast radius.
+ */
+function setupManyCallersFixture(consumerCount: number): string {
+  const root = mkdtempSync(join(tmpdir(), 'shrk-impact-callers-'));
+  writeFileSync(
+    join(root, 'package.json'),
+    JSON.stringify({ name: 'demo-root', workspaces: ['packages/*'] }, null, 2),
+  );
+  mkdirSync(join(root, 'packages', 'alpha', 'src'), { recursive: true });
+  mkdirSync(join(root, 'packages', 'consumers', 'src'), { recursive: true });
+  writeFileSync(
+    join(root, 'packages', 'alpha', 'package.json'),
+    JSON.stringify({ name: '@demo/alpha', main: 'src/index.ts' }, null, 2),
+  );
+  writeFileSync(
+    join(root, 'packages', 'consumers', 'package.json'),
+    JSON.stringify({ name: '@demo/consumers', main: 'src/index.ts' }, null, 2),
+  );
+  writeFileSync(
+    join(root, 'packages', 'alpha', 'src', 'index.ts'),
+    'export function alpha() { return 1; }',
+  );
+  writeFileSync(join(root, 'packages', 'consumers', 'src', 'index.ts'), 'export {};');
+  for (let i = 0; i < consumerCount; i += 1) {
+    writeFileSync(
+      join(root, 'packages', 'consumers', 'src', `c${i}.ts`),
+      `import { alpha } from '@demo/alpha';\nexport const c${i} = alpha();`,
+    );
+  }
+  return root;
+}
+
 describe('analyzeGraphImpact', () => {
   test('files input — direct + transitive dependents + tests', async () => {
     const root = setupFixture();
@@ -122,6 +157,42 @@ describe('analyzeGraphImpact', () => {
       expect(r.affectedRules.some((rule) => rule.id === 'boundary:demo.alpha-isolated')).toBe(true);
       // No bridge-missing diagnostic.
       expect(r.diagnostics.some((d) => d.includes('bridge store missing'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('caller-file cap records truncations.callers; risk uses the uncapped count', () => {
+    const consumerCount = 12; // > the small limit AND >= the 10-caller risk threshold
+    const root = setupManyCallersFixture(consumerCount);
+    try {
+      buildFullIndex({ projectRoot: root });
+
+      // Small limit: the DISPLAYED caller list is capped, but the analyzer must
+      // still see the full blast radius for truncation + risk.
+      const small = analyzeGraphImpact(
+        { kind: 'symbol', symbolId: 'alpha' },
+        { projectRoot: root, limit: 3 },
+      );
+      expect(small.affectedCallerFiles.length).toBe(3);
+      expect(small.truncations.callers).toBe(consumerCount - 3);
+      // Risk reflects the UNCAPPED count (12), not the capped list length (3).
+      expect(small.riskReasons.some((r) => r.includes(`${consumerCount} caller files`))).toBe(true);
+      expect(small.riskReasons.some((r) => r.includes('3 caller files'))).toBe(false);
+
+      // Large limit: nothing capped, no callers truncation.
+      const large = analyzeGraphImpact(
+        { kind: 'symbol', symbolId: 'alpha' },
+        { projectRoot: root, limit: 200 },
+      );
+      expect(large.affectedCallerFiles.length).toBe(consumerCount);
+      expect(large.truncations.callers).toBeUndefined();
+      expect(large.riskReasons.some((r) => r.includes(`${consumerCount} caller files`))).toBe(true);
+
+      // The displayed lists differ between runs, but the caller-driven risk
+      // signal is identical — risk no longer collapses to the display cap.
+      expect(small.affectedCallerFiles.length).not.toBe(large.affectedCallerFiles.length);
+      expect(small.risk).toBe(large.risk);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

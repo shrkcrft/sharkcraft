@@ -12,7 +12,7 @@
  */
 import { existsSync, renameSync, rmSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { safeResolveTargetPath, UnsafeTargetPathError } from '@shrkcrft/core';
+import { pathEscapesRootViaSymlink, safeResolveTargetPath, UnsafeTargetPathError } from '@shrkcrft/core';
 import { checkFolderOpSafety, FolderOpSafety } from './folder-safety.ts';
 
 export interface IFolderOpInput {
@@ -133,6 +133,17 @@ export function applyFolderOps(
         applied.push({ ...baseResult, applied: false });
         continue;
       }
+      // Defense in depth: re-verify the SOURCE has not become a symlink that
+      // escapes the sandbox between safety-check and mutation (TOCTOU window).
+      if (pathEscapesRootViaSymlink(options.projectRoot, absTarget)) {
+        rejected.push({
+          ...baseResult,
+          applied: false,
+          safety: FolderOpSafety.Unsafe,
+          reason: `rename-folder source "${op.targetPath}" resolves outside the project root (symlink escape).`,
+        });
+        continue;
+      }
       try {
         renameSync(absTarget, safeAbsNewPath);
         applied.push({ ...baseResult, applied: true });
@@ -150,6 +161,19 @@ export function applyFolderOps(
     if (op.kind === 'delete-folder') {
       if (dryRun) {
         applied.push({ ...baseResult, applied: false });
+        continue;
+      }
+      // Defense in depth: re-verify the target has not become a symlink that
+      // escapes the sandbox before a recursive delete. checkFolderOpSafety
+      // already gates this; a second realpath probe closes the TOCTOU window
+      // so we never rmSync EXTERNAL data.
+      if (pathEscapesRootViaSymlink(options.projectRoot, absTarget)) {
+        rejected.push({
+          ...baseResult,
+          applied: false,
+          safety: FolderOpSafety.Unsafe,
+          reason: `delete-folder target "${op.targetPath}" resolves outside the project root (symlink escape).`,
+        });
         continue;
       }
       try {

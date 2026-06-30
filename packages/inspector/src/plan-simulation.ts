@@ -383,9 +383,11 @@ export async function simulatePlan(
 
   // Re-render the template to recover virtual contents (when available).
   let liveChanges: readonly IFileChange[] = [];
+  let templateRequiredValidations: readonly string[] = [];
   if (plan.templateId) {
     const template = inspection.templateRegistry.get(plan.templateId);
     if (template) {
+      templateRequiredValidations = template.metadata?.requiredValidations ?? [];
       try {
         const dry = planGeneration(template, {
           templateId: plan.templateId,
@@ -586,22 +588,31 @@ export async function simulatePlan(
     }
   }
 
-  // Required validations. Prefer the project's OWN configured verification
-  // commands (config.verificationCommands), so on e.g. an Nx repo that lists
-  // `nx build <app>` plan-simulate emits that instead of misleading generic
-  // gates. Falls back to the engine defaults only when nothing is configured.
+  // Required validations. The template's OWN declared validations come first
+  // (so an Nx lib template can surface `nx build <app>` rather than the generic
+  // boilerplate, and two templates can show different lists). We then add the
+  // project's authoritative gate set — its configured verificationCommands —
+  // via resolveVerificationCommands. The engine's generic defaults are used
+  // ONLY as a fallback when the template declared nothing of its own.
   // No pipelineIds are passed: a saved plan carries no task query to rank
   // pipelines against, so resolution is config-driven, not pipeline-matched.
-  const requiredValidations = new Set<string>(
-    resolveVerificationCommands(inspection, {
-      knowledgeDefaults: [
-        'bun x tsc -p tsconfig.base.json --noEmit',
-        'bun test',
-        'shrk doctor',
-        'shrk check boundaries',
-      ],
-    }),
-  );
+  const requiredValidations = new Set<string>();
+  for (const v of templateRequiredValidations) {
+    const cmd = v.trim();
+    if (cmd.length > 0) requiredValidations.add(cmd);
+  }
+  const resolvedValidations = resolveVerificationCommands(inspection, {
+    knowledgeDefaults:
+      templateRequiredValidations.length > 0
+        ? []
+        : [
+            'bun x tsc -p tsconfig.base.json --noEmit',
+            'bun test',
+            'shrk doctor',
+            'shrk check boundaries',
+          ],
+  });
+  for (const cmd of resolvedValidations) requiredValidations.add(cmd);
   if (publicApiTouched || barrelExportTouched) requiredValidations.add('shrk api report --all --public-only');
   if (pluginKeysTouched) requiredValidations.add('shrk packs doctor --release');
   if (adapterBoundaryTouched) requiredValidations.add('shrk architecture violations');

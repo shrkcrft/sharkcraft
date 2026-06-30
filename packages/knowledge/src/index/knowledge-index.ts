@@ -69,7 +69,11 @@ export class KnowledgeIndex {
         }
         return true;
       })
-      .sort((a, b) => b.score - a.score);
+      // Stable secondary key on id so equal-score entries order deterministically
+      // regardless of insertion order (mirrors the ranker tie-break in
+      // context-planner/score-files.ts). Without it the result depended on
+      // load order — latent non-determinism across runs.
+      .sort((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id));
 
     return query.limit && query.limit > 0 ? scored.slice(0, query.limit) : scored;
   }

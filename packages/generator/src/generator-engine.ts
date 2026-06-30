@@ -50,8 +50,15 @@ export function generate(
     );
   }
 
-  const written: IFileChange[] = [];
-  let totalBytes = 0;
+  // Multiple changes can target the SAME path (e.g. create-then-insert). The
+  // overlay in planGeneration makes each change's `contents` cumulative, so the
+  // LAST writeable change per path already carries the composed result. Write
+  // each distinct path once and count written/totalBytes by distinct path —
+  // matching the synthetic-plan writer. Writing every change would double-count
+  // and re-write the same file. (Single-op-per-path plans, the common case, are
+  // unchanged.)
+  const lastWriteableByPath = new Map<string, IFileChange>();
+  const writeOrder: string[] = [];
   let skipped = 0;
 
   for (const change of plan.changes) {
@@ -60,20 +67,29 @@ export function generate(
       continue;
     }
     if (isWriteableChange(change.type)) {
-      try {
-        mkdirSync(dirname(change.absolutePath), { recursive: true });
-        writeFileSync(change.absolutePath, change.contents, 'utf8');
-        written.push(change);
-        totalBytes += change.sizeBytes;
-      } catch (e) {
-        return err(
-          new AppErrorImpl(
-            ERROR_CODES.FILE_WRITE_ERROR,
-            `Failed to write ${change.absolutePath}`,
-            { details: { path: change.absolutePath }, cause: e },
-          ),
-        );
-      }
+      if (!lastWriteableByPath.has(change.absolutePath)) writeOrder.push(change.absolutePath);
+      lastWriteableByPath.set(change.absolutePath, change);
+    }
+  }
+
+  const written: IFileChange[] = [];
+  let totalBytes = 0;
+
+  for (const path of writeOrder) {
+    const change = lastWriteableByPath.get(path)!;
+    try {
+      mkdirSync(dirname(change.absolutePath), { recursive: true });
+      writeFileSync(change.absolutePath, change.contents, 'utf8');
+      written.push(change);
+      totalBytes += change.sizeBytes;
+    } catch (e) {
+      return err(
+        new AppErrorImpl(
+          ERROR_CODES.FILE_WRITE_ERROR,
+          `Failed to write ${change.absolutePath}`,
+          { details: { path: change.absolutePath }, cause: e },
+        ),
+      );
     }
   }
 

@@ -19,6 +19,7 @@ export const listPacksTool: IToolDefinition = {
       resolvedCounts: p.resolvedCounts,
       signatureStatus: p.signatureStatus,
       signatureMessage: p.signatureMessage,
+      signatureDev: p.signatureDev,
       loadError: p.loadError,
     }));
     return { data: formatRows(rows, input) };

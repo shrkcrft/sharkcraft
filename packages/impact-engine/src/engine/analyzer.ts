@@ -160,10 +160,17 @@ export function analyzeGraphImpact(
       }
     }
   }
+  // True blast radius BEFORE the display cap. The displayed list is sliced to
+  // `limit`, but risk must reflect the uncapped caller-file count — otherwise a
+  // 5000-caller change and a 200-caller change score identically.
+  const callerFilesTotal = callerSet.size;
   const affectedCallerFiles = [...callerSet]
     .map((id) => toRef(api, id))
     .filter((r): r is IAffectedNodeRef => r !== undefined)
     .slice(0, limit);
+  if (callerFilesTotal > limit) {
+    truncations['callers'] = callerFilesTotal - limit;
+  }
 
   // Affected packages.
   const packagesSet = new Set<string>();
@@ -252,7 +259,7 @@ export function analyzeGraphImpact(
     rulesTouched: affectedRules.length,
     templatesTouched: affectedTemplates.length,
     publicApiTouched,
-    callerFilesCount: affectedCallerFiles.length,
+    callerFilesCount: callerFilesTotal,
   });
   const validationScope = deriveValidationScope({
     risk,
@@ -384,5 +391,148 @@ function changedFilesSince(projectRoot: string, ref: string): readonly string[] 
   } catch {
     return [];
   }
+}
+
+/** Schema id for a {@link findDeletedOrphans} report. */
+export const DELETED_ORPHANS_SCHEMA = 'sharkcraft.deleted-orphans/v1' as const;
+
+/** A surviving file that still imports / references now-deleted code. */
+export interface IDeletedOrphan {
+  /** Graph node id of the surviving importer / caller file. */
+  id: string;
+  /** Project-relative path of the surviving file. */
+  path?: string;
+  /** Display label (basename / node label). */
+  label: string;
+  /** 1-based source line of the import statement / use site, when known. */
+  line?: number;
+  /** How the orphan still reaches the deleted code. */
+  via: 'import' | 'reference';
+  /** The deleted file path the orphan still points at. */
+  deletedFile: string;
+  /** When `via === 'reference'`, the deleted symbol that is still referenced. */
+  symbol?: string;
+}
+
+/** Result of a {@link findDeletedOrphans} query. */
+export interface IDeletedOrphanReport {
+  schema: typeof DELETED_ORPHANS_SCHEMA;
+  /** Deleted paths that resolved to a node in the current index snapshot. */
+  resolvedDeleted: readonly string[];
+  /** Deleted paths NOT in the index (already reindexed, or never indexed). */
+  unresolvedDeleted: readonly string[];
+  /** Surviving files that still import / reference the deleted files or their symbols. */
+  orphans: readonly IDeletedOrphan[];
+  /** Free-form diagnostics. */
+  diagnostics: readonly string[];
+}
+
+/** Read the import-statement line carried on an `imports-file` edge. */
+function importEdgeLine(data: Readonly<Record<string, unknown>> | undefined): number | undefined {
+  const v = data?.['line'];
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * Reverse-of-impact query: given files DELETED in the working tree, find the
+ * surviving files — in the CURRENT index snapshot — that still import them or
+ * still reference a symbol they declared. Each such file is an orphaned
+ * importer whose build would break once the delete lands.
+ *
+ * Two edge classes are walked:
+ *   - `imports-file` into the deleted file → direct importers (this also
+ *     surfaces a barrel that `export … from` the deleted file).
+ *   - references/calls to symbols the deleted file declared → consumers that
+ *     reach the symbol through a package barrel re-export. The indexer already
+ *     rewrites those reference edges to the REAL declaring symbol id
+ *     (`resolveReExportedReferenceEdges`), so a cross-package consumer of a
+ *     re-exported deleted symbol is caught here, not just the barrel.
+ *
+ * Assumption: the graph is the pre-edit snapshot. A not-yet-reindexed delete
+ * still carries its inbound edges, so the deleted file node + its symbols are
+ * present and queryable. Once `shrk graph index` re-runs, those nodes vanish
+ * and `unresolvedDeleted` grows instead — surface a diagnostic, never throw.
+ * Importers that are themselves in the deleted set are excluded (they are
+ * going away too).
+ */
+export function findDeletedOrphans(
+  graph: GraphQueryApi,
+  deletedFiles: readonly string[],
+): IDeletedOrphanReport {
+  const deletedSet = new Set(deletedFiles);
+  const resolvedDeleted: string[] = [];
+  const unresolvedDeleted: string[] = [];
+  const diagnostics: string[] = [];
+  const orphans: IDeletedOrphan[] = [];
+  const seen = new Set<string>();
+
+  const pushOrphan = (o: IDeletedOrphan): void => {
+    const key = `${o.id}|${o.via}|${o.deletedFile}|${o.symbol ?? ''}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    orphans.push(o);
+  };
+
+  for (const rel of deletedFiles) {
+    const fileNode = graph.findFile(rel);
+    if (!fileNode) {
+      unresolvedDeleted.push(rel);
+      diagnostics.push(`deleted file not in index (already reindexed?): ${rel}`);
+      continue;
+    }
+    resolvedDeleted.push(rel);
+
+    // 1) Direct importers of the deleted file (incl. barrels re-exporting it).
+    const neighbours = graph.neighbours(fileNode.id);
+    if (neighbours) {
+      for (const inEdge of neighbours.in) {
+        if (inEdge.edge.kind !== EdgeKind.ImportsFile) continue;
+        const source = inEdge.source;
+        if (!('kind' in source)) continue; // unresolved placeholder — no node
+        if (source.path && deletedSet.has(source.path)) continue; // importer also deleted
+        pushOrphan({
+          id: source.id,
+          ...(source.path ? { path: source.path } : {}),
+          label: source.label,
+          ...(importEdgeLine(inEdge.edge.data) ? { line: importEdgeLine(inEdge.edge.data)! } : {}),
+          via: 'import',
+          deletedFile: rel,
+        });
+      }
+    }
+
+    // 2) Surviving references/calls to symbols the deleted file declared.
+    for (const sym of graph.symbolsIn(fileNode.id)) {
+      for (const site of graph.referenceSitesOf(sym.id)) {
+        if (site.node.path && deletedSet.has(site.node.path)) continue; // caller also deleted
+        pushOrphan({
+          id: site.node.id,
+          ...(site.node.path ? { path: site.node.path } : {}),
+          label: site.node.label,
+          ...(typeof site.line === 'number' ? { line: site.line } : {}),
+          via: 'reference',
+          deletedFile: rel,
+          symbol: sym.label,
+        });
+      }
+    }
+  }
+
+  orphans.sort((a, b) => {
+    const pa = a.path ?? a.id;
+    const pb = b.path ?? b.id;
+    if (pa !== pb) return pa.localeCompare(pb);
+    if ((a.line ?? 0) !== (b.line ?? 0)) return (a.line ?? 0) - (b.line ?? 0);
+    if (a.via !== b.via) return a.via.localeCompare(b.via);
+    return (a.symbol ?? '').localeCompare(b.symbol ?? '');
+  });
+
+  return {
+    schema: DELETED_ORPHANS_SCHEMA,
+    resolvedDeleted,
+    unresolvedDeleted,
+    orphans,
+    diagnostics,
+  };
 }
 

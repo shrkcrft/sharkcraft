@@ -12,6 +12,7 @@
 import { existsSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import * as nodeOs from 'node:os';
+import { pathEscapesRootViaSymlink } from '@shrkcrft/core';
 
 export enum FolderOpSafety {
   Safe = 'safe',
@@ -43,6 +44,16 @@ export function checkFolderOpSafety(
     return {
       safety: FolderOpSafety.Unsafe,
       reason: `Target path "${target}" resolves to "${abs}" which is outside the project root "${normalisedRoot}".`,
+    };
+  }
+  // Realpath-aware containment — a lexically-clean path can still traverse an
+  // in-root symlink (e.g. `linkdir -> ../outside`) so that `linkdir/secret`
+  // physically lives outside the sandbox. A destructive rmSync/renameSync on
+  // such a path would corrupt EXTERNAL data while reporting success.
+  if (pathEscapesRootViaSymlink(normalisedRoot, abs)) {
+    return {
+      safety: FolderOpSafety.Unsafe,
+      reason: `Target path "${target}" resolves to "${abs}" which is outside the project root (symlink escape).`,
     };
   }
   if (abs === normalisedRoot) {

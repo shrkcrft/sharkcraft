@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import * as nodePath from 'node:path';
 
 const SUPPORTED_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
@@ -79,17 +79,15 @@ function* walk(
   for (const entry of entries) {
     const name = String(entry.name);
     if (isIgnored(name, extraIgnore)) continue;
+    // Do NOT descend into (or yield through) symlinks. Following a symlinked
+    // directory can inject phantom files into the graph — a self-referential
+    // loop (`src/loop -> src` => `src/loop/loop/loop/...`) only self-terminates
+    // by accident at PATH_MAX, and a link to a large external tree gets fully
+    // scanned. Mirror detect-workspace.ts's isTraversableDir pruning.
+    if (entry.isSymbolicLink()) continue;
     const full = nodePath.join(current, name);
-    try {
-      const isDir = entry.isDirectory() || entry.isSymbolicLink();
-      if (isDir) {
-        const stat = statSync(full);
-        if (stat.isDirectory()) {
-          yield* walk(root, full, extraIgnore);
-        }
-        continue;
-      }
-    } catch {
+    if (entry.isDirectory()) {
+      yield* walk(root, full, extraIgnore);
       continue;
     }
     if (entry.isFile()) {

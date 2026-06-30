@@ -38,11 +38,18 @@ describe('archGate baseline-relative behavior', () => {
     root = '';
   });
 
-  test('no baseline → fails on any error + opt-in hint', () => {
+  test('no baseline → warns (not a perpetual red) + baseline-freeze hint', () => {
     root = fixtureWithArchError();
     const r = archGate(root);
-    expect(r.status).toBe('fail');
+    expect(r.status).toBe('warn');
+    expect((r.details as { noBaseline?: boolean } | undefined)?.noBaseline).toBe(true);
     expect(r.nextCommands).toContain('shrk arch baseline write');
+  });
+
+  test('no baseline + baselineRelative:false (--arch-all) → fails on total', () => {
+    root = fixtureWithArchError();
+    const r = archGate(root, { baselineRelative: false });
+    expect(r.status).toBe('fail');
   });
 
   test('a baseline covering the error → passes as baseline debt', () => {

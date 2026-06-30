@@ -136,7 +136,20 @@ export const reviewCommand: ICommandHandler = {
   description:
     'Build a PR-review packet: changed files (via git), affected path conventions, relevant rules/templates/pipelines, boundary violations on those files, missing-test heuristic, verification commands. Also: `shrk review scaffold github-action` prints a workflow template with optional `--with-boundaries / --with-coverage / --with-drift / --artifact-only / --comment-placeholder` flags. `shrk review render-comment <packet.json>` renders a Markdown PR comment from a saved packet.',
   usage:
-    'shrk [--cwd <dir>] review [--since <ref>] [--staged] [--files a,b] [--json] | shrk review scaffold github-action [...] | shrk review render-comment <packet.json> [--output <file>]',
+    'shrk [--cwd <dir>] review [files... | --files a,b] [--since <ref>] [--staged] [--no-untracked] [--json] | shrk review scaffold github-action [...] | shrk review render-comment <packet.json> [--output <file>]',
+  booleanFlags: new Set([
+    'json',
+    'staged',
+    'untracked',
+    'no-untracked',
+    'v2',
+    'v3',
+    'with-boundaries',
+    'with-coverage',
+    'with-drift',
+    'artifact-only',
+    'comment-placeholder',
+  ]),
   async run(args: ParsedArgs): Promise<number> {
     if (args.positional[0] === 'scaffold') {
       const which = args.positional[1] ?? 'github-action';
@@ -158,11 +171,16 @@ export const reviewCommand: ICommandHandler = {
     }
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const since = flagString(args, 'since');
-    const files = flagList(args, 'files');
+    // Accept files via `--files a,b` OR as bare positional args
+    // (`shrk review a.ts b.ts`). Positionals were previously dropped silently,
+    // yielding a confident "0 changed files" with exit 0.
+    const filesFlag = flagList(args, 'files');
+    const files = filesFlag.length ? filesFlag : args.positional;
     const packet = buildReviewPacket(inspection, {
       ...(since ? { since } : {}),
       ...(flagBool(args, 'staged') ? { staged: true } : {}),
       ...(files.length ? { files } : {}),
+      ...(flagBool(args, 'no-untracked') ? { untracked: false } : {}),
     });
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(packet) + '\n');

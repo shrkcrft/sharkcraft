@@ -51,9 +51,11 @@ describe('GeminiProvider — request shaping (mocked fetch)', () => {
 
   test('translates system + user messages into Gemini wire format', async () => {
     let capturedUrl = '';
+    let capturedHeaders: Record<string, string> = {};
     let capturedBody: unknown = null;
     globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
       capturedUrl = String(input);
+      capturedHeaders = (init?.headers ?? {}) as Record<string, string>;
       capturedBody = JSON.parse(String(init?.body ?? '{}'));
       return new Response(
         JSON.stringify({
@@ -90,7 +92,10 @@ describe('GeminiProvider — request shaping (mocked fetch)', () => {
     expect(result.value.usage?.outputTokens).toBe(5);
 
     expect(capturedUrl).toContain('/v1beta/models/gemini-2.5-flash:generateContent');
-    expect(capturedUrl).toContain('key=test-key');
+    // SC-4: the API key must NOT ride in the URL query string (it leaks into
+    // proxy/access logs and the error path) — it travels in a header instead.
+    expect(capturedUrl).not.toContain('key=');
+    expect(capturedHeaders['x-goog-api-key']).toBe('test-key');
     const body = capturedBody as {
       contents: Array<{ role: string; parts: Array<{ text: string }> }>;
       systemInstruction?: { parts: Array<{ text: string }> };
@@ -104,6 +109,33 @@ describe('GeminiProvider — request shaping (mocked fetch)', () => {
     expect(body.contents[0]?.parts[0]?.text).toBe('do the thing');
     expect(body.contents[1]?.role).toBe('model');
     expect(body.contents[1]?.parts[0]?.text).toBe('ok');
+  });
+
+  test('SC-4: the API key travels in the x-goog-api-key header, never the URL', async () => {
+    let capturedUrl = '';
+    let capturedHeaders: Record<string, string> = {};
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      capturedUrl = String(input);
+      capturedHeaders = (init?.headers ?? {}) as Record<string, string>;
+      return new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+          modelVersion: 'gemini-2.5-flash',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+
+    const provider = new GeminiProvider();
+    provider.configure({ apiKey: 'secret-123' });
+    const result = await provider.send({
+      messages: [{ role: AiMessageRole.User, content: 'hi' }],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(capturedUrl).not.toContain('key=');
+    expect(capturedUrl).not.toContain('secret-123');
+    expect(capturedHeaders['x-goog-api-key']).toBe('secret-123');
   });
 
   test('adds JSON response hints when a response format is requested', async () => {

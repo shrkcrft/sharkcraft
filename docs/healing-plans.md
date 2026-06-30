@@ -1,21 +1,24 @@
 # Healing plans
 
-`shrk heal` turns a failure (stderr blob, log file, failed report,
+A healing plan turns a failure (stderr blob, log file, failed report,
 or a failed command) into an **advisory** recovery plan.
 
-## Commands
+> **CLI verb retired — MCP-only surface.** The former `shrk heal` CLI
+> command (and the earlier `shrk heal from-*` subcommands) were removed.
+> The deterministic healing-plan builder survives as the read-only MCP
+> tool `create_healing_plan`. There is no CLI write path; the engine
+> never auto-applies a healing plan.
 
-R48 collapsed the four `shrk heal from-*` subcommands into a single
-`--from <source>` flag:
+## Surface
 
-```
-shrk heal --from error:"<text>"
-shrk heal --from file:<file>                         # an error log
-shrk heal --from report:<report.json>                # a failed JSON report
-shrk heal --from command:"<command>" --exit-code <n> --stderr-file <file>
-```
+The MCP tool `create_healing_plan` builds the plan from exactly one of:
 
-Flags shared by all forms: `--format text|markdown|json`, `--output <file>`.
+- `errorText` — a free-form error / stderr string.
+- `filePath` — an error log on disk.
+- `reportPath` — a failed JSON report.
+- `command` + `exitCode` + `stderrText` — a failed command invocation.
+
+The tool is read-only and returns the plan body only.
 
 ## Output
 
@@ -24,8 +27,8 @@ Flags shared by all forms: `--format text|markdown|json`, `--output <file>`.
 Key fields:
 
 - `detectedDiagnostics` — reuses the diagnostics registry; same codes as
-  `shrk explain <stderr-blob>` (R48 — diagnostics get/suggest folded
-  into the universal `shrk explain`).
+  the universal `shrk explain <stderr-blob>` (R48 folded diagnostics
+  get/suggest into `shrk explain`).
 - `confidence` — `low | medium | high`.
 - `likelyCauses`, `safeRecoverySteps`, `forbiddenQuickFixes`,
   `recommendedCommands`.
@@ -46,7 +49,8 @@ Key fields:
 ## Polyglot diagnostics (R25)
 
 R25 adds 10 polyglot diagnostic codes and matching keyword recognition in
-`shrk heal --from error:...`:
+the healing-plan builder (the `errorText` input recognises these
+substrings):
 
 | Code | Triggered by |
 | --- | --- |

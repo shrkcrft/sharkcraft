@@ -123,6 +123,20 @@ export interface IKnowledgeStaleReport {
   anchorChecks: ReadonlyArray<IKnowledgeAnchorCheck>;
 }
 
+/**
+ * Minimal structural view of the code graph's symbol index.
+ *
+ * `GraphQueryApi.findSymbol` satisfies this shape. Inspector sits *below*
+ * `@shrkcrft/graph` in the layer order and therefore cannot import it; the
+ * gate (which lives above the graph) injects a resolver that conforms to
+ * this interface so symbol checks can resolve cross-file without an upward
+ * dependency.
+ */
+export interface ISymbolGraphResolver {
+  /** Return the declaration nodes for `name` (project-relative `path`). */
+  findSymbol(name: string): ReadonlyArray<{ path?: string; line?: number }>;
+}
+
 export interface IKnowledgeStaleCheckOptions {
   /** When provided, only entries referencing one of these files are checked. */
   changedFiles?: ReadonlyArray<string>;
@@ -134,6 +148,13 @@ export interface IKnowledgeStaleCheckOptions {
    * leads.
    */
   renameStrategy?: RenameStrategy;
+  /**
+   * Optional code-graph resolver. When supplied, symbol references are
+   * resolved cross-file via the graph's global symbol index (so a *moved*
+   * symbol is distinguished from a deleted one) and only fall back to the
+   * single-file AST scan when the graph cannot answer.
+   */
+  graph?: ISymbolGraphResolver;
 }
 
 /**
@@ -239,9 +260,14 @@ function packageExists(inspection: ISharkcraftInspection, id: string): boolean {
   return dirExists(inspection.projectRoot, `packages/${rel}`);
 }
 
+function normalizeRel(p: string): string {
+  return p.split(/[\\/]/).join('/').replace(/^\.\//, '');
+}
+
 function checkSymbolReference(
   projectRoot: string,
   ref: IKnowledgeReference,
+  graph?: ISymbolGraphResolver,
 ): { outcome: ReferenceCheckOutcome; confidence: SymbolConfidence; message: string } {
   const sym = ref.symbol ?? '';
   if (!sym) {
@@ -250,6 +276,52 @@ function checkSymbolReference(
       confidence: SymbolConfidence.Unknown,
       message: 'Symbol reference has no `symbol` field.',
     };
+  }
+  // Graph-resolved, cross-file path (preferred when a graph is supplied).
+  // A single-file AST scan cannot tell a *moved* symbol from a deleted one;
+  // the graph's global symbol index can, so consult it first.
+  if (graph) {
+    const decl = graph
+      .findSymbol(sym)
+      .map((n) => n.path)
+      .filter((p): p is string => typeof p === 'string' && p.length > 0)
+      .map(normalizeRel);
+    if (decl.length > 0) {
+      if (ref.path) {
+        const target = normalizeRel(ref.path);
+        if (decl.includes(target)) {
+          return {
+            outcome: ReferenceCheckOutcome.Ok,
+            confidence: SymbolConfidence.Exact,
+            message: `\`${sym}\` resolves to ${ref.path} (graph).`,
+          };
+        }
+        // Symbol exists but no longer at the pinned file — it moved.
+        return {
+          outcome: ReferenceCheckOutcome.Stale,
+          confidence: SymbolConfidence.Missing,
+          message: `Symbol \`${sym}\` is no longer in ${ref.path}; the graph resolves it to ${decl
+            .slice(0, 3)
+            .join(', ')}.`,
+        };
+      }
+      // No file pin, but the graph resolved it cross-file.
+      return {
+        outcome: ReferenceCheckOutcome.Ok,
+        confidence: SymbolConfidence.Probable,
+        message: `\`${sym}\` resolves via the code graph to ${decl.slice(0, 3).join(', ')}.`,
+      };
+    }
+    // Absent from the graph. The graph may be partial (locals, unindexed
+    // languages), so fall through to the AST/text backstop when a file is
+    // pinned; otherwise we cannot verify.
+    if (!ref.path) {
+      return {
+        outcome: ReferenceCheckOutcome.Unknown,
+        confidence: SymbolConfidence.Unknown,
+        message: `Symbol reference \`${sym}\` has no file pin and is absent from the code graph; stale-check cannot verify.`,
+      };
+    }
   }
   const file = ref.path ? nodePath.join(projectRoot, ref.path) : null;
   if (file) {
@@ -346,6 +418,7 @@ function escapeRe(s: string): string {
 function checkReference(
   inspection: ISharkcraftInspection,
   ref: IKnowledgeReference,
+  graph?: ISymbolGraphResolver,
 ): { outcome: ReferenceCheckOutcome; confidence?: SymbolConfidence; message: string; suggestion?: string } {
   const projectRoot = inspection.projectRoot;
   switch (ref.kind) {
@@ -368,7 +441,7 @@ function checkReference(
       };
     }
     case 'symbol': {
-      const r = checkSymbolReference(projectRoot, ref);
+      const r = checkSymbolReference(projectRoot, ref, graph);
       return r;
     }
     case 'command': {
@@ -531,7 +604,7 @@ export function buildKnowledgeStaleReport(
     }
     for (const ref of entry.references ?? []) {
       totalReferences += 1;
-      const result = checkReference(inspection, ref);
+      const result = checkReference(inspection, ref, options.graph);
       const outcome = result.outcome;
       if (outcome === ReferenceCheckOutcome.Ok) counts.ok += 1;
       else if (outcome === ReferenceCheckOutcome.Stale) counts.stale += 1;
@@ -617,7 +690,7 @@ export function buildKnowledgeStaleReport(
     }
     for (const anchor of entry.anchors ?? []) {
       totalAnchors += 1;
-      const inspected = checkAnchor(inspection, anchor);
+      const inspected = checkAnchor(inspection, anchor, options.graph);
       anchorChecks.push({
         entryId: entry.id,
         anchor,
@@ -957,6 +1030,7 @@ function walkForSymbols(
 function checkAnchor(
   inspection: ISharkcraftInspection,
   anchor: IKnowledgeAnchor,
+  graph?: ISymbolGraphResolver,
 ): { outcome: ReferenceCheckOutcome; message: string } {
   switch (anchor.kind) {
     case 'file':
@@ -968,7 +1042,7 @@ function checkAnchor(
       }
       return { outcome: ReferenceCheckOutcome.Stale, message: `anchor file missing: ${anchor.path}` };
     case 'symbol':
-      return checkSymbolAnchor(inspection, anchor);
+      return checkSymbolAnchor(inspection, anchor, graph);
     case 'command':
       if (anchor.targetId && commandExistsInInspection(inspection, anchor.targetId)) {
         return { outcome: ReferenceCheckOutcome.Ok, message: `command exists: ${anchor.targetId}` };
@@ -1005,11 +1079,16 @@ function checkAnchor(
 function checkSymbolAnchor(
   inspection: ISharkcraftInspection,
   anchor: IKnowledgeAnchor,
+  graph?: ISymbolGraphResolver,
 ): { outcome: ReferenceCheckOutcome; message: string } {
-  const r = checkSymbolReference(inspection.projectRoot, {
-    kind: 'symbol',
-    symbol: anchor.symbol,
-    ...(anchor.path ? { path: anchor.path } : {}),
-  });
+  const r = checkSymbolReference(
+    inspection.projectRoot,
+    {
+      kind: 'symbol',
+      symbol: anchor.symbol,
+      ...(anchor.path ? { path: anchor.path } : {}),
+    },
+    graph,
+  );
   return { outcome: r.outcome, message: r.message };
 }

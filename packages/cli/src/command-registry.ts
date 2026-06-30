@@ -477,6 +477,21 @@ export function flagNumber(args: ParsedArgs, name: string): number | undefined {
 }
 
 /**
+ * Parse a `--limit`/`--depth`-style flag as a positive integer, falling back to
+ * `fallback` when the flag is absent OR malformed (non-numeric, NaN, <= 0,
+ * non-integer). Guards the `Number(flagString(...))` footgun where a
+ * fat-fingered `--limit abc` becomes NaN and silently yields empty-or-unbounded
+ * results (`[].slice(0, NaN) === []`, `x >= NaN === false`). Use everywhere a
+ * count/cap is read from a flag.
+ */
+export function flagPositiveInt(args: ParsedArgs, name: string, fallback: number): number {
+  const v = args.flags.get(name);
+  if (typeof v !== 'string') return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+/**
  * Canonical multi-value flag parser.
  *
  * Accepts every form the CLI has historically used:

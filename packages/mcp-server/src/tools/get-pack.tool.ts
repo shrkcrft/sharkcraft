@@ -26,6 +26,7 @@ export const getPackTool: IToolDefinition = {
         resolvedCounts: pack.resolvedCounts,
         signatureStatus: pack.signatureStatus,
         signatureMessage: pack.signatureMessage,
+        signatureDev: pack.signatureDev,
         validationIssues: pack.validationIssues,
         loadError: pack.loadError,
         postInstallNotes: pack.manifest?.postInstallNotes ?? [],

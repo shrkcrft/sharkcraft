@@ -30,7 +30,11 @@ async function runChangesSummary(args: ParsedArgs): Promise<number> {
   const inspection = await inspectSharkcraft({ cwd });
   const since = flagString(args, 'since');
   const staged = flagBool(args, 'staged');
-  const files = flagList(args, 'files');
+  // `--files a,b` OR bare positional args after the subverb
+  // (`shrk changes summary a.ts b.ts`). Positionals were dropped silently
+  // before, yielding a confident full-diff / "0 files" with exit 0.
+  const filesFlag = flagList(args, 'files');
+  const files = filesFlag.length ? filesFlag : args.positional;
   // Optional round / label propagated into the report.
   const roundLabel = flagString(args, 'round') ?? flagString(args, 'label');
   const opts: {
@@ -94,7 +98,9 @@ async function runChangesAcceptanceReplay(args: ParsedArgs): Promise<number> {
   const inspection = await inspectSharkcraft({ cwd });
   const since = flagString(args, 'since');
   const staged = flagBool(args, 'staged');
-  const files = flagList(args, 'files');
+  // `--files a,b` OR bare positional args after the subverb (see above).
+  const filesFlag = flagList(args, 'files');
+  const files = filesFlag.length ? filesFlag : args.positional;
   const roundLabel = flagString(args, 'round') ?? flagString(args, 'label');
   const profileRaw = flagString(args, 'profile') ?? 'changed-only';
   const profile: ReplayProfile = ((): ReplayProfile => {
@@ -144,11 +150,15 @@ export const changesCommand: ICommandHandler = {
   description:
     'Changes summary — grouped diff over --since/--staged/--files. Supports --round label and `changes acceptance-replay`. Read-only.',
   usage:
-    'shrk changes <summary|impact|report|acceptance-replay> [--since <ref>] [--staged] [--files a,b,c] [--round <name>] [--profile changed-only|standard|strict] [--format text|markdown|json] [--output <file>]',
+    'shrk changes <summary|impact|report|acceptance-replay> [files... | --files a,b,c] [--since <ref>] [--staged] [--round <name>] [--profile changed-only|standard|strict] [--format text|markdown|json] [--output <file>]',
+  booleanFlags: new Set(['json', 'staged']),
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
     const sliced: ParsedArgs = { ...args, positional: args.positional.slice(1) };
-    if (sub === 'summary' || sub === undefined) return runChangesSummary(sliced.positional.length > 0 ? sliced : args);
+    // Always dispatch on the sliced args so positionals AFTER the subverb
+    // become the file list (handled in the runners). Passing the un-sliced
+    // `args` here used to leak the subverb token (e.g. "summary") forward.
+    if (sub === 'summary' || sub === undefined) return runChangesSummary(sliced);
     if (sub === 'report') return runChangesSummary(sliced);
     if (sub === 'impact') return runChangesSummary(sliced);
     if (sub === 'acceptance-replay' || sub === 'replay' || sub === 'acceptance') {

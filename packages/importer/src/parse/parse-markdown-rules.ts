@@ -98,7 +98,14 @@ export function parseMarkdownRules(
   const flushPara = (): void => {
     if (paragraph.length === 0) return;
     const block = paragraph.join('\n').trim();
-    if (block.length > 0 && current) {
+    if (block.length > 0) {
+      // Lazily open an implicit preamble section so content before the first
+      // heading (intro prose, or a FLAT heading-less bullet list — the most
+      // common AGENTS.md shape) is not silently dropped. Empty heading →
+      // inferType('') = Rule, keywordTags('') = [], and the falsy heading
+      // suppresses the `section` field downstream, so preamble entries are
+      // well-formed.
+      if (!current) current = { heading: '', level: 0, paragraphs: [] };
       current.paragraphs.push(block);
     }
     paragraph = [];
@@ -128,7 +135,10 @@ export function parseMarkdownRules(
       for (const unit of units) {
         const title = extractTitle(unit);
         if (!title) continue;
-        const slugBase = slugify(`${section.heading}-${title}`) || slugify(title);
+        // `slugify` strips non-ASCII to '', so a CJK/Cyrillic/emoji heading or
+        // title can collapse to an empty slug → id `claude.` which FAILS shrk's
+        // own isValidKnowledgeId. Fall back to a deterministic non-empty slug.
+        const slugBase = slugify(`${section.heading}-${title}`) || slugify(title) || 'entry';
         let id = `${options.idPrefix}.${slugBase}`;
         let counter = 2;
         while (seen.has(id)) {

@@ -138,11 +138,26 @@ function visitTopLevel(
     }
     return;
   }
-  // export default function Foo() {}
-  if (ts.isExportAssignment(stmt) && ts.isFunctionExpression(stmt.expression)) {
-    const name = stmt.expression.name?.text ?? 'Default';
-    if (/^[A-Z]/.test(name) && containsJsx(stmt.expression)) {
-      out.push({ id: makeComponentId(input.filePath, name), name, node: stmt.expression });
+  // export default function () { return <div />; }  (anonymous declaration)
+  if (ts.isFunctionDeclaration(stmt) && !stmt.name && isExportDefault(stmt) && containsJsx(stmt)) {
+    const name = defaultComponentName(input.filePath);
+    out.push({ id: makeComponentId(input.filePath, name), name, node: stmt });
+    return;
+  }
+  // export default function Foo() {} / export default () => <div />
+  if (ts.isExportAssignment(stmt) && !stmt.isExportEquals) {
+    const expr = stmt.expression;
+    if (ts.isFunctionExpression(expr)) {
+      const name = expr.name?.text ?? defaultComponentName(input.filePath);
+      if (/^[A-Z]/.test(name) && containsJsx(expr)) {
+        out.push({ id: makeComponentId(input.filePath, name), name, node: expr });
+      }
+      return;
+    }
+    if (ts.isArrowFunction(expr) && containsJsx(expr)) {
+      const name = defaultComponentName(input.filePath);
+      out.push({ id: makeComponentId(input.filePath, name), name, node: expr });
+      return;
     }
     return;
   }
@@ -194,6 +209,34 @@ function isAncestor(ancestor: ts.Node, descendant: ts.Node): boolean {
 
 function makeComponentId(path: string, name: string): string {
   return `framework:react:component:${path}#${name}`;
+}
+
+/** True when a function declaration carries both `export` and `default`. */
+function isExportDefault(node: ts.FunctionDeclaration): boolean {
+  const mods = node.modifiers;
+  if (!mods) return false;
+  let hasExport = false;
+  let hasDefault = false;
+  for (const m of mods) {
+    if (m.kind === ts.SyntaxKind.ExportKeyword) hasExport = true;
+    else if (m.kind === ts.SyntaxKind.DefaultKeyword) hasDefault = true;
+  }
+  return hasExport && hasDefault;
+}
+
+/**
+ * Deterministic PascalCase component name for a nameless default export,
+ * derived from the file basename (`home-page.tsx` → `HomePage`). Falls
+ * back to `Default` when the basename yields nothing usable.
+ */
+function defaultComponentName(filePath: string): string {
+  const base = nodePath.basename(filePath).replace(/\.[^.]+$/, '');
+  const pascal = base
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+    .join('');
+  return /^[A-Za-z]/.test(pascal) ? pascal : 'Default';
 }
 
 function edge(

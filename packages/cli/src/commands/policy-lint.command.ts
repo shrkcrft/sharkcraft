@@ -1,8 +1,7 @@
 import * as nodePath from 'node:path';
 import type { PolicySurface } from '@shrkcrft/core';
 import { runPolicyLint, type IPolicyFinding } from '@shrkcrft/boundaries';
-import { loadProjectConfig } from '@shrkcrft/config';
-import { resolveChangedFiles } from '@shrkcrft/inspector';
+import { resolveChangedFiles, resolveProjectConfig } from '@shrkcrft/inspector';
 import {
   flagBool,
   flagString,
@@ -40,12 +39,12 @@ export const policyLintCommand: ICommandHandler = {
     }
 
     // Distinguish invalid config from valid-with-no-rules (no silent fail-open).
-    const loaded = await loadProjectConfig(cwd);
+    const loaded = await resolveProjectConfig(cwd);
     if (!loaded.ok) {
       const msg = loaded.error.message;
       if (wantJson) {
         process.stdout.write(
-          asJson({ schema: 'sharkcraft.policy-lint/v1', error: msg, rules: [], findings: [], diagnostics: [msg], verdict: 'errors' }) + '\n',
+          asJson({ schema: 'sharkcraft.policy-lint/v1', error: msg, rules: [], findings: [], diagnostics: [msg], evaluated: 0, verdict: 'errors' }) + '\n',
         );
         return 1;
       }
@@ -54,11 +53,12 @@ export const policyLintCommand: ICommandHandler = {
       return 1;
     }
     const rules = loaded.value.config.policyRules ?? [];
+    const planeDiagnostics = loaded.value.planeDiagnostics;
 
     if (rules.length === 0) {
       if (wantJson) {
         process.stdout.write(
-          asJson({ schema: 'sharkcraft.policy-lint/v1', rules: [], findings: [], diagnostics: [], verdict: 'pass' }) + '\n',
+          asJson({ schema: 'sharkcraft.policy-lint/v1', rules: [], findings: [], diagnostics: [], evaluated: 0, verdict: 'pass' }) + '\n',
         );
         return 0;
       }
@@ -97,12 +97,18 @@ export const policyLintCommand: ICommandHandler = {
     const sharkcraftRel = nodePath.relative(cwd, loaded.value.sharkcraftDir).split(nodePath.sep).join('/');
     const excludeDirs = sharkcraftRel && !sharkcraftRel.startsWith('..') ? [sharkcraftRel] : [];
 
-    const report = runPolicyLint(cwd, rules, {
+    const reportRaw = runPolicyLint(cwd, rules, {
       ...(surfaces ? { surfaces } : {}),
       ...(changedOnly || since ? { changedOnly: true, changedFiles: changedFiles ?? [] } : {}),
       ...(only ? { only: only.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
       ...(excludeDirs.length > 0 ? { excludeDirs } : {}),
     });
+    // Surface pack-plane merge notes (missing/invalid pack policy files, dropped
+    // collisions) in the same diagnostics array the engine already emits.
+    const report =
+      planeDiagnostics.length > 0
+        ? { ...reportRaw, diagnostics: [...reportRaw.diagnostics, ...planeDiagnostics] }
+        : reportRaw;
 
     if (wantJson) {
       process.stdout.write(asJson(report) + '\n');
@@ -110,7 +116,17 @@ export const policyLintCommand: ICommandHandler = {
     }
 
     process.stdout.write(header('Policy lint'));
-    process.stdout.write(kv('rules evaluated', String(report.rules.length)) + '\n');
+    // `evaluated` counts rules that actually scanned ≥1 file. When 0 rules
+    // evaluated but rules ARE configured, say so loudly — "scanned nothing" must
+    // never read as the green "no policy violations" pass.
+    if (report.evaluated === 0) {
+      process.stdout.write(
+        `  ! Nothing evaluated — ${report.rules.length} rule(s) configured but none matched files in scope` +
+          (changedOnly || since ? ' (changed-only).\n' : '.\n'),
+      );
+      return 0;
+    }
+    process.stdout.write(kv('rules evaluated', `${report.evaluated} of ${report.rules.length}`) + '\n');
     const errors = report.findings.filter((f) => f.severity === 'error').length;
     const warnings = report.findings.filter((f) => f.severity === 'warning').length;
     process.stdout.write(kv('findings', `${errors} error(s), ${warnings} warning(s)`) + '\n');

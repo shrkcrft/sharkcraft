@@ -1,6 +1,7 @@
 import { planContext } from '@shrkcrft/context-planner';
 import {
   flagBool,
+  flagPositiveInt,
   flagString,
   resolveCwd,
   type ICommandHandler,
@@ -30,8 +31,11 @@ export const planContextCommand: ICommandHandler = {
       process.stderr.write(this.usage + '\n');
       return 2;
     }
-    const budget = Number(flagString(args, 'budget') ?? '8000');
-    const maxFiles = Number(flagString(args, 'max-files') ?? '30');
+    // NaN-safe: a fat-fingered `--budget abc` would otherwise become NaN and
+    // print "NaN tokens" while selecting 0 files at exit 0. Fall back to the
+    // documented defaults instead.
+    const budget = flagPositiveInt(args, 'budget', 8000);
+    const maxFiles = flagPositiveInt(args, 'max-files', 30);
     const hintedFiles = collectMulti(args, 'hint-file');
     const hintedPackages = collectMulti(args, 'hint-package');
     const pack = planContext({

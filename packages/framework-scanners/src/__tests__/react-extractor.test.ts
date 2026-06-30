@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildFullIndex, EdgeKind } from '@shrkcrft/graph';
-import { runExtractors, FrameworkQueryApi } from '../index.ts';
+import { runExtractors, FrameworkQueryApi, reactExtractor } from '../index.ts';
 
 function setupReactFixture(): string {
   const root = mkdtempSync(join(tmpdir(), 'shrk-fw-react-'));
@@ -83,5 +83,57 @@ describe('react extractor', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('react default-export components', () => {
+  function extract(filePath: string, lines: string[]) {
+    return reactExtractor.extract({
+      filePath,
+      content: lines.join('\n'),
+      fileNodeId: `file:${filePath}`,
+    });
+  }
+  function componentNodes(out: ReturnType<typeof reactExtractor.extract>) {
+    return out.nodes.filter((n) => n.data?.['subtype'] === 'component');
+  }
+
+  test('arrow default export yields exactly one component', () => {
+    const out = extract('packages/ui/src/Page.tsx', ['export default () => <div />;']);
+    const components = componentNodes(out);
+    expect(components.length).toBe(1);
+    expect(components[0]!.data?.['name']).toBe('Page');
+  });
+
+  test('anonymous function default export yields exactly one component', () => {
+    const out = extract('packages/ui/src/about.tsx', [
+      'export default function () {',
+      '  return <div>about</div>;',
+      '}',
+    ]);
+    const components = componentNodes(out);
+    expect(components.length).toBe(1);
+    // PascalCase synthesized from the file basename.
+    expect(components[0]!.data?.['name']).toBe('About');
+  });
+
+  test('hook call inside an arrow default export produces a UsesHook edge', () => {
+    const out = extract('packages/ui/src/Widget.tsx', [
+      "import { useState } from 'react';",
+      'export default () => {',
+      '  const [n, setN] = useState(0);',
+      '  return <div>{n}</div>;',
+      '};',
+    ]);
+    expect(componentNodes(out).length).toBe(1);
+    const hookEdges = out.edges.filter((e) => e.kind === EdgeKind.UsesHook);
+    expect(hookEdges.length).toBe(1);
+  });
+
+  test('arrow default export without JSX is not a component', () => {
+    // Guard: a non-JSX default export (e.g. a config object factory) must
+    // not be swept up as a component.
+    const out = extract('packages/ui/src/config.ts', ['export default () => 42;']);
+    expect(componentNodes(out).length).toBe(0);
   });
 });

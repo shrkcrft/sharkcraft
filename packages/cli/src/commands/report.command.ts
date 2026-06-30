@@ -51,7 +51,7 @@ export const reportCommand: ICommandHandler = {
   description:
     'Render runtime reports in text / markdown / html / json. Subcommands: adoption / session / quality / safety / review / coverage / drift / graph.',
   usage:
-    'shrk report <adoption|session <id>|quality|safety|review <packet.json>|coverage|drift|graph> [--format text|markdown|html|json] [--output <path>] [--collapse-long-sections] [--max-items N] [--include-raw-json] [--json]',
+    'shrk report <adoption|session <id>|quality|safety|review <packet.json>|coverage|drift|graph> [--format text|markdown|html|json] [--output <path>] [--collapse-long-sections] [--max-items N] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
     const sliced: IDispatchArgs = { ...args, positional: args.positional.slice(1) };

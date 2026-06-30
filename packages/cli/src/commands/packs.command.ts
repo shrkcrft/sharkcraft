@@ -242,6 +242,7 @@ export const packsListCommand: ICommandHandler = {
             resolvedCounts: p.resolvedCounts,
             signatureStatus: p.signatureStatus,
             signatureMessage: p.signatureMessage,
+            signatureDev: p.signatureDev,
             loadError: p.loadError,
             validationIssues: p.validationIssues,
           })),
@@ -331,6 +332,9 @@ export const packsGetCommand: ICommandHandler = {
     if (pack.signatureStatus) {
       process.stdout.write('\nSignature:\n');
       process.stdout.write(`  status:  ${pack.signatureStatus}\n`);
+      if (pack.signatureDev) {
+        process.stdout.write('  dev:     yes (NOT release-trusted)\n');
+      }
       if (pack.signatureMessage) {
         process.stdout.write(`  message: ${pack.signatureMessage}\n`);
       }
@@ -412,20 +416,31 @@ export const packsDoctorCommand: ICommandHandler = {
   description:
     'Validate pack discovery: invalid manifests, missing files, empty contributions, duplicates, template/pipeline quality, action-hint coverage, signatures. `--release` folds pack-release-check findings into the report. `--signature-explain` adds per-pack signature explanation.',
   usage:
-    'shrk [--cwd <dir>] packs doctor [--verify-signatures] [--require-signatures] [--release] [--strict] [--secret <secret>] [--signature-explain] [--json]',
+    'shrk [--cwd <dir>] packs doctor [--verify-signatures] [--require-signatures] [--allow-dev-signature] [--release] [--strict] [--secret <secret>] [--signature-explain] [--json]',
   async run(args: ParsedArgs): Promise<number> {
-    const verify = flagBool(args, 'verify-signatures') || flagBool(args, 'require-signatures');
+    const signatureExplain = flagBool(args, 'signature-explain');
+    // `--signature-explain` implies signature verification so the lifecycle
+    // states it prints are backed by a real HMAC check this run — otherwise a
+    // bogus-HMAC-but-fresh-timestamp pack would be reported off freshness
+    // alone instead of the honest "invalid".
+    const verify =
+      flagBool(args, 'verify-signatures') ||
+      flagBool(args, 'require-signatures') ||
+      signatureExplain;
     const required = flagBool(args, 'require-signatures');
     const release = flagBool(args, 'release');
     const strict = flagBool(args, 'strict');
     const secret = flagString(args, 'secret');
-    const signatureExplain = flagBool(args, 'signature-explain');
+    const allowDev = flagBool(args, 'allow-dev-signature');
     const inspection = await inspectSharkcraft({
       cwd: resolveCwd(args),
       ...(verify ? { verifyPackSignatures: true } : {}),
       ...(secret !== undefined ? { packSecret: secret } : {}),
     });
-    const report = buildPackDoctorReport(inspection, { requireSignatures: required });
+    const report = buildPackDoctorReport(inspection, {
+      requireSignatures: required,
+      ...(allowDev ? { allowDevSignatures: true } : {}),
+    });
     if (release) {
       const releaseChecks = await runPackReleaseChecksForReport(inspection);
       mergePackReleaseChecks(inspection, report, releaseChecks, { strict });
@@ -501,36 +516,105 @@ export const packsDoctorCommand: ICommandHandler = {
 export const packsVerifyCommand: ICommandHandler = {
   name: 'verify',
   description:
-    'Verify HMAC signatures on every discovered pack. Unsigned packs are reported but do not fail.',
+    'Verify HMAC signatures on every discovered pack. Unsigned packs are reported but do not fail. Under --required, a signed pack that could not be verified (no secret) or that carries a dev signature fails too — pass --allow-dev-signature to trust dev signatures for local-only flows.',
   usage:
-    'shrk [--cwd <dir>] packs verify [--secret <secret>] [--required] [--json]',
+    'shrk [--cwd <dir>] packs verify [--secret <secret>] [--required] [--allow-dev-signature] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const secret = flagString(args, 'secret');
+    const allowDev = flagBool(args, 'allow-dev-signature');
     const inspection = await inspectSharkcraft({
       cwd: resolveCwd(args),
       verifyPackSignatures: true,
       ...(secret !== undefined ? { packSecret: secret } : {}),
     });
     const required = flagBool(args, 'required');
-    const rows = inspection.packs.discoveredPacks.map((p) => ({
-      packageName: p.packageName,
-      packageVersion: p.packageVersion,
-      valid: p.valid,
-      signatureStatus: p.signatureStatus ?? 'not-checked',
-      signatureMessage: p.signatureMessage,
-    }));
+    type SigStatus =
+      | 'verified'
+      | 'invalid-signature'
+      | 'missing-signature'
+      | 'missing-secret'
+      | 'dev-signature'
+      | 'not-checked';
+    const rows = inspection.packs.discoveredPacks.map((p) => {
+      let signatureStatus: SigStatus = (p.signatureStatus ?? 'not-checked') as SigStatus;
+      let signatureMessage = p.signatureMessage;
+      let signatureDev = p.signatureDev === true;
+      // --allow-dev-signature: actually run the HMAC check against the
+      // well-known dev secret so a *tampered* dev signature still fails. The
+      // default discovery path short-circuits to 'dev-signature' BEFORE
+      // hashing, so we must re-verify here rather than blindly trust the tag.
+      if (allowDev && signatureStatus === 'dev-signature' && p.manifest) {
+        const v = verifyPackManifest(p.manifest, {
+          allowDev: true,
+          ...(secret !== undefined ? { secret } : {}),
+        });
+        signatureStatus = (v.ok ? 'verified' : v.status) as SigStatus;
+        signatureMessage = v.ok ? 'Dev signature verified (--allow-dev-signature).' : v.message;
+        signatureDev = true;
+      }
+      return {
+        packageName: p.packageName,
+        packageVersion: p.packageVersion,
+        valid: p.valid,
+        signatureStatus,
+        signatureMessage,
+        signatureDev,
+      };
+    });
 
     const tampered = rows.some((r) => r.signatureStatus === 'invalid-signature');
     const unsigned = rows.some((r) => r.signatureStatus === 'missing-signature');
-    const passed = !tampered && (!required || !unsigned);
+    // A SIGNED pack we could NOT actually verify this run: the secret was
+    // missing, or it carries a dev signature that is not release-trusted (and
+    // --allow-dev-signature was not passed). Reporting these as "OK" was the
+    // fail-open hole — required verification that could not run must FAIL.
+    const missingSecretCount = rows.filter((r) => r.signatureStatus === 'missing-secret').length;
+    const devCount = rows.filter((r) => r.signatureStatus === 'dev-signature').length;
+    const unverifiable = missingSecretCount > 0 || devCount > 0;
+    const signedCount = rows.filter(
+      (r) => r.signatureStatus !== 'missing-signature' && r.signatureStatus !== 'not-checked',
+    ).length;
+    const verifiedCount = rows.filter((r) => r.signatureStatus === 'verified').length;
+    const allSignedVerified = signedCount > 0 && verifiedCount === signedCount;
+    const passed = !tampered && (!required || (!unsigned && !unverifiable));
+
+    const verdict = ((): string => {
+      if (tampered) return 'TAMPERED pack detected — abort!';
+      if (required && (unverifiable || unsigned)) {
+        const bits: string[] = [];
+        if (missingSecretCount > 0)
+          bits.push(
+            `${missingSecretCount} signed pack(s) could not be verified (no secret) — set ${PACK_SECRET_ENV}`,
+          );
+        if (devCount > 0)
+          bits.push(
+            `${devCount} dev-signed pack(s) are not release-trusted — pass --allow-dev-signature to accept them`,
+          );
+        if (unsigned) bits.push('unsigned pack present');
+        return bits.join('; ');
+      }
+      if (allSignedVerified && !unsigned && !unverifiable) return 'all signatures OK ✓';
+      if (unverifiable || unsigned) {
+        const bits: string[] = [];
+        if (missingSecretCount > 0) bits.push(`${missingSecretCount} signed pack(s) unverified (no secret)`);
+        if (devCount > 0) bits.push(`${devCount} dev-signed pack(s) not release-trusted`);
+        if (unsigned) bits.push('unsigned pack present');
+        return bits.join('; ') + ' (use --required to fail)';
+      }
+      return signedCount > 0 ? 'all signatures OK ✓' : 'no signatures to verify';
+    })();
 
     if (flagBool(args, 'json')) {
       process.stdout.write(
         asJson({
           passed,
           required,
+          allowDevSignature: allowDev,
           tampered,
           unsignedPresent: unsigned,
+          unverifiable,
+          unverifiableCount: missingSecretCount,
+          devSignatureCount: devCount,
           packs: rows,
         }) + '\n',
       );
@@ -552,14 +636,15 @@ export const packsVerifyCommand: ICommandHandler = {
               ? 'UNSIGNED'
               : r.signatureStatus === 'missing-secret'
                 ? 'NO SECRET'
-                : 'NOT CHECKED';
+                : r.signatureStatus === 'dev-signature'
+                  ? 'DEV'
+                  : 'NOT CHECKED';
+      const devNote = r.signatureStatus === 'dev-signature' ? ' (not release-trusted)' : '';
       process.stdout.write(
-        `  ${tag.padEnd(12)} ${r.packageName.padEnd(40)} ${r.signatureMessage ?? ''}\n`,
+        `  ${tag.padEnd(12)} ${r.packageName.padEnd(40)} ${r.signatureMessage ?? ''}${devNote}\n`,
       );
     }
-    process.stdout.write(
-      `\nVerdict: ${passed ? 'all signatures OK ✓' : tampered ? 'TAMPERED pack detected — abort!' : 'unsigned pack present (use --required to fail)'}\n`,
-    );
+    process.stdout.write(`\nVerdict: ${verdict}\n`);
     if (!secret && !process.env[PACK_SECRET_ENV]) {
       process.stdout.write(
         `(Tip: set ${PACK_SECRET_ENV} or pass --secret to verify signed packs.)\n`,

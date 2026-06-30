@@ -7,6 +7,7 @@
  */
 import { classifyChangeIntent, ChangeIntentKind } from './change-intent.ts';
 import { buildDiagnosticByCode, listDiagnostics } from './failure-diagnostics.ts';
+import { rankAll } from './task-ranker.ts';
 import {
   buildUncertaintyReport,
   type IUncertaintyReport,
@@ -112,6 +113,47 @@ function safetyLevelFor(command: string): ICommandRecommendation['safetyLevel'] 
   return 'read-only';
 }
 
+/**
+ * Minimum `rankAll` template score to treat the shared ranker's top template as
+ * a strong, intent-confirmed structured match. Real template matches score well
+ * into double digits; unrelated templates don't match at all — so this bar
+ * cleanly separates a genuine scaffold target from noise. Above it, a keyword
+ * recipe that only overlapped a single word no longer gets to headline.
+ */
+const RANKER_TEMPLATE_PROMOTE_THRESHOLD = 6;
+
+/**
+ * Minimum `rankAll` pipeline score to let the matched pipeline lead. Higher than
+ * the template bar: a generic catch-all pipeline scores low on noise but high on
+ * a real scaffolding task, so the bar excludes that baseline.
+ */
+const RANKER_PIPELINE_PROMOTE_THRESHOLD = 8;
+
+const SCAFFOLD_VERBS: ReadonlySet<string> = new Set([
+  'create', 'build', 'add', 'generate', 'scaffold', 'implement', 'make', 'new', 'introduce', 'write',
+]);
+
+/**
+ * Does the query read like create/build/scaffold work? Gate for ranker-driven
+ * `gen <template>` promotion: a strong template token-overlap on a NON-scaffold
+ * verb (e.g. "document the cli-command template") must not be routed to a
+ * generator. Mirrors the CLI's `looksLikeCreateBuild` (kept local — the
+ * inspector layer cannot import the cli layer).
+ */
+function looksLikeScaffolding(query: string): boolean {
+  const tokens = query
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0) return false;
+  if (SCAFFOLD_VERBS.has(tokens[0]!)) return true;
+  for (let i = 1; i < Math.min(4, tokens.length); i++) {
+    if (SCAFFOLD_VERBS.has(tokens[i]!)) return true;
+  }
+  return false;
+}
+
 export async function recommendCommands(
   inspection: ISharkcraftInspection,
   query: string,
@@ -126,6 +168,54 @@ export async function recommendCommands(
     if (r.match.test(trimmed)) {
       for (const rec of r.recommendations) recommendations.push({ ...rec, safetyLevel: safetyLevelFor(rec.command) });
     }
+  }
+
+  // ── Ranker arbitration ────────────────────────────────────────────────
+  // A keyword recipe matches on a single overlapping word (e.g. "release" in
+  // "create a cli command for the release tooling"), which would otherwise
+  // route a scaffolding intent to unrelated review/release tooling. Consult
+  // the SAME shared ranker that `brief`/`task` use: when it confirms a concrete
+  // template/pipeline for a create/build query, promote `shrk gen <template>`
+  // (or the pipeline packet) to the HEADLINE so the recipe keyword no longer
+  // hijacks the route. Mirrors the CLI's R1 routing-hint promotion.
+  let promotedRanker:
+    | { kind: 'template' | 'pipeline'; id: string; label: string; score: number }
+    | undefined;
+  if (trimmed.length > 0 && looksLikeScaffolding(trimmed)) {
+    try {
+      const ranking = rankAll(inspection, trimmed);
+      const topTemplate = ranking.templates[0];
+      const topPipeline = ranking.pipelines[0];
+      if (topTemplate && topTemplate.score >= RANKER_TEMPLATE_PROMOTE_THRESHOLD) {
+        promotedRanker = {
+          kind: 'template',
+          id: topTemplate.item.id,
+          label: topTemplate.item.name,
+          score: topTemplate.score,
+        };
+      } else if (topPipeline && topPipeline.score >= RANKER_PIPELINE_PROMOTE_THRESHOLD) {
+        promotedRanker = {
+          kind: 'pipeline',
+          id: topPipeline.item.id,
+          label: topPipeline.item.title,
+          score: topPipeline.score,
+        };
+      }
+    } catch {
+      // The ranker is advisory — fall back to recipe/intent output on failure.
+    }
+  }
+  if (promotedRanker) {
+    const command =
+      promotedRanker.kind === 'template'
+        ? `shrk gen ${promotedRanker.id} <name> --dry-run`
+        : `shrk task "${trimmed.replace(/"/g, '\\"')}"`;
+    const why =
+      promotedRanker.kind === 'template'
+        ? `Ranker matched template "${promotedRanker.label}" (score ${promotedRanker.score}) — the project scaffold for this create/build task, ahead of the keyword recipe.`
+        : `Ranker matched pipeline "${promotedRanker.label}" (score ${promotedRanker.score}) — run the full task packet for this create/build task, ahead of the keyword recipe.`;
+    // Headline: unshift so it leads; dedup below keeps this first occurrence.
+    recommendations.unshift({ command, why, safetyLevel: safetyLevelFor(command) });
   }
 
   // If a stderr-like input was provided, do a diagnostic-suggest pass.
@@ -168,10 +258,38 @@ export async function recommendCommands(
   let confidence: 'high' | 'medium' | 'low' | 'unknown' = 'medium';
   const reasons: string[] = [];
   const missing: { id: string; message: string }[] = [];
+  const conflicting: { id: string; message: string }[] = [];
   const increase: string[] = [];
-  if (usedRecipe) {
+  if (usedRecipe && promotedRanker) {
+    // Divergent signals: a keyword recipe fired AND a stronger ranker
+    // template/pipeline match was promoted to the headline. Keyword overlap
+    // alone is NOT enough for HIGH — emit a medium confidence + review note so
+    // the agent confirms the corrected route rather than trusting it blindly.
+    confidence = 'medium';
+    reasons.push(
+      `Keyword recipe matched "${trimmed}", but the shared ranker found a stronger ${promotedRanker.kind} "${promotedRanker.id}" (score ${promotedRanker.score}) and now headlines it — review which fits.`,
+    );
+    conflicting.push({
+      id: 'conflict-recipe-vs-ranker',
+      message: `Recipe keyword overlap competes with ranker ${promotedRanker.kind} "${promotedRanker.id}". The headline was routed to the ranker match; confirm the intended target.`,
+    });
+    increase.push(
+      'Tighten the recipe regex or add a routing hint so the keyword stops overlapping unrelated tooling.',
+    );
+    warnings.push(
+      `review: recipe keyword overlap was outranked by ranker ${promotedRanker.kind} "${promotedRanker.id}" — headline routed to the scaffold; confirm before applying.`,
+    );
+  } else if (usedRecipe) {
+    // Pure-recipe case (no competing ranker match) — HIGH stays appropriate.
     confidence = 'high';
     reasons.push(`Recipe matched the query "${trimmed}".`);
+  } else if (promotedRanker) {
+    // A clean, intent-confirmed structured match with no competing keyword
+    // recipe — the ranker is the engine's confident answer.
+    confidence = 'high';
+    reasons.push(
+      `Shared ranker matched ${promotedRanker.kind} "${promotedRanker.id}" (score ${promotedRanker.score}).`,
+    );
   } else if (recommendations.length > 0 && recommendations[0]?.why.startsWith('Intent fallback')) {
     confidence = 'low';
     reasons.push('No recipe matched — fell back to intent classification.');
@@ -185,6 +303,7 @@ export async function recommendCommands(
     confidence,
     reasons,
     missingSignals: missing,
+    conflictingSignals: conflicting,
     suggestedCommands: recommendations.slice(0, 3).map((r) => r.command),
     safeFallbackCommand: 'shrk start-here',
     whatWouldIncreaseConfidence: increase,

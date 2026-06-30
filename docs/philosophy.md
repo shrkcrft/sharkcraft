@@ -17,7 +17,9 @@ Every CLI flag and every MCP tool is built around retrieval, not enumeration. `g
 - Bun runtime, Bun workspaces, Bun lockfile.
 - The CLI binary runs with Bun.
 - The MCP server runs with Bun.
-- Node APIs are wrapped behind `IFileSystem` so they can be swapped later.
+- File I/O calls `node:fs` / Bun APIs directly — there is no filesystem
+  shim. Determinism comes from the engine + asset registries (same input →
+  same output), not from an abstraction layer over the filesystem.
 
 ## Plan-first generation
 

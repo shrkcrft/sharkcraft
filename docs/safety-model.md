@@ -60,7 +60,7 @@ Every CLI command carries a safety label:
 |--------------------|----------------------------------------------------|
 | `read-only`        | `doctor`, `context`, `task`, `graph`, `coverage`   |
 | `writes-session`   | `dev start`, `dev plan`, `dev mark-applied`        |
-| `writes-drafts`    | `onboard --write-drafts`, `onboard adopt --write-patch`, `boundaries infer --write-drafts`, `ingest repository --write-drafts`, `ingest adopt --write-patch`, `ingest adopt plan` (R28 adds `--include-body`), `generated protect --write-drafts`, `languages cache clear --write`, `plugin rename --output`, `plugin remove --output`, `helper plan --output`, `doctor suppress` (R29 writes `sharkcraft/doctor.suppressions.json`), `knowledge rename-symbol --write` / `rename-file --write` / `update-anchor --write` (R29 writes under `sharkcraft/knowledge-updates/`), `feedback convert-to-backlog --output` (R29 writes a backlog markdown), **R44** `knowledge add --write-preview` / `knowledge update --write-preview` / `knowledge remove --write-preview` / `knowledge lint --write-preview` (writes drafts + manifest + explainer under `.sharkcraft/authoring/` or `.sharkcraft/fixes/`), `pack-author pending --write-todo` (writes `.sharkcraft/reports/pack-signing-todo.md`) |
+| `writes-drafts`    | `onboard --write-drafts`, `onboard adopt --write-patch`, `boundaries infer --write-drafts`, `ingest repository --write-drafts`, `ingest adopt --write-patch`, `ingest adopt plan` (R28 adds `--include-body`), `generated protect --write-drafts`, `languages cache clear --write`, `plugin rename --output`, `plugin remove --output`, `helper plan --output`, `doctor suppress` (R29 writes `sharkcraft/doctor.suppressions.json`), `knowledge rename-symbol --write` / `rename-file --write` / `update-anchor --write` (R29 writes under `sharkcraft/knowledge-updates/`), `feedback convert-to-backlog --output` (R29 writes a backlog markdown), **R44** `knowledge add --write-preview` / `knowledge update --write-preview` / `knowledge remove --write-preview` / `knowledge lint --write-preview` (writes drafts + manifest + explainer under `.sharkcraft/authoring/` or `.sharkcraft/fixes/`), `pack author pending --write-todo` (writes `.sharkcraft/reports/pack-signing-todo.md`) |
 | `writes-source`    | `apply`, `gen --write`, `init`, `packs sign`, `packs new --write` |
 | `runs-shell`       | `dev validate`, `apply --validate`                 |
 | `requires-review`  | Anything in the above three that needs a human    |
@@ -183,9 +183,10 @@ actually moves the score. Hard invariants: memory cannot lower base risk;
 adjustment is capped at 14; stale index (>30 days) halves the adjustment;
 missing index reports it explicitly.
 
-## Agent contract / plan simulation / repo memory / heal / execution graph (R23)
+## Agent contract / plan simulation / repo memory (R23)
 
-R23 adds five capabilities; all five obey the existing safety pledges:
+R23 added five capabilities; all obey the existing safety pledges. Three
+remain CLI commands:
 
 - `shrk contract "<task>"` — read-only; `--save` writes only under
   `.sharkcraft/contracts/`. MCP tool `create_agent_contract` is read-only.
@@ -195,10 +196,20 @@ R23 adds five capabilities; all five obey the existing safety pledges:
   (no network, no telemetry, no embeddings). Writes only into
   `.sharkcraft/memory/`. `memory reset --write` refuses to step outside
   that directory. MCP tools are read-only.
-- `shrk heal …` — advisory only. Never auto-fixes. Never writes source.
-  MCP tool `create_healing_plan` is read-only.
-- `shrk agent graph "<task>"` — read-only data structure. No execution.
-  MCP tool `create_execution_graph` is read-only.
+
+### Healing plans + execution graph (CLI verbs retired — MCP-only)
+
+The other two R23 capabilities lost their CLI verbs but keep their
+read-only MCP surfaces. They never auto-fix, never write source, never
+execute:
+
+- Healing plans — the former `shrk heal …` CLI verb was removed. Surviving
+  surface: MCP tool `create_healing_plan` (read-only). See
+  [`healing-plans.md`](./healing-plans.md).
+- Task execution graph — the former `shrk agent graph "<task>"` CLI verb
+  was removed. Surviving surfaces: MCP tools `create_execution_graph` and
+  `query_execution_graph` (read-only). See
+  [`execution-graph.md`](./execution-graph.md).
 
 ## Compliance evidence packets (retired by R46)
 
@@ -284,7 +295,7 @@ contract applies:
   `.sharkcraft/authoring/` (knowledge drafts) or `.sharkcraft/fixes/`
   (lint output). They never mutate `sharkcraft/knowledge.ts` and never
   touch pack source.
-- `shrk pack-author pending --write-todo` writes a signing TODO under
+- `shrk pack author pending --write-todo` writes a signing TODO under
   `.sharkcraft/reports/pack-signing-todo.md` when
   `SHARKCRAFT_PACK_SECRET` is missing. It never signs.
 - `.sharkcraft/asset-provenance.jsonl` is local-only, append-only.

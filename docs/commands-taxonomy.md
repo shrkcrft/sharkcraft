@@ -8,11 +8,13 @@ _First-time orientation._
 
 - `shrk commands` — List all `shrk` commands with safety labels. _(read-only)_
 - `shrk commands doctor` — Check catalog completeness against the live command registry. _(read-only)_
+- `shrk commands legacy` — Show only legacy / replaced commands and their replacedBy targets. _(read-only)_
+- `shrk commands machine` — Show only machine-oriented commands (JSON pipes / agent surfaces). _(read-only)_
+- `shrk commands overlaps` — Show overlapping commands with their preferredCommand pointers (or `(none)` when missing). _(read-only)_
 - **★** `shrk commands primary` — Show the curated primary command list. _(read-only)_
-- `shrk commands taxonomy` — Command taxonomy report (start-here / daily / architecture / governance / ...). _(read-only)_
+- `shrk commands surface` — Filter the command catalog by surface (primary | common | advanced | machine | internal | legacy). _(read-only)_
 - `shrk commands ux-check` — Audit catalog UX — descriptions, safety metadata, alias collisions. _(read-only)_
 - **★** `shrk doctor` — Workspace doctor: config + entry validation. _(read-only)_
-- **★** `shrk map` — Render a high-level repository map. _(read-only)_
 - **★** `shrk start-here` — Human entry point — 30-second explanation + 5 primary flows + safety pledge. _(read-only)_
 - `shrk version` — Print the CLI version. _(read-only)_
 
@@ -31,20 +33,26 @@ _The agentic write flow._
 - `shrk dev reports` — List reports in a session. _(read-only)_
 - **★** `shrk dev start` — Start a dev session under .sharkcraft/sessions/. _(writes-session)_
 - **★** `shrk gen` — Generate from a template (dry-run by default, --save-plan/--write to apply). _(writes-source)_
+- **★** `shrk generated protect --write-drafts` — Write recommended protect rules under sharkcraft/ingestion/. Never overwrites live policies. _(writes-drafts)_
+- **★** `shrk generated report` — Classify generated vs hand-written code (@generated, DO NOT EDIT, openapi-generator, …). Read-only. _(read-only)_
 - `shrk plan` — Inspect, review, sign, or verify a saved plan file. _(read-only)_
+- `shrk plan check` — Validate an external plan/spec file against the live workspace. Read-only. Two built-in extractors (sharkcraft.spec/v1, markdown-frontmatter-loose). _(read-only)_
+- **★** `shrk plan review` — Review a saved plan file (read-only). _(read-only)_
+- `shrk plan simulate` — Simulate a saved generation plan (v1/v2) without writing source. Read-only. _(read-only)_
 
 ## AI agent context
 
 _Brief / handoff / orchestrate / simulate / intent / recommend._
 
-- `shrk context` — Focused context for a task (rules / paths / templates). _(read-only)_
-- **★** `shrk handoff` — Build an agent handoff packet (continue-from-here context). _(read-only)_
-- `shrk intent` — Classify change intent for a task (read-only, no AI). _(read-only)_
+- `shrk context` — Focused context for a task (rules / paths / templates). For "what should I do?" prefer `shrk recommend "<task>"`. _(read-only)_
+- `shrk context build` — Save a task-specific context bundle under .sharkcraft/context/task-contexts/<slug>.json|.md. _(writes-session)_
+- `shrk context refresh` — Rebuild the most recently saved task context. Writes only under .sharkcraft/context/. _(writes-session)_
+- `shrk context status` — Show the current task context status. Read-only. _(read-only)_
 - **★** `shrk orchestrate` — Read-only agent orchestration plan (no execution). _(read-only)_
 - **★** `shrk orchestrate --risk-aware` — Risk-aware orchestration plan (folds in boundary/policy/architecture signals). _(read-only)_
-- `shrk recommend` — Recommend commands for a query or stderr blob (deterministic, no AI). _(read-only)_
+- `shrk recommend` — Canonical human entrypoint for "what should I do?" — recommends commands for a query or stderr blob (deterministic, no AI). _(read-only)_
 - **★** `shrk simulate` — Predict what a workflow would do without executing it. _(read-only)_
-- `shrk task` — Full task packet for a task. _(read-only)_
+- `shrk task` — Machine task packet (rules + templates + pipelines + commands). Primary consumer is agents / JSON pipes — humans usually want `shrk recommend "<task>"`. _(read-only)_
 - `shrk task decompose` — Deterministic task decomposition (no AI). _(read-only)_
 
 ## Review and impact
@@ -54,6 +62,7 @@ _Review packets, impact graphs, tests impact._
 - **★** `shrk impact` — Architecture impact analysis for a task / files / plan / bundle. _(read-only)_
 - **★** `shrk impact --format` — Render impact reports as text / markdown / html / json. _(read-only)_
 - **★** `shrk impact --graph-format` — Emit Mermaid / DOT dependency graph alongside the impact report. _(read-only)_
+- **★** `shrk impact --symbol` — Direct symbol impact — uses AST-backed symbol index. _(read-only)_
 - **★** `shrk impact <input> --graph-format mermaid --graph-output <path> --render-svg` — Render an impact graph to SVG via local mmdc/dot (opt-in subprocess). _(runs-shell)_
 - **★** `shrk impact graph` — Render a Mermaid / DOT graph from a saved impact report. _(read-only)_
 - **★** `shrk impact graph <impact.json> --render-svg` — Render a previously-saved impact graph to SVG (opt-in subprocess). _(runs-shell)_
@@ -74,11 +83,16 @@ _Architecture map / intelligence graph / boundaries / drift / coverage._
 - `shrk architecture area` — Show members of an architecture area. _(read-only)_
 - **★** `shrk architecture map` — Architecture map v2 — layers, public-API, boundary rules, risks. _(read-only)_
 - `shrk architecture violations` — Boundary violations report. _(read-only)_
+- `shrk architecture violations --changed-only` — Architecture violations diff scoped to working-tree changes. Read-only. _(read-only)_
+- `shrk boundaries enforce` — Polyglot boundary enforcement (read-only). Exits non-zero on errors. _(read-only)_
+- `shrk boundaries enforce --changed-only` — Polyglot boundary enforcement filtered to changes. Read-only. _(read-only)_
 - `shrk boundaries explain` — Explain a boundary rule + suggested fix. _(read-only)_
 - `shrk boundaries infer` — Infer boundary candidates (dry-run by default). _(read-only)_
 - `shrk boundaries list` — List all boundary rules. _(read-only)_
 - `shrk boundaries suggest` — Suggest fixes for boundary violations. _(read-only)_
 - **★** `shrk check boundaries` — Boundary enforcement against tsconfig aliases + import graph. _(read-only)_
+- **★** `shrk check boundaries --changed-only` — Boundary check filtered to changes (working tree, --since <ref>, --staged, --files). Read-only. _(read-only)_
+- **★** `shrk check boundaries --polyglot` — Combined TS + polyglot boundary check. Read-only. _(read-only)_
 - `shrk constructs adopt` — Classify construct drafts into safe / review / low / covered / conflict. _(read-only)_
 - `shrk constructs adopt --write-patch` — Write construct-adoption files under construct-drafts/adoption/. _(writes-drafts)_
 - `shrk constructs adopt diff` — Line-level diff of the proposed construct adoption against live constructs.ts. _(read-only)_
@@ -97,41 +111,25 @@ _Architecture map / intelligence graph / boundaries / drift / coverage._
 - `shrk constructs tokens` — List tokens contributed by a construct. _(read-only)_
 - `shrk constructs trace` — Trace files / publicApi / events / tokens of a construct. _(read-only)_
 - `shrk coverage` — Coverage report across knowledge axes. _(read-only)_
+- `shrk coverage scaffolds` — Scaffold/template/playbook coverage gap report for a task or domain. _(read-only)_
 - `shrk drift` — Stale-entry drift report. _(read-only)_
-- `shrk drift baseline compare` — Compare current drift to a baseline. _(read-only)_
-- `shrk drift baseline create` — Create a drift baseline snapshot. _(writes-drafts)_
-- `shrk graph` — Knowledge graph — nodes, edges, and shortest-path explanations. _(read-only)_
+- `shrk graph` — Knowledge graph plus code-intelligence subverbs (`index`, `status`, `search`, `context`, `impact`, `callers`, `cycles`, `unresolved`, `deps`, `why`, `export`). _(read-only)_
 - `shrk graph imports` — Import graph analysis (cycles/fan-in/out/orphans). _(read-only)_
-- `shrk intelligence explain` — Explain a node — incoming/outgoing edges + neighbor count. _(read-only)_
-- **★** `shrk intelligence graph` — Unified repository intelligence graph (packages/files/constructs/templates/...). _(read-only)_
-- `shrk intelligence node` — Look up a node in the repository intelligence graph by id. _(read-only)_
-- `shrk intelligence path` — Find the shortest path between two repository intelligence nodes. _(read-only)_
-- `shrk intelligence query` — Query the repository intelligence graph (kind/edge/imports/depends-on/text/tag/package/construct). _(read-only)_
-- `shrk intelligence stats` — Summary stats for the repository intelligence graph. _(read-only)_
+- `shrk graph why` — Shortest-path explanation between two graph nodes. _(read-only)_
 
 ## Governance and compliance
 
 _Safety audit, compliance, policy, decisions._
 
-- **★** `shrk compliance check` — Run a compliance profile check (read-only). _(read-only)_
-- `shrk compliance evidence` — Build a compliance evidence packet (writes only into the supplied output dir). _(writes-drafts)_
-- `shrk compliance get` — Show a compliance profile. _(read-only)_
-- `shrk compliance profiles` — List built-in compliance profiles. _(read-only)_
-- `shrk compliance report` — Compliance report (markdown/json/html). _(writes-drafts)_
-- `shrk decisions get` — Show a decision record by id. _(read-only)_
-- **★** `shrk decisions list` — List decision records. _(read-only)_
-- `shrk decisions new` — Preview a new decision record (dry-run by default). _(writes-drafts)_
-- `shrk decisions report` — Aggregate decisions report. _(read-only)_
 - `shrk policy check` — Run the policy engine. _(read-only)_
 - `shrk policy list` — List policy checks. _(read-only)_
-- `shrk policy overrides` — List policy overrides declared in sharkcraft.config.ts. _(read-only)_
-- `shrk policy overrides audit` — Show the policy override audit trail. _(read-only)_
 - **★** `shrk policy run` — Run all policy checks. _(read-only)_
 - `shrk policy snapshot` — Capture / compare policy snapshots (writes under fixture dirs only). _(writes-drafts)_
 - `shrk policy snapshot --accept` — Rewrite policy snapshots after human review (fixture-only writes). _(writes-drafts)_
 - `shrk policy snapshot --gate` — CI gate for policy snapshots — exits non-zero on drift/missing. _(read-only)_
 - `shrk policy test` — Test policy checks with fixtures or inline input. _(read-only)_
 - `shrk policy test --update-snapshot` — Update the saved snapshot for a policy fixture. _(writes-drafts)_
+- `shrk policy-lint` — Lint template/markup, stylesheet, and AOT-invisible TS surfaces against config-defined policyRules[] — sees `.html` files AND inline `template:` strings that tsc/AOT cannot. Deterministic; no AI. [--surface template|style|ts] [--changed-only] [--only <ids>] [--json] _(read-only)_
 - **★** `shrk safety audit` — Audit the SharkCraft safety model (commands, MCP, packs, plan signing). _(read-only)_
 - **★** `shrk safety audit --deep` — Deep safety audit (report-site external JS, demo destructive lines, CI permissions). _(read-only)_
 
@@ -142,19 +140,20 @@ _Pack discovery, doctor, release-check, quality, compat._
 - `shrk packs compat` — Detect pack backwards-compat issues (helper-missing imports). _(read-only)_
 - `shrk packs compat --consumer-root <path>` — Diff a pack's @shrkcrft/plugin-api imports against the consumer's installed exports. _(read-only)_
 - `shrk packs compat --dist-aware` — Pack compat scan that also reads dist/*.js CJS/ESM export forms. _(read-only)_
-- `shrk packs compatibility` — Pack compatibility check against current environment. _(read-only)_
-- `shrk packs docs` — Generate README-style docs for a pack. _(writes-drafts)_
+- `shrk packs contributions` — Show what each discovered pack contributes (knowledge / rules / templates / boundaries). _(read-only)_
+- `shrk packs dev-status` — Pack-author dev status. Read-only. _(read-only)_
 - **★** `shrk packs doctor` — Validate pack discovery. _(read-only)_
 - **★** `shrk packs doctor --release` — Pack doctor with the release-check gate folded into the report. _(read-only)_
 - **★** `shrk packs doctor --release --strict` — Pack doctor + release-check in strict mode (warnings → errors). _(read-only)_
 - `shrk packs list` — List discovered packs. _(read-only)_
 - `shrk packs new` — Scaffold a new SharkCraft pack package (dry-run by default). _(writes-source)_
-- **★** `shrk packs quality` — Pack quality score for a specific pack path. _(read-only)_
+- `shrk packs pending` — Alias for `pack author pending`. Read-only. _(read-only)_
 - **★** `shrk packs release-check` — Run a deterministic release-readiness check on a pack. _(read-only)_
-- `shrk packs score` — Score pack quality. _(read-only)_
 - `shrk packs sign` — Sign a pack manifest. _(writes-source)_
+- `shrk packs signature-status` — Pack manifest signature freshness (verified / missing / invalid / stale). _(read-only)_
 - `shrk packs test` — Validate a pack at the given path. Read-only. _(read-only)_
 - `shrk packs verify` — Verify pack signatures. _(read-only)_
+- `shrk packs watch` — Watch pack assets and re-run pack doctor on change. Never auto-signs. _(runs-shell)_
 
 ## CI and reports
 
@@ -162,13 +161,10 @@ _CI scaffold, report site, dashboard export, demo workflows._
 
 - `shrk ci permissions --fix-preview` — Suggest a least-privilege fix for a CI workflow (never writes). _(read-only)_
 - `shrk ci permissions <workflow-file>` — Audit a CI workflow for write permissions, comment posting, tokens, external actions. _(read-only)_
-- `shrk ci scaffold azure` — Render an Azure DevOps multi-stage pipeline scaffold. _(read-only)_
-- `shrk ci scaffold azure --with-release-readiness` — Include a release readiness gate stage in the Azure scaffold. _(writes-drafts)_
-- `shrk ci scaffold azure-pipelines` — Scaffold an Azure Pipelines configuration. _(writes-drafts)_
+- `shrk ci report` — CI integrity report aggregator over .sharkcraft/reports. --fail-on error|warning|none. _(read-only)_
 - `shrk ci scaffold bitbucket` — Scaffold a Bitbucket Pipelines configuration. _(writes-drafts)_
 - `shrk ci scaffold bitbucket --with-policy-snapshot-gate` — Add the policy-snapshot gate step to the Bitbucket scaffold. _(read-only)_
 - `shrk ci scaffold bitbucket --with-quality` — Render a Bitbucket pipeline scaffold with the quality gate. _(read-only)_
-- `shrk ci scaffold circleci` — Scaffold a CircleCI configuration. _(writes-drafts)_
 - **★** `shrk ci scaffold github-actions` — Scaffold a GitHub Actions workflow for SharkCraft (dry-run by default). _(writes-source)_
 - **★** `shrk ci scaffold github-actions --with-bundle-replay` — CI scaffold v2: include bundle-replay step + artifact upload. _(writes-drafts)_
 - **★** `shrk ci scaffold github-actions --with-impact` — CI scaffold v2: include impact-since-main step + artifact upload. _(writes-drafts)_
@@ -176,23 +172,16 @@ _CI scaffold, report site, dashboard export, demo workflows._
 - `shrk ci scaffold gitlab` — Scaffold a GitLab CI configuration. _(writes-drafts)_
 - `shrk ci scaffold gitlab --with-policy-snapshot-gate` — Add the policy-snapshot gate step to the GitLab scaffold. _(read-only)_
 - `shrk ci scaffold gitlab --with-quality` — Render a GitLab CI scaffold with the quality gate. _(read-only)_
-- `shrk ci scaffold jenkins` — Render a Jenkinsfile declarative pipeline scaffold. _(read-only)_
-- `shrk ci scaffold jenkins --with-release-readiness` — Include a release readiness gate stage in the Jenkins scaffold. _(writes-drafts)_
-- `shrk dashboard export` — Export dashboard-ready JSON files (read-only on source; writes only into --output dir). _(writes-drafts)_
-- `shrk dashboard serve` — Local read-only dashboard API server (GET/HEAD only; 127.0.0.1 by default; no write endpoints). _(read-only)_
-- `shrk demo list` — List available demo scenarios. _(read-only)_
-- `shrk demo package` — Generate a portable demo package (README, demo.sh, expected commands). _(writes-drafts)_
-- `shrk demo package --validate` — Validate a generated demo package (catalog references, destructive lines, script bits). _(read-only)_
-- `shrk demo script` — Render a copy-pasteable demo scenario script. _(read-only)_
-- **★** `shrk demo workflow pr-review` — Render a runnable PR-review demo workflow (default provider github-actions). _(read-only)_
-- **★** `shrk demo workflow pr-review --provider bitbucket` — Render the PR-review demo workflow as a Bitbucket pipeline. _(read-only)_
-- **★** `shrk demo workflow pr-review --provider gitlab` — Render the PR-review demo workflow as a GitLab pipeline. _(read-only)_
+- `shrk dashboard` — Start the local read-only dashboard (web UI + API). GET/HEAD only; 127.0.0.1 by default. _(read-only)_
+- `shrk dashboard diff` — Diff two dashboard exports by directory. _(read-only)_
+- `shrk dashboard export` — Export dashboard-ready JSON files into a directory (defaults to .sharkcraft/dashboard-data). _(writes-drafts)_
 - `shrk report adoption` — Render adoption report in chosen format (--output writes). _(writes-drafts)_
 - `shrk report coverage` — Render coverage report. _(writes-drafts)_
 - `shrk report drift` — Render drift report. _(writes-drafts)_
 - `shrk report graph` — Render knowledge graph summary. _(writes-drafts)_
 - `shrk report impact` — Render a saved impact JSON in the chosen format. _(writes-drafts)_
 - `shrk report impact --include-graph` — Embed a Mermaid / DOT graph in the rendered impact report. _(writes-drafts)_
+- `shrk report language` — Combined language profiles + commands + dependency graph report. Read-only. _(read-only)_
 - `shrk report quality` — Render the quality report in chosen format. _(writes-drafts)_
 - `shrk report review` — Render a review packet as html|markdown|json. _(writes-drafts)_
 - `shrk report safety` — Render the safety audit in chosen format. _(writes-drafts)_
@@ -216,22 +205,15 @@ _release readiness / smoke / install smoke / train / runtime doctor._
 - **★** `shrk release readiness --strict` — Strict readiness — escalate warnings to blockers; exit non-zero on any issue. _(read-only)_
 - **★** `shrk release smoke` — Run a local smoke suite against canonical demo scenarios. _(writes-drafts)_
 - **★** `shrk release smoke --assertions` — Smoke harness with per-step content assertions (default on). _(writes-drafts)_
-- **★** `shrk release smoke --matrix` — Run smoke scenarios across multiple repo targets (sharkcraft/dogfood/synthetic). _(writes-drafts)_
+- **★** `shrk release smoke --matrix` — Run smoke scenarios across multiple repo targets (sharkcraft/dogfood/synthetic/consumer). _(writes-drafts)_
 - `shrk runtime doctor` — Runtime compatibility doctor (Node / Bun version + compat-node summary). _(read-only)_
-- `shrk train list` — List local release trains. _(read-only)_
-- `shrk train new` — Create a release train draft (dry-run by default). _(writes-drafts)_
-- `shrk train readiness` — Readiness check for a release train. _(read-only)_
-- `shrk train report` — Aggregate report across release trains. _(read-only)_
-- `shrk train status` — Status of a release train. _(read-only)_
 
 ## Diagnostics and troubleshooting
 
 _self audit, diagnostics, upgrade._
 
-- `shrk api report` — Public API report for SharkCraft packages. _(read-only)_
-- `shrk diagnostics get` — Look up a SharkCraft failure diagnostic by code. _(read-only)_
+- `shrk api-diff` — Compare the current public API surface to a baseline. Reports added / removed / kind-changed / moved symbols with breaking-change severity. _(read-only)_
 - `shrk diagnostics list` — List every known SharkCraft failure diagnostic. _(read-only)_
-- **★** `shrk diagnostics suggest` — Suggest the most likely diagnostic for a stderr blob. _(read-only)_
 - **★** `shrk self audit` — SharkCraft self-dogfood audit. Meaningful inside the SharkCraft repo. _(read-only)_
 - **★** `shrk self audit --run` — Run the bundled checks (commands doctor, runtime doctor, safety audit, packs doctor, demo validate) with timeouts. _(writes-drafts)_
 - **★** `shrk upgrade check` — Check for SharkCraft schema migrations. _(read-only)_
@@ -242,11 +224,10 @@ _self audit, diagnostics, upgrade._
 _Schemas, exports, imports, ask._
 
 - `shrk ask` — Render a prompt-shaped answer from local knowledge (no AI call). _(read-only)_
-- `shrk explain` — Explain a knowledge entry, rule, or template. _(read-only)_
+- `shrk explain` — Universal explainer: knowledge entry, rule, template, command id, or stderr blob. _(read-only)_
 - `shrk export` — Export the workspace registries as a portable archive. _(writes-drafts)_
 - `shrk export bundle` — Export a feature bundle to a folder. _(writes-drafts)_
 - `shrk export session` — Export a dev session to a folder. _(writes-drafts)_
-- `shrk find` — Find knowledge / rules / paths / templates by id or keyword. _(read-only)_
 - `shrk git branch` — Print the current git branch. _(read-only)_
 - `shrk git changed` — List changed files (read-only git diff). _(read-only)_
 - `shrk git root` — Print the git repo root. _(read-only)_
@@ -255,9 +236,12 @@ _Schemas, exports, imports, ask._
 - `shrk infer templates` — Inferred template candidates from pack scaffold patterns + optional AST analysis. _(read-only)_
 - `shrk init` — Create the sharkcraft/ folder + config skeleton. _(writes-source)_
 - `shrk inspect` — Aggregate inspection of registries + packs. _(read-only)_
-- `shrk next` — Recommend the next thing to do in the current workspace. _(read-only)_
-- `shrk pipelines lint` — Lint registered pipelines. _(read-only)_
-- `shrk pipelines test` — Test pipeline references resolve. _(read-only)_
+- `shrk knowledge add` — Preview adding a new knowledge entry. Preview-only. _(read-only)_
+- `shrk knowledge lint` — Classify knowledge findings (safe stub / needs-human-wording / stale / advisory). _(read-only)_
+- `shrk knowledge propose` — Propose stub knowledge entries for exported top-level constructs that lack coverage. Preview-first. _(read-only)_
+- `shrk knowledge remove` — Preview removal of a knowledge entry. Refuses if reverse references exist. _(read-only)_
+- `shrk knowledge stale-check --watch` — Watch flag on stale-check (debounced, --once supported). _(read-only)_
+- `shrk knowledge update` — Preview an incremental update to a knowledge entry. Preview-only. _(read-only)_
 - `shrk playbooks brief` — Render an agent brief from a playbook. _(read-only)_
 - `shrk playbooks get` — Show a playbook. _(read-only)_
 - `shrk playbooks list` — List registered playbooks. _(read-only)_
@@ -267,25 +251,31 @@ _Schemas, exports, imports, ask._
 - `shrk playbooks script` — Render a playbook as a bash-style preview script (no execution). _(writes-drafts)_
 - `shrk playbooks validate` — Validate a playbook against registered templates / pipelines. _(read-only)_
 - `shrk presets apply --write` — Apply a preset to sharkcraft/ config (writes drafts + may modify config). _(writes-source)_
-- `shrk quality baseline compare` — Compare current quality to a baseline. _(read-only)_
-- `shrk quality baseline create` — Create a quality baseline snapshot. _(writes-drafts)_
-- `shrk quality baseline diff` — Diff two quality baselines. _(read-only)_
-- `shrk quality baseline history` — List historical quality baseline snapshots. _(read-only)_
-- `shrk quality baseline prune` — Prune historical quality baselines (dry-run by default). _(writes-drafts)_
+- `shrk presets explain` — Explain a preset: composition + appliesTo + recommendation rank for current repo. _(read-only)_
+- `shrk presets get` — Show one preset (composition chain, appliesTo, asset counts). _(read-only)_
+- `shrk presets list` — List discovered presets. _(read-only)_
 - `shrk reposet doctor` — Sanity-check the reposet roots exist. _(read-only)_
 - `shrk reposet init` — Preview a reposet starter config (dry-run by default). _(writes-drafts)_
 - `shrk reposet list` — List repos in the local reposet config. _(read-only)_
 - `shrk reposet map` — Aggregate map across the reposet. _(read-only)_
 - `shrk reposet map --parallel` — Parallel reposet map with bounded concurrency. _(read-only)_
+- `shrk rules lint` — Lint rules — alias of `rules doctor` with strict defaults. `--fix-preview` materialises smallest-change patches under .sharkcraft/fixes/rules-lint/ (preview only). _(writes-drafts)_
 - `shrk scaffolds doctor` — Validate scaffold pattern definitions. _(read-only)_
 - `shrk scaffolds get` — Show one scaffold pattern. _(read-only)_
 - `shrk scaffolds list` — List pack-contributed scaffold patterns. _(read-only)_
-- `shrk search` — Unified search across knowledge, rules, paths, templates, pipelines, presets, packs, boundaries, docs, sessions, bundles, constructs, playbooks. _(read-only)_
+- `shrk schemas emit` — Emit every JSON schema to disk (default docs/schemas/) with an INDEX.md. Preview-first; --write applies; --check fails on drift. _(writes-drafts)_
+- `shrk schemas get` — Print one JSON schema by name. _(read-only)_
+- `shrk schemas inventory` — Schema-id inventory: known versions, current, deprecated/back-compat status. Read-only. _(read-only)_
+- `shrk schemas list` — List hand-written JSON schemas exported by `shrk schemas write`. _(read-only)_
+- `shrk schemas write` — Write all JSON schemas to a directory. _(writes-drafts)_
+- `shrk search` — Unified registry search across knowledge, rules, paths, templates, pipelines, presets, packs, boundaries, docs, sessions, bundles, constructs, playbooks. For "what should I do?" prefer `shrk recommend`. _(read-only)_
 - `shrk search tuning` — List or doctor search-tuning entries contributed by packs / local config. _(read-only)_
 - `shrk search tuning explain` — Explain how tuning affects a search query. _(read-only)_
-- `shrk session` — Legacy local sessions (audit trail under .sharkcraft/sessions/). _(writes-session)_
+- `shrk search-structural` — Declarative AST pattern search over the project. Read-only; no rewrites in this round. _(read-only)_
+- `shrk templates drift --watch` — Watch flag on template drift (debounced, --once supported). _(read-only)_
 - `shrk templates lint` — Lint registered templates. _(read-only)_
 - `shrk templates test` — Test template rendering with example variables. _(read-only)_
-- `shrk view` — Role-specific view (developer/reviewer/architect/release-manager/security/ai-agent). _(read-only)_
-<!-- R54 — `shrk watch` removed; use the per-command `--watch` flag (e.g. `shrk doctor --watch`). -->
-
+- `shrk watch` — Emit a focused-context packet on stdout JSONL each time the workspace changes. Designed to feed a parallel Claude agent. _(writes-session)_
+- `shrk watch list` — List active shrk-watch daemons (one per task slug). _(read-only)_
+- `shrk watch prune` — Remove stale shrk-watch manifests whose owning processes are no longer alive. _(writes-session)_
+- `shrk watch stop` — Stop a running shrk-watch daemon by slug. _(writes-session)_

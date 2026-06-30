@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'bun:test';
+import { defineTemplate } from '@shrkcrft/templates';
 import {
   PLAN_SIMULATION_SCHEMA,
   PlanApplyReadiness,
@@ -133,6 +134,83 @@ describe('plan simulation v2', () => {
       const inspection = await inspectSharkcraft({ cwd: root });
       const r = await simulatePlan(inspection, planFile);
       expect(r.likelyTests.join(' ')).toContain('user.service.spec.ts');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('template.metadata.requiredValidations surfaces them, not the generic boilerplate', async () => {
+    const root = setupRoot();
+    try {
+      const template = defineTemplate({
+        id: 'nx.lib.fixture',
+        name: 'Nx lib fixture',
+        description: 'fixture template that declares its own required validations',
+        tags: [],
+        scope: [],
+        appliesWhen: [],
+        variables: [],
+        changes: () => [
+          {
+            targetPath: 'src/foo.ts',
+            operation: { kind: 'create', content: 'export const foo = 1;\n' },
+          },
+        ],
+        metadata: { requiredValidations: ['nx build my-app', 'nx test my-app'] },
+      });
+      const planFile = writePlan(root, {
+        schema: 'sharkcraft.plan/v2',
+        templateId: 'nx.lib.fixture',
+        variables: {},
+        projectRoot: root,
+        createdAt: new Date().toISOString(),
+        expectedChanges: [{ type: 'create', relativePath: 'src/foo.ts', sizeBytes: 20 }],
+      });
+      const inspection = await inspectSharkcraft({ cwd: root });
+      inspection.templateRegistry.register(template);
+      const r = await simulatePlan(inspection, planFile);
+      // Template-declared validations are surfaced…
+      expect(r.requiredValidations).toContain('nx build my-app');
+      expect(r.requiredValidations).toContain('nx test my-app');
+      // …and the generic engine boilerplate is suppressed.
+      expect(r.requiredValidations).not.toContain('bun test');
+      expect(r.requiredValidations).not.toContain('shrk doctor');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a template without requiredValidations still gets the engine defaults (different list)', async () => {
+    const root = setupRoot();
+    try {
+      const template = defineTemplate({
+        id: 'plain.fixture',
+        name: 'Plain fixture',
+        description: 'fixture template with no declared validations',
+        tags: [],
+        scope: [],
+        appliesWhen: [],
+        variables: [],
+        changes: () => [
+          {
+            targetPath: 'src/bar.ts',
+            operation: { kind: 'create', content: 'export const bar = 1;\n' },
+          },
+        ],
+      });
+      const planFile = writePlan(root, {
+        schema: 'sharkcraft.plan/v2',
+        templateId: 'plain.fixture',
+        variables: {},
+        projectRoot: root,
+        createdAt: new Date().toISOString(),
+        expectedChanges: [{ type: 'create', relativePath: 'src/bar.ts', sizeBytes: 20 }],
+      });
+      const inspection = await inspectSharkcraft({ cwd: root });
+      inspection.templateRegistry.register(template);
+      const r = await simulatePlan(inspection, planFile);
+      expect(r.requiredValidations).toContain('bun test');
+      expect(r.requiredValidations).not.toContain('nx build my-app');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

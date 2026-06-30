@@ -17,7 +17,8 @@ export const EXTRACT_GO_FILE_SOURCE = 'extract-go-file@v1';
  *
  * Top-level constructs only:
  *   - `func Name(...)` → symbol (function). Methods (`func (r *T) Name`)
- *     are also captured with the bare method name.
+ *     are captured keyed as `Receiver.Name` (e.g. `Reader.Close`) so that
+ *     same-named methods on distinct receivers don't collide.
  *   - `type Name struct {...}` → symbol (struct).
  *   - `type Name interface {...}` → symbol (interface).
  *   - `type Name = ...` → symbol (type-alias).
@@ -51,10 +52,14 @@ export function extractGoFile(
     const line = i + 1;
     if (raw.length === 0) continue;
     if (raw.trimStart().startsWith('//')) continue;
-    // func — with optional receiver `(r *T)`.
-    let m = /^func(?:\s*\([^)]*\))?\s+([A-Za-z_][\w]*)\s*[\(\[]/.exec(raw);
+    // func — with optional receiver `(r *T)`. Methods are keyed as
+    // `Receiver.Name` so same-named methods on different receivers
+    // (e.g. `Close` on a Reader and a Writer) don't collide.
+    let m = /^func(?:\s*\(([^)]*)\))?\s+([A-Za-z_][\w]*)\s*[\(\[]/.exec(raw);
     if (m) {
-      const name = m[1]!;
+      const methodName = m[2]!;
+      const receiver = m[1] !== undefined ? receiverType(m[1]) : undefined;
+      const name = receiver ? `${receiver}.${methodName}` : methodName;
       pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, name, 'function', line);
       continue;
     }
@@ -86,7 +91,11 @@ function pushSymbol(
   declKind: string,
   line: number,
 ): void {
-  const isExported = /^[A-Z]/.test(name);
+  // Go export visibility is decided by the identifier itself; for a
+  // `Receiver.Name` method key that's the final segment.
+  const dot = name.lastIndexOf('.');
+  const visName = dot >= 0 ? name.slice(dot + 1) : name;
+  const isExported = /^[A-Z]/.test(visName);
   const sym: INode = {
     id: `symbol:${fp.path}#${name}`,
     kind: NodeKind.Symbol,
@@ -104,6 +113,25 @@ function pushSymbol(
     source: EXTRACT_GO_FILE_SOURCE,
     data: { visibility: isExported ? 'export' : 'local', declKind, line },
   });
+}
+
+/**
+ * Derive the receiver type from a Go method receiver clause.
+ *
+ * `r *Reader` → `Reader`, `w Writer` → `Writer`, `*Reader` → `Reader`,
+ * `s *Stack[T]` → `Stack`. Returns undefined for an empty receiver.
+ */
+function receiverType(receiver: string): string | undefined {
+  const trimmed = receiver.trim();
+  if (trimmed.length === 0) return undefined;
+  // Receiver is `varName Type` (or, rarely, just `Type`) — the type is the
+  // last whitespace-separated token.
+  const parts = trimmed.split(/\s+/);
+  let type = parts[parts.length - 1]!;
+  type = type.replace(/^\*+/, ''); // strip pointer marker
+  const bracket = type.indexOf('['); // strip generic type params: Stack[T] → Stack
+  if (bracket >= 0) type = type.slice(0, bracket);
+  return type.length > 0 ? type : undefined;
 }
 
 function makeFileNode(fp: IFileFingerprint, text: string): INode {

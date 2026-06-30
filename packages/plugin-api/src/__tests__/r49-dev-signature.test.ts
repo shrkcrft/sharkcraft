@@ -39,10 +39,30 @@ describe('dev-mode signing', () => {
     expect(r.manifest.signature?.dev).toBe(true);
   });
 
-  test('dev signature verifies via the well-known dev secret', () => {
+  test('dev signature is rejected by default (not release-trusted)', () => {
+    // SECURITY (S3-1): a dev signature uses the well-known PUBLIC dev secret,
+    // so it must NOT verify as release-trusted without an explicit opt-in —
+    // even if a real consumer secret is set in the environment.
     const signed = signPackManifest(manifest(), { dev: true });
     if (!signed.ok) throw new Error('sign failed');
-    const v = verifyPackManifest(signed.manifest);
+    const prev = process.env.SHARKCRAFT_PACK_SECRET;
+    process.env.SHARKCRAFT_PACK_SECRET = 'consumer-real-secret';
+    try {
+      const v = verifyPackManifest(signed.manifest);
+      expect(v.ok).toBe(false);
+      if (v.ok) return;
+      expect(v.status).toBe('dev-signature');
+      expect(v.dev).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.SHARKCRAFT_PACK_SECRET;
+      else process.env.SHARKCRAFT_PACK_SECRET = prev;
+    }
+  });
+
+  test('dev signature verifies only with allowDev opt-in', () => {
+    const signed = signPackManifest(manifest(), { dev: true });
+    if (!signed.ok) throw new Error('sign failed');
+    const v = verifyPackManifest(signed.manifest, { allowDev: true });
     expect(v.ok).toBe(true);
     if (!v.ok) return;
     expect(v.dev).toBe(true);

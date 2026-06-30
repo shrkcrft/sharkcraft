@@ -61,8 +61,11 @@ import {
   buildSpecReview,
   buildTaskPacket,
   inspectSharkcraft,
+  mapChecklistToEvidence,
   recordProvenance,
   SPEC_LIST_SCHEMA,
+  type IChecklistEvidenceReport,
+  type ICriterionCoverage,
   type ISharkcraftInspection,
   type ISpecListReport,
   type ISpecReviewReport,
@@ -896,9 +899,9 @@ function shortHash(text: string): string {
 export const specVerifyCommand: ICommandHandler = {
   name: 'verify',
   description:
-    'Run the spec\'s trusted verification commands, check acceptance-criteria coverage, run diff-aware boundary + drift checks. Returns sharkcraft.spec-verification/v1.',
+    'Run the spec\'s trusted verification commands, check acceptance-criteria coverage, run diff-aware boundary + drift checks. Pass --coverage to map each acceptance criterion to backing changeset evidence and flag UNMET (claimed-but-zero-footprint) criteria. Returns sharkcraft.spec-verification/v1.',
   usage:
-    'shrk spec verify <id> [--since <ref>] [--strict] [--skip-verification-commands] [--json] [--write]',
+    'shrk spec verify <id> [--since <ref>] [--coverage] [--strict] [--skip-verification-commands] [--json] [--write]',
   async run(args: ParsedArgs): Promise<number> {
     const ref = args.positional[0];
     if (!ref) {
@@ -1017,19 +1020,54 @@ export const specVerifyCommand: ICommandHandler = {
       }
     }
 
-    const acceptanceResults = spec.acceptanceCriteria.map((ac) => ({
-      id: ac.id,
-      status: ac.verifiedBy.includes('manual')
-        ? ('manual' as const)
-        : commandFailed
-          ? ('fail' as const)
-          : ('pass' as const),
-      evidence: [],
-    }));
+    // --coverage: map each acceptance criterion to backing changeset
+    // evidence (new exported symbol / registration / route / companion
+    // file / test). UNMET = a claimed criterion with zero footprint.
+    const wantCoverage = flagBool(args, 'coverage');
+    let coverage: IChecklistEvidenceReport | null = null;
+    if (wantCoverage) {
+      const fileContents: Record<string, string> = {};
+      if (changed.isAvailable) {
+        for (const rel of changed.changed) {
+          const abs = nodePath.join(cwd, rel);
+          if (existsSync(abs)) {
+            try {
+              fileContents[rel] = readFileSync(abs, 'utf8');
+            } catch {
+              fileContents[rel] = '';
+            }
+          }
+        }
+      }
+      coverage = mapChecklistToEvidence({
+        criteria: spec.acceptanceCriteria.map((ac) => ({ id: ac.id, text: ac.text })),
+        changedFiles: changed.changed,
+        fileContents,
+      });
+    }
+    const coverageById = new Map<string, ICriterionCoverage>(
+      (coverage?.criteria ?? []).map((c) => [c.id, c]),
+    );
+
+    const acceptanceResults = spec.acceptanceCriteria.map((ac) => {
+      const cov = coverageById.get(ac.id);
+      return {
+        id: ac.id,
+        status: ac.verifiedBy.includes('manual')
+          ? ('manual' as const)
+          : commandFailed
+            ? ('fail' as const)
+            : ('pass' as const),
+        evidence: cov?.evidence ?? [],
+        ...(wantCoverage ? { covered: cov?.covered ?? false } : {}),
+      };
+    });
 
     const verdict: 'pass' | 'warn' | 'fail' = commandFailed
       ? 'fail'
-      : scopeDrift.length > 0 || planIntegrity === 'missing-signature'
+      : scopeDrift.length > 0 ||
+          planIntegrity === 'missing-signature' ||
+          (coverage !== null && coverage.unmetCount > 0)
         ? 'warn'
         : 'pass';
 
@@ -1044,6 +1082,17 @@ export const specVerifyCommand: ICommandHandler = {
       boundaries: { since: changed.ref, violations: [] as unknown[] },
       scopeDrift: { outsideScope: scopeDrift },
       planIntegrity: { status: planIntegrity },
+      ...(coverage !== null
+        ? {
+            coverage: {
+              checked: true,
+              total: coverage.criteria.length,
+              covered: coverage.coveredCount,
+              unmet: coverage.unmetCount,
+              changesetAvailable: changed.isAvailable,
+            },
+          }
+        : {}),
     };
 
     if (flagBool(args, 'write') || flagBool(args, 'apply')) {
@@ -1069,6 +1118,23 @@ export const specVerifyCommand: ICommandHandler = {
       }
       process.stdout.write(`  scope drift: ${scopeDrift.length}\n`);
       process.stdout.write(`  plan integrity: ${planIntegrity}\n`);
+      if (coverage !== null) {
+        process.stdout.write(
+          `  coverage: ${coverage.coveredCount}/${coverage.criteria.length} covered, ${coverage.unmetCount} UNMET\n`,
+        );
+        if (!changed.isAvailable) {
+          process.stdout.write('    (no changeset available — pass --since <ref> for evidence)\n');
+        }
+        for (const c of coverage.criteria) {
+          if (c.covered) {
+            const ev = c.evidence[0];
+            const note = ev ? ` (${ev.kind}: ${ev.detail})` : '';
+            process.stdout.write(`    [ok]   ${c.id}${note}\n`);
+          } else {
+            process.stdout.write(`    UNMET  ${c.id} — ${c.text.slice(0, 60)}\n`);
+          }
+        }
+      }
     }
 
     if (verdict === 'fail') return 1;

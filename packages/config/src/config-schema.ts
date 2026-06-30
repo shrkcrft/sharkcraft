@@ -27,17 +27,32 @@ const DelegateRecipeSchema = z
 const WiringSourceSchema = z
   .object({
     files: z.array(z.string()),
-    pattern: z.string(),
+    // Exactly one of pattern / arrayProperty must be set (enforced below).
+    pattern: z.string().optional(),
     flags: z.string().optional(),
+    arrayProperty: z.string().optional(),
   })
   .strict()
   .superRefine((src, ctx) => {
+    const hasPattern = typeof src.pattern === 'string';
+    const hasArray = typeof src.arrayProperty === 'string';
+    // Exactly one extraction mode: a regex pattern OR a named array literal.
+    if (hasPattern === hasArray) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: hasPattern ? ['arrayProperty'] : ['pattern'],
+        message: 'set exactly one of `pattern` or `arrayProperty`',
+      });
+      return;
+    }
+    // arrayProperty needs no capture group — only validate a regex pattern.
+    if (!hasPattern) return;
     // Catch a bad regex / bad flags at config-load time (clear field location)
     // rather than at runtime. The engine also degrades gracefully, but this
     // surfaces the typo through `shrk doctor` / the loader.
     let re: RegExp | undefined;
     try {
-      re = new RegExp(src.pattern, src.flags ?? '');
+      re = new RegExp(src.pattern!, src.flags ?? '');
     } catch (e) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -62,20 +77,41 @@ const WiringSourceSchema = z
     }
   });
 
-/** One wiring/completeness rule (see `IWiringRule`). */
-const WiringRuleSchema = z
+/**
+ * One wiring/completeness rule (see `IWiringRule`).
+ *
+ * Exported so the inspector's `resolveProjectConfig` seam can validate each
+ * pack-contributed element with the EXACT same rules the config loader uses
+ * (regex / capture-group / superRefine preserved).
+ */
+export const WiringRuleSchema = z
   .object({
     id: z.string(),
     description: z.string().optional(),
     severity: z.enum(['error', 'warning']).optional(),
     declared: WiringSourceSchema,
-    registered: WiringSourceSchema,
+    // A single source or a union array — a token is registered if any source has it.
+    registered: z.union([WiringSourceSchema, z.array(WiringSourceSchema)]),
+    groupBy: z.enum(['dir', 'package']).optional(),
+    mode: z.enum(['subset', 'parity']).optional(),
     hint: z.string().optional(),
+    hintDeclaredMissing: z.string().optional(),
+    hintRegisteredMissing: z.string().optional(),
   })
   .strict();
 
-/** One policy-lint rule (see `IPolicyRule`). */
-const PolicyRuleSchema = z
+/** One declarable registry inventory (see `IRegistryDeclaration`). Exported for the pack-plane merge seam. */
+export const RegistryDeclarationSchema = z
+  .object({
+    name: z.string(),
+    description: z.string().optional(),
+    source: WiringSourceSchema,
+    consumer: WiringSourceSchema.optional(),
+  })
+  .strict();
+
+/** One policy-lint rule (see `IPolicyRule`). Exported for the pack-plane merge seam. */
+export const PolicyRuleSchema = z
   .object({
     id: z.string(),
     description: z.string().optional(),
@@ -100,8 +136,8 @@ const PolicyRuleSchema = z
     }
   });
 
-/** One reuse primitive (see `IReusePrimitive`). */
-const ReusePrimitiveSchema = z
+/** One reuse primitive (see `IReusePrimitive`). Exported for the pack-plane merge seam. */
+export const ReusePrimitiveSchema = z
   .object({
     symbol: z.string(),
     roles: z.array(z.string()),
@@ -138,6 +174,8 @@ export const SharkCraftConfigSchema = z
     agentTestFiles: z.array(z.string()).optional(),
     // Wiring/completeness rules — the "declared but not wired" plane.
     wiringRules: z.array(WiringRuleSchema).optional(),
+    // Declarable registry inventories — `shrk registry <name> list|exists|where`.
+    registries: z.array(RegistryDeclarationSchema).optional(),
     // Policy-lint rules — the template/style/ts content plane.
     policyRules: z.array(PolicyRuleSchema).optional(),
     // Reuse primitives — role-keyed canonical symbols for `shrk reuse`.

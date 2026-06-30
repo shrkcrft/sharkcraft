@@ -1,3 +1,4 @@
+import * as nodeFs from 'node:fs';
 import * as nodePath from 'node:path';
 
 export interface ISafePathResult {
@@ -25,6 +26,68 @@ export class UnsafeTargetPathError extends Error {
     this.code = code;
     this.rawPath = rawPath;
   }
+}
+
+/**
+ * Resolve the symlink-aware real location of `absPath` by realpath-resolving
+ * its deepest *existing* ancestor and re-attaching the not-yet-created tail.
+ *
+ * A lexical containment check (`relative(root, abs)` has no `..`) can be
+ * fooled by an in-root symlink — e.g. `root/linkdir -> ../outside` makes
+ * `root/linkdir/secret` look contained while it physically lives outside the
+ * sandbox. Resolving the deepest existing ancestor unmasks that escape.
+ *
+ * Returns `null` when no ancestor can be realpath-resolved (e.g. the path's
+ * filesystem root cannot be probed); callers then fall back to the lexical
+ * guarantee rather than rejecting. Pure read; never mutates the filesystem.
+ */
+function realResolveDeepestAncestor(absPath: string): string | null {
+  let existing = absPath;
+  const tail: string[] = [];
+  while (!nodeFs.existsSync(existing)) {
+    const parent = nodePath.dirname(existing);
+    if (parent === existing) {
+      // Walked up to the filesystem root without finding anything on disk.
+      return null;
+    }
+    tail.unshift(nodePath.basename(existing));
+    existing = parent;
+  }
+  let real: string;
+  try {
+    real = nodeFs.realpathSync(existing);
+  } catch {
+    return null;
+  }
+  return tail.length === 0 ? real : nodePath.join(real, ...tail);
+}
+
+/**
+ * True when `absPath` — although it may be lexically inside `projectRoot` —
+ * physically resolves (through one or more symlinks) to a location outside
+ * the project root. This is the realpath-aware companion to the lexical
+ * containment check and the only guard that catches an in-root symlink that
+ * escapes the sandbox.
+ *
+ * Conservatively returns `false` when containment cannot be determined from
+ * the filesystem (e.g. the project root does not exist on disk), so the
+ * caller's lexical check remains authoritative in that case.
+ */
+export function pathEscapesRootViaSymlink(
+  projectRoot: string,
+  absPath: string,
+): boolean {
+  let realRoot: string;
+  try {
+    realRoot = nodeFs.realpathSync(nodePath.resolve(projectRoot));
+  } catch {
+    return false;
+  }
+  const realTarget = realResolveDeepestAncestor(absPath);
+  if (realTarget === null) return false;
+  if (realTarget === realRoot) return false;
+  const rel = nodePath.relative(realRoot, realTarget);
+  return rel === '..' || rel.startsWith('..' + nodePath.sep) || nodePath.isAbsolute(rel);
 }
 
 /**
@@ -63,9 +126,18 @@ export function safeResolveTargetPath(
     ? normalized
     : nodePath.resolve(resolvedProjectRoot, normalized);
 
-  // Final containment check — protects against ../../escape and symlink-style tricks.
+  // Lexical containment check — protects against ../../escape.
   const relative = nodePath.relative(resolvedProjectRoot, absolute);
   if (relative === '' || (!relative.startsWith('..') && !nodePath.isAbsolute(relative))) {
+    // Realpath-aware containment — a lexically-clean path can still traverse an
+    // in-root symlink (e.g. linkdir -> ../outside) out of the sandbox.
+    if (pathEscapesRootViaSymlink(resolvedProjectRoot, absolute)) {
+      throw new UnsafeTargetPathError(
+        'outside-project-root',
+        rawPath,
+        `Target path "${rawPath}" resolves through a symlink to a location outside project root "${resolvedProjectRoot}" (symlink escape)`,
+      );
+    }
     return { absolutePath: absolute, relativePath: relative === '' ? '.' : relative };
   }
 

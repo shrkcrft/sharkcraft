@@ -8,7 +8,6 @@ and prompt-engineering an AI to summarise a folder.
 shrk explore packages/cli/src/commands
 shrk explore packages/mcp-server/src/tools --format markdown
 shrk explore sharkcraft --format json
-shrk map area packages/cli/src/commands       # alias
 ```
 
 ## Output
@@ -56,4 +55,4 @@ shrk map area packages/cli/src/commands       # alias
   before.
 - A reviewer wants the "shape" of a dir without opening 20 files.
 - An onboarder is mapping a repo and wants per-dir context, not the
-  repo-wide `shrk map`.
+  repo-wide `shrk architecture map`.

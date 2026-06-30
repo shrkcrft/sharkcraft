@@ -62,7 +62,11 @@ Field reference:
 | `declared.files` / `registered.files` | project-relative globs (`**`, `*`, `?`) |
 | `declared.pattern` / `registered.pattern` | regex source; **capture group 1** is the token. `g` is always applied; add more via `flags` |
 | `declared.flags` / `registered.flags` | extra regex flags (e.g. `i`, `m`) |
-| `hint` | remediation line printed on each violation |
+| `<side>.arrayProperty` | capture array-literal elements of `<name> = [ … ]` / `<name>: [ … ]` instead of a regex (mutually exclusive with `pattern`) — see [Advanced matchers](#advanced-matchers) |
+| `registered` (array) | a list of sources, unioned before the subset check |
+| `groupBy` | `'dir'` / `'package'` — match within the same module, not the global pool |
+| `mode` | `'subset'` (default) or `'parity'` (also report registered-but-not-declared) |
+| `hint` / `hintDeclaredMissing` / `hintRegisteredMissing` | remediation line(s); the directional hints apply in `parity` mode |
 
 ### Authoring patterns safely
 
@@ -78,6 +82,56 @@ Field reference:
 - An **uncompilable pattern or bad `flags`** is caught at config-load time
   (`shrk doctor` and the loader report the exact `wiringRules[n].<side>.pattern`
   location); it never crashes `shrk check wiring` or the `shrk gate` aggregator.
+
+## Advanced matchers
+
+The simple `{ files, pattern }` shape covers a top-level-line registration. Four
+optional primitives let you author the harder cross-file invariants as data —
+no shrk-source change.
+
+### Array-literal membership (`arrayProperty`)
+
+When the registration target is an **array literal** (`things: [A, B, C]` or
+`export const ARR = [A, B, C]`) rather than a one-token-per-line list, set
+`arrayProperty` instead of `pattern`. It captures each element token (identifier
+or quoted string) of every `<name> = [ … ]` / `<name>: [ … ]` literal — exactly
+one of `pattern` / `arrayProperty` per side:
+
+```ts
+registered: { files: ['src/registry.ts'], arrayProperty: 'BLOCKS' }, // const BLOCKS = [A, B] OR blocks: [A, B]
+```
+
+### Union of N registered sets
+
+`registered` accepts an **array of sources** that are unioned before the subset
+check — a token is wired if **any** source has it. Use it when an id may be
+registered in a record's keys *or* a per-item array *or* a flat allowlist:
+
+```ts
+registered: [
+  { files: ['src/builtins.ts'], pattern: "^\\s*([A-Z_]+):" },
+  { files: ['src/extra.ts'], arrayProperty: 'EXTRA' },
+],
+```
+
+### Per-module scoping (`groupBy`)
+
+By default declared/registered tokens are matched in one global pool. Set
+`groupBy: 'dir'` (or `'package'`) so a token declared in module M must be
+registered **within module M** — a same-named token in module N won't satisfy
+it. This expresses "every field of a module's interface appears in that same
+module's schema".
+
+### Parity mode (`mode: 'parity'`)
+
+The default `subset` mode reports only declared-but-not-registered. `parity`
+also reports **registered-but-not-declared**, direction-aware: each violation
+carries a `direction` (`declared-missing` / `registered-missing`) and you can
+give a per-direction message via `hintDeclaredMissing` / `hintRegisteredMissing`
+(e.g. "won't persist" vs "won't serialize").
+
+A misconfigured rule (a side with neither `pattern` nor `arrayProperty`, a bad
+regex, etc.) degrades to a diagnostic — never a silent green.
 
 ## Running it
 

@@ -1,5 +1,5 @@
 import { GraphStore, GraphQueryApi } from '@shrkcrft/graph';
-import { loadProjectConfig } from '@shrkcrft/config';
+import { resolveProjectConfig } from '@shrkcrft/inspector';
 import type { IReusePrimitive } from '@shrkcrft/core';
 import {
   flagBool,
@@ -82,7 +82,7 @@ export const reuseCommand: ICommandHandler = {
       return 2;
     }
 
-    const loaded = await loadProjectConfig(cwd);
+    const loaded = await resolveProjectConfig(cwd);
     if (!loaded.ok) {
       const msg = loaded.error.message;
       if (wantJson) {
@@ -94,9 +94,17 @@ export const reuseCommand: ICommandHandler = {
       return 1;
     }
     const primitives = loaded.value.config.reusePrimitives ?? [];
+    const planeDiagnostics = loaded.value.planeDiagnostics;
+    // reuse has no pre-existing diagnostics surface; expose pack-plane merge
+    // notes (missing/invalid pack primitive files, dropped collisions) so a
+    // pack contribution that failed to load isn't silently invisible.
+    const planeJson = planeDiagnostics.length > 0 ? { planeDiagnostics } : {};
+    const writePlaneNotes = (): void => {
+      for (const d of planeDiagnostics) process.stdout.write(`  ! ${d}\n`);
+    };
     if (primitives.length === 0) {
       if (wantJson) {
-        process.stdout.write(asJson({ schema: 'sharkcraft.reuse/v1', intent, results: [] }) + '\n');
+        process.stdout.write(asJson({ schema: 'sharkcraft.reuse/v1', intent, results: [], ...planeJson }) + '\n');
         return 0;
       }
       process.stdout.write(header(`Reuse: "${intent}"`));
@@ -104,6 +112,7 @@ export const reuseCommand: ICommandHandler = {
         '  No reuse primitives configured. Declare `reusePrimitives[]` in sharkcraft.config.ts\n' +
           '  to map roles/intents to canonical symbols (see docs/reuse.md).\n',
       );
+      writePlaneNotes();
       return 0;
     }
 
@@ -120,12 +129,13 @@ export const reuseCommand: ICommandHandler = {
     if (ranked.length === 0) {
       const roles = [...new Set(primitives.flatMap((p) => p.roles))].sort();
       if (wantJson) {
-        process.stdout.write(asJson({ schema: 'sharkcraft.reuse/v1', intent, results: [], availableRoles: roles }) + '\n');
+        process.stdout.write(asJson({ schema: 'sharkcraft.reuse/v1', intent, results: [], availableRoles: roles, ...planeJson }) + '\n');
         return 0;
       }
       process.stdout.write(header(`Reuse: "${intent}"`));
       process.stdout.write('  No primitive matched. Available roles:\n');
       for (const r of roles.slice(0, 40)) process.stdout.write(`    • ${r}\n`);
+      writePlaneNotes();
       return 0;
     }
 
@@ -180,11 +190,12 @@ export const reuseCommand: ICommandHandler = {
     });
 
     if (wantJson) {
-      process.stdout.write(asJson({ schema: 'sharkcraft.reuse/v1', intent, graphIndexed: !!api, results }) + '\n');
+      process.stdout.write(asJson({ schema: 'sharkcraft.reuse/v1', intent, graphIndexed: !!api, results, ...planeJson }) + '\n');
       return 0;
     }
 
     process.stdout.write(header(`Reuse: "${intent}"`));
+    writePlaneNotes();
     if (!api) {
       process.stdout.write(
         '  (code graph missing — import path/siblings/consumers limited; run `shrk graph index`)\n',

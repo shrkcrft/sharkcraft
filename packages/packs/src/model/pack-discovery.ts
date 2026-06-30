@@ -1,4 +1,4 @@
-import type { ISharkCraftPackManifest } from '@shrkcrft/plugin-api';
+import type { ContributionFileKey, ISharkCraftPackManifest } from '@shrkcrft/plugin-api';
 
 export interface IDiscoveredPack {
   /** Published package name (from package.json). */
@@ -10,7 +10,16 @@ export interface IDiscoveredPack {
   packageRoot: string;
   /** Parsed manifest, if it loaded. */
   manifest?: ISharkCraftPackManifest;
-  /** Number of contribution **files** of each kind. Zero if not declared. */
+  /**
+   * Number of contribution **files** of each kind. Zero if not declared.
+   *
+   * Populated generically from the canonical `CONTRIBUTION_FILE_KEYS`
+   * (`@shrkcrft/plugin-api`) so an "extended"-only pack (conventions / helpers /
+   * framework extractors / decisions / …) still reports a non-zero declared
+   * total. The originally-tracked kinds stay required for back-compat; the
+   * extended kinds are optional so older object literals keep type-checking, but
+   * `countContributions` fills in every key.
+   */
   contributionCounts: {
     knowledgeFiles: number;
     ruleFiles: number;
@@ -25,7 +34,7 @@ export interface IDiscoveredPack {
     constructFacetFiles: number;
     playbookFiles: number;
     delegateRecipeFiles: number;
-  };
+  } & Partial<Record<ContributionFileKey, number>>;
   /**
    * Number of **resolved objects** loaded from this pack's contributions, after
    * de-duplication against local entries and inside the pack. Populated by the
@@ -55,9 +64,19 @@ export interface IDiscoveredPack {
     | 'invalid-signature'
     | 'missing-signature'
     | 'missing-secret'
+    | 'dev-signature'
     | 'not-checked';
   /** Free-form message accompanying the signature status. */
   signatureMessage?: string;
+  /**
+   * True when this pack's signature carries `dev: true` — produced by
+   * `shrk packs sign --dev` and verified only against the well-known public
+   * dev secret. Dev signatures are NOT release-trusted; they verify under
+   * `--allow-dev-signature` but otherwise report `signatureStatus:
+   * 'dev-signature'`. Populated from the verify result (or, when verification
+   * did not run, from the manifest's signature block).
+   */
+  signatureDev?: boolean;
 }
 
 export interface IPackDiscoveryResult {

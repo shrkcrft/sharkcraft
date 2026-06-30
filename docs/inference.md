@@ -150,7 +150,9 @@ Emitted by profile + script combo:
 
 ## Readiness impact
 
-The current grade is computed by `shrk ai-readiness`. The expected grade adds
+The current grade is computed by `shrk doctor` (the standalone `ai-readiness`
+verb was retired; the same report is also available over MCP as
+`get_ai_readiness_report`). The expected grade adds
 a conservative bonus (cap = 20 points) based on the size of the inferred plan
 and whether the repo lacks a sharkcraft config. We never claim more than one
 grade jump per +15 points and the bonus is capped well below "excellent".

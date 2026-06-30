@@ -8,7 +8,7 @@ contribution or local `sharkcraft/` config.
 ## Kinds
 
 - `migration` — describes a multi-phase migration gate (files / env vars
-  to probe). Drives `shrk migration readiness`.
+  to probe). Drives migration-readiness probing for the profile.
 
 Future kinds (reserved): `command-behavior`, `generator`, `boundary`,
 `naming`, `architecture`, `language`, `report`.

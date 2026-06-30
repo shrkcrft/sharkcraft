@@ -48,6 +48,21 @@ export function wiringGate(projectRoot: string, options: IWiringGateOptions = {}
   const report = runWiring(projectRoot, rules, {
     ...(options.changedOnly ? { changedOnly: true, changedFiles: options.changedFiles ?? [] } : {}),
   });
+
+  // Loud zero case: rules exist but none actually ran a comparison (their globs
+  // matched no files, or `--changed-only` filtered them all out). Surface it as
+  // skipped rather than a silent green pass.
+  if (report.rules.length === 0 || report.evaluated === 0) {
+    return {
+      id: 'wiring',
+      label: 'Wiring (completeness)',
+      status: 'skipped',
+      message: 'No wiring rules in scope — nothing evaluated.',
+      details: { evaluated: 0 },
+      durationMs: Date.now() - start,
+    };
+  }
+
   const errors = report.violations.filter((v) => v.severity === 'error').length;
   const warnings = report.violations.filter((v) => v.severity === 'warning').length;
   const samples = report.violations.slice(0, 8).map((v) => `${v.ruleId}: ${v.token} (${v.file}:${v.line})`);
@@ -59,7 +74,7 @@ export function wiringGate(projectRoot: string, options: IWiringGateOptions = {}
       label: 'Wiring (completeness)',
       status: 'pass',
       message: `${report.rules.length} wiring rule(s) — every declared token is wired.`,
-      details: { rules: report.rules.length },
+      details: { rules: report.rules.length, evaluated: report.evaluated },
       durationMs: Date.now() - start,
     };
   }
@@ -69,7 +84,13 @@ export function wiringGate(projectRoot: string, options: IWiringGateOptions = {}
     label: 'Wiring (completeness)',
     status: report.verdict === 'errors' ? 'fail' : 'warn',
     message: `${errors} error(s), ${warnings} warning(s)${misconfig}: declared but not wired.`,
-    details: { errors, warnings, samples, ...(diagnostics.length > 0 ? { diagnostics } : {}) },
+    details: {
+      errors,
+      warnings,
+      samples,
+      evaluated: report.evaluated,
+      ...(diagnostics.length > 0 ? { diagnostics } : {}),
+    },
     nextCommands: ['shrk check wiring'],
     durationMs: Date.now() - start,
   };

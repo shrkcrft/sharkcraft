@@ -485,7 +485,12 @@ export const applyCommand: ICommandHandler = {
     }
 
     const diff = diffPlanChanges(saved, livePlan);
-    if (diff.length > 0 && !allowDivergent && !force) {
+    // Divergence acceptance is decoupled from the overwrite strategy: only the
+    // explicit --allow-divergent waives a divergence refusal. --force selects
+    // the overwrite strategy and must NOT double as a silent divergence bypass
+    // (a signed-but-drifted plan would otherwise apply while printing
+    // "Signature: verified"). A user who wants both passes --force --allow-divergent.
+    if (diff.length > 0 && !allowDivergent) {
       if (!wantJson) {
         process.stdout.write('Plan diverged from the saved version:\n');
         for (const d of diff) {
@@ -543,7 +548,9 @@ export const applyCommand: ICommandHandler = {
     // continue to carry their structured folderOps verbatim.
     const liveFolderOps: readonly ISavedPlanFolderOp[] = plannedFolderOps;
     const folderOpDiff = diffPlanFolderOps(saved, liveFolderOps);
-    if (folderOpDiff.length > 0 && !allowDivergent && !force) {
+    // Same decoupling as the file-op divergence gate above: --force is the
+    // overwrite strategy only; --allow-divergent is the explicit waiver.
+    if (folderOpDiff.length > 0 && !allowDivergent) {
       if (!wantJson) {
         process.stdout.write('Folder-op set diverged from the saved version:\n');
         for (const d of folderOpDiff) {

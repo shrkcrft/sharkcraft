@@ -58,6 +58,15 @@ export interface ISymbolEntry {
 export interface IReExportEntry {
   /** Symbol name as exposed (the "name" half of `export { foo } from`). */
   name: string;
+  /**
+   * Original name in the target module for a RENAMED re-export
+   * (`export { Orig as Exposed } from './x'` → `localName` is `Orig`). Absent
+   * for a plain `export { foo } from './x'` where the exposed name equals the
+   * original. `default` for `export { default as Foo } from './x'`. Threaded
+   * through so the graph re-export resolver can recurse with the ORIGINAL
+   * name and land on the real declaring symbol instead of giving up.
+   */
+  localName?: string;
   /** Original specifier path (e.g. `./feature`). */
   from: string;
   /** If true, this is `export * from "..."`. */
@@ -201,8 +210,14 @@ export function buildSymbolIndex(
         for (const spec of stmt.exportClause.elements) {
           const name = spec.name.text;
           if (fromSpec) {
+            // `export { Orig as Exposed } from './x'` — keep the ORIGINAL name
+            // (`spec.propertyName`) so a renamed re-export can be resolved to
+            // its real declaration. Plain `export { foo } from` has no
+            // propertyName (exposed === original).
+            const localName = spec.propertyName?.text;
             reExportsList.push({
               name,
+              ...(localName !== undefined ? { localName } : {}),
               from: fromSpec,
               star: false,
               line: lineOf(sf, spec),

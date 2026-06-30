@@ -39,6 +39,30 @@ describe('r18 command recommender', () => {
     const r = await recommendCommands(inspection, 'qwerty zxcvbn');
     expect(r.nextCommand).toBeDefined();
   });
+  test('scaffolding intent that overlaps a recipe keyword headlines the ranker template, not release/review tooling', async () => {
+    const inspection = await inspectSharkcraft({ cwd: process.cwd() });
+    // "release" overlaps the publish/release recipe, but the intent is to
+    // scaffold a cli command — the shared ranker matches that template.
+    const r = await recommendCommands(
+      inspection,
+      'create a new cli command for the release tooling',
+    );
+    // Headline is the ranker-matched generator, NOT the release recipe.
+    expect(r.recommendations[0]!.command).toMatch(/^shrk gen /);
+    expect(r.nextCommand).toMatch(/^shrk gen /);
+    expect(r.recommendations[0]!.command).not.toMatch(/release readiness|review packet/);
+    // Keyword overlap alone must NOT be stamped HIGH — divergent signals
+    // (recipe vs. stronger ranker match) drop confidence to medium + a review note.
+    expect(r.uncertainty.confidence).toBe('medium');
+    expect(r.uncertainty.conflictingSignals.length).toBeGreaterThan(0);
+    expect(r.warnings.some((w) => /^review:/.test(w))).toBe(true);
+  });
+  test('pure-recipe match (no competing ranker) keeps HIGH confidence', async () => {
+    const inspection = await inspectSharkcraft({ cwd: process.cwd() });
+    const r = await recommendCommands(inspection, 'review my PR');
+    expect(r.recommendations.some((x) => /review packet/.test(x.command))).toBe(true);
+    expect(r.uncertainty.confidence).toBe('high');
+  });
 });
 
 describe('r18 diagnostics suggest', () => {

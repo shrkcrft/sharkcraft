@@ -41,6 +41,8 @@ export interface ITemplateChange {
     | {
         kind: 'insert-array-entry';
         arrayName: string;
+        arrayNameAlternatives?: readonly string[];
+        manualStepInstruction?: string;
         entryValue: string;
         ifMissing?: string;
         description?: string;
@@ -168,6 +170,14 @@ export interface ITemplateDefinition {
     requiredAnchors?: readonly ITemplateAnchorDeclaration[];
     /** Optional ids of registration hints applicable to this template. */
     registrationHintIds?: readonly string[];
+    /**
+     * Verification commands this template's outputs require — surfaced by
+     * plan-simulation ahead of the generic engine defaults. Lets two templates
+     * declare different gate lists (e.g. an Nx lib template asks for
+     * `nx build <app>` rather than the boilerplate `bun test`). Informational;
+     * the renderer ignores it.
+     */
+    requiredValidations?: readonly string[];
   };
 }
 

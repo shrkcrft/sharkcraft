@@ -11,6 +11,13 @@ import { dropDeleted, graphResultStaleness } from './graph-staleness.ts';
 
 const NEXT = 'shrk graph index';
 
+/**
+ * Per-list display cap. The payload always reports the true pre-slice count
+ * (`total<List>`) and a `<list>Truncated` flag so a high-fan-in node is never
+ * silently capped. Kept in sync with the CLI `graph context` subverb.
+ */
+const CONTEXT_LIST_CAP = 50;
+
 interface IContextInput {
   target?: string;
 }
@@ -76,24 +83,26 @@ export const getGraphContextTool: IToolDefinition = {
     // "who implements this interface" answer for a symbol anchor.
     const subtypes = anchor.kind === NodeKind.Symbol ? api.subtypesOf(anchor.id) : [];
     const supertypes = anchor.kind === NodeKind.Symbol ? api.supertypesOf(anchor.id) : [];
-    const importsFrom = neighbours.out
-      .filter((o) => o.edge.kind === 'imports-file')
-      .slice(0, 50)
+    // Pre-slice the filtered arrays so the payload reports the TRUE count + a
+    // truncated flag instead of silently capping each list at 50.
+    const importsFromAll = neighbours.out.filter((o) => o.edge.kind === 'imports-file');
+    const importedByAll = neighbours.in.filter((i) => i.edge.kind === 'imports-file');
+    const importsFrom = importsFromAll
+      .slice(0, CONTEXT_LIST_CAP)
       .map((o) =>
         'resolved' in o.target
           ? { id: o.target.id, resolved: false }
           : { ...summarise(o.target), resolved: true },
       );
-    const importedBy = neighbours.in
-      .filter((i) => i.edge.kind === 'imports-file')
-      .slice(0, 50)
+    const importedBy = importedByAll
+      .slice(0, CONTEXT_LIST_CAP)
       .map((i) =>
         'resolved' in i.source
           ? { id: i.source.id, resolved: false }
           : { ...summarise(i.source), resolved: true },
       );
-    const referencedByRows = referencedBy.slice(0, 50).map(summarise);
-    const calledByRows = calledBy.slice(0, 50).map(summarise);
+    const referencedByRows = referencedBy.slice(0, CONTEXT_LIST_CAP).map(summarise);
+    const calledByRows = calledBy.slice(0, CONTEXT_LIST_CAP).map(summarise);
     // Drop imports/refs to/from files deleted on disk; flag the rest if changed.
     const fresh = graphResultStaleness(api, ctx.inspection.projectRoot, [
       anchor.path,
@@ -107,10 +116,26 @@ export const getGraphContextTool: IToolDefinition = {
       anchor: summarise(anchor),
       ...(declaringFile ? { declaredIn: summarise(declaringFile) } : {}),
       importsFrom: dropDeleted(importsFrom, fresh.deletedSet),
+      totalImportsFrom: importsFromAll.length,
+      importsFromTruncated: importsFromAll.length > CONTEXT_LIST_CAP,
       importedBy: dropDeleted(importedBy, fresh.deletedSet),
+      totalImportedBy: importedByAll.length,
+      importedByTruncated: importedByAll.length > CONTEXT_LIST_CAP,
       symbols: symbols.slice(0, 50).map(summarise),
-      ...(referencedByRows.length > 0 ? { referencedBy: dropDeleted(referencedByRows, fresh.deletedSet) } : {}),
-      ...(calledByRows.length > 0 ? { calledBy: dropDeleted(calledByRows, fresh.deletedSet) } : {}),
+      ...(referencedByRows.length > 0
+        ? {
+            referencedBy: dropDeleted(referencedByRows, fresh.deletedSet),
+            totalReferencedBy: referencedBy.length,
+            referencedByTruncated: referencedBy.length > CONTEXT_LIST_CAP,
+          }
+        : {}),
+      ...(calledByRows.length > 0
+        ? {
+            calledBy: dropDeleted(calledByRows, fresh.deletedSet),
+            totalCalledBy: calledBy.length,
+            calledByTruncated: calledBy.length > CONTEXT_LIST_CAP,
+          }
+        : {}),
       ...(subtypes.length > 0 ? { subtypes: subtypes.slice(0, 50).map(summarise) } : {}),
       ...(supertypes.length > 0 ? { supertypes: supertypes.slice(0, 50).map(summarise) } : {}),
       ...(fresh.field ?? {}),

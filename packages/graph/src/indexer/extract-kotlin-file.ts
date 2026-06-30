@@ -54,7 +54,10 @@ export function extractKotlinFile(
       /^(?:inline\s+|suspend\s+|tailrec\s+|infix\s+|operator\s+|external\s+|open\s+|abstract\s+|final\s+|sealed\s+|data\s+|value\s+|enum\s+|annotation\s+|inner\s+|companion\s+|expect\s+|actual\s+|override\s+)+/,
       '',
     );
-    let m = /^fun(?:\s*<[^>]+>)?\s+([A-Za-z_][\w]*)\s*[<(]/.exec(trimmed);
+    // Allow an optional receiver (e.g. `String.`, `List<Int>.`) before the
+    // name so extension functions are captured; the FINAL identifier is the
+    // function name.
+    let m = /^fun(?:\s*<[^>]+>)?\s+(?:[A-Za-z_][\w.<>,?\s]*\.)?([A-Za-z_][\w]*)\s*[<(]/.exec(trimmed);
     if (m) {
       pushSymbol(fingerprint, symbolNodes, edges, fileNode.id, m[1]!, 'function', i + 1, isExported);
       continue;

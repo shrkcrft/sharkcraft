@@ -74,8 +74,18 @@ export const packAuthorStatusCommand: ICommandHandler = {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
     const status = buildPackAuthorStatus(inspection);
+    // Freshness: the pack authoring state is stale (relative to a signed,
+    // applied baseline) while drafts are pending — they have been authored
+    // since the last apply/sign but not yet incorporated.
+    const state: 'fresh' | 'stale' = status.pendingDrafts > 0 ? 'stale' : 'fresh';
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson(status) + '\n');
+      process.stdout.write(
+        asJson({
+          ...status,
+          state,
+          ...(state === 'stale' ? { nextCommand: 'shrk pack author pending' } : {}),
+        }) + '\n',
+      );
       return 0;
     }
     process.stdout.write(header('Pack author status'));
@@ -84,6 +94,12 @@ export const packAuthorStatusCommand: ICommandHandler = {
     process.stdout.write(`  pack secret: ${status.secretAvailable ? 'available' : 'missing'}\n`);
     process.stdout.write(`  pending drafts: ${status.pendingDrafts}\n`);
     for (const f of status.pendingDraftFiles) process.stdout.write(`    - ${f}\n`);
+    process.stdout.write(`  state: ${state}\n`);
+    if (state === 'stale') {
+      process.stdout.write(
+        `  ! stale — ${status.pendingDrafts} pending draft(s) authored since the last apply/sign; run \`shrk pack author pending\`\n`,
+      );
+    }
     process.stdout.write('  contribution counts:\n');
     for (const [k, n] of Object.entries(status.contributionCounts)) {
       const support = status.authoringSupport[k] ?? 'deferred';

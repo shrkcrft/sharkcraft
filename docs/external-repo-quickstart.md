@@ -15,7 +15,7 @@ draft / session / report directories.
 ```bash
 shrk start-here
 shrk commands primary
-shrk map
+shrk architecture map
 ```
 
 If you do not yet have a `shrk` shim, run from a local clone with

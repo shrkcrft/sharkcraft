@@ -3,7 +3,12 @@ import {
   renderGateReportMarkdown,
   runQualityGates,
 } from '@shrkcrft/quality-gates';
-import { loadProjectConfig } from '@shrkcrft/config';
+import {
+  inspectSharkcraft,
+  resolveChangedFiles,
+  resolveProjectConfig,
+  type ISharkcraftInspection,
+} from '@shrkcrft/inspector';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
@@ -32,7 +37,7 @@ export const gateCommand: ICommandHandler = {
   description:
     'Aggregator: runs the code-intelligence quality gates (graph freshness, architecture, impact-since-ref) and reports a single pass/fail.',
   usage:
-    'shrk gate [--since <gitref>] [--fail-on critical,high] [--arch-all] [--disable arch,impact,api-diff] [--api-baseline <path>] [--no-fail-on-breaking] [--strict] [--no-persist] [--json] [--markdown] [--output <path>]\n         (the arch gate is baseline-relative by default once a baseline is frozen — fails only on NEW errors; --arch-all fails on total)\n         shrk gate scaffold-ci [--provider github|generic] [--force] [--json]\n         shrk gate scaffold-hook [--provider husky|raw] [--force] [--json]',
+    'shrk gate [--since <gitref>] [--changed-only] [--staged] [--files a,b,c] [--fail-on critical,high] [--arch-all] [--disable arch,impact,policy,knowledge-symbol,api-diff] [--api-baseline <path>] [--no-fail-on-breaking] [--strict] [--no-persist] [--json] [--markdown] [--output <path>]\n         (the arch gate is baseline-relative once a baseline is frozen — fails only on NEW errors; with no baseline it warns on errors rather than going perpetually red — --arch-all fails on total, --strict escalates the warn)\n         (--changed-only / --staged / --files / --since scope the wiring + policy + knowledge-symbol gates to the changeset; they also drive the impact gate — --since diffs the gitref, the others analyze the changed-file set)\n         shrk gate scaffold-ci [--provider github|generic] [--force] [--json]\n         shrk gate scaffold-hook [--provider husky|raw] [--force] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     if (args.positional[0] === 'scaffold-ci') {
       const sliced = { ...args, positional: args.positional.slice(1) };
@@ -52,30 +57,117 @@ export const gateCommand: ICommandHandler = {
     const disableRaw = flagString(args, 'disable');
     const apiBaseline = flagString(args, 'api-baseline');
     const noFailOnBreaking = flagBool(args, 'no-fail-on-breaking');
-    const failOn = failOnRaw
-      ? (failOnRaw.split(',').map((s) => s.trim()).filter(Boolean) as readonly ('high' | 'critical')[])
+    // `--fail-on` accepts only `high` / `critical`. An unknown token used to
+    // silently REPLACE the default `['critical']`, leaving nothing able to fail
+    // the gate — reject it loudly (exit 2) instead.
+    const failOnTokens = failOnRaw
+      ? failOnRaw.split(',').map((s) => s.trim()).filter(Boolean)
       : undefined;
+    if (failOnTokens) {
+      const allowedRisk = new Set(['high', 'critical']);
+      const unknown = failOnTokens.filter((t) => !allowedRisk.has(t));
+      if (unknown.length > 0) {
+        process.stderr.write(
+          `Unknown --fail-on value(s): ${unknown.join(', ')}. Allowed: high, critical.\n`,
+        );
+        return 2;
+      }
+    }
+    const failOn =
+      failOnTokens && failOnTokens.length > 0
+        ? (failOnTokens as readonly ('high' | 'critical')[])
+        : undefined;
     const disable = disableRaw ? disableRaw.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
     // --arch-all: fail on TOTAL architecture errors (ignore the frozen baseline).
     // By default the arch gate is baseline-relative — it fails only on NEW errors.
     const archAll = flagBool(args, 'arch-all');
-    // Wiring rules come from the project config; the gate is skipped (never red)
-    // when none are declared, so this is inert for projects that don't opt in.
-    // An INVALID config is surfaced (warn) rather than silently disabling wiring.
-    const loadedConfig = await loadProjectConfig(cwd);
+    // Changeset scope. `--changed-only` (tracked + untracked worktree),
+    // `--staged`, `--files`, and `--since` all narrow the wiring + policy +
+    // knowledge-symbol gates to the change. `--since` additionally drives the
+    // (ref-based) impact gate, as before.
+    const changedOnly = flagBool(args, 'changed-only');
+    const staged = flagBool(args, 'staged');
+    const filesRaw = flagString(args, 'files');
+    const fileList = filesRaw ? filesRaw.split(',').map((s) => s.trim()).filter(Boolean) : [];
+    const wantChangedScope = changedOnly || staged || Boolean(sinceRef) || fileList.length > 0;
+    let changedFiles: readonly string[] | undefined;
+    if (wantChangedScope) {
+      const resolved = resolveChangedFiles({
+        projectRoot: cwd,
+        ...(fileList.length > 0 ? { files: fileList } : {}),
+        ...(staged ? { staged: true } : {}),
+        ...(sinceRef ? { since: sinceRef } : {}),
+        ...(changedOnly && !staged && !sinceRef && fileList.length === 0
+          ? { includeWorktree: true }
+          : {}),
+      });
+      changedFiles = resolved.files;
+    }
+    // Wiring + policy rules come from the project config; each gate is skipped
+    // (never red) when none are declared, so they're inert for projects that
+    // don't opt in. An INVALID config is surfaced (warn) rather than silently
+    // disabling the plane.
+    const loadedConfig = await resolveProjectConfig(cwd);
     const wiringRules = loadedConfig.ok ? loadedConfig.value.config.wiringRules ?? [] : [];
-    const wiringConfigError = loadedConfig.ok ? undefined : loadedConfig.error.message;
+    const policyRules = loadedConfig.ok ? loadedConfig.value.config.policyRules ?? [] : [];
+    const configError = loadedConfig.ok ? undefined : loadedConfig.error.message;
+    // Pack-plane merge notes (missing/invalid pack rule files, dropped
+    // collisions) go to stderr so they never pollute the JSON/markdown report
+    // on stdout that CI consumes.
+    if (loadedConfig.ok) {
+      for (const d of loadedConfig.value.planeDiagnostics) {
+        process.stderr.write(`plane: ${d}\n`);
+      }
+    }
+    const scopeOpts = wantChangedScope
+      ? { changedOnly: true, changedFiles: changedFiles ?? [] }
+      : {};
+    // Knowledge symbol-ref integrity needs the loaded knowledge entries. The
+    // inspection is async, so we build it here and inject it; the gate stays
+    // synchronous and resolves the code graph itself. Best-effort — a failed
+    // inspection just skips the gate rather than failing `shrk gate`.
+    let inspection: ISharkcraftInspection | undefined;
+    if (!disable?.includes('knowledge-symbol')) {
+      try {
+        inspection = await inspectSharkcraft({ cwd });
+      } catch {
+        inspection = undefined;
+      }
+    }
     const report = runQualityGates({
       projectRoot: cwd,
       ...(archAll ? { arch: { baselineRelative: false } } : {}),
-      ...(wiringConfigError
-        ? { wiring: { configError: wiringConfigError } }
-        : wiringRules.length > 0
-          ? { wiring: { rules: wiringRules } }
-          : {}),
+      wiring: {
+        ...(configError
+          ? { configError }
+          : wiringRules.length > 0
+            ? { rules: wiringRules }
+            : {}),
+        ...scopeOpts,
+      },
+      policy: {
+        ...(configError
+          ? { configError }
+          : policyRules.length > 0
+            ? { rules: policyRules }
+            : {}),
+        ...scopeOpts,
+      },
+      ...(inspection
+        ? {
+            knowledgeSymbol: {
+              inspection,
+              ...(wantChangedScope ? { changedFiles: changedFiles ?? [] } : {}),
+            },
+          }
+        : {}),
       impact: {
         ...(sinceRef ? { sinceRef } : {}),
         ...(failOn ? { failOn } : {}),
+        // Scope the impact gate to the changeset too: with `--since` we keep the
+        // gitref diff; with `--changed-only` / `--staged` / `--files` (and no
+        // `--since`) we analyze the resolved changed-file set directly.
+        ...(wantChangedScope && !sinceRef ? { files: changedFiles ?? [] } : {}),
       },
       ...(apiBaseline
         ? {

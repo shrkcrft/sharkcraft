@@ -11,6 +11,7 @@ import {
   isTodoReason,
   renderImportHygieneText,
   resolveChangedFiles,
+  resolveProjectConfig,
   runDoctor,
   suggestBoundaryFixes,
   type IChangedScopeOptions,
@@ -37,7 +38,6 @@ import {
   scanImports,
   summarizeImports,
 } from '@shrkcrft/boundaries';
-import { loadProjectConfig } from '@shrkcrft/config';
 
 interface IGroupResult {
   name: string;
@@ -615,7 +615,7 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
   // Distinguish "config is invalid" from "config valid with no wiring rules":
   // an invalid config (e.g. a malformed wiringRule) must NOT fail open with a
   // misleading "no rules configured" + exit 0.
-  const loaded = await loadProjectConfig(cwd);
+  const loaded = await resolveProjectConfig(cwd);
   if (!loaded.ok) {
     const msg = loaded.error.message;
     if (wantJson) {
@@ -629,6 +629,7 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
     return 1;
   }
   const rules = loaded.value.config.wiringRules ?? [];
+  const planeDiagnostics = loaded.value.planeDiagnostics;
 
   if (rules.length === 0) {
     if (wantJson) {
@@ -655,10 +656,16 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
     changedFiles = changed.files;
   }
 
-  const report = runWiring(cwd, rules, {
+  const reportRaw = runWiring(cwd, rules, {
     ...(changedOnly || since ? { changedOnly: true, changedFiles: changedFiles ?? [] } : {}),
     ...(only ? { only: only.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
   });
+  // Surface pack-plane merge notes (missing/invalid pack rule files, dropped
+  // collisions) alongside the rule engine's own misconfiguration diagnostics.
+  const report =
+    planeDiagnostics.length > 0
+      ? { ...reportRaw, diagnostics: [...reportRaw.diagnostics, ...planeDiagnostics] }
+      : reportRaw;
 
   if (wantJson) {
     process.stdout.write(asJson(report) + '\n');
@@ -666,7 +673,17 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
   }
 
   process.stdout.write(header('Wiring check'));
-  process.stdout.write(kv('rules evaluated', String(report.rules.length)) + '\n');
+  // `evaluated` counts rules that actually ran a comparison (globs matched >0
+  // files). When 0 rules evaluated but rules ARE configured, say so loudly —
+  // "checked nothing" must never read as the green "every token is wired" pass.
+  if (report.evaluated === 0) {
+    process.stdout.write(
+      `  ! Nothing evaluated — ${report.rules.length} rule(s) configured but none matched files in scope` +
+        (changedOnly || since ? ' (changed-only).\n' : '.\n'),
+    );
+    return 0;
+  }
+  process.stdout.write(kv('rules evaluated', `${report.evaluated} of ${report.rules.length}`) + '\n');
   const errors = report.violations.filter((v) => v.severity === 'error').length;
   const warnings = report.violations.filter((v) => v.severity === 'warning').length;
   process.stdout.write(kv('violations', `${errors} error(s), ${warnings} warning(s)`) + '\n');
@@ -712,6 +729,20 @@ export const checkCommand: ICommandHandler = {
     'shrk [--cwd <dir>] check [packs|pipelines|knowledge|generation|boundaries|imports|wiring] [--strict] [--min-score <0-100>] [--changed-only] [--since <ref>] [--only <ids>] [--json] [--watch [--paths <list>] [--debounce N] [--once]]',
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
+    // `check generation <id> <name>` legitimately takes extra positionals;
+    // every other subverb (boundaries/imports/wiring/…) and the full sweep are
+    // flag-driven. Reject stray positional file args instead of silently
+    // dropping them and reporting a confident green — pass files via --files.
+    if (sub !== 'generation') {
+      const extras = args.positional.slice(1);
+      if (extras.length > 0) {
+        process.stderr.write(
+          `Unexpected positional argument(s): ${extras.join(', ')}. ` +
+            `Use --files a.ts,b.ts (or --changed-only) instead of passing files positionally.\n`,
+        );
+        return 2;
+      }
+    }
     if (sub === 'generation') return checkGeneration(args);
     if (sub === 'boundaries') return checkBoundaries(args);
     if (sub === 'imports' || sub === 'import-hygiene') return checkImports(args);

@@ -58,6 +58,33 @@ describe('selectAiProvider', () => {
     expect(result.provider?.id).toBe('ollama');
   });
 
+  test('explicit "auto" ignores AI_PROVIDER=claude (never ships the seed off-machine)', () => {
+    // SC-1: an explicit `--provider auto` is a local-first REQUEST. Even with
+    // AI_PROVIDER=claude + a key in env, it must NOT resolve to the hosted
+    // Claude provider — that would send the deterministic seed (CLAUDE.md +
+    // knowledge + file paths) off-machine.
+    process.env.AI_PROVIDER = 'claude';
+    process.env.ANTHROPIC_API_KEY = 'dummy-key';
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.LLAMACPP_MODEL_PATH;
+    const result = selectAiProvider('auto');
+    expect(result.requested).toBe('auto');
+    expect(result.provider?.id).not.toBe('claude');
+    // Local-first chain: llamacpp unavailable → ollama (structurally ready).
+    expect(result.provider?.id).toBe('ollama');
+  });
+
+  test('explicit "auto" ignores AI_PROVIDER=gemini (stays local)', () => {
+    process.env.AI_PROVIDER = 'gemini';
+    process.env.GEMINI_API_KEY = 'dummy-key';
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.LLAMACPP_MODEL_PATH;
+    const result = selectAiProvider('auto');
+    expect(result.requested).toBe('auto');
+    expect(result.provider?.id).not.toBe('gemini');
+    expect(result.provider?.id).toBe('ollama');
+  });
+
   test('auto picks llamacpp when LLAMACPP_MODEL_PATH points at a real file', () => {
     const { mkdtempSync, rmSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
     const { tmpdir } = require('node:os') as typeof import('node:os');

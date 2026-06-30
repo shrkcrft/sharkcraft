@@ -93,11 +93,18 @@ export const pathsBestCommand: ICommandHandler = {
     }
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const selection = inspection.pathService.findBestForTask(task);
+    const wantJson = flagBool(args, 'json');
     if (!selection) {
+      // Keep `--json` machine-parseable on a miss: emit `{match:null}` rather
+      // than the human sentence so a consumer can `JSON.parse` the output.
+      if (wantJson) {
+        process.stdout.write(asJson({ match: null }) + '\n');
+        return 0;
+      }
       process.stdout.write('No matching path convention.\n');
       return 0;
     }
-    if (flagBool(args, 'json')) {
+    if (wantJson) {
       process.stdout.write(asJson(selection) + '\n');
       return 0;
     }

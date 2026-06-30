@@ -7,6 +7,7 @@ export * from './evaluate/evaluate-boundaries.ts';
 export * from './scan/tsconfig-aliases.ts';
 export * from './wiring/evaluate-wiring.ts';
 export * from './wiring/scan-wiring-files.ts';
+export * from './wiring/registry-query.ts';
 export * from './policy/extract-templates.ts';
 export * from './policy/evaluate-policy.ts';
 export * from './policy/run-policy.ts';

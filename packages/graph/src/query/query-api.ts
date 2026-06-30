@@ -106,6 +106,13 @@ export interface IGraphHubs {
  * (rules / framework) are deliberately excluded so a path is always a real
  * import/call/reference/heritage chain, not a routing through a package node.
  */
+/**
+ * Internal scan bound for honest match COUNTS in {@link GraphQueryApi.searchNodes}
+ * — large enough that `total` is accurate for any realistic repo, bounded so a
+ * pathological query can't walk forever.
+ */
+const SEARCH_TOTAL_SCAN_CAP = 100_000;
+
 const CODE_PATH_EDGE_KINDS: ReadonlySet<EdgeKind> = new Set<EdgeKind>([
   EdgeKind.ImportsFile,
   EdgeKind.CallsSymbol,
@@ -156,10 +163,66 @@ export class GraphQueryApi {
     this.inByTo = inByTo;
   }
 
-  /** Load a snapshot from disk and construct the query API. */
+  /**
+   * Load a snapshot from disk and construct the query API. Propagates the typed
+   * corrupt-store error from {@link GraphStore.loadSnapshot} (one bad JSONL line
+   * → a typed AppError, not a raw `JSON Parse error`) so callers can turn it into
+   * a clean "rebuild the index" hint instead of crashing.
+   */
   static fromStore(projectRoot: string): GraphQueryApi {
     const store = new GraphStore(projectRoot);
     return new GraphQueryApi(store.loadSnapshot());
+  }
+
+  /**
+   * Search the graph by path / symbol name / package name, returning the
+   * display-capped page AND the TRUE pre-slice match count so a caller can emit
+   * an honest `total` + `truncated` flag (the old per-surface code reported the
+   * post-cap length as the total, so 285 matches showed as `total: 20`). The
+   * single source of truth shared by the CLI `graph search` and the MCP
+   * `get_graph_search` tool, so the two never drift.
+   *
+   * `exact` suppresses the fuzzy file-substring fallback and forces exact symbol
+   * lookup (default fuzzy). The full match set is counted with a generous
+   * internal scan bound so `total` stays accurate for any realistic repo.
+   */
+  searchNodes(
+    query: string,
+    opts: { kind?: 'file' | 'symbol' | 'package'; limit?: number; exact?: boolean } = {},
+  ): { matches: INode[]; total: number } {
+    const { kind, exact = false } = opts;
+    const limit = opts.limit && opts.limit > 0 ? Math.floor(opts.limit) : 20;
+    const all: INode[] = [];
+    const seen = new Set<string>();
+    const push = (n: INode): void => {
+      if (seen.has(n.id)) return;
+      seen.add(n.id);
+      all.push(n);
+    };
+    if (!kind || kind === 'file') {
+      const f = this.findFile(query);
+      if (f) push(f);
+      // Fuzzy fallback: substring match on path/basename so a bare `Foo` finds
+      // `packages/x/Foo.ts` without the full path. Suppressed by `exact`.
+      if (!exact) {
+        const q = query.toLowerCase();
+        for (const node of this.allFiles()) {
+          const p = node.path?.toLowerCase() ?? '';
+          const base = p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p;
+          if (base.includes(q) || p.includes(q)) push(node);
+        }
+      }
+    }
+    if (!kind || kind === 'symbol') {
+      // Count-honest: collect ALL matches (large internal cap) so `total` is the
+      // true match count, then slice for display below.
+      for (const s of this.findSymbol(query, { exact, limit: SEARCH_TOTAL_SCAN_CAP })) push(s);
+    }
+    if (!kind || kind === 'package') {
+      const pkg = this.snap.nodes.get(`package:${query}`);
+      if (pkg && pkg.kind === NodeKind.Package) push(pkg);
+    }
+    return { matches: all.slice(0, limit), total: all.length };
   }
 
   status(): IGraphStatus {

@@ -89,10 +89,36 @@ Packs can be signed with an HMAC secret distributed out-of-band:
 - Consumer: `shrk packs verify --required` or
   `shrk packs doctor --require-signatures`.
 
+The HMAC is computed over the canonical JSON of the **entire manifest with
+the `signature` field removed** (keys sorted recursively, `undefined` dropped,
+array order preserved) — i.e. `schema`, `info`, `contributions`, and
+`postInstallNotes` are all covered. Tampering with any of them invalidates the
+signature.
+
 Signed JSON manifests are read as data (no dynamic import). They give you
 tamper detection on the manifest content. They do **not** sandbox the
 TypeScript contribution files the manifest points at — those still load
 under the trusted-local-config trust model from rule #4.
+
+**Dev signatures are not release-trusted.** `shrk packs sign --dev` marks the
+signature `dev: true` and signs it with a **well-known, public** dev secret so
+authors can iterate without the release secret. Because that secret is public,
+a dev signature proves nothing about publisher identity. The verifier therefore
+**rejects** a `dev: true` signature by default (`signatureStatus:
+'dev-signature'`), *even if your own real secret is set*; it is only accepted
+when you explicitly pass `--allow-dev-signature` (a local-only escape hatch,
+which still fails a *tampered* dev signature). Under `--require-signatures` /
+`--required`, a dev-signed pack fails the gate.
+
+**`--required` fails closed when verification cannot run.** A genuinely signed
+pack that cannot be checked because `SHARKCRAFT_PACK_SECRET` is unset reports
+`signatureStatus: 'missing-secret'` and is treated as *unverifiable* — under
+`--required` it FAILS and the verdict names the missing secret. The command
+never prints "all signatures OK" unless every signed pack actually reached
+`verified`. Freshness (`shrk packs doctor --signature-explain`) is likewise
+not verification: a signature whose timestamp is merely newer than every
+contribution file, with no HMAC check this run, is reported as
+`present-unverified`, never `valid`.
 
 For private/commercial packs:
 

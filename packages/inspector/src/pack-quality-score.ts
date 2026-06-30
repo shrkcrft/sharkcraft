@@ -1,3 +1,4 @@
+import { CONTRIBUTION_FILE_KEYS } from '@shrkcrft/plugin-api';
 import type { IDiscoveredPack } from '@shrkcrft/packs';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { lintTemplates } from './template-lint.ts';
@@ -110,15 +111,15 @@ export function scorePack(
     scaffoldPatterns: 0,
     policyChecks: 0,
   };
-  const totalDeclared =
-    pack.contributionCounts.knowledgeFiles +
-    pack.contributionCounts.ruleFiles +
-    pack.contributionCounts.pathFiles +
-    pack.contributionCounts.templateFiles +
-    pack.contributionCounts.pipelineFiles +
-    pack.contributionCounts.docsFiles +
-    pack.contributionCounts.presetFiles +
-    pack.contributionCounts.scaffoldPatternFiles;
+  // Sum EVERY canonical contribution kind (not just the original 8) so a pack
+  // that contributes only "extended" kinds (conventions / helpers / framework
+  // extractors / …) is recognised as declaring contributions instead of being
+  // scored as "Pack declares no contributions".
+  const declaredCounts = pack.contributionCounts as Record<string, number | undefined>;
+  const totalDeclared = CONTRIBUTION_FILE_KEYS.reduce(
+    (sum, key) => sum + (declaredCounts[key] ?? 0),
+    0,
+  );
   const totalResolved =
     resolved.knowledgeEntries +
     resolved.rules +

@@ -46,7 +46,8 @@ describe('extractGoFile', () => {
       expect(fp.language).toBe('go');
       const ex = extractGoFile(fp, file);
       const names = ex.symbolNodes.map((s) => s.label).sort();
-      expect(names).toEqual(['Greet', 'Greeter', 'ID', 'User', 'helper']);
+      // The `Greet` method on `*User` is keyed as `User.Greet`.
+      expect(names).toEqual(['Greeter', 'ID', 'User', 'User.Greet', 'helper']);
       const specs = ex.rawImportSpecifiers.map((r) => r.specifier).sort();
       expect(specs).toEqual(['encoding/json', 'fmt', 'net/http', 'strings']);
       const helper = ex.symbolNodes.find((s) => s.label === 'helper')!;
@@ -54,6 +55,37 @@ describe('extractGoFile', () => {
       const user = ex.symbolNodes.find((s) => s.label === 'User')!;
       expect(user.data?.['isExported']).toBe(true);
       expect(ex.fileNode.data?.['goPackage']).toBe('main');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('disambiguates same-named methods on different receivers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-go-recv-'));
+    try {
+      const file = join(root, 'io.go');
+      writeFileSync(
+        file,
+        [
+          'package io', // 1
+          '', // 2
+          'func (r *Reader) Close() error { return nil }', // 3
+          'func (w *Writer) Close() error { return nil }', // 4
+          'func Close() error { return nil }', // 5
+        ].join('\n'),
+      );
+      const fp = fingerprintFile(file, root);
+      const ex = extractGoFile(fp, file);
+      // Three distinct nodes — receiver-scoped ids keep Close/Close/Close apart.
+      expect(ex.symbolNodes).toHaveLength(3);
+      const byLabel = new Map(ex.symbolNodes.map((s) => [s.label, s]));
+      expect([...byLabel.keys()].sort()).toEqual(['Close', 'Reader.Close', 'Writer.Close']);
+      expect(byLabel.get('Reader.Close')!.id).toBe(`symbol:${fp.path}#Reader.Close`);
+      expect(byLabel.get('Writer.Close')!.id).toBe(`symbol:${fp.path}#Writer.Close`);
+      expect(byLabel.get('Close')!.id).toBe(`symbol:${fp.path}#Close`);
+      expect(byLabel.get('Reader.Close')!.line).toBe(3);
+      expect(byLabel.get('Writer.Close')!.line).toBe(4);
+      expect(byLabel.get('Close')!.line).toBe(5);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -54,6 +54,12 @@ function normaliseKind(kind: string | undefined): AiProviderKind {
   const known = new Set(['claude', 'gemini', 'ollama', 'llamacpp']);
   if (kind !== undefined) {
     const explicit = kind.trim().toLowerCase();
+    // An explicit `auto` is itself a request — the user is asking for the
+    // local-first chain. It must NOT be overridden by AI_PROVIDER (which
+    // could be `claude`/`gemini` and would silently ship the deterministic
+    // seed — CLAUDE.md + knowledge + file paths — off-machine to a hosted
+    // API). AI_PROVIDER is consulted ONLY when no kind was passed at all.
+    if (explicit === 'auto') return 'auto';
     if (known.has(explicit)) return explicit as AiProviderKind;
   }
   const envCandidate = (process.env.AI_PROVIDER ?? '').trim().toLowerCase();

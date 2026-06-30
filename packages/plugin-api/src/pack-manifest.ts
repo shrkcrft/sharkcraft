@@ -41,6 +41,38 @@ export interface ISharkCraftPackContributions {
   presetFiles?: readonly string[];
   /** Boundary rule files (default export = array of IBoundaryRule). */
   boundaryFiles?: readonly string[];
+  /**
+   * Wiring/completeness rule files — the "declared but not wired" plane.
+   * Each default-exports `readonly IWiringRule[]`. Lets a framework pack ship a
+   * cross-file invariant (e.g. "every @Injectable must be registered in a
+   * module") as data instead of every consuming repo hand-copying it into
+   * `sharkcraft.config.ts wiringRules[]`. Merged local-wins by `id` in the
+   * inspector's `resolveProjectConfig` seam (config can't import packs).
+   */
+  wiringRuleFiles?: readonly string[];
+  /**
+   * Registry-inventory declaration files. Each default-exports
+   * `readonly IRegistryDeclaration[]`. Pack-contributed registries are merged
+   * local-wins by `name`.
+   */
+  registryFiles?: readonly string[];
+  /**
+   * Policy-lint rule files — the regex-over-surfaces plane read by
+   * `shrk policy-lint`. Each default-exports `readonly IPolicyRule[]`, merged
+   * local-wins by `id`.
+   *
+   * NOTE: distinct from {@link ISharkCraftPackContributions.policyCheckFiles},
+   * which carries `IPackPolicyCheck` (a JS `evaluate()` callback). A
+   * `policyRuleFiles` element is pure data (surface + regex + message); a
+   * `policyCheckFiles` element is executable. They are different planes.
+   */
+  policyRuleFiles?: readonly string[];
+  /**
+   * Reuse-primitive files — the "use the existing thing" plane for
+   * `shrk reuse`. Each default-exports `readonly IReusePrimitive[]`, merged
+   * local-wins by `symbol`.
+   */
+  reusePrimitiveFiles?: readonly string[];
   /** Context regression test files. */
   contextTestFiles?: readonly string[];
   /** Agent contract test files. */
@@ -95,10 +127,75 @@ export interface ISharkCraftPackContributions {
   frameworkExtractorFiles?: readonly string[];
 }
 
+/**
+ * Contribution slots that are declared, validated, and signed but have NO
+ * consuming loader/verifier yet — reserved for a future release. Deliberately
+ * excluded from {@link CONTRIBUTION_FILE_KEYS} so the honesty surfaces (release
+ * verification, discovery counts, quality scoring) don't claim to enforce slots
+ * nothing reads. When a loader lands for one of these, move it into
+ * {@link CONTRIBUTION_FILE_KEYS}.
+ */
+export const FUTURE_CONTRIBUTION_FILE_KEYS = [
+  'mcpToolFiles',
+  'aiProviderFiles',
+] as const satisfies readonly (keyof ISharkCraftPackContributions)[];
+
+/**
+ * Canonical list of every contribution `*Files` slot that has a real consumer
+ * (a loader and/or a release-time verifier). This is the single source of truth
+ * that drives the release-check existence/load loop, the discovery contribution
+ * counts, and the quality-score declared total — adding a new contribution kind
+ * here once makes every honesty surface enforce it. Future no-op slots live in
+ * {@link FUTURE_CONTRIBUTION_FILE_KEYS} and are intentionally absent.
+ */
+export const CONTRIBUTION_FILE_KEYS = [
+  'knowledgeFiles',
+  'ruleFiles',
+  'pathFiles',
+  'templateFiles',
+  'pipelineFiles',
+  'docsFiles',
+  'presetFiles',
+  'boundaryFiles',
+  'wiringRuleFiles',
+  'registryFiles',
+  'policyRuleFiles',
+  'reusePrimitiveFiles',
+  'contextTestFiles',
+  'agentTestFiles',
+  'delegateRecipeFiles',
+  'scaffoldPatternFiles',
+  'policyCheckFiles',
+  'constructFiles',
+  'constructFacetFiles',
+  'playbookFiles',
+  'searchTuningFiles',
+  'feedbackRuleFiles',
+  'decisionFiles',
+  'pathConventionFiles',
+  'contractTemplateFiles',
+  'migrationProfileFiles',
+  'conventionFiles',
+  'helperFiles',
+  'taskRoutingHintFiles',
+  'registrationHintFiles',
+  'frameworkExtractorFiles',
+] as const satisfies readonly (keyof ISharkCraftPackContributions)[];
+
+/** Union of every canonical (non-future) contribution `*Files` key. */
+export type ContributionFileKey = (typeof CONTRIBUTION_FILE_KEYS)[number];
+
 export interface ISharkCraftPackSignature {
   /** Algorithm marker (HMAC-SHA256). */
   algo: 'sha256';
-  /** Hex-encoded HMAC over canonical-JSON(info + contributions + postInstallNotes). */
+  /**
+   * Hex-encoded HMAC over canonical-JSON of the entire manifest with the
+   * `signature` field removed (keys sorted recursively, undefined dropped,
+   * array order preserved). This covers `schema`, `info`, `contributions`,
+   * and `postInstallNotes` — every field except the signature itself — so
+   * tampering with any of them invalidates the HMAC. See
+   * {@link signPackManifest} / `canonicalizePackManifest`.
+   */
   hmac: string;
   /** ISO timestamp of when the manifest was signed. */
   signedAt: string;
@@ -174,37 +271,7 @@ export function validatePackManifest(value: unknown): IPackManifestValidationRes
   if (!contributions || typeof contributions !== 'object') {
     issues.push({ field: 'contributions', message: 'contributions is required' });
   } else {
-    for (const key of [
-      'knowledgeFiles',
-      'ruleFiles',
-      'pathFiles',
-      'templateFiles',
-      'pipelineFiles',
-      'docsFiles',
-      'presetFiles',
-      'boundaryFiles',
-      'contextTestFiles',
-      'agentTestFiles',
-      'mcpToolFiles',
-      'aiProviderFiles',
-      'delegateRecipeFiles',
-      'scaffoldPatternFiles',
-      'policyCheckFiles',
-      'constructFiles',
-      'constructFacetFiles',
-      'playbookFiles',
-      'searchTuningFiles',
-      'feedbackRuleFiles',
-      'decisionFiles',
-      'pathConventionFiles',
-      'contractTemplateFiles',
-      'migrationProfileFiles',
-      'conventionFiles',
-      'helperFiles',
-      'taskRoutingHintFiles',
-      'registrationHintFiles',
-      'frameworkExtractorFiles',
-    ] as const) {
+    for (const key of [...CONTRIBUTION_FILE_KEYS, ...FUTURE_CONTRIBUTION_FILE_KEYS]) {
       const v = contributions[key];
       if (v === undefined) continue;
       if (

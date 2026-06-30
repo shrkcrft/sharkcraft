@@ -11,6 +11,8 @@ import type { ITemplateDefinition } from '@shrkcrft/templates';
 import type { IPresetRecommendation } from '@shrkcrft/presets';
 import type { IPipelineDefinition } from '@shrkcrft/pipelines';
 import { rankAll, type IRankedItem } from './task-ranker.ts';
+import { listSearchTuning } from './search-tuning-registry.ts';
+import { contextTuningBoostFor } from './context-tuning.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { buildProjectOverview, renderOverviewText } from './project-overview.ts';
 import { resolveVerificationCommands } from './resolve-verification-commands.ts';
@@ -182,17 +184,20 @@ export function buildTaskPacket(
   const overview = buildProjectOverview(inspection.workspace, inspection.config?.projectName);
   const overviewText = renderOverviewText(overview);
 
+  const contextBoost = contextTuningBoostFor(inspection, task);
   const contextResult = buildContext(inspection.knowledgeEntries, {
     task,
     maxTokens,
     ...(options.scope ? { scope: options.scope as string[] } : {}),
     projectOverview: overviewText,
+    ...(contextBoost ? { boostFor: contextBoost } : {}),
   });
 
   // ── Deterministic ranker — replaces the old substring search ─────────
   // Compact mode requests top-5; full mode requests top-10 (the original).
   const rankN = compact ? 8 : 10;
-  const ranking = rankAll(inspection, task, rankN);
+  const tuning = listSearchTuning(inspection);
+  const ranking = rankAll(inspection, task, rankN, tuning);
   const relevantRules = compact
     ? ranking.rules.slice(0, COMPACT_CAPS.rules).map((r) => r.item)
     : ranking.rules.map((r) => r.item);

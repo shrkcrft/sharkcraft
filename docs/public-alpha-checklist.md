@@ -24,7 +24,8 @@ Run every entry below before tagging `0.1.0-alpha.2`.
 - [ ] `shrk release smoke --matrix --target sharkcraft,dogfood,synthetic`
       → PASS.
 - [ ] `shrk install smoke --tarball` → PASS.
-- [ ] `shrk demo package --scenario all --validate` → PASS.
+- [ ] Dogfood scenarios green — run the integration scripts under
+      `examples/dogfood-target/` (the `shrk demo` namespace was retired).
 
 ## Docs
 

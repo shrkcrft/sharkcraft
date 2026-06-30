@@ -205,18 +205,26 @@ export function buildPackSignatureStatusReport(
 
 /**
  * Pack signature explanation. Surfaces the distinct lifecycle
- * states (`unsigned`, `stale`, `invalid`, `valid`, `secret-missing`,
- * `not-required`) per pack with a one-line "why this matters".
+ * states (`unsigned`, `stale`, `invalid`, `valid`, `present-unverified`,
+ * `dev-signature`, `secret-missing`, `not-required`) per pack with a one-line
+ * "why this matters".
  *
  * Read-only. Reads `inspection.packs.discoveredPacks[i].signatureStatus`
  * which already reflects the verifier's outcome when the inspector was
  * constructed with `verifyPackSignatures: true`.
+ *
+ * `valid` is reserved STRICTLY for a real HMAC pass (verifier === 'verified').
+ * A pack whose signature timestamp is merely fresher than its contribution
+ * files — but whose HMAC was not checked this run — is `present-unverified`,
+ * never `valid`: freshness is not verification.
  */
 export type PackSignatureExplainState =
   | 'valid'
   | 'unsigned'
   | 'stale'
   | 'invalid'
+  | 'present-unverified'
+  | 'dev-signature'
   | 'secret-missing'
   | 'not-required'
   | 'unknown';
@@ -269,6 +277,11 @@ export function explainPackSignatureStatus(
       state = 'invalid';
       explanation = 'Manifest signature failed HMAC verification — pack contents may have been tampered with.';
       nextCommand = 'shrk packs verify --required';
+    } else if (verifier === 'dev-signature') {
+      state = 'dev-signature';
+      explanation =
+        'Manifest carries a dev signature — verified only against the well-known public dev secret, NOT release-trusted. Re-sign with the release secret before publishing.';
+      nextCommand = secretAvailable ? signCmd : 'shrk packs verify --required --allow-dev-signature';
     } else if (verifier === 'missing-signature' || (!verifier && fresh?.status === 'missing')) {
       state = 'unsigned';
       explanation = 'Manifest has no signature block.';
@@ -282,8 +295,13 @@ export function explainPackSignatureStatus(
       explanation = `${fresh.reason ?? 'Signature is older than at least one contribution file.'}`;
       nextCommand = signCmd;
     } else if (fresh?.status === 'present') {
-      state = 'valid';
-      explanation = 'Signature timestamp is newer than every contribution file.';
+      // Freshness only — the HMAC was NOT checked this run. Reserve `valid`
+      // strictly for a real verifier pass so a bogus-HMAC-but-fresh-timestamp
+      // pack is never mislabelled as verified.
+      state = 'present-unverified';
+      explanation =
+        'Signature present and newer than every contribution file, but the HMAC was NOT checked this run.';
+      nextCommand = 'shrk packs verify --required';
     } else {
       state = mode === 'required' ? 'unknown' : 'not-required';
       explanation = mode === 'required'

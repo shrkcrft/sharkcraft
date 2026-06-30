@@ -74,7 +74,7 @@ The CLI reads:
 - "How many knowledge entries have I authored this week?" →
   `shrk provenance list --kind knowledge --limit 50`.
 - "Is this pack signed but the knowledge added last week never got an
-  apply trail?" → `shrk pack-author pending` includes pending provenance
+  apply trail?" → `shrk pack author pending` includes pending provenance
   entries; cross-check with `shrk provenance show <id>`.
 
 ## What the provenance ledger is NOT

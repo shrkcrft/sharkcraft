@@ -180,12 +180,12 @@ If the change touches release behavior or pack contributions, mention
 ## When to start a session
 
 ```bash
-shrk session start "<task description>"
+shrk dev start "<task description>"
 ```
 
 Starts a session under `.sharkcraft/sessions/<timestamp>-<slug>/`. Use it
-for any multi-turn or multi-PR change so the next turn can `shrk session
-diff` and recover.
+for any multi-turn or multi-PR change so the next turn can
+`shrk dev diff` and recover.
 
 ## Tests
 

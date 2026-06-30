@@ -11,8 +11,10 @@ import {
   type IChangedScopeOptions,
 } from '@shrkcrft/inspector';
 import {
+  ALL_KNOWLEDGE_TYPES,
   formatEntryCompact,
   formatEntryFull,
+  isKnowledgeType,
   projectKnowledgeEntryForJson,
   searchKnowledge,
 } from '@shrkcrft/knowledge';
@@ -108,6 +110,22 @@ ${p.ci.exitNonZero ? `<p style="color:#a40000;font-weight:bold">FAIL: ${esc(p.ci
 `;
 }
 
+/**
+ * Validate `--type` filter values against the KnowledgeType vocabulary and
+ * reject (exit 2) on any unknown value. Without this a typo'd `--type` would
+ * silently filter every entry out and return an empty result with exit 0.
+ * Returns the exit code to propagate when a value is unknown, or null when all
+ * values are valid (or none were supplied).
+ */
+function rejectUnknownKnowledgeTypes(types: readonly string[]): number | null {
+  const unknown = types.filter((t) => !isKnowledgeType(t));
+  if (unknown.length === 0) return null;
+  process.stderr.write(
+    `Unknown --type ${unknown.join(', ')}. Valid: ${ALL_KNOWLEDGE_TYPES.join(', ')}\n`,
+  );
+  return 2;
+}
+
 export const knowledgeListCommand: ICommandHandler = {
   name: 'list',
   description: 'List knowledge entries.',
@@ -115,6 +133,8 @@ export const knowledgeListCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const types = flagList(args, 'type');
+    const typeReject = rejectUnknownKnowledgeTypes(types);
+    if (typeReject !== null) return typeReject;
     const scope = flagList(args, 'scope');
 
     let entries = inspection.knowledgeEntries;
@@ -189,6 +209,8 @@ export const knowledgeSearchCommand: ICommandHandler = {
     const query = args.positional.join(' ').trim();
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const types = flagList(args, 'type');
+    const typeReject = rejectUnknownKnowledgeTypes(types);
+    if (typeReject !== null) return typeReject;
     const scope = flagList(args, 'scope');
     const tags = flagList(args, 'tag');
     const appliesWhen = flagList(args, 'appliesWhen');

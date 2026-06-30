@@ -12,7 +12,7 @@ function jsonTokens(value: unknown): number {
  * cost means the net-loss guard keeps `table` form on more (smaller) payloads.
  */
 export const COLUMNAR_LEGEND =
-  '_table: rows[i] are values in cols order; absent=[row,col] keys to skip when rebuilding objects. If _table.dict[col] exists, that column’s cells are integer indices into dict[col].';
+  '_table: rows[i] are values in cols order; absent=[row,col] keys to skip when rebuilding objects. If _table.dict[col] exists, that column’s cells are integer indices into dict[col]. derived[]: columns omitted from cols because each is a function of a kept column — rebuild per op: const->arg; prefix->arg+row[from]; basename->basename(row[from]).';
 
 /** Shared `format` input fragment for list tools that support columnar output. */
 export const FORMAT_INPUT_PROPERTY = {

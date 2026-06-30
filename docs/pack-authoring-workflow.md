@@ -1,18 +1,17 @@
 # Pack authoring workflow (R44)
 
-`shrk pack-author <verb>` (alias: `shrk pack author <verb>`) gives
-pack contributors a single, preview-first surface for evolving pack
-asset contributions and seeing what's pending across the authoring
-loop.
+`shrk pack author <verb>` gives pack contributors a single, preview-first
+surface for evolving pack asset contributions and seeing what's pending
+across the authoring loop.
 
 ## Verbs
 
 ```bash
-shrk pack-author status              # inventory of pack contributions + drafts + signature state
-shrk pack-author preview --kind <k> --id <id>
-shrk pack-author pending             # cross-section pending view
-shrk pack-author validate            # recommended post-authoring command list
-shrk packs pending                   # alias for `pack-author pending`
+shrk pack author status              # inventory of pack contributions + drafts + signature state
+shrk pack author preview --kind <k> --id <id>
+shrk pack author pending             # cross-section pending view
+shrk pack author validate            # recommended post-authoring command list
+shrk packs pending                   # alias for `pack author pending`
 ```
 
 ## R44 scope
@@ -39,7 +38,7 @@ The status report makes each kind's support level visible
 (`authoring: preview` vs `authoring: deferred`) so an agent knows
 before invoking which kinds round-trip cleanly.
 
-## `pack-author status`
+## `pack author status`
 
 Reports, per kind:
 
@@ -52,16 +51,16 @@ Reports, per kind:
 
 Schema: `sharkcraft.pack-author-status/v1`.
 
-## `pack-author preview`
+## `pack author preview`
 
 ```bash
-shrk pack-author preview --kind knowledge --id team.style --reason "..."
+shrk pack author preview --kind knowledge --id team.style --reason "..."
 ```
 
 For `knowledge`, the verb returns `implemented: true` and prints the
 list of follow-up commands the caller should run. The actual draft
-generation lives under `shrk knowledge add` (which `pack-author
-preview` calls into).
+generation lives under `shrk knowledge add` (which `pack author preview`
+calls into).
 
 For deferred kinds, the verb returns `implemented: false` with a
 `deferralNote` plus a next-command list pointing at
@@ -70,12 +69,12 @@ the right file to hand-edit.
 
 Schema: `sharkcraft.pack-author-preview/v1`.
 
-## `pack-author pending`
+## `pack author pending`
 
 The combined pending view — see `docs/pack-signatures.md` for the full
 breakdown. Schema: `sharkcraft.pack-pending/v1`.
 
-## `pack-author validate`
+## `pack author validate`
 
 Prints (does NOT execute) the recommended post-authoring command list:
 
@@ -96,16 +95,16 @@ Schema: `sharkcraft.pack-author-validate/v1`.
   by any of these verbs.
 - Drafts only land under `.sharkcraft/authoring/`. Lint fixes only land
   under `.sharkcraft/fixes/`.
-- `pack-author pending` never signs anything. When the secret is
+- `pack author pending` never signs anything. When the secret is
   missing it surfaces the exact command for a human / signing CI.
 
 ## When to use which command
 
 | Question | Command |
 | --- | --- |
-| What kinds does this pack contribute to? | `shrk pack-author status` |
-| What's left to finalise in this pack right now? | `shrk pack-author pending` |
-| Want a knowledge entry added/updated/removed? | `shrk knowledge add/update/remove` (or `shrk pack-author preview --kind knowledge --id <id>` for the dispatcher) |
+| What kinds does this pack contribute to? | `shrk pack author status` |
+| What's left to finalise in this pack right now? | `shrk pack author pending` |
+| Want a knowledge entry added/updated/removed? | `shrk knowledge add/update/remove` (or `shrk pack author preview --kind knowledge --id <id>` for the dispatcher) |
 | Want lint pass over the knowledge corpus? | `shrk knowledge lint --fix-preview --write-preview` |
 | Where do I see who/why authored a given asset? | `shrk provenance show <assetId>` |
-| Want the recommended validation list? | `shrk pack-author validate` |
+| Want the recommended validation list? | `shrk pack author validate` |

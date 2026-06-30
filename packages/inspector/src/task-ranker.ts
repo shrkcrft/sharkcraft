@@ -2,6 +2,7 @@ import type { IKnowledgeEntry } from '@shrkcrft/knowledge';
 import type { ITemplateDefinition } from '@shrkcrft/templates';
 import type { IPipelineDefinition } from '@shrkcrft/pipelines';
 import type { IPreset, IResolvedPreset } from '@shrkcrft/presets';
+import { tuningBoostFor, type ISearchTuningEntry } from './search-tuning-registry.ts';
 
 /**
  * Deterministic relevance ranker.
@@ -389,6 +390,34 @@ export interface IRankAllResult {
   presets: IRankedItem<IPreset>[];
 }
 
+/**
+ * Apply pack search-tuning boostIds/boostTags/taskHints to an already-ranked
+ * list, mirroring exactly what `searchIndex` does (search-index.ts) so the
+ * task ranker and the search ranker honor the same pack tuning. Re-sorts so a
+ * boosted item can cross the top-N slice.
+ */
+function applyTuningToRanked<T extends { id: string }>(
+  ranked: readonly IRankedItem<T>[],
+  kind: string,
+  idPrefix: string,
+  tuningTokens: readonly string[],
+  tuning: readonly ISearchTuningEntry[],
+): IRankedItem<T>[] {
+  if (tuning.length === 0) return ranked.slice();
+  const out = ranked.map((r) => {
+    const tags = (r.item as { tags?: readonly string[] }).tags;
+    const boost = tuningBoostFor(
+      { id: `${idPrefix}${r.item.id}`, kind, ...(tags ? { tags } : {}), source: 'local' },
+      tuningTokens,
+      tuning,
+    );
+    if (boost.delta === 0) return r;
+    return { item: r.item, score: r.score + boost.delta, reasons: [...r.reasons, ...boost.reasons] };
+  });
+  out.sort((a, b) => b.score - a.score);
+  return out;
+}
+
 export function rankAll(
   inspection: {
     knowledgeEntries: readonly IKnowledgeEntry[];
@@ -401,6 +430,7 @@ export function rankAll(
   },
   task: string,
   limit: number = 10,
+  tuning: readonly ISearchTuningEntry[] = [],
 ): IRankAllResult {
   const initialRules = rankKnowledgeEntries(inspection.ruleService.list(), task);
   const initialPaths = rankPathConventions(inspection.pathService.list(), task);
@@ -455,11 +485,17 @@ export function rankAll(
   });
   templates.sort((a, b) => b.score - a.score);
 
+  const tuningTokens = task.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 1);
+  const tunedRules = applyTuningToRanked(rules, 'rule', 'rule:', tuningTokens, tuning);
+  const tunedPaths = applyTuningToRanked(initialPaths, 'path', 'path:', tuningTokens, tuning);
+  const tunedTemplates = applyTuningToRanked(templates, 'template', 'template:', tuningTokens, tuning);
+  const tunedPipelines = applyTuningToRanked(initialPipelines, 'pipeline', 'pipeline:', tuningTokens, tuning);
+
   return {
-    rules: rules.slice(0, limit),
-    paths: initialPaths.slice(0, limit),
-    templates: templates.slice(0, limit),
-    pipelines: initialPipelines.slice(0, limit),
+    rules: tunedRules.slice(0, limit),
+    paths: tunedPaths.slice(0, limit),
+    templates: tunedTemplates.slice(0, limit),
+    pipelines: tunedPipelines.slice(0, limit),
     presets: rankPresets(
       inspection.presetRegistry.list(),
       task,

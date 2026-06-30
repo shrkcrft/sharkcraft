@@ -16,12 +16,14 @@ import {
 } from '../command-registry.ts';
 import { asJson } from '../output/format-output.ts';
 
+const VALID_ORCHESTRATION_MODES: readonly string[] = ['conservative', 'balanced', 'aggressive'];
+
 export const orchestrateCommand: ICommandHandler = {
   name: 'orchestrate',
   description:
     'Produce a read-only agent orchestration plan (discovery / plan / review / apply / validate). No execution; no writes.',
   usage:
-    'shrk orchestrate "<task>" [--mode conservative|balanced|aggressive] [--bundle] [--session] [--json] [--output <file.md>]',
+    'shrk orchestrate "<task>" [--mode conservative|balanced|aggressive] [--json] [--output <file.md>]',
   async run(args: ParsedArgs): Promise<number> {
     const task = args.positional.join(' ').trim();
     if (!task) {
@@ -31,6 +33,12 @@ export const orchestrateCommand: ICommandHandler = {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
     const modeRaw = (flagString(args, 'mode') ?? '').toLowerCase();
+    // Warn on a typo'd --mode rather than silently treating it as balanced.
+    if (modeRaw && !VALID_ORCHESTRATION_MODES.includes(modeRaw)) {
+      process.stderr.write(
+        `Unknown --mode ${modeRaw}. Valid: ${VALID_ORCHESTRATION_MODES.join(', ')} (defaulting to balanced).\n`,
+      );
+    }
     const mode =
       modeRaw === 'conservative'
         ? OrchestrationMode.Conservative

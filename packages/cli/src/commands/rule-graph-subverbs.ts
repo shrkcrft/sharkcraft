@@ -5,7 +5,8 @@
  * because the verbs operate on a separate `.sharkcraft/bridge/` store
  * and don't conceptually belong under `shrk graph`.
  */
-import { buildBridge, RuleGraphQueryApi } from '@shrkcrft/rule-graph';
+import { buildBridge, BridgeStore, RuleGraphQueryApi } from '@shrkcrft/rule-graph';
+import { detectGraphFreshness } from '@shrkcrft/graph';
 import { flagBool, resolveCwd, type ICommandHandler, type ParsedArgs } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
@@ -58,13 +59,41 @@ async function runStatus(args: ParsedArgs): Promise<number> {
     return 1;
   }
   const api = RuleGraphQueryApi.fromStores(cwd);
-  // No public counters from the API itself — just confirm it loads.
+  // The bridge maps code-graph files → asset registries, so it is stale once
+  // the underlying code graph has drifted. Reuse the already-available graph
+  // freshness signal (the same one `graph status` reports) rather than a
+  // hardcoded 'fresh'. `lastBuiltAt` comes from the bridge manifest.
+  let lastBuiltAt: string | null = null;
+  try {
+    lastBuiltAt = new BridgeStore(cwd).loadSnapshot().manifest.lastBuiltAt;
+  } catch {
+    lastBuiltAt = null;
+  }
+  const fresh = detectGraphFreshness(cwd);
+  const behind = fresh.modified.length + fresh.added.length + fresh.deleted.length;
+  const state: 'fresh' | 'stale' = behind > 0 ? 'stale' : 'fresh';
   if (wantJson) {
-    process.stdout.write(asJson({ ok: true, state: 'fresh' }) + '\n');
+    process.stdout.write(
+      asJson({
+        ok: true,
+        state,
+        lastBuiltAt,
+        modifiedSinceIndex: fresh.modified.length,
+        newSinceIndex: fresh.added.length,
+        deletedSinceIndex: fresh.deleted.length,
+        ...(state === 'stale' ? { nextCommand: 'shrk rule-graph index' } : {}),
+      }) + '\n',
+    );
     return 0;
   }
   process.stdout.write(header('Rule-graph status'));
-  process.stdout.write(kv('state', 'fresh') + '\n');
+  if (lastBuiltAt) process.stdout.write(kv('last built', lastBuiltAt) + '\n');
+  process.stdout.write(kv('state', state) + '\n');
+  if (state === 'stale') {
+    process.stdout.write(
+      `! stale — ${fresh.modified.length} modified, ${fresh.added.length} new, ${fresh.deleted.length} deleted in the code graph since the bridge was built; re-run \`shrk rule-graph index\`\n`,
+    );
+  }
   void api;
   return 0;
 }

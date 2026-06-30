@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export interface ISafeImportSuccess<T = Record<string, unknown>> {
@@ -82,12 +83,35 @@ export async function importModuleViaLoader<T = Record<string, unknown>>(
   return (await import(pathToFileURL(filePath).href)) as T;
 }
 
+/**
+ * Process-scoped memory of modules that threw during evaluation. The ESM
+ * module registry is frozen for the lifetime of a process: a module URL that
+ * errored on its first evaluation will never re-evaluate, and a second
+ * `import()` of it can hand back a *partially-initialized* namespace whose
+ * bindings (e.g. `default`) sit in the temporal dead zone — reading them
+ * throws `Cannot access 'default' before initialization` synchronously,
+ * far away from any try/catch. By remembering the original evaluation error
+ * we return it deterministically instead of re-importing into that trap.
+ */
+const moduleEvaluationErrors = new Map<string, Error>();
+
 export async function safeImport<T = Record<string, unknown>>(
   filePath: string,
   options: ISafeImportOptions = {},
 ): Promise<SafeImportResult<T>> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_SAFE_IMPORT_TIMEOUT_MS;
   const start = Date.now();
+  const cacheKey = resolve(filePath);
+
+  const priorError = moduleEvaluationErrors.get(cacheKey);
+  if (priorError) {
+    return {
+      ok: false,
+      error: priorError,
+      elapsedMs: Date.now() - start,
+      timedOut: false,
+    };
+  }
 
   if (!options.skipExistsCheck && !existsSync(filePath)) {
     return {
@@ -120,9 +144,13 @@ export async function safeImport<T = Record<string, unknown>>(
       const mod = await importModuleViaLoader<T>(filePath);
       return { ok: true, module: mod, elapsedMs: Date.now() - start };
     } catch (e) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      // Remember the evaluation failure so a second import() of the same
+      // (now-frozen) module URL returns this error instead of a TDZ namespace.
+      moduleEvaluationErrors.set(cacheKey, error);
       return {
         ok: false,
-        error: e instanceof Error ? e : new Error(String(e)),
+        error,
         elapsedMs: Date.now() - start,
         timedOut: false,
       };

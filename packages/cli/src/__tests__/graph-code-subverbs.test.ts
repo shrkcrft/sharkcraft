@@ -655,6 +655,130 @@ describe('graph code-intelligence CLI subverbs', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // ── 1.1: graph context reports true totals + a truncated flag ──────────
+
+  test('runGraphContext emits totals with truncated=false below the cap', async () => {
+    const root = symbolFixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const cap = capture();
+      const code = await runGraphContext(
+        withCwd(makeArgs(['context', 'packages/p/src/index.ts']), root),
+      );
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      // index.ts is imported by exactly consumer.ts — total is honest, no truncation.
+      expect(json.totalImportedBy).toBe(1);
+      expect(json.importedByTruncated).toBe(false);
+      expect(json.totalImportsFrom).toBe(0);
+      expect(json.importsFromTruncated).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphContext reports the TRUE total + truncated=true for a high-fan-in file', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-graph-cli-fanin-'));
+    try {
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'demo', workspaces: ['packages/*'] }, null, 2),
+      );
+      mkdirSync(join(root, 'packages', 'p', 'src'), { recursive: true });
+      writeFileSync(
+        join(root, 'packages', 'p', 'package.json'),
+        JSON.stringify({ name: '@demo/p', main: 'src/core.ts' }, null, 2),
+      );
+      writeFileSync(join(root, 'packages', 'p', 'src', 'core.ts'), 'export const core = 1;\n');
+      // 60 importers of core.ts — well past the 50 per-list display cap.
+      const importerCount = 60;
+      for (let i = 0; i < importerCount; i += 1) {
+        writeFileSync(
+          join(root, 'packages', 'p', 'src', `u${i}.ts`),
+          `import { core } from './core.ts';\nexport const u${i} = core;\n`,
+        );
+      }
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const cap = capture();
+      const code = await runGraphContext(
+        withCwd(makeArgs(['context', 'packages/p/src/core.ts']), root),
+      );
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      // The list is display-capped at 50, but the metadata stays honest.
+      expect(json.importedBy.length).toBe(50);
+      expect(json.totalImportedBy).toBe(importerCount);
+      expect(json.importedByTruncated).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ── 6.2: no-arg subverbs reject a stray positional ─────────────────────
+
+  test('graph status/cycles/unresolved/index reject a stray positional', async () => {
+    const root = fixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      for (const [verb, run] of [
+        ['status', runGraphStatus],
+        ['cycles', runGraphCycles],
+        ['unresolved', runGraphUnresolved],
+        ['index', runGraphIndex],
+      ] as const) {
+        const cap = capture();
+        const code = await run(withCwd(makeArgs([verb, 'bogus']), root));
+        const json = JSON.parse(cap.restore());
+        expect(code).toBe(2);
+        expect(json.ok).toBe(false);
+        expect(json.error).toBe('unexpected-argument');
+        expect(json.argument).toBe('bogus');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ── 6.2: hubs honours a positional scope, rejects an ambiguous one ─────
+
+  test('runGraphHubs accepts a positional path scope', async () => {
+    const root = symbolFixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const cap = capture();
+      const code = await runGraphHubs(withCwd(makeArgs(['hubs', 'packages/p']), root));
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      // The positional is used as the scope (echoed back in the payload).
+      expect(json.path).toBe('packages/p');
+      expect(Array.isArray(json.symbols)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphHubs rejects passing both --path and a positional scope', async () => {
+    const root = symbolFixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const args = withCwd(makeArgs(['hubs', 'packages/p']), root);
+      args.flags.set('path', 'packages/q');
+      const cap = capture();
+      const code = await runGraphHubs(args);
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(2);
+      expect(json.ok).toBe(false);
+      expect(json.error).toBe('ambiguous-path');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 function withCwd<T extends { flags: Map<string, string | boolean> }>(args: T, cwd: string): T {

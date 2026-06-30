@@ -140,14 +140,24 @@ export const recommendCommand: ICommandHandler = {
       const promotedSet = new Set(promoted.map((p) => p.command));
       const isGenericDefault = (c: string): boolean =>
         /^(bun run )?shrk (review|report|impact)\b/i.test(c);
+      // The recommender (inspector) already arbitrates the keyword recipe
+      // against the shared ranker and may have promoted a `shrk gen <template>`
+      // / `shrk task` headline (its `why` starts with "Ranker matched"). That
+      // ranker-confirmed scaffold is the engine's corrected route — keep it
+      // ahead of even the routing-hint promotion so the headline survives.
+      const isRankerPromoted = (r: { why: string }): boolean => /^Ranker matched /.test(r.why);
       const existing = report.recommendations;
+      const keptRankerPromoted = existing.filter(
+        (r) => !promotedSet.has(r.command) && isRankerPromoted(r),
+      );
       const keptNonGeneric = existing.filter(
-        (r) => !promotedSet.has(r.command) && !isGenericDefault(r.command),
+        (r) => !promotedSet.has(r.command) && !isRankerPromoted(r) && !isGenericDefault(r.command),
       );
       const keptGeneric = existing.filter(
-        (r) => !promotedSet.has(r.command) && isGenericDefault(r.command),
+        (r) => !promotedSet.has(r.command) && !isRankerPromoted(r) && isGenericDefault(r.command),
       );
       (report as { recommendations: typeof report.recommendations }).recommendations = [
+        ...keptRankerPromoted,
         ...promoted,
         ...keptNonGeneric,
         ...keptGeneric,

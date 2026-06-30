@@ -19,6 +19,43 @@ import { ccrDir, openCcrStore } from '../output/ccr-store-config.ts';
 
 const CONTENT_TYPES = new Set<string>(Object.values(EContentType));
 
+// `--type` accepts the EContentType wire strings plus ergonomic aliases. `code`
+// is an alias for `source-code`: it routes to the structure-preserving code
+// outline (ECompressionStrategy.Code), NOT the markdown line-omission a bare
+// `code` used to silently fall through to under auto-detect.
+const TYPE_ALIASES: Readonly<Record<string, EContentType>> = {
+  code: EContentType.SourceCode,
+};
+
+// The full set of accepted `--type` tokens (content-type wire strings +
+// aliases), sorted and rendered once so the rejection message and the
+// passthrough hint advertise exactly what `resolveContentType` accepts.
+const VALID_TYPE_TOKENS: string = [...CONTENT_TYPES, ...Object.keys(TYPE_ALIASES)].sort().join(', ');
+
+/** Outcome of resolving a raw `--type` flag value. */
+interface IResolvedContentType {
+  /** The forced content type — set only when the raw value named a valid one. */
+  type?: EContentType;
+  /** Set when the raw value was non-empty but unrecognized; the caller rejects. */
+  error?: string;
+}
+
+/**
+ * Resolve a raw `--type` value into a forced {@link EContentType}. Unlike the
+ * old `CONTENT_TYPES.has` check — which silently dropped unknown values and let
+ * the phantom `code` fall through to auto-detect (markdown line-omission) — an
+ * unrecognized non-empty value yields an `error` so the caller can reject with a
+ * non-zero exit, and `code` is mapped to the real source-code strategy. A
+ * missing/empty value is a no-op (auto-detect).
+ */
+function resolveContentType(raw: string | undefined): IResolvedContentType {
+  if (raw === undefined || raw === '') return {};
+  const aliased = TYPE_ALIASES[raw];
+  if (aliased) return { type: aliased };
+  if (CONTENT_TYPES.has(raw)) return { type: raw as EContentType };
+  return { error: `compress: unknown --type "${raw}". Valid types: ${VALID_TYPE_TOKENS}.` };
+}
+
 // Below this size a passthrough no-op isn't worth a warning (tiny snippets
 // legitimately have nothing to compress). Above it, a silent `−0%` re-emit is
 // the opposite of the tool's purpose — nudge the user toward `--type`.
@@ -54,6 +91,13 @@ export const compressCommand: ICommandHandler = {
   booleanFlags: COMPRESS_BOOLEAN_FLAGS,
   run(args: ParsedArgs): number {
     const cwd = resolveCwd(args);
+    // Validate `--type` up front: an unknown value is a user error, not a
+    // silent fall-through to auto-detect — fail fast before reading input.
+    const resolvedType = resolveContentType(flagString(args, 'type'));
+    if (resolvedType.error) {
+      process.stderr.write(resolvedType.error + '\n');
+      return 1;
+    }
     let content: string;
     try {
       content = readInput(args);
@@ -73,8 +117,7 @@ export const compressCommand: ICommandHandler = {
     const max = flagNumber(args, 'max');
     if (max !== undefined && max > 0) opts.maxItems = Math.floor(max);
     if (flagBool(args, 'lossless')) opts.lossless = true;
-    const type = flagString(args, 'type');
-    if (type && CONTENT_TYPES.has(type)) opts.contentType = type as EContentType;
+    if (resolvedType.type) opts.contentType = resolvedType.type;
 
     const result = compressContent(content, opts);
     const pct = Math.round(result.savings.ratio * 100);
@@ -134,7 +177,7 @@ export const compressCommand: ICommandHandler = {
     ) {
       process.stderr.write(
         `hint: nothing was compressed — auto-detect classified this as ${result.contentType} and found no win. ` +
-          'Try `--type <content-type>` to force a strategy (json, git-diff, search-results, build-log, source-code, markdown).\n',
+          `Try \`--type <content-type>\` to force a strategy (${VALID_TYPE_TOKENS}).\n`,
       );
     }
     return 0;

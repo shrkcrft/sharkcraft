@@ -4,6 +4,7 @@ import { buildContext } from '@shrkcrft/context';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { buildTaskPacket } from './task-packet.ts';
 import { rankKnowledgeEntries } from './task-ranker.ts';
+import { contextTuningBoostFor } from './context-tuning.ts';
 import {
   type IAgentContractTest,
   type IContextTest,
@@ -155,10 +156,12 @@ export function runContextTest(
   test: IContextTest,
 ): IContextTestResult {
   const overview = buildProjectOverview(inspection.workspace, inspection.config?.projectName);
+  const boostFor = contextTuningBoostFor(inspection, test.task);
   const ctx = buildContext(inspection.knowledgeEntries, {
     task: test.task,
     maxTokens: test.maxTokens ?? 3500,
     projectOverview: renderOverviewText(overview),
+    ...(boostFor ? { boostFor } : {}),
   });
   const bodyIds = new Set<string>();
   for (const section of ctx.sections) {

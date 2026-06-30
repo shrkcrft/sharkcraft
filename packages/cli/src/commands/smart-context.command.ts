@@ -19,6 +19,7 @@ import { EdgeKind, GraphQueryApi, GraphStore, NodeKind, type INode } from '@shrk
 import {
   buildProjectOverview,
   buildTaskPacket,
+  contextTuningBoostFor,
   inspectSharkcraft,
   renderOverviewText,
   type ISharkcraftInspection,
@@ -223,6 +224,47 @@ export const smartContextCommand: ICommandHandler = {
         }
       }
       const enh = enhanced.value.enhancement;
+
+      // Deterministic-always contract (CLAUDE.md): when the enhancement
+      // pipeline fully degrades — every stage failed (or none ran), so the
+      // pipeline's finalOutput is just the echoed system message (preamble +
+      // "## Repository context" + the assembled deterministic seed) — fall
+      // back to the clean deterministic seed instead of leaking the raw
+      // internal prompt to stdout. This mirrors the single-shot
+      // provider-failure fallback below: clean renderSeed(seed) content,
+      // finishReason 'deterministic-fallback', no LLM/system-prompt wrapper.
+      const systemMsg = messages.find((m) => m.role === AiMessageRole.System);
+      const originalContext = (systemMsg?.content ?? '').trim();
+      const fullyDegraded =
+        (enh.stages.length > 0 && enh.stages.every((s) => s.degraded)) ||
+        (originalContext.length > 0 && enhanced.value.content.trim() === originalContext);
+      if (fullyDegraded) {
+        if (!opts.json) {
+          process.stderr.write(
+            '[smart-context] enhancement fully degraded — returning deterministic context only.\n',
+          );
+        }
+        const fallbackEnvelope = buildEnvelope({
+          task,
+          seed,
+          ai: {
+            content: renderSeed(seed),
+            model: 'deterministic',
+            finishReason: 'deterministic-fallback',
+            usage: null,
+            providerId: 'deterministic',
+          },
+          mode: opts.mode,
+        });
+        if (opts.save) {
+          const saved = saveEnvelope(cwd, fallbackEnvelope);
+          writeSavedNotice(saved, opts.json, fallbackEnvelope);
+          return 0;
+        }
+        writeEnvelope(fallbackEnvelope, opts.json, opts.debug);
+        return 0;
+      }
+
       if (!opts.json && !enh.deterministicFallback) {
         if (enh.budgetExhausted) {
           process.stderr.write(
@@ -257,6 +299,9 @@ export const smartContextCommand: ICommandHandler = {
       messages,
       maxTokens: opts.maxTokens,
       model: opts.model,
+      // Bound the single shot so a hung local model degrades to the
+      // deterministic seed below instead of hanging the command.
+      timeoutMs: perCallTimeoutMs(opts.budgetMs),
     });
     if (!aiResult.ok) {
       // Deterministic-always contract (CLAUDE.md): a provider failure must
@@ -384,6 +429,9 @@ export const smartContextPlanAheadCommand: ICommandHandler = {
         messages,
         maxTokens: opts.maxTokens,
         model: opts.model,
+        // Bound each task's call so one hung model can't stall the queue;
+        // a timeout is reported as that task's error and the loop continues.
+        timeoutMs: perCallTimeoutMs(opts.budgetMs),
       });
       if (!aiResult.ok) {
         results.push({ task, status: 'error', error: aiResult.error.message, slug: slug(task) });
@@ -1777,6 +1825,7 @@ async function buildSmartContextSeed(input: {
     task,
     maxTokens: options.seedTokens,
     projectOverview: overviewText,
+    boostFor: contextTuningBoostFor(inspection, task),
   });
   const graphGrounding = buildInitialGraphGrounding(cwd, task);
   const semantic = await tryLoadSemanticHits(cwd, task, 10, options);
@@ -3232,6 +3281,25 @@ const PER_STAGE_TIMEOUT_MS = 90_000;
 const FAST_ENHANCE_BUDGET_MS = 150_000;
 const PLUS_ENHANCE_BUDGET_MS = 360_000;
 
+/**
+ * Per-call wall-clock bounds for the paths that DON'T run through
+ * `runEnhancementPipeline` (single-shot brief, plan-ahead, and the two
+ * `--ai-plan` stages). Without these, `--budget` only constrained the
+ * enhancement pipeline, so a hung local model could still hang those modes.
+ *
+ *  - `SINGLE_CALL_DEFAULT_BUDGET_MS` — the cap applied when no `--budget` is
+ *    given (mirrors the fast-enhance ceiling).
+ *  - `PER_CALL_TIMEOUT_CAP_MS` — an absolute ceiling, so even a generous
+ *    `--budget` can't let a single call run unbounded.
+ */
+const SINGLE_CALL_DEFAULT_BUDGET_MS = 150_000;
+const PER_CALL_TIMEOUT_CAP_MS = 360_000;
+
+/** Derive a per-call timeout (ms) from the optional `--budget` (budgetMs). */
+function perCallTimeoutMs(budgetMs: number | undefined): number {
+  return Math.min(budgetMs ?? SINGLE_CALL_DEFAULT_BUDGET_MS, PER_CALL_TIMEOUT_CAP_MS);
+}
+
 async function runEnhancementPipeline(input: {
   provider: ReturnType<typeof selectAiProvider>['provider'];
   messages: IAiMessage[];
@@ -3384,12 +3452,20 @@ async function callProvider(input: {
     model?: string;
     responseFormat?: { type: 'json_object' | 'json_schema'; schema?: Record<string, unknown>; schemaName?: string };
     onTokenStream?: (chunk: string) => void;
+    timeoutMs?: number;
   }) => Promise<{ ok: boolean; value?: { content: string; model: string; finishReason?: string; usage?: { inputTokens?: number; outputTokens?: number } }; error?: Error }> };
   messages: IAiMessage[];
   maxTokens: number;
   model?: string;
   responseFormat?: { type: 'json_object' | 'json_schema'; schema?: Record<string, unknown>; schemaName?: string };
   onTokenStream?: (chunk: string) => void;
+  /**
+   * Per-call wall-clock cap (ms). Forwarded to the provider so a hung local
+   * model can't hang the single-shot brief / plan-ahead / ai-plan-stage paths
+   * (the enhancement pipeline has its own budget). A TIMEOUT degrades exactly
+   * like any other provider failure — the caller falls back to the seed.
+   */
+  timeoutMs?: number;
 }): Promise<{ ok: true; value: IAiCallResult } | { ok: false; error: Error & { message: string } }> {
   if (input.model) input.provider.configure({ model: input.model });
   const res = await input.provider.send({
@@ -3398,6 +3474,7 @@ async function callProvider(input: {
     ...(input.model ? { model: input.model } : {}),
     ...(input.responseFormat ? { responseFormat: input.responseFormat } : {}),
     ...(input.onTokenStream ? { onTokenStream: input.onTokenStream } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   });
   if (!res.ok || !res.value) return { ok: false, error: (res as { error: Error }).error as Error & { message: string } };
   return {
@@ -3603,9 +3680,23 @@ function writeDryRun(
 }
 
 function displayProviderName(explicit: string | undefined): string {
-  if (explicit) return explicit;
+  // Mirror provider-resolver.ts `normaliseKind` so the --dry-run header names
+  // the provider that will ACTUALLY run, not a stale 'auto'. An explicit
+  // `auto` is a local-first request that AI_PROVIDER never overrides; with no
+  // --provider, AI_PROVIDER (including a hosted claude/gemini) decides what
+  // runs, so the header must say so truthfully.
+  if (explicit !== undefined) {
+    const e = explicit.trim().toLowerCase();
+    if (e === 'auto') return 'auto';
+    if (e === 'claude' || e === 'gemini' || e === 'ollama' || e === 'llamacpp') return e;
+  }
   const envProvider = (process.env.AI_PROVIDER ?? '').trim().toLowerCase();
-  if (envProvider === 'ollama' || envProvider === 'llamacpp') {
+  if (
+    envProvider === 'ollama' ||
+    envProvider === 'llamacpp' ||
+    envProvider === 'claude' ||
+    envProvider === 'gemini'
+  ) {
     return envProvider;
   }
   return 'auto';
@@ -4020,6 +4111,15 @@ async function buildAiPlanEnvelope(input: {
     progressMarker(`preflight ok — host=${preflight.value.host} models=${preflight.value.models.length}`, input.options);
   }
 
+  // Split the (optional) --budget across the two stages so a hung local
+  // model can't hang the ai-plan path the way it previously could. Each
+  // call is independently bounded; a TIMEOUT surfaces as a call-failure and
+  // is handled exactly like any other provider failure below.
+  const aiPlanStageTimeoutMs = Math.min(
+    Math.floor((input.options.budgetMs ?? SINGLE_CALL_DEFAULT_BUDGET_MS) / 2),
+    PER_CALL_TIMEOUT_CAP_MS,
+  );
+
   progressMarker(`stage 1 calling ${selection.provider.id}${input.options.model ? `:${input.options.model}` : ''}…`, input.options);
   const stage1Messages = buildStage1Messages(input.seed, grounding, cacheLookup.reference);
   logPromptToStderr('stage1', stage1Messages, input.options);
@@ -4037,6 +4137,7 @@ async function buildAiPlanEnvelope(input: {
     repromptInstruction: STAGE1_REPROMPT,
     stageLabel: 'stage 1',
     options: input.options,
+    timeoutMs: aiPlanStageTimeoutMs,
   });
 
   let stage1Request: IContextExpansionRequest;
@@ -4086,6 +4187,7 @@ async function buildAiPlanEnvelope(input: {
     repromptInstruction: STAGE2_REPROMPT,
     stageLabel: 'stage 2',
     options: input.options,
+    timeoutMs: aiPlanStageTimeoutMs,
   });
 
   const conversationTurns: ISmartContextConversationTurn[] = [];
@@ -4271,6 +4373,8 @@ async function callProviderWithRetry<T>(input: {
   repromptInstruction: string;
   stageLabel: string;
   options: ISmartContextOptions;
+  /** Per-call wall-clock cap (ms) forwarded to each provider call. */
+  timeoutMs?: number;
 }): Promise<StageOutcome<T>> {
   const first = await callProvider({
     provider: input.provider,
@@ -4278,6 +4382,7 @@ async function callProviderWithRetry<T>(input: {
     maxTokens: input.maxTokens,
     ...(input.model ? { model: input.model } : {}),
     ...(input.responseFormat ? { responseFormat: input.responseFormat } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   });
   if (!first.ok) return { kind: 'call-failed', error: first.error };
   const firstParsed = input.parse(first.value.content);
@@ -4306,6 +4411,7 @@ async function callProviderWithRetry<T>(input: {
     maxTokens: input.maxTokens,
     ...(input.model ? { model: input.model } : {}),
     ...(input.responseFormat ? { responseFormat: input.responseFormat } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   });
   if (!second.ok) {
     return {

@@ -12,7 +12,11 @@ function isLikelyEntry(value: unknown): value is IKnowledgeEntry {
   return typeof v.id === 'string' && typeof v.title === 'string' && typeof v.content === 'string';
 }
 
-function collectEntriesFromModule(mod: Record<string, unknown>, entries: IKnowledgeEntry[]): void {
+function collectEntriesFromModule(
+  mod: Record<string, unknown>,
+  entries: IKnowledgeEntry[],
+  warnings: string[],
+): void {
   const seen = new Set<string>();
   const tryPush = (value: unknown): void => {
     if (!isLikelyEntry(value)) return;
@@ -21,7 +25,17 @@ function collectEntriesFromModule(mod: Record<string, unknown>, entries: IKnowle
     entries.push(value);
   };
   for (const key of Object.keys(mod)) {
-    const value = mod[key];
+    let value: unknown;
+    try {
+      value = mod[key];
+    } catch (e) {
+      // A partially-initialized module namespace (e.g. a `default` binding in
+      // the temporal dead zone after a previously-errored import) throws on
+      // property access. Degrade to a warning rather than a sync crash.
+      const message = e instanceof Error ? e.message : String(e);
+      warnings.push(`Skipped uninitialized export "${key}": ${message}`);
+      continue;
+    }
     if (isLikelyEntry(value)) {
       tryPush(value);
     } else if (Array.isArray(value)) {
@@ -67,7 +81,7 @@ export class TypeScriptKnowledgeLoader implements IKnowledgeLoader {
       return { entries, warnings, sourceFiles };
     }
 
-    collectEntriesFromModule(result.module, entries);
+    collectEntriesFromModule(result.module, entries, warnings);
     for (const entry of entries) {
       if (!entry.source?.origin) {
         (entry as { source?: { origin?: string; loader?: string } }).source = {

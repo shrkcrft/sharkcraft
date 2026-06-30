@@ -21,6 +21,11 @@ import {
   type IStructuralPatternsGateOptions,
 } from '../gates/structural-patterns-gate.ts';
 import { wiringGate, type IWiringGateOptions } from '../gates/wiring-gate.ts';
+import { policyLintGate, type IPolicyLintGateOptions } from '../gates/policy-lint-gate.ts';
+import {
+  knowledgeSymbolGate,
+  type IKnowledgeSymbolGateOptions,
+} from '../gates/knowledge-symbol-gate.ts';
 import {
   QUALITY_GATE_SCHEMA,
   type GateStatus,
@@ -51,6 +56,13 @@ export interface IRunGatesOptions {
   intentClassifier?: IIntentClassifierGateOptions;
   /** Optional wiring gate config (the project's wiringRules + change scope). */
   wiring?: IWiringGateOptions;
+  /** Optional policy-lint gate config (the project's policyRules + change scope). */
+  policy?: IPolicyLintGateOptions;
+  /**
+   * Optional knowledge symbol-ref gate config. When omitted, the gate is
+   * skipped — the inspection (async to load) is what opts a project in.
+   */
+  knowledgeSymbol?: IKnowledgeSymbolGateOptions;
   /** Disable specific gates by id. */
   disable?: readonly string[];
 }
@@ -110,6 +122,12 @@ export function runQualityGates(options: IRunGatesOptions): IQualityGateReport {
   }
   if (!disabled.has('wiring')) {
     gates.push(wiringGate(options.projectRoot, options.wiring ?? {}));
+  }
+  if (!disabled.has('policy')) {
+    gates.push(policyLintGate(options.projectRoot, options.policy ?? {}));
+  }
+  if (!disabled.has('knowledge-symbol') && options.knowledgeSymbol) {
+    gates.push(knowledgeSymbolGate(options.projectRoot, options.knowledgeSymbol));
   }
   if (!disabled.has('api-diff') && options.apiDiff) {
     gates.push(apiDiffGate(options.projectRoot, options.apiDiff));

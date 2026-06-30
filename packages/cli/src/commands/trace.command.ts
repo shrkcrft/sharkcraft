@@ -14,6 +14,7 @@ import {
 } from '@shrkcrft/inspector';
 import {
   flagBool,
+  flagList,
   flagNumber,
   flagString,
   resolveCwd,
@@ -75,10 +76,25 @@ export const traceCommand: ICommandHandler = {
       process.stderr.write('Usage: shrk trace <query> | shrk trace --symbol <Name>\n');
       return 2;
     }
+    // `--kind` restricts the result set to specific match kinds — the engine
+    // (resolveQuery) filters by them. Validate up front so an unknown kind
+    // fails fast with the valid list, instead of being silently ignored (which
+    // returned a wrong-kind best match, e.g. a knowledge hit for
+    // `--kind template`).
+    const kinds = flagList(args, 'kind');
+    const validKinds = new Set<string>(Object.values(QueryMatchKind));
+    const unknownKind = kinds.find((k) => !validKinds.has(k));
+    if (unknownKind) {
+      process.stderr.write(
+        `trace: unknown --kind "${unknownKind}". Valid kinds: ${[...validKinds].sort().join(', ')}.\n`,
+      );
+      return 2;
+    }
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
     const limit = flagNumber(args, 'limit');
     const resolution = resolveQuery(inspection, query, {
+      ...(kinds.length > 0 ? { kinds: kinds as QueryMatchKind[] } : {}),
       ...(typeof limit === 'number' ? { limit } : {}),
     });
     if (flagBool(args, 'json')) {

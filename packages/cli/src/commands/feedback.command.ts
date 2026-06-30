@@ -23,6 +23,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header } from '../output/format-output.ts';
+import { feedbackRulesDoctorHints, renderFailureHints } from '../output/failure-hints.ts';
 
 function ingestPositional(args: ParsedArgs): string | undefined {
   return args.positional[0];
@@ -273,6 +274,9 @@ export const feedbackRulesDoctorCommand: ICommandHandler = {
     process.stdout.write(`errors: ${errors.length}\nwarnings: ${warnings.length}\n`);
     for (const e of errors) process.stdout.write(`  ERROR   ${e.id}: ${e.message}\n`);
     for (const w of warnings) process.stdout.write(`  WARN    ${w.id}: ${w.message}\n`);
+    if (errors.length > 0) {
+      process.stdout.write(renderFailureHints(feedbackRulesDoctorHints()));
+    }
     return errors.length > 0 ? 1 : 0;
   },
 };

@@ -81,9 +81,12 @@ function resolveScope(args: ParsedArgs, cwd: string): {
   const staged = flagBool(args, 'staged');
   const since = flagString(args, 'since');
   const filesRaw = flagString(args, 'files');
+  // Files come from `--files a,b` or as bare positional args
+  // (`shrk diff-check a.ts b.ts`). Positionals were previously ignored, which
+  // silently widened the scope back to the full worktree.
   const files = filesRaw
     ? filesRaw.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
-    : [];
+    : args.positional.filter((s) => s.length > 0);
   if (files.length > 0) {
     return { mode: 'files', options: { projectRoot: cwd, files } };
   }
@@ -155,7 +158,8 @@ export const diffCheckCommand: ICommandHandler = {
   description:
     'Self-check the current git diff against this project\'s boundary + import-hygiene rules. Single-call composite of `shrk check boundaries --changed-only` + `shrk check imports --changed-only`, with one verdict and one nextAction line. Designed for AI agents to run after editing — pass --json for the structured envelope.',
   usage:
-    'shrk [--cwd <dir>] diff-check [--staged | --since <ref> | --files a.ts,b.ts] [--json]',
+    'shrk [--cwd <dir>] diff-check [files... | --files a.ts,b.ts | --staged | --since <ref>] [--json]',
+  booleanFlags: new Set(['json', 'staged']),
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const wantJson = flagBool(args, 'json');

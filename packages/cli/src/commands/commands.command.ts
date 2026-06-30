@@ -3,9 +3,15 @@ import {
   flagBool,
   flagString,
   type ICommandHandler,
-  type ParsedArgs
+  type ParsedArgs,
+  resolveCwd
 } from '../command-registry.ts';
 import { asJson, header } from '../output/format-output.ts';
+import {
+  BUILTIN_PROFILES,
+  getProfile,
+  type ISurfaceProfile
+} from '../surface/profiles.ts';
 import {
   buildCommandSafetyMatrix,
   COMMAND_CATALOG,
@@ -32,9 +38,9 @@ export function makeCommandsCommand(registry: CommandRegistry): ICommandHandler 
   return {
     name: 'commands',
     description:
-      'Browse the command catalog. Default view is compact (primary + common); pass --all for the full catalog. Subcommands: primary | advanced | deprecated | hidden | retirement-plan | docs-check | surface | machine | legacy | overlaps | taxonomy | matrix | tree | search | suggest | explain | entrypoints | doctor | ux-check.',
+      'Browse the command catalog. Default view is compact (primary + common); pass --all for the full catalog, or --profile <id> (e.g. agent) for the surface a profile sees. Subcommands: primary | advanced | deprecated | hidden | retirement-plan | docs-check | surface | profile | machine | legacy | overlaps | taxonomy | matrix | tree | search | suggest | explain | entrypoints | doctor | ux-check.',
     usage:
-      'shrk commands [primary|advanced|deprecated|hidden|retirement-plan|docs-check|surface <s>|machine|legacy|overlaps|taxonomy|matrix|tree|search <q>|suggest <p>|explain <cmd>|entrypoints|doctor|ux-check] [--all] [--safety <level>] [--category <name>] [--json]',
+      'shrk commands [primary|advanced|deprecated|hidden|retirement-plan|docs-check|surface <s>|profile [<id>]|machine|legacy|overlaps|taxonomy|matrix|tree|search <q>|suggest <p>|explain <cmd>|entrypoints|doctor|ux-check] [--all] [--profile <id>] [--safety <level>] [--category <name>] [--json]',
     async run(args: ParsedArgs): Promise<number> {
       const sub = args.positional[0];
       if (sub === 'doctor') {
@@ -125,6 +131,12 @@ export function makeCommandsCommand(registry: CommandRegistry): ICommandHandler 
       if (sub === 'surface') {
         return runCommandsSurface(args);
       }
+      // `shrk commands profile [<id>]` — list surface profiles, or render the
+      // catalog as one profile sees it (the curated view, e.g. `agent`).
+      if (sub === 'profile') {
+        const id = args.positional[1];
+        return id ? runCommandsProfile(args, id) : runCommandsProfileList(args);
+      }
       if (sub === 'machine') {
         return runCommandsMachine(args);
       }
@@ -150,8 +162,38 @@ export function makeCommandsCommand(registry: CommandRegistry): ICommandHandler 
       if (sub === 'docs-check') {
         return runCommandsDocsCheck(args);
       }
+      // `--profile <id>` renders the catalog curated for a surface profile
+      // (e.g. `--profile agent` hides CI/release/pack-maintenance machinery an
+      // inline agent doesn't need). Commands stay callable; this is a listing
+      // filter, not a disable.
+      const profileFilter = flagString(args, 'profile');
+      if (profileFilter) {
+        return runCommandsProfile(args, profileFilter);
+      }
       const safetyFilter = flagString(args, 'safety');
       const categoryFilter = flagString(args, 'category');
+      // Validate the filter values against real allowlists — a typo (e.g.
+      // `--safety read` or `--category typo`) previously matched nothing and
+      // returned "commands (0)" with exit 0, which reads like an empty result
+      // rather than a mistake. Reject with the valid set + exit 2 instead.
+      if (safetyFilter !== undefined) {
+        const validSafety = new Set<string>(Object.values(SafetyLevel));
+        if (!validSafety.has(safetyFilter)) {
+          process.stderr.write(
+            `Unknown --safety "${safetyFilter}". Valid: ${[...validSafety].sort().join(', ')}\n`,
+          );
+          return 2;
+        }
+      }
+      if (categoryFilter !== undefined) {
+        const validCategories = new Set(COMMAND_CATALOG.map((e) => e.category));
+        if (!validCategories.has(categoryFilter)) {
+          process.stderr.write(
+            `Unknown --category "${categoryFilter}". Valid: ${[...validCategories].sort().join(', ')}\n`,
+          );
+          return 2;
+        }
+      }
       const wantsAll = flagBool(args, 'all');
       let entries: readonly ICommandCatalogEntry[] = COMMAND_CATALOG;
       if (safetyFilter) {
@@ -218,6 +260,118 @@ function runCommandsSurface(args: ParsedArgs): number {
     const tag = safetyTag(e.safetyLevel);
     process.stdout.write(`  ${tag}  ${e.command.padEnd(34)} ${e.description}\n`);
   }
+  return 0;
+}
+
+export interface ICommandsProfileView {
+  profile: ISurfaceProfile;
+  entries: readonly ICommandCatalogEntry[];
+  hidden: readonly string[];
+  catalogTotal: number;
+}
+
+/**
+ * Pure: render the catalog as a surface profile sees it. Every command the
+ * profile lists in `hidden` is filtered out of `entries` (commands stay
+ * callable — this is a listing filter, not a disable). Returns undefined when
+ * the profile id is unknown. Exported for tests.
+ */
+export function buildCommandsProfileView(
+  profileId: string,
+  packProfiles: readonly ISurfaceProfile[] = [],
+): ICommandsProfileView | undefined {
+  const profile = getProfile(profileId, packProfiles);
+  if (!profile) return undefined;
+  const hidden = new Set(profile.hidden ?? []);
+  const entries = COMMAND_CATALOG.filter((e) => !hidden.has(e.command));
+  return { profile, entries, hidden: [...hidden].sort(), catalogTotal: COMMAND_CATALOG.length };
+}
+
+/**
+ * `shrk commands --profile <id>` / `shrk commands profile <id>` renders the
+ * catalog curated for a surface profile (e.g. `agent` hides
+ * CI/release/pack-maintenance machinery an inline agent doesn't need) without
+ * editing `sharkcraft.config.ts`. Builtin profiles resolve instantly; an
+ * unknown id falls back to discovering pack-contributed profiles via the
+ * surface context (best-effort — needs a workspace).
+ */
+async function runCommandsProfile(args: ParsedArgs, profileId: string): Promise<number> {
+  let view = buildCommandsProfileView(profileId);
+  let validIds: readonly string[] = BUILTIN_PROFILES.map((p) => p.id);
+  if (!view) {
+    try {
+      const { loadSurfaceContext } = await import('../surface/load-surface-context.ts');
+      const ctx = await loadSurfaceContext({ cwd: resolveCwd(args) });
+      validIds = ctx.availableProfiles.map((p) => p.id);
+      view = buildCommandsProfileView(profileId, ctx.availableProfiles);
+    } catch {
+      // Pack discovery failed (e.g. outside a project) — builtin-only.
+    }
+  }
+  if (!view) {
+    process.stderr.write(
+      `Unknown profile "${profileId}". Valid: ${[...validIds].sort().join(', ')}\n`,
+    );
+    return 2;
+  }
+  const { profile, entries, hidden, catalogTotal } = view;
+  if (flagBool(args, 'json')) {
+    process.stdout.write(
+      asJson({
+        profile: profile.id,
+        description: profile.description,
+        source: profile.source,
+        total: entries.length,
+        catalogTotal,
+        hiddenCount: hidden.length,
+        hidden,
+        entries,
+      }) + '\n',
+    );
+    return 0;
+  }
+  process.stdout.write(
+    header(`Commands — profile=${profile.id} (${entries.length} of ${catalogTotal} visible)`),
+  );
+  process.stdout.write(`  ${profile.description}\n`);
+  if (hidden.length > 0) {
+    process.stdout.write(
+      `  (${hidden.length} command(s) hidden by this profile — still callable)\n`,
+    );
+  }
+  const grouped = new Map<string, ICommandCatalogEntry[]>();
+  for (const e of entries) {
+    const arr = grouped.get(e.category) ?? [];
+    arr.push(e);
+    grouped.set(e.category, arr);
+  }
+  for (const [cat, items] of [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    process.stdout.write(`\n## ${cat}\n`);
+    for (const e of items.sort((a, b) => a.command.localeCompare(b.command))) {
+      process.stdout.write(`  ${safetyTag(e.safetyLevel)}  ${e.command.padEnd(34)} ${e.description}\n`);
+    }
+  }
+  return 0;
+}
+
+/** `shrk commands profile` (no id) lists the available surface profiles. */
+function runCommandsProfileList(args: ParsedArgs): number {
+  const rows = BUILTIN_PROFILES.map((p) => ({
+    id: p.id,
+    description: p.description,
+    hides: (p.hidden ?? []).length,
+  }));
+  if (flagBool(args, 'json')) {
+    process.stdout.write(asJson({ total: rows.length, profiles: rows }) + '\n');
+    return 0;
+  }
+  process.stdout.write(header(`Surface profiles (${rows.length})`));
+  for (const r of rows) {
+    process.stdout.write(`  ${r.id.padEnd(12)} hides=${String(r.hides).padEnd(4)} ${r.description}\n`);
+  }
+  process.stdout.write(
+    `\nUsage: shrk commands profile <id>   |   shrk commands --profile <id>   (render the curated view)\n`,
+  );
   return 0;
 }
 
@@ -550,6 +704,10 @@ export const commandsCommand: ICommandHandler = {
     }
     // Keep the new views available even via the back-compat entry.
     if (sub === 'surface') return runCommandsSurface(args);
+    if (sub === 'profile') {
+      const id = args.positional[1];
+      return id ? runCommandsProfile(args, id) : runCommandsProfileList(args);
+    }
     if (sub === 'machine') return runCommandsMachine(args);
     if (sub === 'legacy') return runCommandsLegacy(args);
     if (sub === 'overlaps') return runCommandsOverlaps(args);
@@ -558,6 +716,10 @@ export const commandsCommand: ICommandHandler = {
     if (sub === 'hidden') return runCommandsHidden(args);
     if (sub === 'retirement-plan') return runCommandsRetirementPlan(args);
     if (sub === 'docs-check') return await runCommandsDocsCheck(args);
+    const profileFilter = flagString(args, 'profile');
+    if (profileFilter) {
+      return runCommandsProfile(args, profileFilter);
+    }
     const safetyFilter = flagString(args, 'safety');
     const categoryFilter = flagString(args, 'category');
     let entries: readonly ICommandCatalogEntry[] = COMMAND_CATALOG;
@@ -1003,6 +1165,31 @@ export function buildCommandsDoctorReport(
           code: 'missing-usage',
           message: `command "${c.name}" has empty usage`,
           severity: 'warning',
+        });
+      }
+    }
+    // 8. registerSubcommand-only GROUPS without a catalog entry.
+    // Check #7 above only sees depth-1 nodes that carry a handler
+    // (registry.list()). Groups registered purely via registerSubcommand
+    // (e.g. paths / pipelines / checks / audit / ownership) are handler-less
+    // group nodes — they resolve live yet never appear in list(), so the
+    // doctor reported "No issues" while those groups had zero catalog
+    // coverage. Walk listGroups() and flag any group no catalog entry
+    // covers. Pure alias groups (listGroupAliases) are skipped — their
+    // canonical target carries the entry.
+    const aliasGroups = new Set(registry.listGroupAliases().keys());
+    const catalogTopWords = new Set<string>();
+    for (const e of COMMAND_CATALOG) {
+      const top = e.command.split(/\s+/)[0];
+      if (top) catalogTopWords.add(top);
+    }
+    for (const g of registry.listGroups()) {
+      if (aliasGroups.has(g)) continue;
+      if (!catalogTopWords.has(g)) {
+        issues.push({
+          code: 'missing-catalog-entry',
+          message: `command group "${g}" is registered (registerSubcommand) but no catalog entry covers it`,
+          severity: 'error',
         });
       }
     }

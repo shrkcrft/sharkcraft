@@ -25,6 +25,7 @@ import { BoundaryRegistry, loadBoundaryRulesFromFile } from '@shrkcrft/boundarie
 import { DoctorSeverity, type IDoctorCheck, type IDoctorResult } from './doctor-result.ts';
 import { diagnoseActionHints } from './action-hint-diagnostics.ts';
 import { buildCodeIntelligenceChecks } from './code-intelligence-doctor.ts';
+import { loadSearchTuning } from './search-tuning-registry.ts';
 import { buildDelegateRecipeChecks } from './delegate-doctor.ts';
 import {
   computeFileFingerprint,
@@ -535,7 +536,22 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
 
     for (const rel of c.knowledgeFiles ?? []) await loadFile(rel, 'knowledge');
     for (const rel of c.ruleFiles ?? []) await loadFile(rel, 'rules');
-    for (const rel of c.pathFiles ?? []) await loadFile(rel, 'paths');
+    const loadedPathRels = new Set<string>();
+    for (const rel of c.pathFiles ?? []) {
+      loadedPathRels.add(rel);
+      await loadFile(rel, 'paths');
+    }
+    // `pathConventionFiles` is a manifest slot distinct from `pathFiles` (see the
+    // plugin-api comment "separate from pathFiles"), but it still feeds the path
+    // domain. Previously NO loader consumed it, so a pack shipping conventions
+    // here loaded nothing. Load it through the same path loader, skipping any rel
+    // already handled by `pathFiles` so a file listed in both slots doesn't
+    // double-load (entry ids are also deduped by `loadFile`).
+    for (const rel of c.pathConventionFiles ?? []) {
+      if (loadedPathRels.has(rel)) continue;
+      loadedPathRels.add(rel);
+      await loadFile(rel, 'paths');
+    }
     for (const rel of c.docsFiles ?? []) await loadFile(rel, 'docs');
     for (const rel of c.templateFiles ?? []) await loadFile(rel, 'templates');
     for (const rel of c.pipelineFiles ?? []) await loadFile(rel, 'pipelines');
@@ -668,7 +684,7 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
     if (tracked.skipped) warnings.push(...tracked.warnings);
   }
 
-  return {
+  const inspection: ISharkcraftInspection = {
     projectRoot: workspace.projectRoot,
     workspace,
     hasSharkcraftFolder: workspace.hasSharkcraftFolder,
@@ -699,6 +715,15 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
     cacheEnabled: cache.enabled,
     cacheDir: cache.dir,
   };
+  // Warm the pack search-tuning cache (best-effort; existsSync-gated + cached
+  // per projectRoot) so the synchronous buildTaskPacket → rankAll path can read
+  // listSearchTuning and apply pack boostIds — the same tuning `shrk search` uses.
+  try {
+    await loadSearchTuning(inspection);
+  } catch {
+    /* tuning is best-effort */
+  }
+  return inspection;
 }
 
 export function runDoctor(inspection: ISharkcraftInspection): IDoctorResult {

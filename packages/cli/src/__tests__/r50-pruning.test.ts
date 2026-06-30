@@ -156,7 +156,16 @@ describe('surface lockdown holds', () => {
     // wired" cross-file checks) — +1 entry, ceiling 396. The reuse plane adds
     // `policy-lint` (template/style/ts content lint) and `reuse` (intent →
     // canonical primitive) — +2 entries, ceiling 398.
-    expect(COMMAND_CATALOG.length).toBeLessThan(398);
+    // Catalog-honesty pass: five command groups that were registered and
+    // resolved live but had ZERO catalog entries (and were therefore invisible
+    // to `shrk commands`, explore's related-command scoring, and `commands
+    // doctor`) are now cataloged — paths {list/get/search/best}, pipelines
+    // {list/get/context/plan/script/next/vars}, checks {list/doctor/run/
+    // parse-report/import/aggregate/report/convert}, audit {project-coupling},
+    // ownership {list/for/affected} — +24 entries. `commands doctor` now also
+    // flags any registered group missing a catalog entry, so this can't
+    // regress silently. Ceiling 425.
+    expect(COMMAND_CATALOG.length).toBeLessThan(425);
     // Sanity: not absurdly small.
     expect(COMMAND_CATALOG.length).toBeGreaterThan(250);
   });

@@ -135,6 +135,21 @@ export interface IInsertArrayEntryOperation {
    * before the array's matching closing bracket.
    */
   arrayName: string;
+  /**
+   * Fallback array identifiers tried, in order, when `arrayName` does not
+   * resolve in the target project (registration arrays are often named
+   * differently across codebases). The first cleanly-resolved candidate
+   * wins. When none resolve, the op surfaces an actionable manual-wiring
+   * conflict instead of an opaque "array not found".
+   */
+  arrayNameAlternatives?: readonly string[];
+  /**
+   * Precise manual-wiring instruction shown when no candidate array resolves.
+   * When set, it replaces the synthesized "wire <entry> into <array> manually"
+   * message — letting a template author mark this step as a MANUAL follow-up
+   * with exact guidance instead of an opaque conflict.
+   */
+  manualStepInstruction?: string;
   /** Element source text to add (already source-formatted, no trailing comma). */
   entryValue: string;
   /** Optional idempotency marker (default = `entryValue`). */

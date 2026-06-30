@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/context-planner",
-  "version": "0.1.0-alpha.22",
+  "version": "0.1.0-alpha.23",
   "description": "SharkCraft context planner: deterministic, token-budgeted context packs for AI coding agents. Combines code graph, rule-graph, and intent classification to pick the minimal relevant file set for a task.",
   "license": "MIT",
   "author": "SharkCraft contributors",

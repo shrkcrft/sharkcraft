@@ -94,12 +94,30 @@ export type VerifyPackResult =
   | { ok: true; status: 'verified'; dev: boolean }
   | {
       ok: false;
-      status: 'missing-signature' | 'missing-secret' | 'invalid-signature';
+      status: 'missing-signature' | 'missing-secret' | 'invalid-signature' | 'dev-signature';
       message: string;
+      /**
+       * True when the rejection is specifically because the signature is
+       * dev-only (`sig.dev === true`) and the caller did not pass
+       * {@link VerifyPackManifestOptions.allowDev}. Lets callers distinguish a
+       * "not release-trusted" dev signature from a genuinely bad one.
+       */
+      dev?: boolean;
     };
 
 export interface VerifyPackManifestOptions {
   secret?: string;
+  /**
+   * Opt in to trusting dev signatures. A `dev: true` signature is produced by
+   * `shrk packs sign --dev` and verifies against the WELL-KNOWN, PUBLIC
+   * {@link PACK_DEV_SECRET} — so any party can forge one. By default
+   * (`allowDev` unset/false) such a signature is REJECTED with
+   * `status: 'dev-signature'`, regardless of whether the consumer's real
+   * secret is set: a public dev secret is not proof of publisher identity.
+   * Only pass `allowDev: true` (surfaced as `--allow-dev-signature`) for
+   * local-only flows that explicitly accept dev signatures.
+   */
+  allowDev?: boolean;
 }
 
 export function verifyPackManifest(
@@ -117,10 +135,22 @@ export function verifyPackManifest(
       message: `Unsupported signature algorithm: ${sig.algo}`,
     };
   }
-  // Dev signatures verify against the well-known dev secret. Callers
-  // see `dev: true` in the result and can choose to reject (release path) or
-  // accept (local-only flows).
+  // Dev signatures verify against the well-known dev secret. Because that
+  // secret is PUBLIC, a dev signature proves nothing about publisher identity,
+  // so it is NOT release-trusted: reject it unless the caller explicitly opts
+  // in via `allowDev` (`--allow-dev-signature`). This is the gate that stops a
+  // forged `signPackManifest(forged, { dev: true })` from reporting "verified"
+  // even when the consumer's own real secret is set.
   const isDev = sig.dev === true;
+  if (isDev && options.allowDev !== true) {
+    return {
+      ok: false,
+      status: 'dev-signature',
+      message:
+        'Dev signature is not release-trusted (signed with the well-known public dev secret); pass --allow-dev-signature to accept it for local-only flows.',
+      dev: true,
+    };
+  }
   const secret = isDev ? PACK_DEV_SECRET : readSecret(options.secret);
   if (!secret) {
     return {

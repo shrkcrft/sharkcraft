@@ -46,7 +46,7 @@ import {
   renderErrorFooter,
 } from '../output/failure-hints.ts';
 import { entrypointBanner } from '@shrkcrft/inspector';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 function entryFor(cmd: string): ICommandCatalogEntry {
@@ -237,6 +237,32 @@ describe('error footer', () => {
       const f = errorFooterFor(k);
       expect(f).toBeDefined();
       expect(f!.next).toMatch(/^shrk\s+/);
+    }
+  });
+});
+
+describe('failure-hint builders are wired (no dead exports)', () => {
+  test('every exported hint builder is dispatched by a command', () => {
+    // Each convenience builder in output/failure-hints.ts must be
+    // referenced from a command so it actually reaches a failure path —
+    // guards against the dead-export regression where a builder is defined
+    // but never rendered.
+    const builders = [
+      'doctorHints',
+      'staleKnowledgeHints',
+      'templateDriftHints',
+      'fuzzyImpactAmbiguousHints',
+      'agentTestMissingExpectedHints',
+      'ciReportEmptyHints',
+      'feedbackRulesDoctorHints',
+    ];
+    const commandsDir = resolve(process.cwd(), 'packages/cli/src/commands');
+    const sources = readdirSync(commandsDir)
+      .filter((f) => f.endsWith('.command.ts'))
+      .map((f) => readFileSync(resolve(commandsDir, f), 'utf8'))
+      .join('\n');
+    for (const b of builders) {
+      expect(sources).toContain(b);
     }
   });
 });

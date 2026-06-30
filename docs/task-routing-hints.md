@@ -24,11 +24,11 @@ interface ITaskRoutingHint {
 
 ## Commands
 
-```bash
-shrk routing hints list [--source pack|local]
-shrk routing hints doctor
-shrk routing explain "<task>"
-```
+> **CLI verbs retired — MCP-only surface.** The standalone `routing` CLI
+> verbs (`routing hints list`, `routing hints doctor`, `routing explain`)
+> were removed. The deterministic engine survives as the read-only MCP
+> tools `list_task_routing_hints` and `explain_task_routing` (see below).
+> No CLI write path, no execution — the hints are read-only data.
 
 ## MCP
 

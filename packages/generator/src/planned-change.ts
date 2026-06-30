@@ -670,24 +670,32 @@ function evaluateInsertArrayEntry(
       op,
     );
   }
-  const arr = findArrayLiteralBlock(existing, op.arrayName);
+  // Try the primary array name, then each declared alternative in order. The
+  // first cleanly-resolved (present + unambiguous) array wins. This lets a
+  // template target a project whose registration array is named differently
+  // without silently dead-ending.
+  const candidates = [op.arrayName, ...(op.arrayNameAlternatives ?? [])].filter(
+    (n) => n.length > 0,
+  );
+  let arr: IBlockLocation | null = null;
+  let sawAmbiguous = false;
+  for (const name of candidates) {
+    const found = findArrayLiteralBlock(existing, name);
+    if (!found) continue;
+    if (found.duplicate) {
+      sawAmbiguous = true;
+      continue;
+    }
+    arr = found;
+    break;
+  }
   if (!arr) {
     return mkChange(
       FileChangeType.Conflict,
       absolutePath,
       relativePath,
       existing,
-      `insert-array-entry: array "${op.arrayName}" not found`,
-      op,
-    );
-  }
-  if (arr.duplicate) {
-    return mkChange(
-      FileChangeType.Conflict,
-      absolutePath,
-      relativePath,
-      existing,
-      `insert-array-entry: array "${op.arrayName}" appears multiple times (ambiguous)`,
+      unresolvedArrayReason(op, candidates, sawAmbiguous),
       op,
     );
   }
@@ -1075,4 +1083,33 @@ function detectIndent(body: string): string | null {
   const match = body.match(/^([ \t]+)\S/m);
   if (!match) return null;
   return match[1] ?? null;
+}
+
+/**
+ * Build the actionable reason for an `insert-array-entry` op whose target
+ * array (and all declared alternatives) could not be resolved. Instead of an
+ * opaque "array not found", the message tells the human exactly what to wire
+ * by hand — preserving the template's "zero manual wiring" promise as an
+ * explicit, honest fallback. A template author may override the message with
+ * `op.manualStepInstruction`.
+ */
+function unresolvedArrayReason(
+  op: Extract<IPlannedOperation, { kind: 'insert-array-entry' }>,
+  candidates: readonly string[],
+  sawAmbiguous: boolean,
+): string {
+  if (op.manualStepInstruction && op.manualStepInstruction.trim().length > 0) {
+    return `insert-array-entry: MANUAL — ${op.manualStepInstruction.trim()}`;
+  }
+  const entry = oneLineEntryLabel(op.ifMissing ?? op.entryValue);
+  const tried = candidates.map((c) => `"${c}"`).join(', ');
+  const why = sawAmbiguous
+    ? `registration array ${tried} appears multiple times (ambiguous)`
+    : `no registration array found (tried ${tried})`;
+  return `insert-array-entry: ${why} — wire ${entry} into ${op.arrayName} manually`;
+}
+
+function oneLineEntryLabel(raw: string): string {
+  const collapsed = raw.replace(/\s+/g, ' ').trim();
+  return collapsed.length > 60 ? collapsed.slice(0, 57) + '…' : collapsed;
 }

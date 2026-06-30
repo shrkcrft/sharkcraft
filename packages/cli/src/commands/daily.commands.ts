@@ -241,15 +241,35 @@ export const explainCommand: ICommandHandler = {
       .filter((e) => matches(topic, e.id, e.title, e.content, e.tags.join(' ')))
       .slice(0, maxEntries);
 
+    // Surface the matched items themselves, not just counts. `explain`
+    // otherwise duplicates `shrk search`'s job while hiding what matched.
+    const relevantRules = packet.relevantRules.map((r) => ({
+      id: r.id,
+      title: r.title,
+      priority: r.priority,
+    }));
+    const relevantPaths = packet.relevantPaths.map((p) => ({
+      id: p.id,
+      title: p.title,
+      priority: p.priority,
+    }));
+    const relevantTemplates = packet.relevantTemplates.map((t) => ({
+      id: t.id,
+      name: t.name,
+    }));
+
     if (flagBool(args, 'json')) {
       process.stdout.write(
         asJson({
           topic,
           summary: {
-            relevantRules: packet.relevantRules.length,
-            relevantPaths: packet.relevantPaths.length,
-            relevantTemplates: packet.relevantTemplates.length,
+            relevantRules: relevantRules.length,
+            relevantPaths: relevantPaths.length,
+            relevantTemplates: relevantTemplates.length,
           },
+          relevantRules,
+          relevantPaths,
+          relevantTemplates,
           entries: top.map((e) => ({
             id: e.id,
             title: e.title,
@@ -265,13 +285,37 @@ export const explainCommand: ICommandHandler = {
     process.stdout.write(
       kv(
         'matches',
-        `rules=${packet.relevantRules.length} paths=${packet.relevantPaths.length} templates=${packet.relevantTemplates.length}`,
+        `rules=${relevantRules.length} paths=${relevantPaths.length} templates=${relevantTemplates.length}`,
       ) + '\n\n',
     );
+    if (relevantRules.length > 0) {
+      process.stdout.write('Rules:\n');
+      for (const r of relevantRules) {
+        process.stdout.write(`  • [${r.priority}] ${r.id} — ${r.title}\n`);
+      }
+      process.stdout.write('\n');
+    }
+    if (relevantPaths.length > 0) {
+      process.stdout.write('Paths:\n');
+      for (const p of relevantPaths) {
+        process.stdout.write(`  • [${p.priority}] ${p.id} — ${p.title}\n`);
+      }
+      process.stdout.write('\n');
+    }
+    if (relevantTemplates.length > 0) {
+      process.stdout.write('Templates:\n');
+      for (const t of relevantTemplates) {
+        process.stdout.write(`  • ${t.id} — ${t.name}\n`);
+      }
+      process.stdout.write('\n');
+    }
     if (top.length === 0) {
-      process.stdout.write('(no matching knowledge entries)\n');
+      if (relevantRules.length + relevantPaths.length + relevantTemplates.length === 0) {
+        process.stdout.write('(no matching knowledge entries)\n');
+      }
       return 0;
     }
+    process.stdout.write('Knowledge:\n');
     for (const e of top) {
       process.stdout.write(`• [${e.priority}] ${e.id} — ${e.title}\n`);
       const body = e.content

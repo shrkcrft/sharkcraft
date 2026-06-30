@@ -67,13 +67,25 @@ export const onboardCommand: ICommandHandler = {
       return runOnboardAdopt(sliced);
     }
     const cwd = resolveCwd(args);
-    const writeDrafts = flagBool(args, 'write-drafts');
+    const writeDraftsFlag = flagBool(args, 'write-drafts');
+    const dryRunFlag = flagBool(args, 'dry-run');
+    // --dry-run is authoritative: it overrides --write-drafts so that
+    // `onboard --dry-run --write-drafts` never writes. `writeDrafts` below is
+    // the EFFECTIVE value used by every write guard / mode label.
+    const writeDrafts = writeDraftsFlag && !dryRunFlag;
+    const dryRunOverrodeWrite = writeDraftsFlag && dryRunFlag;
     const scaffoldTemplates = flagBool(args, 'scaffold-templates');
     const importAgents = flagBool(args, 'import-agents');
     const diffMode = flagBool(args, 'diff');
-    const dryRun = flagBool(args, 'dry-run') || !writeDrafts;
+    const dryRun = !writeDrafts;
     const preferredPreset = flagString(args, 'preset');
     const asJsonOut = flagBool(args, 'json');
+
+    if (dryRunOverrodeWrite) {
+      process.stderr.write(
+        'Note: --dry-run overrode --write-drafts; no files were written.\n',
+      );
+    }
 
     const inspection = await inspectSharkcraft({ cwd });
     const plan = buildOnboardingPlan(inspection, {

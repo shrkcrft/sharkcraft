@@ -7,12 +7,14 @@ import {
 import { inspectSharkcraft } from '@shrkcrft/inspector';
 import {
   flagBool,
+  flagPositiveInt,
   flagString,
   resolveCwd,
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { computeMtimeFreshness } from '../status/freshness.ts';
 
 /**
  * `shrk framework` — run / inspect the framework-aware extractors.
@@ -119,8 +121,22 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   }
   const api = FrameworkQueryApi.fromStore(cwd);
   const m = api.manifest();
+  // Honest freshness: the framework store is stale once a source file changed
+  // after it was built. Mirror the `state + lastBuiltAt + drift` shape that
+  // `graph status` exposes.
+  const fresh = computeMtimeFreshness(cwd, m.lastBuiltAt);
   if (wantJson) {
-    process.stdout.write(asJson({ ok: true, manifest: m }) + '\n');
+    process.stdout.write(
+      asJson({
+        ok: true,
+        state: fresh.state,
+        lastBuiltAt: m.lastBuiltAt,
+        lastChangedAt: fresh.lastChangedAt,
+        behindMs: fresh.behindMs,
+        ...(fresh.state === 'stale' ? { nextCommand: 'shrk framework index' } : {}),
+        manifest: m,
+      }) + '\n',
+    );
     return 0;
   }
   process.stdout.write(header('Framework status'));
@@ -130,6 +146,12 @@ async function runStatus(args: ParsedArgs): Promise<number> {
     process.stdout.write(kv(`  ${k}`, String(v)) + '\n');
   }
   process.stdout.write(kv('last built', m.lastBuiltAt) + '\n');
+  process.stdout.write(kv('state', fresh.state) + '\n');
+  if (fresh.state === 'stale') {
+    process.stdout.write(
+      `! stale — source changed since last build${fresh.lastChangedAt ? ` (last change ${fresh.lastChangedAt})` : ''}; re-run \`shrk framework index\`\n`,
+    );
+  }
   return 0;
 }
 
@@ -145,7 +167,7 @@ async function runList(args: ParsedArgs): Promise<number> {
   const framework = flagString(args, 'framework');
   const subtype = flagString(args, 'subtype');
   const file = flagString(args, 'file');
-  const limit = Number(flagString(args, 'limit') ?? '50');
+  const limit = flagPositiveInt(args, 'limit', 50);
   const entities = api.list({
     ...(framework ? { framework } : {}),
     ...(subtype ? { subtype } : {}),

@@ -64,6 +64,16 @@ export interface ISharkCraftConfig {
   wiringRules?: readonly IWiringRule[];
 
   /**
+   * Declarable registry inventories — string-keyed contribution sets spread
+   * across files. Each declaration reuses the wiring `{ files, pattern |
+   * arrayProperty }` extractor to harvest the registry's ids. Queried via
+   * `shrk registry <name> list | exists <id> | where <id>` — one deterministic
+   * multi-root scan that replaces a fragile "is this id taken / where is it"
+   * grep. The engine is generic — projects supply the patterns.
+   */
+  registries?: readonly IRegistryDeclaration[];
+
+  /**
    * Policy-lint rules — the template/style/ts content plane (markup + inline
    * `template:` strings, stylesheets, AOT-invisible TS shapes). Run via
    * `shrk policy-lint`. Generic + deterministic; projects supply the patterns.
@@ -122,6 +132,9 @@ import type { IDelegateRecipe } from '@shrkcrft/core';
 // one contract; re-export for `import { IWiringRule } from '@shrkcrft/config'`.
 export type { IWiringRule, IWiringSource } from '@shrkcrft/core';
 import type { IWiringRule } from '@shrkcrft/core';
+// Registry declarations live in core too; re-export for config consumers.
+export type { IRegistryDeclaration } from '@shrkcrft/core';
+import type { IRegistryDeclaration } from '@shrkcrft/core';
 // Policy-lint + reuse contracts also live in core; re-export for consumers.
 export type { IPolicyRule, PolicySurface, IReusePrimitive } from '@shrkcrft/core';
 import type { IPolicyRule, IReusePrimitive } from '@shrkcrft/core';

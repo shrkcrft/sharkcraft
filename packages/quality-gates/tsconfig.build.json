@@ -28,6 +28,9 @@
       ],
       "@shrkcrft/context-planner": [
         "../context-planner/dist/index.d.ts"
+      ],
+      "@shrkcrft/inspector": [
+        "../inspector/dist/index.d.ts"
       ]
     },
     "tsBuildInfoFile": "./dist/.tsbuildinfo"

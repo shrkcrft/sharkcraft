@@ -1,9 +1,9 @@
-import { spawnSync } from 'node:child_process';
 import { evaluateBoundaries, loadTsconfigPaths, scanImports } from '@shrkcrft/boundaries';
 import { matchAffectedConventions } from '@shrkcrft/paths';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { resolveVerificationCommands } from './resolve-verification-commands.ts';
 import { rankAll } from './task-ranker.ts';
+import { getChangedFiles } from './git-helpers.ts';
 
 export interface IReviewPacket {
   changedFiles: readonly string[];
@@ -41,20 +41,27 @@ export interface IBuildReviewPacketOptions {
   since?: string;
   staged?: boolean;
   files?: readonly string[];
+  /**
+   * Working-tree default only: when undefined/true, non-ignored untracked
+   * files are included — so a just-generated, never-staged source file is
+   * visible to the review (and to the missing-test heuristic). Set false to
+   * restore the legacy tracked-only `git diff` view. Ignored when
+   * `since`/`staged`/`files` is set.
+   */
+  untracked?: boolean;
 }
 
 function gitDiffFiles(cwd: string, opts: IBuildReviewPacketOptions): string[] {
   if (opts.files && opts.files.length > 0) return [...opts.files];
-  const args = ['diff', '--name-only'];
-  if (opts.staged) args.push('--cached');
-  if (opts.since) args.push(opts.since);
-  const res = spawnSync('git', args, { cwd, encoding: 'utf8' });
-  if (res.status !== 0) return [];
-  return (res.stdout ?? '')
-    .toString()
-    .split('\n')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  if (opts.staged) return getChangedFiles(cwd, { staged: true });
+  if (opts.since) return getChangedFiles(cwd, { since: opts.since });
+  // Default working-tree view: include non-ignored untracked files so a
+  // just-generated, never-staged source file is visible to review (and to the
+  // "is each new src/ file tested?" heuristic below). Mirrors `shrk changes
+  // summary` and every other working-tree caller; `.gitignore` stays honored.
+  // `{ untracked: false }` restores the legacy tracked-only `git diff` view.
+  if (opts.untracked === false) return getChangedFiles(cwd, {});
+  return getChangedFiles(cwd, { includeWorktree: true });
 }
 
 function buildPseudoTask(files: readonly string[]): string {

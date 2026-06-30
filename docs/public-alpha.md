@@ -37,7 +37,7 @@ shrk start-here
 
 # 2. Doctor + repository map.
 shrk doctor
-shrk map
+shrk architecture map
 
 # 3. Pick a flow.
 shrk commands primary

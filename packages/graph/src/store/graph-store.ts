@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import * as nodePath from 'node:path';
+import { AppErrorImpl, ERROR_CODES, type AppError } from '@shrkcrft/core';
 import type { IEdge } from '../schema/edge.ts';
 import type { IFileFingerprint } from '../schema/file-fingerprint.ts';
 import type { IGraphManifest } from '../schema/manifest.ts';
@@ -190,10 +191,19 @@ function readJsonl<T>(path: string): T[] {
   const raw = readFileSync(path, 'utf8');
   if (!raw) return [];
   const out: T[] = [];
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
+  const lines = raw.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const trimmed = lines[i]!.trim();
     if (!trimmed) continue;
-    out.push(JSON.parse(trimmed) as T);
+    // A single malformed line (truncated write, hand-edit, partial fsync)
+    // must NOT crash the whole CLI with a raw `Fatal: JSON Parse error` — it
+    // surfaces as a typed corrupt-store error citing the file + 1-based line so
+    // the caller can print a deterministic "rebuild the index" hint instead.
+    try {
+      out.push(JSON.parse(trimmed) as T);
+    } catch (cause) {
+      throw corruptStoreError(path, cause, i + 1);
+    }
   }
   return out;
 }
@@ -203,7 +213,48 @@ function writeJson(path: string, value: unknown): void {
 }
 
 function readJson<T>(path: string): T {
-  return JSON.parse(readFileSync(path, 'utf8')) as T;
+  const raw = readFileSync(path, 'utf8');
+  try {
+    return JSON.parse(raw) as T;
+  } catch (cause) {
+    throw corruptStoreError(path, cause);
+  }
+}
+
+/**
+ * `details.kind` marker on the AppError thrown when a store file fails to
+ * parse, so callers distinguish "store is corrupt, rebuild it" from any other
+ * IO error WITHOUT brittle message-matching. Module-private — callers use
+ * {@link isGraphStoreCorruptError}.
+ */
+const GRAPH_STORE_CORRUPT_KIND = 'graph-store-corrupt';
+
+/**
+ * True when `err` is the typed corrupt-store error thrown by the JSONL/JSON
+ * loaders. Duck-typed (not `instanceof`) so it stays reliable even if two
+ * copies of `@shrkcrft/core`'s AppErrorImpl class exist across package
+ * boundaries — the `details.kind` marker is the contract.
+ */
+export function isGraphStoreCorruptError(err: unknown): err is AppError {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { details?: Record<string, unknown> }).details?.['kind'] === GRAPH_STORE_CORRUPT_KIND
+  );
+}
+
+/** Build the typed corrupt-store AppError, carrying the file (+ 1-based line). */
+function corruptStoreError(file: string, cause: unknown, line?: number): AppError {
+  const at = line !== undefined ? `${file} (line ${line})` : file;
+  return new AppErrorImpl(
+    ERROR_CODES.IO_ERROR,
+    `code-graph store is corrupt — failed to parse ${at}. Run 'shrk graph index' to rebuild it.`,
+    {
+      cause,
+      details: { kind: GRAPH_STORE_CORRUPT_KIND, file, ...(line !== undefined ? { line } : {}) },
+      suggestion: "Run 'shrk graph index' to rebuild the code-graph store.",
+    },
+  );
 }
 
 /**

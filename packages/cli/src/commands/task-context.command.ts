@@ -30,6 +30,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { computeMtimeFreshness } from '../status/freshness.ts';
 
 const CONTEXT_BASE = nodePath.join('.sharkcraft', 'context');
 
@@ -287,11 +288,37 @@ export const contextStatusCommand: ICommandHandler = {
     }
     const { readFileSync } = await import('node:fs');
     const body = readFileSync(file, 'utf8');
+    let status: { lastTask?: string; lastBuilt?: string; bundles?: readonly string[] };
+    try {
+      status = JSON.parse(body) as typeof status;
+    } catch {
+      status = {};
+    }
+    // Honest freshness: the saved context is stale once a source file changed
+    // after it was built. Adds `state` + a warn line in both shapes.
+    const fresh = computeMtimeFreshness(cwd, status.lastBuilt);
     if (flagBool(args, 'json')) {
-      process.stdout.write(body + '\n');
+      process.stdout.write(
+        asJson({
+          ...status,
+          state: fresh.state,
+          lastBuiltAt: fresh.lastBuiltAt,
+          lastChangedAt: fresh.lastChangedAt,
+          behindMs: fresh.behindMs,
+          ...(fresh.state === 'stale' ? { nextCommand: 'shrk context refresh' } : {}),
+        }) + '\n',
+      );
       return 0;
     }
-    process.stdout.write(body + '\n');
+    process.stdout.write(header('Context status'));
+    process.stdout.write(kv('last task', status.lastTask ?? '-') + '\n');
+    process.stdout.write(kv('last built', status.lastBuilt ?? '-') + '\n');
+    process.stdout.write(kv('state', fresh.state) + '\n');
+    if (fresh.state === 'stale') {
+      process.stdout.write(
+        `! stale — files changed since this context was built${fresh.lastChangedAt ? ` (last change ${fresh.lastChangedAt})` : ''}; re-run \`shrk context refresh\`\n`,
+      );
+    }
     return 0;
   },
 };

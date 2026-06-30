@@ -1,4 +1,4 @@
-import { entrypointBanner, inspectSharkcraft } from '@shrkcrft/inspector';
+import { contextTuningBoostFor, entrypointBanner, inspectSharkcraft } from '@shrkcrft/inspector';
 import { buildContext } from '@shrkcrft/context';
 import {
   loadIntentBenchmark,
@@ -93,6 +93,7 @@ export const contextCommand: ICommandHandler = {
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const overview = buildProjectOverview(inspection.workspace, inspection.config?.projectName);
 
+    const contextBoost = contextTuningBoostFor(inspection, task);
     const result = buildContext(inspection.knowledgeEntries, {
       task,
       framework,
@@ -107,6 +108,7 @@ export const contextCommand: ICommandHandler = {
       includeDocs,
       includeCommands,
       projectOverview: renderOverviewText(overview),
+      ...(contextBoost ? { boostFor: contextBoost } : {}),
     });
 
     // Surface top commands prominently before the long context body.

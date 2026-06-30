@@ -1,4 +1,9 @@
-import { inspectSharkcraft, buildProjectOverview, renderOverviewText } from '@shrkcrft/inspector';
+import {
+  inspectSharkcraft,
+  buildProjectOverview,
+  renderOverviewText,
+  contextTuningBoostFor,
+} from '@shrkcrft/inspector';
 import { buildContext } from '@shrkcrft/context';
 import {
   AiMessageRole,
@@ -39,6 +44,7 @@ export const askCommand: ICommandHandler = {
       task: question,
       maxTokens,
       projectOverview: renderOverviewText(overview),
+      boostFor: contextTuningBoostFor(inspection, question),
     });
 
     const messages = buildPromptMessages({

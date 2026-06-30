@@ -91,22 +91,25 @@ shrk architecture area <areaId>
 
 ### Repository intelligence graph
 
+> The standalone `shrk intelligence` CLI verb was removed. The code graph
+> is now queried through `shrk graph` (subverbs: `index`, `status`,
+> `search`, `context`, `impact`, `callers`, `cycles`, `unresolved`,
+> `deps`, `why`, `export`); the layered architecture map lives under
+> `shrk architecture map`. Over MCP, the same graph is read-only via the
+> `get_graph_*` tools (`get_graph_search`/`context`/`impact`/`callers`/…)
+> and `get_architecture_map`.
+
 ```bash
-# Compact graph (no import edges)
-shrk intelligence graph
+# Code graph (import / depends-on / tests edges, alias-resolved)
+shrk graph index
+shrk graph deps @shrkcrft/core
+shrk graph why <fromId> <toId>
 
-# With imports / depends-on / tests edges
-shrk intelligence graph --include-imports
-
-# R20: also resolve `@shrkcrft/...` imports through tsconfig.base.json
-# path aliases. Edges include `resolvedVia: 'literal' | 'tsconfig-path'`.
-shrk intelligence graph --include-imports --resolve-aliases
-
-# Query DSL v2 (AND default, OR literal, not:<filter>)
-shrk intelligence query "kind:package OR kind:test"
-shrk intelligence query "kind:file not:tag:test imports:@shrkcrft/core"
+# Layered architecture map + risk + signals
+shrk architecture map --risk --signals
 ```
 
-MCP equivalents: `get_architecture_map`, `get_architecture_violations`,
-`get_architecture_violations_diff`, `get_architecture_area`,
-`query_repository_intelligence`. All read-only.
+MCP equivalents: the `get_graph_*` tools (search / context / impact /
+callers / path over the packages/files/constructs/templates graph) plus
+the architecture surfaces (`get_architecture_constraints`,
+`get_architecture_violations`, `get_architecture_map`). All read-only.

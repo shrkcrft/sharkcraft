@@ -10,10 +10,6 @@ and never embeds external assets in HTML responses.
 | Tool                              | Inputs                                                      | Output                              |
 |-----------------------------------|-------------------------------------------------------------|-------------------------------------|
 | `get_adoption_report`             | `format?`                                                   | adoption report (json/html/md/text) |
-| `get_session_html_report`         | `id`, `format?`                                             | dev session report                  |
-| `get_quality_html_report`         | `format?`                                                   | quality report                      |
-| `get_safety_html_report`          | `format?`                                                   | safety audit                        |
-| `get_review_html_report`          | `packetPath?` or `packet`, `format?`, `collapseLongSections?`, `maxItems?` | review packet  |
 | `get_coverage_report_rendered`    | `format?`                                                   | coverage                            |
 | `get_drift_report_rendered`       | `format?`                                                   | drift                               |
 

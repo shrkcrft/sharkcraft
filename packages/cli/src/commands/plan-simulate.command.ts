@@ -22,7 +22,7 @@ export const planSimulateCommand: ICommandHandler = {
   description:
     'Simulate a saved generation plan (v1 or v2): virtual final content, classified operations, boundary/policy/impact/test gates, apply readiness. Read-only.',
   usage:
-    'shrk plan simulate <plan.json> [--format text|markdown|html|json] [--output <file>] [--strict] [--include-boundaries] [--include-impact] [--include-tests] [--include-policies] [--include-ownership] [--include-memory] [--diff] [--max-diff-lines N]',
+    'shrk plan simulate <plan.json> [--format text|markdown|html|json] [--output <file>] [--strict] [--no-boundaries] [--no-impact] [--no-tests] [--no-policies] [--no-ownership] [--include-memory] [--diff] [--max-diff-lines N]',
   async run(args: ParsedArgs): Promise<number> {
     const planPath = args.positional[0];
     if (!planPath) {

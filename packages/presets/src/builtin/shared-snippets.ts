@@ -159,7 +159,16 @@ export const COMMON_TEMPLATE_SERVICE = `defineTemplate({
     ],
     targetPath: (v) => \`src/services/\${kebab(v.className)}.service.ts\`,
     content: (v) => \`export class \${v.className} {\\n  init(): void {}\\n}\\n\`,
-    postGenerationNotes: ['Wire the new service into your composition root when ready.'],
+    postGenerationNotes: [
+      'Wire the new service into your composition root when ready.',
+      'If this file starts a NEW package/library it will not build from source alone. Complete this ordered checklist:',
+      '1. packages/<pkg>/package.json — { "name": "@scope/<pkg>", "version": "0.0.0", "type": "module", "main": "src/index.ts", "exports": { ".": "./src/index.ts" } }',
+      '2. packages/<pkg>/tsconfig.json — { "extends": "../../tsconfig.base.json", "include": ["src"] }',
+      '3. tsconfig.base.json — add a compilerOptions.paths entry: "@scope/<pkg>": ["packages/<pkg>/src/index.ts"]',
+      '4. packages/<pkg>/src/index.ts — barrel that re-exports this module',
+      '5. Register the package in the workspace root (root package.json "workspaces" or pnpm-workspace.yaml) and in your bootstrap/composition root',
+      '6. Verify: run bun install, then bun x tsc -p tsconfig.base.json --noEmit, then your project build command',
+    ],
   })`;
 
 export const COMMON_TEMPLATE_UTILITY = `defineTemplate({
@@ -179,6 +188,15 @@ export const COMMON_TEMPLATE_UTILITY = `defineTemplate({
     ],
     targetPath: (v) => \`src/utils/\${v.functionName}.ts\`,
     content: (v) => \`export function \${v.functionName}(): void {\\n  // TODO\\n}\\n\`,
+    postGenerationNotes: [
+      'If this file starts a NEW package/library it will not build from source alone. Complete this ordered checklist:',
+      '1. packages/<pkg>/package.json — { "name": "@scope/<pkg>", "version": "0.0.0", "type": "module", "main": "src/index.ts", "exports": { ".": "./src/index.ts" } }',
+      '2. packages/<pkg>/tsconfig.json — { "extends": "../../tsconfig.base.json", "include": ["src"] }',
+      '3. tsconfig.base.json — add a compilerOptions.paths entry: "@scope/<pkg>": ["packages/<pkg>/src/index.ts"]',
+      '4. packages/<pkg>/src/index.ts — barrel that re-exports this module',
+      '5. Register the package in the workspace root (root package.json "workspaces" or pnpm-workspace.yaml)',
+      '6. Verify: run bun install, then bun x tsc -p tsconfig.base.json --noEmit, then your project build command',
+    ],
   })`;
 
 export const COMMON_TEMPLATE_TEST = `defineTemplate({
