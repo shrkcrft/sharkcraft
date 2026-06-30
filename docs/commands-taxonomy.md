@@ -69,6 +69,9 @@ _Review packets, impact graphs, tests impact._
 - `shrk owners impact` — Ownership impact for files / plan / bundle. _(read-only)_
 - `shrk owners list` — List ownership rules. _(read-only)_
 - `shrk owners match` — Match a file against ownership rules. _(read-only)_
+- `shrk ownership affected` — Show owners affected by --since <ref>, --bundle <id>, or --files a,b. _(read-only)_
+- `shrk ownership for` — Show the ownership match for a single file. _(read-only)_
+- `shrk ownership list` — List ownership rules from CODEOWNERS / sharkcraft/ownership.ts. _(read-only)_
 - `shrk review` — PR-review packet — changed files, affected rules, missing tests heuristic. _(read-only)_
 - **★** `shrk review packet` — Build a review packet (v1 default, --v2 for the enriched format). _(read-only)_
 - `shrk review render-comment` — Render PR-comment markdown from a review packet (--output writes file). _(writes-drafts)_
@@ -242,6 +245,17 @@ _Schemas, exports, imports, ask._
 - `shrk knowledge remove` — Preview removal of a knowledge entry. Refuses if reverse references exist. _(read-only)_
 - `shrk knowledge stale-check --watch` — Watch flag on stale-check (debounced, --once supported). _(read-only)_
 - `shrk knowledge update` — Preview an incremental update to a knowledge entry. Preview-only. _(read-only)_
+- `shrk paths best` — Pick the best path convention for a task. _(read-only)_
+- `shrk paths get` — Get one path convention by id. _(read-only)_
+- `shrk paths list` — List path conventions. _(read-only)_
+- `shrk paths search` — Search path conventions by scope / query. _(read-only)_
+- `shrk pipelines context` — Token-budgeted context for a pipeline + task. _(read-only)_
+- `shrk pipelines get` — Show one pipeline by id. _(read-only)_
+- `shrk pipelines list` — List available pipelines. _(read-only)_
+- `shrk pipelines next` — Show the next recommended step in a pipeline for a task. _(read-only)_
+- `shrk pipelines plan` — Render a pipeline as an ordered step plan for a task. _(read-only)_
+- `shrk pipelines script` — Render a pipeline as a runnable bash-style preview script (no execution). _(read-only)_
+- `shrk pipelines vars` — List the variables a pipeline consumes. _(read-only)_
 - `shrk playbooks brief` — Render an agent brief from a playbook. _(read-only)_
 - `shrk playbooks get` — Show a playbook. _(read-only)_
 - `shrk playbooks list` — List registered playbooks. _(read-only)_
