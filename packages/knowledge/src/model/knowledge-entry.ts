@@ -98,6 +98,17 @@ export interface IKnowledgeEntry {
    */
   actionHints?: IActionHints;
   /**
+   * Author-set opt-out from action-hint coverage: `true` marks an entry as
+   * legitimately having NO actionable next step (a context-only overview, a
+   * glossary, an architecture thesis) so it is excluded from the hint-coverage
+   * denominator. This is the precise, per-entry lever — preferred over the coarse
+   * type allowlist ({@link KNOWLEDGE_TYPES_NO_ACTION}, kept as a conservative
+   * floor). Reach for it only when a real hint isn't natural; where one IS
+   * natural (e.g. a path convention → `shrk why <path>`), give the entry a real
+   * hint instead of exempting it.
+   */
+  noAction?: boolean;
+  /**
    * Optional verifiable references to repo artefacts.
    *
    * Optional — entries that omit this field still load.

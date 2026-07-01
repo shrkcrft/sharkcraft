@@ -1,4 +1,9 @@
-import { hasActionHints } from '@shrkcrft/knowledge';
+import {
+  hasActionHints,
+  hasMeaningfulActionHints,
+  KNOWLEDGE_TYPES_NO_ACTION,
+  type KnowledgeType,
+} from '@shrkcrft/knowledge';
 import { resolvePreset, resolvePresetReferences } from '@shrkcrft/presets';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { inspectionReferenceLookup } from './reference-lookup.ts';
@@ -78,22 +83,52 @@ export function buildCoverageReport(inspection: ISharkcraftInspection): ICoverag
     });
   }
 
-  // 3. Critical/high knowledge entries with action hints.
+  // 3. Critical/high knowledge entries carry a MEANINGFUL action hint.
+  //    Quality, not mere presence: a hollow/templated hint (a `<command>`
+  //    placeholder, a lone requiresHumanReview, an empty object) does NOT count,
+  //    so an agent can't clear the gate with uniform low-value metadata. Entries
+  //    with no actionable next step are exempt from the denominator — a per-entry
+  //    author `noAction: true` (the precise lever) OR a purely-descriptive type
+  //    (business/decision — the conservative floor) — so the target isn't
+  //    artificially 100% and nobody is pushed to bolt a hollow hint on.
   {
     const eligible = inspection.knowledgeEntries.filter((e) => {
       const p = String(e.priority);
       return p === 'critical' || p === 'high';
     });
-    const total = eligible.length;
+    const actionable = eligible.filter(
+      (e) => e.noAction !== true && !KNOWLEDGE_TYPES_NO_ACTION.has(e.type as KnowledgeType),
+    );
+    const total = actionable.length;
+    const knowledgeIds = new Set(inspection.knowledgeEntries.map((x) => x.id));
+    const templateIds = new Set(inspection.templates.map((t) => t.id));
     const missing: string[] = [];
     let covered = 0;
-    for (const e of eligible) {
-      if (hasActionHints(e)) covered += 1;
-      else missing.push(`${e.id} — no actionHints`);
+    for (const e of actionable) {
+      if (hasMeaningfulActionHints(e)) {
+        covered += 1;
+        continue;
+      }
+      // Reward RESOLVED cross-references: a hint whose related ids actually
+      // point at real entries/templates is substantive even without a command.
+      const a = e.actionHints;
+      const resolvedXref =
+        !!a &&
+        ((a.relatedKnowledge?.some((id) => knowledgeIds.has(id)) ?? false) ||
+          (a.relatedTemplates?.some((id) => templateIds.has(id)) ?? false));
+      if (resolvedXref) {
+        covered += 1;
+        continue;
+      }
+      missing.push(
+        hasActionHints(e)
+          ? `${e.id} — actionHints present but low-value (templated/empty/unresolved cross-refs)`
+          : `${e.id} — no actionHints`,
+      );
     }
     categories.push({
       id: 'hint-coverage',
-      title: 'Critical/high entries carry actionHints',
+      title: 'Critical/high entries carry a meaningful actionHint',
       total,
       covered,
       score: pct(covered, total),

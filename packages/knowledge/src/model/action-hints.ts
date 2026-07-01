@@ -78,3 +78,38 @@ export function hasActionHints(entry: { actionHints?: IActionHints }): boolean {
       a.writePolicy !== undefined,
   );
 }
+
+/**
+ * A command is a low-value placeholder when it has no concrete, runnable
+ * content once conventional `<…>` placeholders and whitespace are stripped —
+ * e.g. a bare `<command>` an agent dropped in to clear a presence gate. A
+ * genuinely parameterized command (`shrk gen <template> <name>`) keeps concrete
+ * tokens (`shrk gen`) and is NOT a placeholder.
+ */
+export function isPlaceholderCommand(command: string): boolean {
+  return command.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().length === 0;
+}
+
+/**
+ * Quality-aware successor to {@link hasActionHints}: true only when the entry
+ * carries SUBSTANTIVE, actionable guidance — a concrete (non-placeholder)
+ * command, an MCP tool, a verification command, a preferred flow, or a non-empty
+ * forbidden-action / safety note. The presence-only signals an agent can bolt on
+ * to game a coverage gate — an empty hints object, a lone `requiresHumanReview`,
+ * a bare `writePolicy`, a `<command>` placeholder — do NOT count. Cross-
+ * references (related*) are deliberately excluded here: their value depends on
+ * RESOLUTION, so the corpus-level caller credits them only when they resolve.
+ */
+export function hasMeaningfulActionHints(entry: { actionHints?: IActionHints }): boolean {
+  const a = entry.actionHints;
+  if (!a) return false;
+  if (a.commands?.some((c) => typeof c.command === 'string' && !isPlaceholderCommand(c.command))) {
+    return true;
+  }
+  if (a.mcpTools && a.mcpTools.length > 0) return true;
+  if (a.verificationCommands?.some((c) => c.trim().length > 0)) return true;
+  if (a.preferredFlow?.some((s) => s.trim().length > 0)) return true;
+  if (a.forbiddenActions?.some((s) => s.trim().length > 0)) return true;
+  if (a.safetyNotes?.some((s) => s.trim().length > 0)) return true;
+  return false;
+}

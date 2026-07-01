@@ -25,7 +25,7 @@ import { FrameworkQueryApi, FrameworkStore } from '@shrkcrft/framework-scanners'
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { compactArrayToColumnar } from '@shrkcrft/compress';
-import { flagBool, flagPositiveInt, flagString, resolveCwd, type ParsedArgs } from '../command-registry.ts';
+import { flagBool, flagNumber, flagPositiveInt, flagString, resolveCwd, type ParsedArgs } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { maybeRunInWatchMode } from '../output/watch-loop.ts';
 
@@ -88,6 +88,23 @@ const CORRUPT_HINT = 'code graph store is corrupt — run `shrk graph index` to 
  * runGraphCallers). Kept in sync with the MCP `get_graph_context` tool.
  */
 const CONTEXT_LIST_CAP = 50;
+
+/**
+ * Resolve a `--limit N` per-list cap for the graph read commands. Absent → the
+ * command's `fallback` (the historical default — 50 for `context`, 200 for
+ * `callers`/`impact`); `--limit 0` (or any non-positive) → unbounded so a
+ * consumer can pull the full set off a high-fan-in barrel/hub in one call.
+ * Returns `Infinity` for the unbounded case: `arr.slice(0, Infinity)` yields
+ * every row and `len > Infinity` is `false`, so the `<list>Truncated` flag stays
+ * honest (never "truncated" when nothing was dropped). Malformed `--limit abc`
+ * (NaN) degrades to `fallback`, matching `flagPositiveInt`.
+ */
+function resolveListLimit(args: ParsedArgs, fallback: number): number {
+  const v = flagNumber(args, 'limit');
+  if (v === undefined) return fallback;
+  if (v <= 0) return Number.POSITIVE_INFINITY;
+  return Math.floor(v);
+}
 
 /**
  * Refresh-by-default: incrementally reindex changed/deleted files BEFORE
@@ -735,10 +752,11 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
   const wantJson = flagBool(args, 'json');
   const target = args.positional[1];
   if (!target) {
-    process.stderr.write('Usage: shrk graph context <fileOrSymbol> [--depth N] [--no-bridge] [--no-framework]\n');
+    process.stderr.write('Usage: shrk graph context <fileOrSymbol> [--depth N] [--limit N|0] [--no-bridge] [--no-framework]\n');
     return 2;
   }
   const depth = Math.min(3, flagPositiveInt(args, 'depth', 1));
+  const cap = resolveListLimit(args, CONTEXT_LIST_CAP);
   const includeBridge = !flagBool(args, 'no-bridge');
   const includeFramework = !flagBool(args, 'no-framework');
   maybeRefresh(args, cwd);
@@ -786,13 +804,13 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
   const importsFromAll = neighbours.out.filter((o) => o.edge.kind === 'imports-file');
   const importedByAll = neighbours.in.filter((i) => i.edge.kind === 'imports-file');
   const importsFromList = importsFromAll
-    .slice(0, CONTEXT_LIST_CAP)
+    .slice(0, cap)
     .map((o) => ('target' in o ? targetSummary(o.target) : { id: 'unknown', resolved: false }));
   const importedByList = importedByAll
-    .slice(0, CONTEXT_LIST_CAP)
+    .slice(0, cap)
     .map((i) => ('source' in i ? sourceSummary(i.source) : { id: 'unknown', resolved: false }));
-  const referencedByList = references.slice(0, CONTEXT_LIST_CAP).map(nodeSummary);
-  const calledByList = callers.slice(0, CONTEXT_LIST_CAP).map(nodeSummary);
+  const referencedByList = references.slice(0, cap).map(nodeSummary);
+  const calledByList = callers.slice(0, cap).map(nodeSummary);
   // Staleness over the anchor + every referenced file: drop dead paths from the
   // usage lists, flag changed ones.
   const ctxPathOf = (x: { path?: string }): string | undefined => x.path;
@@ -812,19 +830,19 @@ export async function runGraphContext(args: ParsedArgs): Promise<number> {
     depth,
     importsFrom: ctxDropDel(importsFromList),
     totalImportsFrom: importsFromAll.length,
-    importsFromTruncated: importsFromAll.length > CONTEXT_LIST_CAP,
+    importsFromTruncated: importsFromAll.length > cap,
     importedBy: ctxDropDel(importedByList),
     totalImportedBy: importedByAll.length,
-    importedByTruncated: importedByAll.length > CONTEXT_LIST_CAP,
-    symbols: symbols.slice(0, 50).map(nodeSummary),
+    importedByTruncated: importedByAll.length > cap,
+    symbols: symbols.slice(0, cap).map(nodeSummary),
     referencedBy: ctxDropDel(referencedByList),
     totalReferencedBy: references.length,
-    referencedByTruncated: references.length > CONTEXT_LIST_CAP,
+    referencedByTruncated: references.length > cap,
     calledBy: ctxDropDel(calledByList),
     totalCalledBy: callers.length,
-    calledByTruncated: callers.length > CONTEXT_LIST_CAP,
-    ...(subtypes.length > 0 ? { subtypes: subtypes.slice(0, 50).map(nodeSummary) } : {}),
-    ...(supertypes.length > 0 ? { supertypes: supertypes.slice(0, 50).map(nodeSummary) } : {}),
+    calledByTruncated: callers.length > cap,
+    ...(subtypes.length > 0 ? { subtypes: subtypes.slice(0, cap).map(nodeSummary) } : {}),
+    ...(supertypes.length > 0 ? { supertypes: supertypes.slice(0, cap).map(nodeSummary) } : {}),
     ...(fresh.field ?? {}),
     bridge: bridgeFor
       ? {
@@ -943,12 +961,12 @@ export async function runGraphImpact(args: ParsedArgs): Promise<number> {
   const target = args.positional[1];
   if (!target) {
     process.stderr.write(
-      'Usage: shrk graph impact <fileOrSymbol> [--max-depth N] [--limit N] [--full]\n',
+      'Usage: shrk graph impact <fileOrSymbol> [--max-depth N] [--limit N|0] [--full]\n',
     );
     return 2;
   }
   const maxDepth = Math.min(10, flagPositiveInt(args, 'max-depth', 5));
-  const limit = flagPositiveInt(args, 'limit', 200);
+  const limit = resolveListLimit(args, 200);
   maybeRefresh(args, cwd);
 
   // --full → delegate to the impact-engine for a richer v3 payload.
@@ -1030,7 +1048,8 @@ export async function runGraphImpact(args: ParsedArgs): Promise<number> {
     schema: 'sharkcraft.graph-impact/v1',
     anchor: nodeSummary(anchor),
     maxDepth,
-    limit,
+    // 0 signals "unbounded" (`--limit 0`); JSON can't carry Infinity.
+    limit: Number.isFinite(limit) ? limit : 0,
     truncated: closure.truncated,
     directDependents: liveDirect,
     transitiveDependents: liveTransitive,
@@ -1146,16 +1165,15 @@ export async function runGraphCallers(args: ParsedArgs): Promise<number> {
   const wantJson = flagBool(args, 'json');
   const target = args.positional[1];
   if (!target) {
-    process.stderr.write('Usage: shrk graph callers <symbol> [--mode call|reference] [--limit N] [--no-refresh]\n');
+    process.stderr.write('Usage: shrk graph callers <symbol> [--mode call|reference] [--limit N|0] [--no-refresh]\n');
     return 2;
   }
   const mode = (flagString(args, 'mode') ?? 'call') as 'call' | 'reference';
-  // --limit N: cap the returned call sites (default 200). `total` still reports
-  // the true uncapped count, so a truncated result stays honest. Guard against
-  // non-numeric input — `Number('foo')` is NaN and `slice(0, NaN)` would zero
-  // the callers list while `total` kept showing the real count.
-  const parsedLimit = Number.parseInt(flagString(args, 'limit') ?? '200', 10);
-  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 200;
+  // --limit N: cap the returned call sites (default 200; `--limit 0` = all).
+  // `total` still reports the true uncapped count, so a truncated result stays
+  // honest. resolveListLimit guards non-numeric input (NaN → fallback) so a
+  // fat-fingered `--limit foo` can't zero the list via `slice(0, NaN)`.
+  const limit = resolveListLimit(args, 200);
   maybeRefresh(args, cwd);
   const api = loadOrFail(cwd, wantJson);
   if (!api) return 1;

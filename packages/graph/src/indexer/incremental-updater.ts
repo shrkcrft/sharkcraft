@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { execSync } from 'node:child_process';
+import { runGitLines } from '@shrkcrft/shared';
 import type { IEdge } from '../schema/edge.ts';
 import { EdgeKind } from '../schema/edge-kind.ts';
 import type { IFileFingerprint } from '../schema/file-fingerprint.ts';
@@ -390,19 +390,9 @@ export function detectChangedAndDeleted(projectRoot: string): {
  * a tag). Returns project-relative POSIX paths. Errors → empty list.
  */
 export function changedFilesSince(projectRoot: string, ref: string): readonly string[] {
-  try {
-    const raw = execSync(`git diff --name-only ${ref}`, {
-      cwd: projectRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    return raw
-      .split('\n')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-  } catch {
-    return [];
-  }
+  // Shell-free + high-maxBuffer: a large changeset no longer ENOBUFS-crashes
+  // the incremental graph update. Failure → [] (caller falls back to a full scan).
+  return runGitLines(projectRoot, ['diff', '--name-only', ref]).lines;
 }
 
 // ── helpers ───────────────────────────────────────────────────────────

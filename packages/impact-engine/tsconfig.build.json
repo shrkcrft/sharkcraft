@@ -13,6 +13,9 @@
       ],
       "@shrkcrft/rule-graph": [
         "../rule-graph/dist/index.d.ts"
+      ],
+      "@shrkcrft/shared": [
+        "../shared/dist/index.d.ts"
       ]
     },
     "tsBuildInfoFile": "./dist/.tsbuildinfo"

@@ -74,6 +74,17 @@ export interface ISharkCraftConfig {
   registries?: readonly IRegistryDeclaration[];
 
   /**
+   * DI/registration idioms — the runtime-wiring graph plane. Each idiom names
+   * the three roles (declared / provided / consumed) of a token-space, reusing
+   * the wiring `{ files, pattern | arrayProperty }` extractor. Queried via
+   * `shrk wiring chain <token>` (declared → provided → consumed with file:line),
+   * `shrk wiring unprovided` (declared/injected but never provided — the
+   * silent-at-runtime class), and `shrk wiring orphans` (provided, nothing
+   * consumes). Generic + deterministic; projects/packs supply the idiom shapes.
+   */
+  registrationGraph?: readonly IRegistrationIdiom[];
+
+  /**
    * Policy-lint rules — the template/style/ts content plane (markup + inline
    * `template:` strings, stylesheets, AOT-invisible TS shapes). Run via
    * `shrk policy-lint`. Generic + deterministic; projects supply the patterns.
@@ -135,6 +146,9 @@ import type { IWiringRule } from '@shrkcrft/core';
 // Registry declarations live in core too; re-export for config consumers.
 export type { IRegistryDeclaration } from '@shrkcrft/core';
 import type { IRegistryDeclaration } from '@shrkcrft/core';
+// Registration idioms (the DI/wiring graph plane) also live in core.
+export type { IRegistrationIdiom } from '@shrkcrft/core';
+import type { IRegistrationIdiom } from '@shrkcrft/core';
 // Policy-lint + reuse contracts also live in core; re-export for consumers.
 export type { IPolicyRule, PolicySurface, IReusePrimitive } from '@shrkcrft/core';
 import type { IPolicyRule, IReusePrimitive } from '@shrkcrft/core';

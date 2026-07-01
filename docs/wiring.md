@@ -147,6 +147,106 @@ Exit code is `1` when any `error`-severity rule has a violation, `0`
 otherwise. `--changed-only` makes it cheap and diff-aware for pre-commit hooks
 and CI.
 
+## Inspecting a rule before you commit it (`explain` / `test`)
+
+Authoring a wiring rule is a tuning loop: a rule is only as good as the
+alias-resolved set-difference it computes, and that set is invisible until you
+run the gate. Two read-only commands surface it **without writing config**:
+
+```bash
+shrk wiring explain <ruleId>          # dry-run ONE configured rule
+shrk wiring test <candidate.json>     # dry-run an EPHEMERAL candidate rule
+shrk wiring test '{"id":"x","declared":{…},"registered":{…}}'   # inline JSON
+```
+
+Both print, with `file:line` at every site:
+
+- the **declared set** the rule extracted,
+- the **registered set** (union of all registered sources) it extracted,
+- the **set-difference** (`declared but NOT registered`, plus `registered but
+  NOT declared` in `parity` mode),
+- the verdict and any misconfiguration diagnostics.
+
+`explain` resolves the rule from `sharkcraft.config.ts`; `test` takes a
+candidate rule as a `.json` file or inline JSON, so you can iterate on a
+pattern against the live tree before committing it. `shrk check wiring --explain
+<ruleId>` is the same view reachable from the gate. (Mirrors the
+`search tuning explain` dry-run.)
+
+## The registration / DI graph (`chain` / `unprovided` / `orphans`)
+
+Wiring **rules** answer one fixed pass/fail question. The complementary
+**registration graph** models the three roles a token plays so you can *query*
+runtime wiring imports can't see:
+
+- **declared** — where a token/provider is defined (an injection token, an
+  `@Injectable` class, a capability definition);
+- **provided** — where it is registered into a composition (a `providers: [...]`
+  array, a kernel `register*()` call, a module import);
+- **consumed** — where it is injected/used (`@Inject(X)`, a constructor param,
+  an `inject(X)` call, a `useX()` hook).
+
+You declare the idiom *shapes* as data — each role reuses the same `{ files,
+pattern | arrayProperty }` extractor as a wiring rule — under
+`registrationGraph[]` in `sharkcraft.config.ts` (a framework pack can contribute
+them via the `registrationGraphFiles` slot, same as `wiringRules`):
+
+```ts
+export default {
+  registrationGraph: [
+    {
+      name: 'di-providers',
+      declared: { files: ['src/**/*.ts'], pattern: "export const (\\w+) = new InjectionToken" },
+      provided: { files: ['src/**/*.ts'], arrayProperty: 'providers' },
+      consumed: { files: ['src/**/*.ts'], pattern: "inject\\((\\w+)\\)" },
+    },
+  ],
+};
+```
+
+Then query it:
+
+```bash
+shrk wiring chain <token>     # declared → provided → consumed, file:line per hop + verdict
+shrk wiring unprovided        # tokens declared/injected but NEVER provided
+shrk wiring orphans           # tokens provided but NOTHING consumes them
+```
+
+- **`unprovided`** is the silent-at-runtime class: typecheck/AOT-green, but the
+  provider is never registered (or the injected token has no provider anywhere),
+  so it resolves to `undefined` at runtime. Exit `1` when any are found.
+- **`orphans`** is a build-clean dead registration — a provider nothing injects,
+  often a renamed/removed consumer. Advisory (exit `0`).
+- **`chain`** is the full hop-by-hop trace for one token, tagged
+  `wired` / `unprovided` / `orphan`.
+
+This is the natural superset of the "is X registered" wiring rules: a real
+registration graph turns the question from a hand-authored regex into a query
+(schema `sharkcraft.registration-graph/v1`).
+
+The scan is **cached by the code-graph digest** (`.sharkcraft/cache/`), so
+repeated session queries (`chain` + `unprovided` + `orphans`) reuse one scan; a
+reindex rotates the digest and invalidates it. `chain`/`orphans` on a single
+token are naturally cheap; `unprovided` is the repo-wide sweep.
+
+**On-demand, by design.** The graph is built on demand from the idiom specs
+rather than persisted as new edge kinds in the incremental-reindex hot path —
+that keeps a noisy/wrong idiom spec contained (it can't pollute `impact` /
+`callers`), and the queries don't need persistence. The spec's three roles
+(`declared` / `provided` / `consumed`) and its site records (`{ idiom, file, line
+}`) map one-to-one onto future `provides` / `registers` / `consumes` edges, so
+persisting them later is a **storage change, not a redesign**.
+
+## Tracing a raw string contract (`trace literal`)
+
+When two sides of a fence deliberately **duplicate a string literal** (a kind
+slug, a permission id, a route key) so the type system can't link them,
+`shrk trace literal "<string>"` finds every occurrence of that exact literal,
+**classified by direction** (declare → register → consume) and alias-resolved
+(`const X = "lit"` bindings and their uses), across files and layers — the chain
+grep can't give. See also [registry-inventory](./registry-inventory.md) for the
+pre-declared-registry variant (`registry … where`).
+
 ## In the quality gate
 
 When `wiringRules[]` is present, the `wiring` gate runs as part of

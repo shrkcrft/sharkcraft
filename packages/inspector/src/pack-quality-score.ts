@@ -1,4 +1,9 @@
 import { CONTRIBUTION_FILE_KEYS } from '@shrkcrft/plugin-api';
+import {
+  hasMeaningfulActionHints,
+  KNOWLEDGE_TYPES_NO_ACTION,
+  type KnowledgeType,
+} from '@shrkcrft/knowledge';
 import type { IDiscoveredPack } from '@shrkcrft/packs';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { lintTemplates } from './template-lint.ts';
@@ -170,19 +175,25 @@ export function scorePack(
     notes: pipFromPack.length === 0 ? ['No pipelines contributed'] : [],
   });
 
-  // Action hints presence.
+  // Action hints QUALITY (not mere presence): score only entries that carry a
+  // substantive, non-templated hint, and exempt purely-descriptive types
+  // (business/decision) from the denominator so a pack can't game the gate with
+  // hollow metadata on context-only entries.
   const packEntries = inspection.knowledgeEntries.filter((e) =>
     inspection.entrySources.get(e.id)?.packageName === pack.packageName,
   );
-  const entriesWithHints = packEntries.filter((e) =>
-    (e as { actionHints?: unknown }).actionHints !== undefined,
-  ).length;
+  const actionable = packEntries.filter(
+    (e) => e.noAction !== true && !KNOWLEDGE_TYPES_NO_ACTION.has(e.type as KnowledgeType),
+  );
+  const entriesWithMeaningfulHints = actionable.filter((e) => hasMeaningfulActionHints(e)).length;
+  const hollow = actionable.length - entriesWithMeaningfulHints;
   dims.push({
     id: 'action-hints',
-    label: 'Action hints',
-    score: packEntries.length === 0 ? 70 : Math.round((entriesWithHints / packEntries.length) * 100),
+    label: 'Action hints quality',
+    score:
+      actionable.length === 0 ? 70 : Math.round((entriesWithMeaningfulHints / actionable.length) * 100),
     weight: 0.6,
-    notes: [],
+    notes: hollow > 0 ? [`${hollow} entry(ies) lack a meaningful (non-templated) actionHint`] : [],
   });
 
   // Duplicate ids guard.

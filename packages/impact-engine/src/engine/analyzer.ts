@@ -1,4 +1,3 @@
-import { execSync } from 'node:child_process';
 import {
   EdgeKind,
   GraphQueryApi,
@@ -10,6 +9,7 @@ import {
   BridgeStore,
   RuleGraphQueryApi,
 } from '@shrkcrft/rule-graph';
+import { runGitLines } from '@shrkcrft/shared';
 import {
   GRAPH_IMPACT_SCHEMA,
   type IAffectedAssetRef,
@@ -378,19 +378,9 @@ function missingGraphPayload(
 }
 
 function changedFilesSince(projectRoot: string, ref: string): readonly string[] {
-  try {
-    const raw = execSync(`git diff --name-only ${ref}`, {
-      cwd: projectRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    return raw
-      .split('\n')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-  } catch {
-    return [];
-  }
+  // Shell-free + high-maxBuffer: a large changeset no longer ENOBUFS-crashes
+  // the gitref impact analysis. Failure → [] (caller degrades cleanly).
+  return runGitLines(projectRoot, ['diff', '--name-only', ref]).lines;
 }
 
 /** Schema id for a {@link findDeletedOrphans} report. */

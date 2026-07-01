@@ -104,7 +104,7 @@ shrk apply plan.json --verify-signature --validate  # fails on boundary violatio
 If the right column doesn't look like a problem you have, **stop
 here and just use Claude Skills.** This README is honest about that.
 
-> Status: **0.1.0-alpha.23**. APIs may shift. Bun ≥ 1.1 is the primary runtime.
+> Status: **0.1.0-alpha.24**. APIs may shift. Bun ≥ 1.1 is the primary runtime.
 > Release notes: [`docs/releases/0.1.0-alpha.2.md`](docs/releases/0.1.0-alpha.2.md) ·
 > known limitations: [`docs/public-alpha-limitations.md`](docs/public-alpha-limitations.md) ·
 > external quickstart: [`docs/external-repo-quickstart.md`](docs/external-repo-quickstart.md).

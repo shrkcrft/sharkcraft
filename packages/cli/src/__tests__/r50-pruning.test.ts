@@ -165,7 +165,13 @@ describe('surface lockdown holds', () => {
     // ownership {list/for/affected} — +24 entries. `commands doctor` now also
     // flags any registered group missing a catalog entry, so this can't
     // regress silently. Ceiling 425.
-    expect(COMMAND_CATALOG.length).toBeLessThan(425);
+    // The a23 runtime-wiring/write-safety round (prompts/round-a23-feature-ideas.md)
+    // adds 8 entries: `check orphans` (diff-robust reverse-closure write-safety
+    // guard), `finish` (composite changed-only gate), `wiring explain`/`wiring
+    // test` (author-loop dry-runs), and the registration/DI graph surface
+    // `wiring chain`/`wiring unprovided`/`wiring orphans` + `trace literal`
+    // (cross-fence string-contract tracer). Ceiling 435.
+    expect(COMMAND_CATALOG.length).toBeLessThan(435);
     // Sanity: not absurdly small.
     expect(COMMAND_CATALOG.length).toBeGreaterThan(250);
   });

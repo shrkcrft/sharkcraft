@@ -486,6 +486,15 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     taskRole: CommandTaskRole.Validate,
   }),
   entry({
+    command: 'check orphans',
+    description:
+      'Write-safety guard: after deleting file(s)/export(s), finds surviving files that still import them or reference a symbol they declared — alias-resolved, incl. barrel re-exports the type checker misses. Reverse-closure over the diff vs --since (or --staged) against the code-graph snapshot; each survivor reported with file:line. [--since <ref>] [--staged] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
     command: 'policy-lint',
     description:
       'Lint template/markup, stylesheet, and AOT-invisible TS surfaces against config-defined policyRules[] — sees `.html` files AND inline `template:` strings that tsc/AOT cannot. Deterministic; no AI. [--surface template|style|ts] [--changed-only] [--only <ids>] [--json]',
@@ -493,6 +502,51 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Common,
     taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'wiring explain',
+    description:
+      'Dry-run ONE configured wiringRule and print the declared set + registered set it extracts (token + file:line), the alias-resolved set-difference, and the verdict — the author-loop view of what `check wiring` sees, without re-running the gate. [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Explain,
+  }),
+  entry({
+    command: 'wiring test',
+    description:
+      'Dry-run an EPHEMERAL candidate wiring rule (a .json file or inline JSON) against the live tree — see the declared/registered sets + diff it would produce before committing it to sharkcraft.config.ts. Never writes config. [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Explain,
+  }),
+  entry({
+    command: 'wiring chain',
+    description:
+      'Registration/DI graph query: the declared → provided → consumed chain of a token across files/layers, alias-resolved, with file:line at each hop + a verdict (wired / unprovided / orphan). Models runtime wiring imports can\'t see. Idioms from sharkcraft.config.ts registrationGraph[]. [--json]',
+    category: 'analysis',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'wiring unprovided',
+    description:
+      'Registration/DI graph query: tokens DECLARED or INJECTED but never PROVIDED — the silent-at-runtime class (typecheck/AOT-green, resolves to undefined at runtime). The write-safety check imports/grep structurally can\'t do. [--json]',
+    category: 'analysis',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'wiring orphans',
+    description:
+      'Registration/DI graph query: tokens PROVIDED/registered that nothing CONSUMES — a build-clean dead registration (or a sign the consumer was renamed/removed). [--json]',
+    category: 'analysis',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Inspect,
   }),
   entry({
     command: 'reuse',
@@ -509,6 +563,15 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'core',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'finish',
+    description:
+      'Composite "is this changeset safe to finish?" gate: EXECUTES boundaries + import-hygiene + wiring + policy + deleted-orphans changed-only inline, plus an impact summary, and returns ONE pass/fail. The trustworthy "done?" call after editing — superset of diff-check; honors 0-rules→skipped. Read-only. [files… | --staged | --since <ref>] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Common,
     taskRole: CommandTaskRole.Validate,
   }),
@@ -1775,6 +1838,15 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'analysis',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
+  }),
+  entry({
+    command: 'trace literal',
+    description:
+      'Trace an EXACT string literal across the codebase, classified by direction: declare → register → consume sites of a cross-fence contract (kind slug, permission id, route key) the type system can\'t link and grep can\'t classify. Resolves `const X = "lit"` aliases. Generalizes `registry … where` to any literal — no pre-declared registry. [--glob <g>] [--no-aliases] [--limit N] [--json]',
+    category: 'analysis',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Inspect,
   }),
   entry({
     command: 'feedback',
@@ -3840,6 +3912,7 @@ const PRIMARY_VERBS_ALLOWLIST: ReadonlySet<string> = new Set([
   'gen',
   'apply',
   'check',
+  'finish',
   'quality',
   'plan',
   'fix',
@@ -3903,6 +3976,34 @@ export function defaultShowInHelp(e: ICommandCatalogEntry): boolean {
   if (!PRIMARY_VERBS_ALLOWLIST.has(verb)) return false;
   const surface = commandSurface(e);
   return surface === CommandSurface.Primary || surface === CommandSurface.Common;
+}
+
+/**
+ * The "explain / dry-run" command family: entries that show you what a gate,
+ * ranker, or graph *sees* before you act (`search tuning explain`, `wiring
+ * explain`/`wiring test`, `boundaries explain`, `surface explain`, …). Several
+ * carry an Advanced surface, so {@link defaultShowInHelp} hides them despite
+ * being high-value — which is exactly why an agent finds them only by guessing.
+ * `shrk --full-help` lists this family in a dedicated section so they stop
+ * being hidden. Returns callable entries only (retired/deprecated/alias and
+ * R46-pruned are excluded), sorted by command.
+ */
+export function listExplainFamily(): readonly ICommandCatalogEntry[] {
+  return COMMAND_CATALOG.filter((e) => {
+    const lc = commandLifecycle(e);
+    if (
+      lc === CommandLifecycle.Deprecated ||
+      lc === CommandLifecycle.Retired ||
+      lc === CommandLifecycle.Alias
+    ) {
+      return false;
+    }
+    if (R46_OVERLAY[e.command]) return false;
+    const role = commandTaskRole(e);
+    return role === CommandTaskRole.Explain || /(^|\s)explain$/.test(e.command);
+  })
+    .slice()
+    .sort((a, b) => a.command.localeCompare(b.command));
 }
 
 /**

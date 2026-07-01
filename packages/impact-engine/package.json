@@ -1,6 +1,6 @@
 {
   "name": "@shrkcrft/impact-engine",
-  "version": "0.1.0-alpha.23",
+  "version": "0.1.0-alpha.24",
   "description": "SharkCraft impact engine: graph-backed change analysis. Combines code graph + rule-graph + symbol-reference edges into a v3 impact payload (affected files, symbols, rules, templates, tests, risk).",
   "license": "MIT",
   "author": "SharkCraft contributors",
@@ -46,7 +46,8 @@
   "dependencies": {
     "@shrkcrft/core": "workspace:*",
     "@shrkcrft/graph": "workspace:*",
-    "@shrkcrft/rule-graph": "workspace:*"
+    "@shrkcrft/rule-graph": "workspace:*",
+    "@shrkcrft/shared": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

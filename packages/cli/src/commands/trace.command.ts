@@ -13,6 +13,11 @@ import {
   type IQueryMatch,
 } from '@shrkcrft/inspector';
 import {
+  traceLiteral,
+  TraceRole,
+  type ITraceReport,
+} from '@shrkcrft/boundaries';
+import {
   flagBool,
   flagList,
   flagNumber,
@@ -21,19 +26,92 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
-import { asJson, header } from '../output/format-output.ts';
+import { asJson, header, kv } from '../output/format-output.ts';
 
 function describeMatch(m: IQueryMatch): string {
   return `${m.kind.padEnd(12)} ${m.id}${m.label && m.label !== m.id ? ` — ${m.label}` : ''} [${m.score.toFixed(0)}]`;
 }
 
+const LITERAL_SITE_CAP = 30;
+const TRACE_ROLE_ORDER: readonly TraceRole[] = [
+  TraceRole.Declare,
+  TraceRole.Register,
+  TraceRole.Consume,
+  TraceRole.Reference,
+];
+
+function renderTraceLiteral(report: ITraceReport, limit: number): void {
+  process.stdout.write(header(`Trace literal: "${report.literal}"`));
+  process.stdout.write(kv('found', `${report.total} site(s) across ${report.files} file(s)`) + '\n');
+  if (report.aliases.length > 0) {
+    process.stdout.write(kv('const aliases', report.aliases.join(', ')) + '\n');
+  }
+  if (report.total === 0) {
+    process.stdout.write('\nNo occurrences of that exact string literal in scope.\n');
+    return;
+  }
+  // Mirror `shrk registry <name> where`'s `<role>  file:line` line idiom so the
+  // two surfaces read the same — `trace literal` is the same scanner + classifier
+  // without a pre-declared registry, just with two extra roles (`registered`,
+  // `reference`). The raw source line stays in `--json` (`text`); the human view
+  // is classification-first (direction), not a grep-style text dump.
+  process.stdout.write('\n');
+  for (const role of TRACE_ROLE_ORDER) {
+    const sites = report.byRole[role];
+    for (const s of sites.slice(0, limit)) {
+      const alias = s.viaAlias ? ` [via ${s.viaAlias}]` : '';
+      process.stdout.write(`  ${role.padEnd(10)} ${s.file}:${s.line}${alias}\n`);
+    }
+    if (sites.length > limit) {
+      process.stdout.write(`  ${role.padEnd(10)} … (${sites.length - limit} more — pass --json)\n`);
+    }
+  }
+}
+
+/**
+ * `shrk trace literal "<string>"`: trace an EXACT string literal across the
+ * codebase, classified by direction (declare → register → consume), resolving
+ * `const X = "lit"` aliases too. Generalizes `registry … where` to any
+ * cross-fence string contract (a kind slug, permission id, route key) with no
+ * pre-declared registry — the chain grep can't give (direction + role + layer).
+ */
+function runTraceLiteral(args: ParsedArgs): number {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json');
+  // `trace literal "<lit>"` → the literal is positional[1] (quoted by the user
+  // so an internal space stays one token); join the rest defensively.
+  const literal = args.positional.slice(1).join(' ');
+  if (literal === '') {
+    process.stderr.write(
+      'Usage: shrk trace literal "<string>" [--glob <g1,g2>] [--no-aliases] [--limit N] [--json]\n',
+    );
+    return 2;
+  }
+  const globs = flagList(args, 'glob');
+  const report = traceLiteral(cwd, literal, {
+    ...(globs.length > 0 ? { globs } : {}),
+    resolveAliases: !flagBool(args, 'no-aliases'),
+  });
+  if (wantJson) {
+    process.stdout.write(asJson(report) + '\n');
+    return 0;
+  }
+  const limitRaw = flagNumber(args, 'limit');
+  const limit = limitRaw !== undefined && limitRaw > 0 ? Math.floor(limitRaw) : LITERAL_SITE_CAP;
+  renderTraceLiteral(report, limit);
+  return 0;
+}
+
 export const traceCommand: ICommandHandler = {
   name: 'trace',
   description:
-    'Fuzzy trace — accept any free-form query (file path, construct id, symbol, plugin key, helper id, template id, knowledge id, command). Read-only.',
+    'Fuzzy trace — accept any free-form query (file path, construct id, symbol, plugin key, helper id, template id, knowledge id, command). `trace literal "<string>"` traces an exact string literal\'s declare→register→consume chain across layers (alias-resolved). Read-only.',
   usage:
-    'shrk trace <query> [--limit <n>] [--kind file|construct|knowledge|template|helper|playbook|policy|command] [--deep] [--json]',
+    'shrk trace <query> | shrk trace literal "<string>" [--glob <g>] [--no-aliases] [--limit <n>] [--kind ...] [--deep] [--json]',
+  booleanFlags: new Set(['json', 'deep', 'no-aliases']),
   async run(args: ParsedArgs): Promise<number> {
+    // `trace literal "<lit>"` — cross-fence string-contract tracer (3.3).
+    if (args.positional[0] === 'literal') return runTraceLiteral(args);
     // Direct symbol trace via --symbol <Name>
     const symbol = flagString(args, 'symbol');
     if (symbol) {

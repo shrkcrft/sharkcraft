@@ -48,6 +48,23 @@ export class GraphStore {
     return existsSync(nodePath.join(this.storeDir, META_FILE));
   }
 
+  /**
+   * Read just the stored content digest from `meta.json` — cheap (no snapshot
+   * load), so a caller can key a derived cache on "has the graph changed?"
+   * without paying to load nodes/edges. Undefined if the store is
+   * absent/unreadable. The digest rotates on every reindex, so it is a sound
+   * invalidation key for anything computed from the current source tree.
+   */
+  manifestDigest(): string | undefined {
+    try {
+      const raw = readFileSync(nodePath.join(this.storeDir, META_FILE), 'utf8');
+      const digest = (JSON.parse(raw) as { digest?: unknown }).digest;
+      return typeof digest === 'string' ? digest : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   clear(): void {
     if (existsSync(this.storeDir)) {
       rmSync(this.storeDir, { recursive: true, force: true });

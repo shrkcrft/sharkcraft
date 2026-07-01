@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import * as os from 'node:os';
@@ -15,6 +15,7 @@ import {
   type IEnhancementStageResult,
 } from '@shrkcrft/ai';
 import { buildContext } from '@shrkcrft/context';
+import { runGitLines } from '@shrkcrft/shared';
 import { EdgeKind, GraphQueryApi, GraphStore, NodeKind, type INode } from '@shrkcrft/graph';
 import {
   buildProjectOverview,
@@ -2668,40 +2669,19 @@ function isSemanticAutomationDisabled(): boolean {
  * ripples through. Empty array on git failure or no-graph.
  */
 function collectChangedPathsWithNeighbors(cwd: string, gitRef: string): string[] {
-  // Use `node:child_process` spawnSync (works under both Bun and Node)
-  // instead of `Bun.spawnSync` so the CLI runs cleanly on a pure-Node
-  // runtime after `npm i -g @shrkcrft/cli`. The compat-node preflight
-  // gate flags `Bun.*` direct usages as publish blockers.
-  let changed: string[];
-  try {
-    const out = spawnSync('git', ['-C', cwd, 'diff', '--name-only', `${gitRef}...HEAD`], {
-      encoding: 'utf8',
-    });
-    if (out.status !== 0) return [];
-    changed = (out.stdout ?? '')
-      .split('\n')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-  } catch {
-    return [];
-  }
-  if (changed.length === 0) return [];
+  // `runGitLines` is shell-free + high-maxBuffer, so a large changeset can't
+  // ENOBUFS-crash the feedback bundle. (It also keeps the CLI on
+  // `node:child_process` rather than `Bun.*`, which the compat-node preflight
+  // gate flags as a publish blocker.)
+  const committed = runGitLines(cwd, ['diff', '--name-only', `${gitRef}...HEAD`]);
+  if (!committed.ok || committed.lines.length === 0) return [];
+  const changed: string[] = [...committed.lines];
 
   // Also include uncommitted changes — agent feedback should reflect
   // the *current* working tree, not just committed deltas.
-  try {
-    const out = spawnSync('git', ['-C', cwd, 'diff', '--name-only', 'HEAD'], {
-      encoding: 'utf8',
-    });
-    if (out.status === 0) {
-      const uncommitted = (out.stdout ?? '')
-        .split('\n')
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      for (const p of uncommitted) if (!changed.includes(p)) changed.push(p);
-    }
-  } catch {
-    // ignore
+  const uncommitted = runGitLines(cwd, ['diff', '--name-only', 'HEAD']);
+  if (uncommitted.ok) {
+    for (const p of uncommitted.lines) if (!changed.includes(p)) changed.push(p);
   }
 
   const set = new Set<string>(changed);

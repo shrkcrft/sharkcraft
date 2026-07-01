@@ -175,7 +175,7 @@
     },
     "packages/ai": {
       "name": "@shrkcrft/ai",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/context": "workspace:*",
         "@shrkcrft/core": "workspace:*",
@@ -184,7 +184,7 @@
     },
     "packages/api-surface-diff": {
       "name": "@shrkcrft/api-surface-diff",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/graph": "workspace:*",
@@ -193,7 +193,7 @@
     },
     "packages/architecture-guard": {
       "name": "@shrkcrft/architecture-guard",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/core": "workspace:*",
@@ -202,14 +202,14 @@
     },
     "packages/boundaries": {
       "name": "@shrkcrft/boundaries",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/cli": {
       "name": "@shrkcrft/cli",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "bin": {
         "shrk": "./dist/main.js",
       },
@@ -251,14 +251,14 @@
     },
     "packages/compress": {
       "name": "@shrkcrft/compress",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/config": {
       "name": "@shrkcrft/config",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "zod": "^3.25.0 || ^4.0.0",
@@ -266,7 +266,7 @@
     },
     "packages/context": {
       "name": "@shrkcrft/context",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -277,7 +277,7 @@
     },
     "packages/context-planner": {
       "name": "@shrkcrft/context-planner",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/graph": "workspace:*",
@@ -286,14 +286,14 @@
     },
     "packages/core": {
       "name": "@shrkcrft/core",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "jiti": "^2.7.0",
       },
     },
     "packages/dashboard": {
       "name": "@shrkcrft/dashboard",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/dashboard-api": "workspace:*",
         "react": "^18.3.0",
@@ -308,18 +308,18 @@
     },
     "packages/dashboard-api": {
       "name": "@shrkcrft/dashboard-api",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
     },
     "packages/embeddings": {
       "name": "@shrkcrft/embeddings",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@huggingface/transformers": "^3.7.5",
       },
     },
     "packages/framework-scanners": {
       "name": "@shrkcrft/framework-scanners",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/graph": "workspace:*",
@@ -329,7 +329,7 @@
     },
     "packages/generator": {
       "name": "@shrkcrft/generator",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/paths": "workspace:*",
@@ -339,26 +339,28 @@
     },
     "packages/graph": {
       "name": "@shrkcrft/graph",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/inspector": "workspace:*",
+        "@shrkcrft/shared": "workspace:*",
         "typescript": "^5.6.0",
       },
     },
     "packages/impact-engine": {
       "name": "@shrkcrft/impact-engine",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/graph": "workspace:*",
         "@shrkcrft/rule-graph": "workspace:*",
+        "@shrkcrft/shared": "workspace:*",
       },
     },
     "packages/importer": {
       "name": "@shrkcrft/importer",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -366,7 +368,7 @@
     },
     "packages/inspector": {
       "name": "@shrkcrft/inspector",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/config": "workspace:*",
@@ -389,14 +391,14 @@
     },
     "packages/knowledge": {
       "name": "@shrkcrft/knowledge",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/mcp-server": {
       "name": "@shrkcrft/mcp-server",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.0.0",
         "@shrkcrft/api-surface-diff": "workspace:*",
@@ -430,7 +432,7 @@
     },
     "packages/migrate": {
       "name": "@shrkcrft/migrate",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/structural-search": "workspace:*",
@@ -438,7 +440,7 @@
     },
     "packages/packs": {
       "name": "@shrkcrft/packs",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/plugin-api": "workspace:*",
@@ -446,7 +448,7 @@
     },
     "packages/paths": {
       "name": "@shrkcrft/paths",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -454,21 +456,21 @@
     },
     "packages/pipelines": {
       "name": "@shrkcrft/pipelines",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/plugin-api": {
       "name": "@shrkcrft/plugin-api",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/presets": {
       "name": "@shrkcrft/presets",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -477,7 +479,7 @@
     },
     "packages/quality-gates": {
       "name": "@shrkcrft/quality-gates",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/api-surface-diff": "workspace:*",
         "@shrkcrft/architecture-guard": "workspace:*",
@@ -492,7 +494,7 @@
     },
     "packages/rule-graph": {
       "name": "@shrkcrft/rule-graph",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/boundaries": "workspace:*",
         "@shrkcrft/core": "workspace:*",
@@ -503,7 +505,7 @@
     },
     "packages/rules": {
       "name": "@shrkcrft/rules",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "@shrkcrft/knowledge": "workspace:*",
@@ -511,11 +513,11 @@
     },
     "packages/shared": {
       "name": "@shrkcrft/shared",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
     },
     "packages/structural-search": {
       "name": "@shrkcrft/structural-search",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
         "typescript": "^5.5.0",
@@ -523,14 +525,14 @@
     },
     "packages/templates": {
       "name": "@shrkcrft/templates",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },
     },
     "packages/workspace": {
       "name": "@shrkcrft/workspace",
-      "version": "0.1.0-alpha.22",
+      "version": "0.1.0-alpha.24",
       "dependencies": {
         "@shrkcrft/core": "workspace:*",
       },

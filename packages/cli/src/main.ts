@@ -131,6 +131,7 @@ import {
 import { taskCommand } from './commands/task.command.ts';
 import { preflightCommand } from './commands/preflight.command.ts';
 import { checkCommand } from './commands/check.command.ts';
+import { finishCommand } from './commands/finish.command.ts';
 import { diffCheckCommand } from './commands/diff-check.command.ts';
 import { driftCommand } from './commands/drift.command.ts';
 import { graphCommand } from './commands/graph.command.ts';
@@ -142,6 +143,7 @@ import { frameworkCommand } from './commands/framework.command.ts';
 import { apiDiffCommand } from './commands/api-diff.command.ts';
 import { gateCommand } from './commands/gate.command.ts';
 import { policyLintCommand } from './commands/policy-lint.command.ts';
+import { wiringCommand } from './commands/wiring.command.ts';
 import { reuseCommand } from './commands/reuse.command.ts';
 import { migrateCommand } from './commands/migrate.command.ts';
 import { coverageCommand } from './commands/coverage.command.ts';
@@ -429,6 +431,7 @@ export function buildRegistry(): CommandRegistry {
   registry.register(explainCommand);
   registry.register(checkCommand);
   registry.register(diffCheckCommand);
+  registry.register(finishCommand);
   // changed-only preflight orchestrator.
   registry.register(preflightCommand);
   registry.register(driftCommand);
@@ -441,6 +444,7 @@ export function buildRegistry(): CommandRegistry {
   registry.register(apiDiffCommand);
   registry.register(gateCommand);
   registry.register(policyLintCommand);
+  registry.register(wiringCommand);
   registry.register(reuseCommand);
   registry.register(migrateCommand);
   registry.register(coverageCommand);

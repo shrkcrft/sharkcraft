@@ -31,7 +31,7 @@ import {
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { fuzzyImpactAmbiguousHints, renderFailureHints } from '../output/failure-hints.ts';
-import { collectChangedPaths } from '../diff/collect-changed-paths.ts';
+import { computeDeletedOrphans } from '../diff/deleted-orphans.ts';
 
 function collectFiles(
   args: ParsedArgs,
@@ -393,16 +393,22 @@ async function runDeletedOrphans(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const wantJson = flagBool(args, 'json') || flagString(args, 'format') === 'json';
   const sinceRef = flagString(args, 'since');
-  const changed = collectChangedPaths({ cwd, ...(sinceRef ? { ref: sinceRef } : {}) });
-  if (!changed.isAvailable) {
+  const staged = flagBool(args, 'staged');
+  const scan = await computeDeletedOrphans(cwd, {
+    ...(sinceRef ? { since: sinceRef } : {}),
+    ...(staged ? { staged: true } : {}),
+  });
+  if (!scan.ok) {
     if (wantJson) {
-      process.stdout.write(asJson({ ok: false, error: changed.error }) + '\n');
+      process.stdout.write(asJson({ ok: false, error: scan.error }) + '\n');
+    } else if (scan.reason === 'diff-unavailable') {
+      process.stderr.write(`Cannot resolve diff: ${scan.error ?? 'unknown'}\n`);
     } else {
-      process.stderr.write(`Cannot resolve diff: ${changed.error ?? 'unknown'}\n`);
+      process.stderr.write(`${scan.error ?? 'orphan check unavailable'}\n`);
     }
     return 2;
   }
-  const deleted = changed.deleted;
+  const deleted = scan.deleted;
   if (deleted.length === 0) {
     if (wantJson) {
       process.stdout.write(
@@ -411,36 +417,24 @@ async function runDeletedOrphans(args: ParsedArgs): Promise<number> {
           resolvedDeleted: [],
           unresolvedDeleted: [],
           orphans: [],
-          diagnostics: [`no deleted files in diff vs ${changed.ref}`],
+          diagnostics: [`no deleted files in diff vs ${scan.ref}`],
         }) + '\n',
       );
       return 0;
     }
     process.stdout.write(header('Deleted-symbol orphans'));
-    process.stdout.write(`No deleted files in diff vs ${changed.ref}.\n`);
+    process.stdout.write(`No deleted files in diff vs ${scan.ref}.\n`);
     return 0;
   }
 
-  const { GraphStore, GraphQueryApi } = await import('@shrkcrft/graph');
-  if (!new GraphStore(cwd).exists()) {
-    const msg = 'code-graph store missing — run `shrk graph index` first.';
-    if (wantJson) {
-      process.stdout.write(asJson({ ok: false, error: msg }) + '\n');
-    } else {
-      process.stderr.write(msg + '\n');
-    }
-    return 2;
-  }
-  const { findDeletedOrphans } = await import('@shrkcrft/impact-engine');
-  const report = findDeletedOrphans(GraphQueryApi.fromStore(cwd), deleted);
-
+  const report = scan.report!;
   if (wantJson) {
     process.stdout.write(asJson(report) + '\n');
     return report.orphans.length > 0 ? 1 : 0;
   }
 
   process.stdout.write(header('Deleted-symbol orphans'));
-  process.stdout.write(`Deleted files (vs ${changed.ref}): ${deleted.length}\n`);
+  process.stdout.write(`Deleted files (vs ${scan.ref}): ${deleted.length}\n`);
   if (report.orphans.length === 0) {
     process.stdout.write('no orphaned importers\n');
     for (const d of report.diagnostics.slice(0, 5)) process.stdout.write(`! ${d}\n`);

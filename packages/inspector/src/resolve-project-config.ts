@@ -26,6 +26,7 @@ import {
   ok,
   type AppError,
   type IPolicyRule,
+  type IRegistrationIdiom,
   type IRegistryDeclaration,
   type IReusePrimitive,
   type IWiringRule,
@@ -34,6 +35,7 @@ import {
 import {
   loadProjectConfig,
   PolicyRuleSchema,
+  RegistrationIdiomSchema,
   RegistryDeclarationSchema,
   ReusePrimitiveSchema,
   WiringRuleSchema,
@@ -148,7 +150,12 @@ async function mergePlane<T>(
 /** Collect every pack contribution file for one manifest slot across valid packs. */
 function gatherPackContribs(
   validPacks: readonly IDiscoveredPack[],
-  slot: 'wiringRuleFiles' | 'registryFiles' | 'policyRuleFiles' | 'reusePrimitiveFiles',
+  slot:
+    | 'wiringRuleFiles'
+    | 'registryFiles'
+    | 'registrationGraphFiles'
+    | 'policyRuleFiles'
+    | 'reusePrimitiveFiles',
 ): IPackContribFile[] {
   const out: IPackContribFile[] = [];
   for (const pack of validPacks) {
@@ -206,6 +213,14 @@ export async function resolveProjectConfig(
     'registry',
     diagnostics,
   );
+  const registrationGraph = await mergePlane<IRegistrationIdiom>(
+    base.config.registrationGraph ?? [],
+    gatherPackContribs(validPacks, 'registrationGraphFiles'),
+    RegistrationIdiomSchema as IPlaneSchema,
+    (r) => r.name,
+    'registrationIdiom',
+    diagnostics,
+  );
   const policyRules = await mergePlane<IPolicyRule>(
     base.config.policyRules ?? [],
     gatherPackContribs(validPacks, 'policyRuleFiles'),
@@ -225,7 +240,14 @@ export async function resolveProjectConfig(
 
   return ok({
     ...base,
-    config: { ...base.config, wiringRules, registries, policyRules, reusePrimitives },
+    config: {
+      ...base.config,
+      wiringRules,
+      registries,
+      registrationGraph,
+      policyRules,
+      reusePrimitives,
+    },
     planeDiagnostics: diagnostics,
   });
 }

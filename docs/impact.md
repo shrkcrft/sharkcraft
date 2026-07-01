@@ -147,6 +147,44 @@ The CLI prints which renderer was used (or the reason it was skipped:
 manifest records both the source artifacts and any SVGs in
 `impactSvgFiles` + `impactRenderDiagnostics`.
 
+## Delete safety — `check orphans`
+
+The reverse of impact: after you DELETE a file or export, which surviving files
+still import it or reference a symbol it declared? `tsc` misses a deleted barrel
+re-export or a string-keyed registration; the code graph doesn't.
+
+```bash
+shrk check orphans                 # vs the default branch (origin/main / main)
+shrk check orphans --since <ref>   # vs an explicit ref
+shrk check orphans --staged        # the staged (index) deletions
+shrk check orphans --json          # schema: sharkcraft.deleted-orphans/v1
+```
+
+It reads the deleted files from the diff and queries the **pre-edit graph
+snapshot** (a not-yet-reindexed delete still carries its inbound edges), so each
+surviving importer is reported with `file:line`, alias-resolved (incl. barrel
+re-exports). Exit `1` when any orphan survives. Nothing deleted → a loud
+`skipped`, never a green pass. The diff is streamed (no `ENOBUFS` on large
+changesets). This generalizes `shrk impact --deleted` into a first-class verb.
+
+## The composite "done?" gate — `shrk finish`
+
+`shrk finish` is the single call an agent runs after editing to ask *"is this
+changeset safe to complete?"*. It EXECUTES every deterministic changed-only gate
+inline — boundaries + import-hygiene + wiring + policy + deleted-orphans — plus
+an impact summary, and returns ONE pass/fail (schema `sharkcraft.finish/v1`).
+
+```bash
+shrk finish                  # worktree changes (default)
+shrk finish --staged         # staged changes
+shrk finish --since <ref>    # changes since <ref>
+shrk finish --json
+```
+
+A sub-gate with no applicable rules (no wiring rules, nothing deleted, …) is
+reported as `skipped`, not silently passed. A superset of `diff-check` (which
+runs only boundaries + imports).
+
 ## Limitations
 
 - Reverse-dependency closure uses the workspace import graph; node_modules

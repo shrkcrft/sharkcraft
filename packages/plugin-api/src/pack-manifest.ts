@@ -57,6 +57,14 @@ export interface ISharkCraftPackContributions {
    */
   registryFiles?: readonly string[];
   /**
+   * DI/registration idiom files — the runtime-wiring graph plane behind
+   * `shrk wiring chain|unprovided|orphans`. Each default-exports
+   * `readonly IRegistrationIdiom[]` (declared/provided/consumed shapes for a
+   * framework's DI). Merged local-wins by `name`. Lets a framework pack ship the
+   * idiom shape (e.g. NestJS providers) as data instead of every repo redeclaring it.
+   */
+  registrationGraphFiles?: readonly string[];
+  /**
    * Policy-lint rule files — the regex-over-surfaces plane read by
    * `shrk policy-lint`. Each default-exports `readonly IPolicyRule[]`, merged
    * local-wins by `id`.
@@ -159,6 +167,7 @@ export const CONTRIBUTION_FILE_KEYS = [
   'boundaryFiles',
   'wiringRuleFiles',
   'registryFiles',
+  'registrationGraphFiles',
   'policyRuleFiles',
   'reusePrimitiveFiles',
   'contextTestFiles',

@@ -717,6 +717,106 @@ describe('graph code-intelligence CLI subverbs', () => {
     }
   });
 
+  // ── 4.3: --limit N (and --limit 0 = all) on graph read commands ────────
+
+  function fanInFixture(importerCount: number): string {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-graph-cli-limit-'));
+    writeFileSync(
+      join(root, 'package.json'),
+      JSON.stringify({ name: 'demo', workspaces: ['packages/*'] }, null, 2),
+    );
+    mkdirSync(join(root, 'packages', 'p', 'src'), { recursive: true });
+    writeFileSync(
+      join(root, 'packages', 'p', 'package.json'),
+      JSON.stringify({ name: '@demo/p', main: 'src/core.ts' }, null, 2),
+    );
+    writeFileSync(join(root, 'packages', 'p', 'src', 'core.ts'), 'export const core = 1;\n');
+    for (let i = 0; i < importerCount; i += 1) {
+      writeFileSync(
+        join(root, 'packages', 'p', 'src', `u${i}.ts`),
+        `import { core } from './core.ts';\nexport const u${i} = core;\n`,
+      );
+    }
+    return root;
+  }
+
+  test('runGraphContext --limit 0 returns the full importer set (truncated=false)', async () => {
+    const root = fanInFixture(60);
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const args = withCwd(makeArgs(['context', 'packages/p/src/core.ts']), root);
+      args.flags.set('limit', '0');
+      const cap = capture();
+      const code = await runGraphContext(args);
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      // --limit 0 = all: every importer is returned and nothing is "truncated".
+      expect(json.importedBy.length).toBe(60);
+      expect(json.totalImportedBy).toBe(60);
+      expect(json.importedByTruncated).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphContext --limit N caps below the default and stays honest', async () => {
+    const root = fanInFixture(60);
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const args = withCwd(makeArgs(['context', 'packages/p/src/core.ts']), root);
+      args.flags.set('limit', '10');
+      const cap = capture();
+      const code = await runGraphContext(args);
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      expect(json.importedBy.length).toBe(10);
+      expect(json.totalImportedBy).toBe(60);
+      expect(json.importedByTruncated).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphCallers --limit 0 returns every caller site', async () => {
+    const root = symbolFixture();
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const args = withCwd(makeArgs(['callers', 'hello']), root);
+      args.flags.set('limit', '0');
+      const cap = capture();
+      const code = await runGraphCallers(args);
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      expect(json.callers.length).toBe(json.total);
+      expect(json.total).toBeGreaterThanOrEqual(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runGraphImpact --limit 0 reports limit:0 and never truncates', async () => {
+    const root = fanInFixture(60);
+    try {
+      capture().restore();
+      await runGraphIndex(withCwd(makeArgs(['index']), root));
+      const args = withCwd(makeArgs(['impact', 'packages/p/src/core.ts']), root);
+      args.flags.set('limit', '0');
+      const cap = capture();
+      const code = await runGraphImpact(args);
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      // 0 signals "unbounded" in the payload (JSON can't carry Infinity).
+      expect(json.limit).toBe(0);
+      expect(json.truncated).toBe(false);
+      expect(json.directDependents.length).toBe(60);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // ── 6.2: no-arg subverbs reject a stray positional ─────────────────────
 
   test('graph status/cycles/unresolved/index reject a stray positional', async () => {

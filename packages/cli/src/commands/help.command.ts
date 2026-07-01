@@ -1,6 +1,13 @@
 import type { CommandRegistry } from '../command-registry.ts';
 import { header } from '../output/format-output.ts';
-import { COMMAND_CATALOG, defaultShowInHelp } from './command-catalog.ts';
+import { COMMAND_CATALOG, defaultShowInHelp, listExplainFamily } from './command-catalog.ts';
+
+/** First sentence of a catalog description, for the compact explain-family list. */
+function firstSentence(description: string): string {
+  const dot = description.indexOf('. ');
+  const head = dot > 0 ? description.slice(0, dot + 1) : description;
+  return head.length > 100 ? head.slice(0, 97).trimEnd() + '…' : head;
+}
 
 const EXTRA_HELP_LINES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   graph: [
@@ -63,7 +70,7 @@ export function renderStartScreen(): string {
   lines.push('Discover the rest (everything stays callable — this screen shows ~17 of ~70 verbs):');
   lines.push('  $ shrk surface list              — full catalog by tier');
   lines.push('  $ shrk help <command>            — usage for a specific command');
-  lines.push('  $ shrk --full-help               — long, exhaustive help');
+  lines.push('  $ shrk --full-help               — long, exhaustive help (incl. the explain/dry-run family)');
   lines.push('  $ shrk --about                   — what shrk is and is not');
   lines.push('');
   lines.push('Free-form input is fine — `shrk "<task>"` routes to `shrk recommend`.');
@@ -194,6 +201,19 @@ export function makeHelpCommand(registry: CommandRegistry) {
           process.stdout.write(`  ${group} ${s.name.padEnd(10)} — ${s.description}\n`);
         }
       }
+      // Explain / dry-run family — several carry an Advanced surface and are
+      // filtered out of the listings above, so surface them explicitly. These
+      // show you what a gate, ranker, or graph SEES before you act; an agent
+      // would otherwise find them only by guessing (the #4.4 friction).
+      const explainFamily = listExplainFamily();
+      if (explainFamily.length > 0) {
+        process.stdout.write(header('Inspect / explain (dry-run what a gate, ranker, or graph sees)'));
+        for (const e of explainFamily) {
+          process.stdout.write(`  ${e.command.padEnd(24)} — ${firstSentence(e.description)}\n`);
+        }
+        process.stdout.write('  (also: shrk check wiring --explain <ruleId>)\n');
+      }
+
       process.stdout.write('\nRun `shrk help <command>` for detailed usage.\n');
       return 0;
     },

@@ -3,4 +3,6 @@
  * multiple packages without belonging to any one of them. Intentionally
  * kept minimal — do not dump utilities here when @shrkcrft/core fits.
  */
-export const SHARKCRAFT_VERSION = '0.1.0-alpha.23';
+export const SHARKCRAFT_VERSION = '0.1.0-alpha.24';
+
+export { runGitLines, type IGitLinesResult } from './run-git-lines.ts';

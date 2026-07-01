@@ -29,10 +29,13 @@ import {
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { maybeRunInWatchMode } from '../output/watch-loop.ts';
+import { computeDeletedOrphans } from '../diff/deleted-orphans.ts';
+import { renderWiringExplain } from './wiring.command.ts';
 import { validateTemplateVariables } from '@shrkcrft/templates';
 import { FileChangeType, planGeneration } from '@shrkcrft/generator';
 import {
   evaluateBoundaries,
+  explainWiring,
   loadTsconfigPaths,
   runWiring,
   scanImports,
@@ -631,6 +634,32 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
   const rules = loaded.value.config.wiringRules ?? [];
   const planeDiagnostics = loaded.value.planeDiagnostics;
 
+  // `--explain <ruleId>`: dry-run ONE rule and print the declared + registered
+  // sets it extracts (file:line), the set-difference, and the verdict — the
+  // author-loop view of what the gate sees, without re-running the whole gate.
+  if (args.flags.has('explain')) {
+    const explainId = flagString(args, 'explain');
+    if (!explainId) {
+      process.stderr.write('Usage: shrk check wiring --explain <ruleId> [--json]\n');
+      return 2;
+    }
+    const rule = rules.find((r) => r.id === explainId);
+    if (!rule) {
+      const ids = rules.map((r) => r.id);
+      if (wantJson) {
+        process.stdout.write(
+          asJson({ ok: false, error: 'not-found', ruleId: explainId, available: ids }) + '\n',
+        );
+        return 2;
+      }
+      process.stderr.write(
+        `No wiring rule "${explainId}". Configured rules: ${ids.length > 0 ? ids.join(', ') : '(none)'}\n`,
+      );
+      return 2;
+    }
+    return renderWiringExplain(explainWiring(cwd, rule), wantJson);
+  }
+
   if (rules.length === 0) {
     if (wantJson) {
       process.stdout.write(
@@ -719,6 +748,100 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
   return report.verdict === 'errors' ? 1 : 0;
 }
 
+/**
+ * `shrk check orphans [--since <ref>] [--staged]`: first-class, diff-robust
+ * reverse-closure over REMOVED files. Reads the deleted files from the diff
+ * (vs `--since`, or the staged index with `--staged`) and queries the
+ * code-graph snapshot for surviving files that still import them or reference a
+ * symbol they declared — alias-resolved, incl. barrel re-exports. Each survivor
+ * is an error with `file:line`; the type checker misses a deleted barrel
+ * re-export or string-keyed registration, so this is a write-safety guard an
+ * agent can't replicate natively. Generalizes `impact --deleted`; pairs with
+ * the composite `finish` gate.
+ */
+async function checkOrphans(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json');
+  const since = flagString(args, 'since');
+  const staged = flagBool(args, 'staged');
+  const scan = await computeDeletedOrphans(cwd, {
+    ...(since ? { since } : {}),
+    ...(staged ? { staged: true } : {}),
+  });
+
+  if (!scan.ok) {
+    if (wantJson) {
+      process.stdout.write(
+        asJson({
+          schema: 'sharkcraft.deleted-orphans/v1',
+          error: scan.error,
+          reason: scan.reason,
+          orphans: [],
+        }) + '\n',
+      );
+      return 2;
+    }
+    process.stdout.write(header('Orphan check'));
+    process.stdout.write(
+      scan.reason === 'diff-unavailable'
+        ? `  ✗ Cannot resolve diff: ${scan.error ?? 'unknown'}\n`
+        : `  ✗ ${scan.error ?? 'orphan check unavailable'}\n`,
+    );
+    return 2;
+  }
+
+  const scopeLabel = staged ? 'staged' : `vs ${scan.ref}`;
+
+  // Nothing deleted → there is nothing to check. Report a LOUD skip, not a
+  // green "no orphans" — "checked nothing" must never read as "verified clean".
+  if (scan.deleted.length === 0) {
+    if (wantJson) {
+      process.stdout.write(
+        asJson({
+          schema: 'sharkcraft.deleted-orphans/v1',
+          skipped: true,
+          ref: scan.ref,
+          resolvedDeleted: [],
+          unresolvedDeleted: [],
+          orphans: [],
+          diagnostics: [`no deleted files (${scopeLabel}) — nothing to check`],
+        }) + '\n',
+      );
+      return 0;
+    }
+    process.stdout.write(header('Orphan check'));
+    process.stdout.write(`  ! Nothing deleted (${scopeLabel}) — orphan check skipped.\n`);
+    return 0;
+  }
+
+  const report = scan.report!;
+  if (wantJson) {
+    process.stdout.write(asJson(report) + '\n');
+    return report.orphans.length > 0 ? 1 : 0;
+  }
+
+  process.stdout.write(header('Orphan check'));
+  process.stdout.write(kv('deleted files', `${scan.deleted.length} (${scopeLabel})`) + '\n');
+  if (report.orphans.length === 0) {
+    process.stdout.write('\nNo orphaned importers — nothing still references the deleted code. ✓\n');
+    for (const d of report.diagnostics.slice(0, 5)) process.stdout.write(`  ! ${d}\n`);
+    return 0;
+  }
+  process.stdout.write(
+    `\n${report.orphans.length} surviving importer(s) still reference deleted code:\n`,
+  );
+  for (const o of report.orphans.slice(0, 100)) {
+    const loc = o.path ? `${o.path}${o.line ? `:${o.line}` : ''}` : o.id;
+    const detail = o.via === 'reference' && o.symbol ? `references \`${o.symbol}\`` : 'imports';
+    process.stdout.write(`  ✗ ${loc} ${detail} from deleted ${o.deletedFile}\n`);
+  }
+  if (report.orphans.length > 100) {
+    process.stdout.write(`  … (${report.orphans.length - 100} more)\n`);
+  }
+  for (const d of report.diagnostics.slice(0, 5)) process.stdout.write(`  ! ${d}\n`);
+  return 1;
+}
+
 // Main shrk check + subcommands
 // ────────────────────────────────────────────────────────────────────────
 export const checkCommand: ICommandHandler = {
@@ -726,7 +849,7 @@ export const checkCommand: ICommandHandler = {
   description:
     'Run SharkCraft-level validation across knowledge / rules / templates / pipelines / packs / action hints / doctor. `check boundaries [--watch [--paths a,b] [--debounce N] [--once]]` re-runs the boundary scan on file changes.',
   usage:
-    'shrk [--cwd <dir>] check [packs|pipelines|knowledge|generation|boundaries|imports|wiring] [--strict] [--min-score <0-100>] [--changed-only] [--since <ref>] [--only <ids>] [--json] [--watch [--paths <list>] [--debounce N] [--once]]',
+    'shrk [--cwd <dir>] check [packs|pipelines|knowledge|generation|boundaries|imports|wiring|orphans] [--strict] [--min-score <0-100>] [--changed-only] [--since <ref>] [--staged] [--only <ids>] [--json] [--watch [--paths <list>] [--debounce N] [--once]]',
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
     // `check generation <id> <name>` legitimately takes extra positionals;
@@ -747,6 +870,7 @@ export const checkCommand: ICommandHandler = {
     if (sub === 'boundaries') return checkBoundaries(args);
     if (sub === 'imports' || sub === 'import-hygiene') return checkImports(args);
     if (sub === 'wiring') return checkWiring(args);
+    if (sub === 'orphans') return checkOrphans(args);
     if (sub === 'registry-lifecycle') {
       const cwd = resolveCwd(args);
       const { buildRegistryLifecycleReport, renderRegistryLifecycleReportText } = await import('@shrkcrft/inspector');

@@ -18,6 +18,8 @@ export interface DefineKnowledgeInput {
   source?: IKnowledgeSource;
   metadata?: Readonly<Record<string, unknown>>;
   actionHints?: IActionHints;
+  /** Author opt-out: no actionable next step → excluded from hint-coverage. */
+  noAction?: boolean;
 }
 
 export function defineKnowledgeEntry(input: DefineKnowledgeInput): IKnowledgeEntry {
@@ -54,5 +56,6 @@ export function defineKnowledgeEntry(input: DefineKnowledgeInput): IKnowledgeEnt
     source: input.source,
     metadata: input.metadata,
     actionHints: input.actionHints,
+    ...(input.noAction !== undefined ? { noAction: input.noAction } : {}),
   };
 }

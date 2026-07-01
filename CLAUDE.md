@@ -85,6 +85,9 @@ shrk context --task "<task>"     # focused context for a task (deterministic)
 shrk task "<task>"               # full task packet (rules + templates + pipelines + commands)
 shrk coverage                    # what's still missing
 shrk check boundaries            # boundary enforcement (with tsconfig alias support)
+shrk finish                      # composite "safe to finish?" — runs boundaries+wiring+policy+orphans changed-only → one verdict
+shrk check orphans               # after a delete: surviving importers of removed files/exports (alias-resolved)
+shrk wiring chain|unprovided|orphans  # registration/DI graph: declared→provided→consumed (the silent-at-runtime bugs imports can't see)
 shrk graph why <a> <b>           # shortest-path explanation between two graph nodes
 shrk onboard --dry-run           # onboard an existing repo (advisory)
 shrk stats                       # per-language file counts, LOC, sizes, averages

@@ -3,6 +3,7 @@ export * from './result/errors.ts';
 export * from './delegate/delegate-recipe.ts';
 export * from './wiring/wiring-rule.ts';
 export * from './wiring/registry-declaration.ts';
+export * from './wiring/registration-idiom.ts';
 export * from './policy/policy-rule.ts';
 export * from './reuse/reuse-primitive.ts';
 export * from './logger/log-level.ts';

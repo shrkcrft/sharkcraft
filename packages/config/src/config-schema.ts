@@ -110,6 +110,21 @@ export const RegistryDeclarationSchema = z
   })
   .strict();
 
+/**
+ * One DI/registration idiom (see `IRegistrationIdiom`) — the three-role shape
+ * (declared / provided / consumed) the registration graph queries. Exported for
+ * the pack-plane merge seam.
+ */
+export const RegistrationIdiomSchema = z
+  .object({
+    name: z.string(),
+    description: z.string().optional(),
+    declared: WiringSourceSchema,
+    provided: WiringSourceSchema,
+    consumed: WiringSourceSchema,
+  })
+  .strict();
+
 /** One policy-lint rule (see `IPolicyRule`). Exported for the pack-plane merge seam. */
 export const PolicyRuleSchema = z
   .object({
@@ -176,6 +191,9 @@ export const SharkCraftConfigSchema = z
     wiringRules: z.array(WiringRuleSchema).optional(),
     // Declarable registry inventories — `shrk registry <name> list|exists|where`.
     registries: z.array(RegistryDeclarationSchema).optional(),
+    // DI/registration idioms — the runtime-wiring graph behind
+    // `shrk wiring chain|unprovided|orphans`.
+    registrationGraph: z.array(RegistrationIdiomSchema).optional(),
     // Policy-lint rules — the template/style/ts content plane.
     policyRules: z.array(PolicyRuleSchema).optional(),
     // Reuse primitives — role-keyed canonical symbols for `shrk reuse`.

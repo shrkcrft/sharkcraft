@@ -23,8 +23,18 @@ export interface IGitStatusSummary {
   clean: boolean;
 }
 
+// 512 MB — the same generous ceiling @shrkcrft/shared's runGitLines uses. A
+// `diff`/`log --name-only` listing on a large changeset overflows Node's 1 MB
+// default `maxBuffer` and dies with ENOBUFS; a name listing never approaches
+// 512 MB, so this is effectively unbounded while still capping a runaway.
+const GIT_MAX_BUFFER = 512 * 1024 * 1024;
+
 function runGit(cwd: string, args: readonly string[]): { ok: boolean; stdout: string; stderr: string } {
-  const res = spawnSync('git', args as string[], { cwd, encoding: 'utf8' });
+  const res = spawnSync('git', args as string[], {
+    cwd,
+    encoding: 'utf8',
+    maxBuffer: GIT_MAX_BUFFER,
+  });
   return {
     ok: res.status === 0,
     stdout: (res.stdout ?? '').toString(),

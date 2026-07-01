@@ -5,6 +5,53 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [0.1.0-alpha.24] — Runtime wiring, write-safety & the author loop
+
+This release adds a second graph beside the import graph — the
+**registration/DI graph** — plus a composite "safe to finish?" gate, safer git
+plumbing, and pack-health scoring that rewards quality over presence. Everything
+stays deterministic (no model in the engine) and ships with tests (~50 new).
+
+### Runtime wiring — the graph imports can't see
+
+- **Registration/DI graph as a first-class peer to the import graph.**
+  `provides` / `registers` / `consumes` edges model the declare→provide→consume
+  chain. New `shrk wiring chain | unprovided | orphans` surface the
+  silent-at-runtime bugs — a handler declared but never provided, a provider no
+  one consumes — that the import graph structurally cannot show.
+- **`shrk wiring test <candidate>` / `shrk check wiring --explain <ruleId>`** print
+  the declared set and the registered set, each source extracted at `file:line`,
+  their diff, and a verdict — without writing config. Mirrors
+  `search tuning explain`.
+- **`shrk trace "<literal>"`** generalizes registry tracing to any cross-layer
+  string contract: declare→register→consume→handle sites, alias-resolved, with
+  direction and no pre-declared registry.
+
+### Write-safety — never buffer an unbounded git blob
+
+- **`shrk impact --deleted` no longer ENOBUFS.** The git diff is streamed line by
+  line instead of buffered as one blob; every other unbounded `spawnSync` /
+  `execSync` git call is routed through a shared `runGitLines` helper.
+- **`shrk check orphans [--since <ref>] [--staged]`** — first-class, diff-robust
+  reverse-closure over removed files/exports: after a delete it finds the
+  surviving importers, alias-resolved.
+
+### The author loop — one verdict, better discoverability
+
+- **`shrk finish` (a.k.a. `review --run`)** runs changed-only boundaries + wiring +
+  policy + orphans inline, plus an impact summary, and collapses them to one
+  pass/fail. A sub-check with 0 rules reports `skipped`, never a green-washed pass.
+- **Discoverability**: callable-but-unlisted commands (the `*-explain` family) now
+  surface in `help` / `surface list`.
+- **`--limit N` (`--limit 0` = all)** on graph read commands, default 50, with an
+  honest `total` + `truncated`.
+
+### Quality metrics
+
+- **Pack-health scores quality, not presence.** Templated hints count for less;
+  resolved cross-refs, distinct content, and runnable verification are rewarded;
+  no-action entry types are exempt from the denominator.
+
 ## [0.1.0-alpha.23] — Correctness, gate trust, security & pack-distributable invariants
 
 A large hardening release across four themes: keep the code graph honest, keep
