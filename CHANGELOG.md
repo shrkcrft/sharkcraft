@@ -5,6 +5,71 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [0.1.0-alpha.25] — Earned & change-attributable verdicts
+
+A correctness/labeling round: every gate's verdict is now **earned and
+change-attributable** — never green on nothing, never red on untouched baseline
+debt, never non-terminating. Plus a small batch of self-discovery + author-loop
+surface. All deterministic; ships with tests (the suite is green at ~3450).
+
+### Gate trust — never an unearned verdict
+
+- **`check wiring --changed-only` never renders green over 0 evaluated rules.**
+  It prints `0 rules evaluated — NOT verified` (loud) when the diff touches no
+  rule scope, and always reports `rules evaluated M of N (K skipped)` against the
+  TOTAL configured count — the unqualified "every declared token is registered ✓"
+  only prints when every rule actually ran.
+- **The composite `gate` is change-attributable.** The impact sub-gate is now
+  ADVISORY by default (blast-radius risk is pre-existing structure, not a new
+  failure) — high/critical fanout warns instead of redding, so the verdict clears
+  for a clean inline change. `--fail-on critical` opts back into a hard fail.
+- **Cycle detection excludes type-only import edges** (`import type`,
+  `export type … from`) by default — they're erased at emit time and can't cause
+  a runtime cycle. Type-only loops move to a separate non-blocking bucket;
+  `shrk graph cycles --include-type-edges` opts back in. Clears the phantom
+  architecture red.
+- **`check registry-lifecycle` no longer hangs.** The scan is bounded by a hard
+  wall-clock budget (partial flush + deterministic non-zero on timeout), skips
+  oversized files, and precomputes line offsets (was O(n·m)). New
+  `--changed-only` scopes it to the diff so it runs inline in seconds; an empty
+  scope reports a loud skip, never a green. Skip-dirs are configurable via
+  `registryLifecycle.skipDirs` (default = a source-only set) so a repo that
+  registers code under `tools/`/a non-standard root isn't silently blinded.
+- **`policy-lint --new-only`** scans the whole tree but shows only findings the
+  change introduced, hiding pre-existing baseline debt (with the hidden count).
+
+### Fewer false negatives
+
+- **`reuse "<intent>"` has a confidence floor.** A lone weak keyword collision is
+  surfaced as a did-you-mean, never a confident answer; results expose the score
+  + `confidence`, and consumers show a labeled total (`N total, showing 5`).
+- **`smart-context`** accepts `--task` (as well as positional) and FAILS LOUD
+  when the local model is degraded/index stale — a one-line banner instead of a
+  silent stale repo-guide dump.
+- **`changes summary`** attributes areas from the declared layer/area taxonomy
+  (boundary globs + generic package roots) instead of bucketing to `unknown`, and
+  tracks the `unknown` rate as a self-diagnostic.
+- **`context` / `task` render the FULL body by default** (parity with
+  why/reuse/knowledge get); `--summary` opts into the terse view.
+
+### Author-loop & self-discovery
+
+- **`shrk changelog [--since <version>] [--all] [--json]`** — the command-surface
+  delta of the running build (added/changed/removed verbs & flags), from an
+  in-binary release-notes asset (offline, authoritative for the exact build).
+- **`shrk gen --typecheck`** is a PRE-WRITE gate: it renders a dry-run and
+  compiles the emitted files against the detected tsconfig, so a template bug
+  fails at generation — and with `--write` the write is **refused** (nothing
+  lands on disk) rather than surfacing at the human's next build. `--print`
+  aliases `--show-content`.
+- **`registry <name> exists <id> --fail-if-taken | --fail-if-missing`** guard-mode
+  exit codes, plus `--resolve` synonym→canonical mapping (config
+  `registries[].aliases`).
+- **`constructs trace <symbol>`** redirects to `graph callers`/`graph search`
+  when the argument is a code symbol, instead of a misleading "No construct".
+- **`compress --type code`** labels its lossy fidelity (banner + JSON `fidelity`);
+  `graph context` template coverage requires a real emit-path match.
+
 ## [0.1.0-alpha.24] — Runtime wiring, write-safety & the author loop
 
 This release adds a second graph beside the import graph — the

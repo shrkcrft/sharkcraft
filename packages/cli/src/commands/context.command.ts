@@ -28,6 +28,16 @@ import { asJson, header } from '../output/format-output.ts';
 import type { IContextResult } from '@shrkcrft/context';
 
 /**
+ * Budget used for the DEFAULT full human-text orientation view when the caller
+ * set no explicit `--max-tokens`. Orientation is the cheap-first step an agent
+ * uses to form its initial model of the project — it must not silently drop the
+ * body of the richest sections (architecture, conventions, paths, workflows) the
+ * way a tight budget would. Large enough to hold every planned section; explicit
+ * `--max-tokens` and JSON/`--summary` callers still get the configured budget.
+ */
+const WIDE_CONTEXT_BUDGET = 100_000;
+
+/**
  * Minimal JSON shape for agent / skill consumption — the context-side mirror
  * of `shrk task --compact`. Drops the heavy `body` and `request` echo and
  * carries the section map + structured action hints (so the agent reads
@@ -89,9 +99,22 @@ export const contextCommand: ICommandHandler = {
     const noPaths = flagBool(args, 'no-paths');
     const includeDocs = flagBool(args, 'include-docs');
     const includeCommands = flagBool(args, 'include-commands');
+    // Orientation renders the FULL body by default now (parity with why / reuse
+    // / knowledge get). `--summary`/`--brief` opts back into the terse view.
+    const wantsSummary = flagBool(args, 'summary') || flagBool(args, 'brief');
+    const wantsJsonOut = flagBool(args, 'json') || flagBool(args, 'machine-json');
 
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const overview = buildProjectOverview(inspection.workspace, inspection.config?.projectName);
+
+    // Auto-widen the budget for the default full human view so no requested
+    // section is dropped purely to fit a tight budget. Explicit `--max-tokens`,
+    // JSON, and summary callers keep the configured budget.
+    const effectiveMaxTokens =
+      maxTokens ??
+      (!wantsJsonOut && !wantsSummary
+        ? WIDE_CONTEXT_BUDGET
+        : (inspection.config?.defaultMaxTokens ?? 3000));
 
     const contextBoost = contextTuningBoostFor(inspection, task);
     const result = buildContext(inspection.knowledgeEntries, {
@@ -100,7 +123,7 @@ export const contextCommand: ICommandHandler = {
       area,
       tags,
       scope,
-      maxTokens: maxTokens ?? inspection.config?.defaultMaxTokens ?? 3000,
+      maxTokens: effectiveMaxTokens,
       includeExamples: !noExamples,
       includeTemplates: !noTemplates,
       includeRules: !noRules,
@@ -111,15 +134,10 @@ export const contextCommand: ICommandHandler = {
       ...(contextBoost ? { boostFor: contextBoost } : {}),
     });
 
-    // Surface top commands prominently before the long context body.
-    // Auto-promote commands-first for action-like tasks (rename / add /
-    // fix / refactor / remove / migrate / explore / wire). Pass --full to
-    // see the long context body anyway.
-    const actionVerbRe =
-      /^(rename|add|fix|refactor|remove|delete|migrate|wire|explore|create|implement|update|introduce|build|extract|move|inline|generate|scaffold)\b/i;
-    const isActionLike = actionVerbRe.test(task.trim());
-    const wantsFull = flagBool(args, 'full');
-    const commandsFirst = flagBool(args, 'commands-first') || (isActionLike && !wantsFull);
+    // Surface top commands prominently before the long context body. The body
+    // itself now prints by default (parity with sibling orientation verbs);
+    // `--commands-first` keeps the terse commands-only view for action tasks.
+    const commandsOnly = flagBool(args, 'commands-first');
     let commandRecommendations: Awaited<ReturnType<typeof recommendCommands>> | null = null;
     let routingMatches: Awaited<ReturnType<typeof explainTaskRouting>> = [];
     let searchReport: Awaited<ReturnType<typeof buildUniversalSearch>> | null = null;
@@ -174,19 +192,14 @@ export const contextCommand: ICommandHandler = {
         process.stdout.write(`  • ${m.hint.id}  ${m.hint.title}\n`);
       }
     }
-    // Default human text mode keeps the output short. The long
-    // context body is one flag away via `--full`. JSON / commands-first /
-    // markdown paths are unchanged.
-    if (commandsFirst || !wantsFull) {
-      if (!wantsFull) {
-        process.stdout.write(
-          '\n(text mode is summary-only — pass --full for the long context body, --json for machine output.)\n',
-        );
-      } else if (isActionLike && !flagBool(args, 'commands-first')) {
-        process.stdout.write(
-          '\n(action-like task → commands-first; pass --full to see the long context body.)\n',
-        );
-      }
+    // The full context body prints by default now — parity with why / reuse /
+    // knowledge get, so the agent's first read of the project isn't thinner than
+    // every adjacent command. `--summary`/`--brief` (or `--commands-first`) opts
+    // back into the terse view.
+    if (wantsSummary || commandsOnly) {
+      process.stdout.write(
+        '\n(summary mode — omit --summary for the full context body, --json for machine output.)\n',
+      );
       return 0;
     }
 

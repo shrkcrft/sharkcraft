@@ -163,7 +163,12 @@ export const gateCommand: ICommandHandler = {
         : {}),
       impact: {
         ...(sinceRef ? { sinceRef } : {}),
-        ...(failOn ? { failOn } : {}),
+        // Blast-radius risk is inherently PRE-EXISTING structure (touching a hub
+        // is risky but not a new failure this change introduced), so the composite
+        // gate treats it as ADVISORY by default — `failOn: []` warns instead of
+        // redding, keeping the verdict change-attributable. `--fail-on critical`
+        // opts into a hard fail; `--strict` escalates the advisory warn.
+        failOn: failOn ?? [],
         // Scope the impact gate to the changeset too: with `--since` we keep the
         // gitref diff; with `--changed-only` / `--staged` / `--files` (and no
         // `--since`) we analyze the resolved changed-file set directly.

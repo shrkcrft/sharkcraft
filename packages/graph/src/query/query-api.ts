@@ -7,7 +7,7 @@ import type { INode } from '../schema/node.ts';
 import { NodeKind } from '../schema/node-kind.ts';
 import { GraphStore } from '../store/graph-store.ts';
 import { fingerprintFile } from '../store/file-fingerprint.ts';
-import { findFileCycles, type IFileCycle } from './cycle-detection.ts';
+import { findFileCycles, type IFileCycle, type IFindFileCyclesOptions } from './cycle-detection.ts';
 
 /** Read the representative source line stored on a reference/call edge. */
 function edgeLine(e: IEdge): number | undefined {
@@ -485,7 +485,7 @@ export class GraphQueryApi {
    * this method on the query API; backed by `findFileCycles` so the
    * indexer's manifest counts stay consistent with what callers see.
    */
-  cycles(): readonly IFileCycle[] {
+  cycles(options: IFindFileCyclesOptions = {}): readonly IFileCycle[] {
     const pathById = new Map<string, string>();
     for (const [id, n] of this.snap.nodes) {
       if (n.kind === NodeKind.File && n.path) pathById.set(id, n.path);
@@ -494,6 +494,7 @@ export class GraphQueryApi {
       [...this.snap.nodes.values()],
       [...this.snap.edges.values()],
       pathById,
+      options,
     );
   }
 

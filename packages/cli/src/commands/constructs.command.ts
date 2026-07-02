@@ -38,6 +38,54 @@ import {
 } from '../command-registry.ts';
 import { asJson, header } from '../output/format-output.ts';
 
+/**
+ * A construct subverb was handed an id that is NOT a registered construct.
+ * `constructs *` matches a curated construct-registry ID, not a raw code symbol
+ * — so a miss must never read as an existence claim about the symbol. Probe the
+ * code graph and redirect to the tools that actually answer "where does X live /
+ * who calls it" instead of a definitive-sounding "No construct". Returns exit 1.
+ */
+function emitConstructMiss(id: string, args: ParsedArgs): number {
+  const cwd = resolveCwd(args);
+  const store = new GraphStore(cwd);
+  let isCodeSymbol = false;
+  if (store.exists()) {
+    const api = GraphQueryApi.fromStore(cwd);
+    isCodeSymbol =
+      api.findSymbol(id, { exact: true }).length > 0 ||
+      api.findSymbol(id, { exact: false, limit: 1 }).length > 0;
+  }
+  if (flagBool(args, 'json')) {
+    process.stdout.write(
+      asJson({
+        schema: 'sharkcraft.constructs-miss/v1',
+        id,
+        found: false,
+        reason: 'not-a-construct-id',
+        isCodeSymbol,
+        hint: isCodeSymbol
+          ? `"${id}" is a code symbol, not a construct — try 'shrk graph callers ${id}' or 'shrk graph search ${id}'.`
+          : `"${id}" is not a registered construct ID; list them with 'shrk constructs list', or search code with 'shrk graph search ${id}'.`,
+      }) + '\n',
+    );
+    return 1;
+  }
+  if (isCodeSymbol) {
+    process.stderr.write(
+      `"${id}" is not a construct ID — did you mean a code symbol?\n` +
+        `  shrk graph callers ${id}    # who references it (path:line)\n` +
+        `  shrk graph search ${id}     # find its declaration\n`,
+    );
+  } else {
+    process.stderr.write(
+      `"${id}" is not a registered construct ID, and no code symbol by that name was found.\n` +
+        `  shrk constructs list        # the curated construct IDs\n` +
+        `  shrk graph search ${id}     # search the code graph\n`,
+    );
+  }
+  return 1;
+}
+
 async function loadAll(args: ParsedArgs): Promise<{
   constructs: readonly IConstruct[];
   inspection: Awaited<ReturnType<typeof inspectSharkcraft>>;
@@ -185,8 +233,7 @@ export const constructsGetCommand: ICommandHandler = {
     const { constructs } = await loadAll(args);
     const c = constructs.find((x) => x.id === id);
     if (!c) {
-      process.stderr.write(`No construct "${id}"\n`);
-      return 1;
+      return emitConstructMiss(id, args);
     }
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(c) + '\n');
@@ -240,8 +287,7 @@ export const constructsTraceCommand: ICommandHandler = {
     const { constructs } = await loadAll(args);
     const c = constructs.find((x) => x.id === id);
     if (!c) {
-      process.stderr.write(`No construct "${id}"\n`);
-      return 1;
+      return emitConstructMiss(id, args);
     }
     const trace = traceConstruct(c);
     const deep = flagBool(args, 'deep');
@@ -339,8 +385,7 @@ export const constructsImpactCommand: ICommandHandler = {
     const { constructs, inspection } = await loadAll(args);
     const c = constructs.find((x) => x.id === id);
     if (!c) {
-      process.stderr.write(`No construct "${id}"\n`);
-      return 1;
+      return emitConstructMiss(id, args);
     }
     const trace = traceConstruct(c);
     /**
@@ -414,8 +459,7 @@ export const constructsRelatedCommand: ICommandHandler = {
     const { constructs } = await loadAll(args);
     const c = constructs.find((x) => x.id === id);
     if (!c) {
-      process.stderr.write(`No construct "${id}"\n`);
-      return 1;
+      return emitConstructMiss(id, args);
     }
     const related = [
       ...(c.relatedKnowledge ?? []).map((id) => ({ kind: 'knowledge', id })),
@@ -451,8 +495,7 @@ export const constructsFilesCommand: ICommandHandler = {
     const { constructs } = await loadAll(args);
     const c = constructs.find((x) => x.id === id);
     if (!c) {
-      process.stderr.write(`No construct "${id}"\n`);
-      return 1;
+      return emitConstructMiss(id, args);
     }
     const trace = traceConstruct(c);
     // Emit the graph-resolved files (globs expanded), not the raw declared
@@ -482,8 +525,7 @@ export const constructsApiCommand: ICommandHandler = {
     const { constructs } = await loadAll(args);
     const c = constructs.find((x) => x.id === id);
     if (!c) {
-      process.stderr.write(`No construct "${id}"\n`);
-      return 1;
+      return emitConstructMiss(id, args);
     }
     const publicApi = c.publicApi ?? [];
     if (flagBool(args, 'json')) {
@@ -556,8 +598,7 @@ export const constructsFacetsCommand: ICommandHandler = {
     const { constructs } = await loadAll(args);
     const c = constructs.find((x) => x.id === id);
     if (!c) {
-      process.stderr.write(`No construct "${id}"\n`);
-      return 1;
+      return emitConstructMiss(id, args);
     }
     const facets = c.facets ?? {};
     if (flagBool(args, 'json')) {

@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildRegistryLifecycleReport } from '../registry-lifecycle.ts';
+import {
+  buildRegistryLifecycleReport,
+  renderRegistryLifecycleReportText,
+} from '../registry-lifecycle.ts';
 
 function repo(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), 'shrk-registry-lifecycle-'));
@@ -60,6 +63,79 @@ describe('registry-lifecycle heuristic', () => {
       const report = buildRegistryLifecycleReport({ projectRoot: root });
       expect(report.matchedPairs.length).toBe(1);
       expect(report.missingRemovers.length).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('--changed-only (files: []) with nothing in scope reports a LOUD skip, not a green', () => {
+    const root = repo({
+      'src/reg.ts':
+        'const m = new Map();\n' +
+        'export function registerThing(id, x) { m.set(id, x); }\n' +
+        'export function clearThing(id) { m.delete(id); }\n',
+    });
+    try {
+      const report = buildRegistryLifecycleReport({ projectRoot: root, files: [] });
+      expect(report.changedOnly).toBe(true);
+      expect(report.filesScanned).toBe(0);
+      // The renderer must not read as a clean pass.
+      const text = renderRegistryLifecycleReportText(report);
+      expect(text.toLowerCase()).toContain('not verified');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('--changed-only scopes the scan to just the listed files', () => {
+    const root = repo({
+      'src/reg.ts':
+        'const m = new Map();\n' +
+        'export function registerThing(id, x) { m.set(id, x); }\n' +
+        'export function clearAll() { m.clear(); }\n',
+      'src/other.ts': 'export const noop = 1;\n',
+    });
+    try {
+      const report = buildRegistryLifecycleReport({ projectRoot: root, files: ['src/reg.ts'] });
+      expect(report.changedOnly).toBe(true);
+      expect(report.filesScanned).toBe(1);
+      expect(report.registersFound).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('an exhausted wall-clock budget flushes partial results and flags timedOut', () => {
+    const root = repo({ 'src/a.ts': 'export function registerX(n) { return n; }\n' });
+    try {
+      // A budget already in the past forces the deadline check to fire on the
+      // first file — the scan flushes rather than running to completion.
+      const report = buildRegistryLifecycleReport({ projectRoot: root, budgetMs: -1 });
+      expect(report.timedOut).toBe(true);
+      expect(report.truncated).toBe(true);
+      expect(report.filesScanned).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('skipDirs is configurable — tools/ skipped by default, scanned when overridden', () => {
+    const root = repo({
+      'tools/reg.ts':
+        'const m = new Map();\n' +
+        'export function registerThing(id, x) { m.set(id, x); }\n' +
+        'export function clearAll() { m.clear(); }\n',
+    });
+    try {
+      // Default source-only skip set excludes tools/ → the registration is invisible.
+      const byDefault = buildRegistryLifecycleReport({ projectRoot: root });
+      expect(byDefault.registersFound).toBe(0);
+      // Override the skip set (drop 'tools') → the tools/ registration is scanned.
+      const overridden = buildRegistryLifecycleReport({
+        projectRoot: root,
+        skipDirs: ['node_modules', 'dist', '.git'],
+      });
+      expect(overridden.registersFound).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -255,6 +255,7 @@ export function updateChanged(
       cycleCount: cycles.cycleCount,
       largestCycleSize: cycles.largestCycleSize,
       filesInCycles: cycles.filesInCycles,
+      typeOnlyLoopCount: cycles.typeOnlyLoopCount,
       unresolvedImportCount: unresolved.unresolvedImportCount,
       filesWithUnresolvedImports: unresolved.filesWithUnresolvedImports,
       unresolvedImportSamples: unresolved.unresolvedImportSamples,
@@ -499,6 +500,7 @@ function reExtractFile(args: {
       line: raw.line,
       importKind: raw.kind,
       resolutionKind: r.kind,
+      typeOnly: raw.isTypeOnly === true,
     } as Record<string, unknown>;
     const targetId = r.targetPath
       ? `file:${r.targetPath}`
@@ -512,7 +514,13 @@ function reExtractFile(args: {
       EXTRACT_TS_FILE_SOURCE,
       data,
     );
-    edges.set(e.id, e);
+    // Value import wins over type-only for the same file pair — don't overwrite
+    // an already-recorded value edge with a type-only one (it stays a real
+    // runtime dependency for cycle purposes).
+    const existing = edges.get(e.id);
+    if (!(existing && existing.data?.['typeOnly'] === false)) {
+      edges.set(e.id, e);
+    }
   }
   reExtracted.set(newFp.path, { extracted, resolvedSpec });
 }

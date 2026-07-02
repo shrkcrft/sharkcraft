@@ -51,6 +51,18 @@ Output per match: the symbol, the import line, where it's declared, its sibling
 exports, and a few real consumer files you can copy from. With no matching
 primitive, it lists the available roles so you can refine the intent.
 
+## Match confidence
+
+`reuse` won't dress up a weak guess as an answer. A **lone weak keyword
+collision** — a single non-symbol token hitting on a multi-token intent — is
+**not** returned as a confident match: the command prints `No confident match`
+plus a *did-you-mean* list (`--json`: `confident: false`, `didYouMean:
+[{ symbol, score, confidence, matched }]`) so you refine the intent instead of
+copying the wrong primitive. Each confident result exposes its `score`,
+`confidence` (`0..1` — the fraction of intent tokens matched), and the `matched`
+tokens. The consumer list is labeled with its true size —
+`consumers to copy (N total, showing 5)` — and `--json` carries `consumerTotal`.
+
 ## Requirements & behavior
 
 - **Build the code graph first** (`shrk graph index`) for import-path

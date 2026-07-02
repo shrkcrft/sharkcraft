@@ -57,6 +57,34 @@ describe('shrk compress / expand', () => {
     }
   });
 
+  test('--type code emits a fidelity banner + JSON fidelity flag (lossy, not line-accurate)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-code-'));
+    try {
+      // Enough substantial function bodies that eliding them is a real win.
+      const fns = Array.from({ length: 8 }, (_, i) => {
+        const body = Array.from({ length: 8 }, (_, j) => `  const v${i}_${j} = ${i} * ${j} + ${j};`).join('\n');
+        return `export function fn${i}(): number {\n${body}\n  return v${i}_0 + v${i}_7;\n}`;
+      }).join('\n\n');
+      const file = join(dir, 'big.ts');
+      writeFileSync(file, fns + '\n', 'utf8');
+
+      const text = capture(() => compressCommand.run(makeArgs([file], { type: 'code' }, dir)) as number);
+      expect(text.code).toBe(0);
+      // Banner must fire on the code outline so it isn't mistaken for a Read.
+      expect(text.err).toContain('code outline is LOSSY');
+      expect(text.err.toLowerCase()).toContain('not line-accurate');
+
+      const json = capture(
+        () => compressCommand.run(makeArgs([file], { type: 'code', json: true }, dir)) as number,
+      );
+      const parsed = JSON.parse(json.out);
+      expect(parsed.strategy).toBe('code');
+      expect(parsed.fidelity).toContain('lossy-outline');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('trivial input passthrough does NOT warn', () => {
     const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
     try {

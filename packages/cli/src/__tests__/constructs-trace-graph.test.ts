@@ -199,4 +199,38 @@ describe('constructs trace — graph-backed verification', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('a raw code symbol (not a construct id) redirects — never phrased as "not found"', async () => {
+    const root = setupFixture();
+    try {
+      buildFullIndex({ projectRoot: root });
+      const cap = capture();
+      // FOO0_TOKEN is a real exported symbol but NOT a registered construct id.
+      const code = await constructsTraceCommand.run(makeArgs(['FOO0_TOKEN'], root));
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(1);
+      expect(json.found).toBe(false);
+      expect(json.reason).toBe('not-a-construct-id');
+      expect(json.isCodeSymbol).toBe(true);
+      expect(json.hint).toContain('graph callers');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('an id that is neither construct nor code symbol says so without a false symbol claim', async () => {
+    const root = setupFixture();
+    try {
+      buildFullIndex({ projectRoot: root });
+      const cap = capture();
+      const code = await constructsTraceCommand.run(makeArgs(['zzz-not-real'], root));
+      const json = JSON.parse(cap.restore());
+      expect(code).toBe(1);
+      expect(json.found).toBe(false);
+      expect(json.isCodeSymbol).toBe(false);
+      expect(json.hint).toContain('constructs list');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

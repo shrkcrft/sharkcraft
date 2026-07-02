@@ -85,7 +85,7 @@ const COMPRESS_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
 export const compressCommand: ICommandHandler = {
   name: 'compress',
   description:
-    'Compress a blob (file or stdin) deterministically to cut tokens — JSON→table, logs/search/diffs→signal. Reversible via `shrk expand`.',
+    'Compress a blob (file or stdin) deterministically to cut tokens — JSON→table, logs/search/diffs→signal. Reversible via `shrk expand`. NOTE: `--type code` emits a LOSSY outline (function bodies elided) — good for fitting more code into context, NOT for line-accurate reading; use plain Read (or `--lossless`) to inspect a file.',
   usage:
     'shrk [--cwd <dir>] compress [<file>|-] [--stdin] [--type <content-type>] [--query <text>] [--max <n>] [--lossless] [--no-cache] [--json]',
   booleanFlags: COMPRESS_BOOLEAN_FLAGS,
@@ -145,6 +145,14 @@ export const compressCommand: ICommandHandler = {
         tokensSaved: result.savings.saved,
         savedRatio: result.savings.ratio,
         tokensAreEstimated: true,
+        // Explicit fidelity signal so a caller never mistakes a lossy code
+        // outline for a line-accurate read.
+        fidelity:
+          result.strategy === ECompressionStrategy.Code
+            ? 'lossy-outline (not line-accurate; use Read or --lossless to inspect)'
+            : result.lossy
+              ? 'lossy'
+              : 'lossless',
         queryApplied,
         ccrKey: result.ccrKey ?? null,
         note: result.note,
@@ -166,6 +174,15 @@ export const compressCommand: ICommandHandler = {
     process.stderr.write(
       `${result.strategy}: ~${result.savings.before} → ~${result.savings.after} tokens (−${pct}%, est.)${cached}\n`,
     );
+    // Fidelity banner: the code outline elides function bodies, so it is a
+    // footgun as a cheaper Read. Say so loudly — same failure mode as a lossy
+    // result that doesn't *look* lossy.
+    if (result.strategy === ECompressionStrategy.Code) {
+      process.stderr.write(
+        'note: code outline is LOSSY (bodies elided) — for bulk context, not line-accurate reading; ' +
+          'use `Read` or `--lossless` for inspection.\n',
+      );
+    }
     // Token-economy guard: when auto-detect declines to compress a non-trivial
     // input, a silent `−0%` re-emit looks like success. Nudge toward `--type`
     // (stdout stays the verbatim blob; exit code unchanged).

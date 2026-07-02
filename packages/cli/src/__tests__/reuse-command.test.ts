@@ -88,6 +88,47 @@ describe('shrk reuse', () => {
     }
   });
 
+  test('weak single-keyword overlap → no confident match + did-you-mean, not a confident answer', async () => {
+    const root = setup(true);
+    try {
+      const cap = capture();
+      // 'clickable' hits AppButton's role only (not its symbol name); a lone
+      // keyword collision on a 3-token intent is below the confidence floor.
+      const code = await reuseCommand.run(makeArgs(['clickable', 'widget', 'thing'], root));
+      const out = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      expect(out.results).toEqual([]);
+      expect(out.confident).toBe(false);
+      expect(out.didYouMean.length).toBeGreaterThan(0);
+      expect(out.didYouMean[0].symbol).toBe('AppButton');
+      // The score is exposed so a caller can judge the match strength.
+      expect(typeof out.didYouMean[0].score).toBe('number');
+      expect(out.didYouMean[0].confidence).toBeLessThan(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('confident match exposes score/confidence and a labeled consumer total', async () => {
+    const root = setup(true);
+    try {
+      const cap = capture();
+      const code = await reuseCommand.run(makeArgs(['I', 'want', 'to', 'add', 'a', 'button'], root));
+      const out = JSON.parse(cap.restore());
+      expect(code).toBe(0);
+      const top = out.results[0];
+      expect(top.symbol).toBe('AppButton');
+      expect(typeof top.score).toBe('number');
+      expect(top.confidence).toBeGreaterThan(0);
+      expect(top.matched).toContain('button');
+      // The consumer denominator is exposed (1 real consumer: src/page.ts).
+      expect(top.consumerTotal).toBe(1);
+      expect(top.consumerTotal).toBe(top.consumers.length);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('graph indexed but symbol absent → notFound flag (not a silent blank)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'shrk-reuse-missing-'));
     try {

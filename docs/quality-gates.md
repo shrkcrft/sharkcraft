@@ -47,6 +47,26 @@ The corresponding CLI flags override the config: `--min-readiness`,
 `--require-boundary-clean`, `--require-drift-clean`, `--require-agent-tests`,
 `--require-context-tests`, `--require-pack-signatures`.
 
+## The composite `shrk gate` — advisory impact & noise controls
+
+`shrk gate` aggregates the code-intelligence gates (graph freshness,
+architecture, impact, wiring, policy, …) into one pass/fail. Three refinements
+keep it from going red on pre-existing structure:
+
+- **Impact is advisory by default.** Blast-radius risk is a property of the
+  existing structure, not a new failure, so a high/critical fanout **warns**
+  instead of failing — a clean inline change clears the verdict. Opt back into a
+  hard fail with `--fail-on critical` (or `--fail-on high`); `--strict`
+  escalates the advisory warn to a blocker.
+- **Type-only cycles are excluded.** The graph cycle detector now **ignores
+  type-only import edges** (`import type`, `export type … from`) by default —
+  they're erased at emit time and can't cause a runtime cycle. Type-only loops
+  are reported in a separate non-blocking bucket; `shrk graph cycles
+  --include-type-edges` opts them back into the cycle set.
+- **`shrk policy-lint --new-only`.** Scans the whole tree but shows only the
+  findings the change *introduced*, hiding pre-existing baseline debt (and
+  reporting the hidden count) so a gate run isn't drowned in inherited noise.
+
 ## MCP
 
 `get_quality_report` returns the same structured report over MCP. It is

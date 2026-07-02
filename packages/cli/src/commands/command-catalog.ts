@@ -1269,6 +1269,15 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     surface: CommandSurface.Common,
   }),
   entry({
+    command: 'changelog',
+    description:
+      'The shrk command-surface delta of the running build (added / changed / removed verbs & flags). `--since <version>` for the cumulative delta; offline, authoritative for this exact build.',
+    category: 'meta',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Common,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent],
+  }),
+  entry({
     command: 'completion',
     description:
       'Print a sourcable shell-completion script for the `shrk` CLI (bash | zsh | fish). Pipe into your shell rc.',

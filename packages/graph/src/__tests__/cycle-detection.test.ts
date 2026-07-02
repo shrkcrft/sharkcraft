@@ -23,6 +23,9 @@ function importEdge(from: string, to: string): IEdge {
     source: 'test',
   };
 }
+function typeOnlyImportEdge(from: string, to: string): IEdge {
+  return { ...importEdge(from, to), data: { typeOnly: true } };
+}
 
 describe('summarizeCycles', () => {
   test('linear chain has no cycles', () => {
@@ -123,6 +126,28 @@ describe('summarizeCycles', () => {
     const edges = [importEdge('a.ts', 'b.ts'), importEdge('b.ts', 'a.ts')];
     const cycles = findFileCycles(nodes, edges);
     expect(cycles[0]!.paths).toBeUndefined();
+  });
+
+  test('type-only import cycle is excluded by default, counted only under includeTypeEdges', () => {
+    const nodes = ['a.ts', 'b.ts'].map(fileNode);
+    // A purely compile-time reference loop (both directions `import type`).
+    const edges = [typeOnlyImportEdge('a.ts', 'b.ts'), typeOnlyImportEdge('b.ts', 'a.ts')];
+    const r = summarizeCycles(nodes, edges);
+    expect(r.cycleCount).toBe(0); // erased at emit — not a runtime cycle
+    expect(r.typeOnlyLoopCount).toBe(1); // surfaced in the non-blocking bucket
+    // Opt back in for auditing.
+    expect(findFileCycles(nodes, edges, undefined, { includeTypeEdges: true })).toHaveLength(1);
+  });
+
+  test('a value import in either direction keeps the cycle real; a type-only counter-edge does not', () => {
+    const nodes = ['a.ts', 'b.ts'].map(fileNode);
+    // a→b value, b→a type-only: at runtime only a→b exists → NO cycle.
+    const mixed = summarizeCycles(nodes, [importEdge('a.ts', 'b.ts'), typeOnlyImportEdge('b.ts', 'a.ts')]);
+    expect(mixed.cycleCount).toBe(0);
+    // Both directions value → a genuine runtime cycle.
+    const both = summarizeCycles(nodes, [importEdge('a.ts', 'b.ts'), importEdge('b.ts', 'a.ts')]);
+    expect(both.cycleCount).toBe(1);
+    expect(both.typeOnlyLoopCount).toBe(0);
   });
 
   test('handles a 1000-file linear chain without stack overflow', () => {

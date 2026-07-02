@@ -62,6 +62,9 @@ shrk smart-context "..." --ai-plan --dry-run
 shrk smart-context "..." --json
 ```
 
+The task can be given **positionally** *or* via `--task "<task>"` (the same
+convention as `shrk context --task`); both forms are accepted.
+
 ### Flags
 
 | Flag | Default | Notes |
@@ -155,6 +158,20 @@ and feed the result into your own provider call.
 configured, SHRK does **not** fail the whole command; it falls back to a
 deterministic smart-context payload and reports that fallback in the
 JSON envelope / debug output.
+
+When the local model / semantic index is **degraded or unavailable**,
+`smart-context` now fails *loud* instead of silently returning a repo-guide
+dump. It prints a one-line banner —
+
+```
+[smart-context] semantic retrieval unavailable (<cause>), semantic index
+N file(s) behind — falling back to the deterministic seed
+(rules/paths/templates/candidate files), NOT task-scoped retrieval.
+Run `shrk smart-context --refresh` …
+```
+
+— so you know the result is the deterministic seed, **not** task-scoped semantic
+retrieval, and exactly how to repair the index.
 
 ## What `smart-context` is not
 

@@ -44,6 +44,10 @@ export interface IRegistryLifecycleReport {
   totalFiles: number;
   /** True when the scan hit the file cap and did NOT see every candidate file. */
   truncated: boolean;
+  /** True when the scan hit its wall-clock budget and flushed partial results. */
+  timedOut: boolean;
+  /** True when the scan was scoped to the changed file set (`--changed-only`). */
+  changedOnly: boolean;
   /** Project-relative subtree the scan was scoped to, when `--scope` was used. */
   scope?: string;
   registersFound: number;
@@ -59,7 +63,14 @@ export interface IRegistryLifecycleReport {
   recommendations: ReadonlyArray<string>;
 }
 
-const SKIP_DIRS = new Set([
+/**
+ * Default directories the walk skips — build artefacts + non-source trees that
+ * inflate the scan without owning runtime lifecycle. This is the DEFAULT only;
+ * a repo that genuinely registers code under `tools/`, a non-standard root, etc.
+ * can override the set via config (`registryLifecycle.skipDirs`) / the engine's
+ * `skipDirs` input, so a hardcoded exclusion never silently blinds the check.
+ */
+export const DEFAULT_REGISTRY_LIFECYCLE_SKIP_DIRS: readonly string[] = Object.freeze([
   'node_modules',
   'dist',
   '.git',
@@ -68,8 +79,20 @@ const SKIP_DIRS = new Set([
   '.nx',
   'build',
   'out',
+  'examples',
+  'e2e',
+  'fixtures',
+  '__fixtures__',
+  'scripts',
+  'tools',
+  '.agents',
+  '.github',
 ]);
 const SCAN_EXTENSIONS = new Set(['.ts', '.tsx']);
+/** Skip pathological single files — a 200 KB command file has no registry to pair. */
+const MAX_SCAN_FILE_BYTES = 256 * 1024;
+/** Hard wall-clock budget so the scan fails loud (partial flush) instead of hanging. */
+const DEFAULT_BUDGET_MS = 15_000;
 
 function isGeneratedFile(file: string, content: string): boolean {
   if (file.endsWith('.d.ts')) return true;
@@ -78,7 +101,7 @@ function isGeneratedFile(file: string, content: string): boolean {
   return false;
 }
 
-function walk(dir: string, projectRoot: string, out: string[]): void {
+function walk(dir: string, projectRoot: string, out: string[], skipDirs: ReadonlySet<string>): void {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -86,14 +109,14 @@ function walk(dir: string, projectRoot: string, out: string[]): void {
     return;
   }
   for (const e of entries) {
-    if (SKIP_DIRS.has(e.name)) continue;
+    if (skipDirs.has(e.name)) continue;
     if (e.name.startsWith('.') && e.name !== '.sharkcraft') {
       // skip hidden dotfiles
       if (e.name !== '.') continue;
     }
     const abs = join(dir, e.name);
     if (e.isDirectory()) {
-      walk(abs, projectRoot, out);
+      walk(abs, projectRoot, out, skipDirs);
     } else if (e.isFile() && SCAN_EXTENSIONS.has(extname(e.name))) {
       out.push(abs);
     }
@@ -179,7 +202,38 @@ function stripCommentsAndLiterals(content: string): string {
   return out.join('');
 }
 
-function findRegistersInFile(content: string): IRegisterMatch[] {
+/**
+ * Precompute the byte offset of each line start, so an offset → line lookup is
+ * O(log n) instead of the O(fileLen) `content.slice(0, i).split('\n')` done PER
+ * MATCH (the original quadratic hotspot — a 57 KB file with 200 `register*`
+ * tokens paid ~200 × 57 KB of slicing). Built once per file.
+ */
+function buildLineStarts(content: string): number[] {
+  const starts = [0];
+  for (let i = 0; i < content.length; i += 1) {
+    if (content.charCodeAt(i) === 10 /* \n */) starts.push(i + 1);
+  }
+  return starts;
+}
+
+/** 1-based line number for a byte offset, via binary search over line starts. */
+function lineAtOffset(lineStarts: readonly number[], offset: number): number {
+  let lo = 0;
+  let hi = lineStarts.length - 1;
+  let ans = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lineStarts[mid]! <= offset) {
+      ans = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return ans + 1;
+}
+
+function findRegistersInFile(content: string, lineStarts: readonly number[]): IRegisterMatch[] {
   const out: IRegisterMatch[] = [];
   const seen = new Set<string>();
   for (const re of REGISTER_PATTERNS) {
@@ -189,8 +243,7 @@ function findRegistersInFile(content: string): IRegisterMatch[] {
       const name = m[1]!;
       if (seen.has(`${name}@${m.index}`)) continue;
       seen.add(`${name}@${m.index}`);
-      const line = content.slice(0, m.index).split('\n').length;
-      out.push({ name, line });
+      out.push({ name, line: lineAtOffset(lineStarts, m.index) });
     }
   }
   return out;
@@ -233,7 +286,11 @@ function expectedRemoverNames(registerName: string): string[] {
   ];
 }
 
-function findRemoverInContent(content: string, candidates: ReadonlyArray<string>): {
+function findRemoverInContent(
+  content: string,
+  candidates: ReadonlyArray<string>,
+  lineStarts: readonly number[],
+): {
   name: string;
   line: number;
 } | null {
@@ -243,8 +300,7 @@ function findRemoverInContent(content: string, candidates: ReadonlyArray<string>
     );
     const m = content.match(re);
     if (m && typeof m.index === 'number') {
-      const line = content.slice(0, m.index).split('\n').length;
-      return { name, line };
+      return { name, line: lineAtOffset(lineStarts, m.index) };
     }
   }
   return null;
@@ -255,31 +311,73 @@ export function buildRegistryLifecycleReport(input: {
   limit?: number;
   /** Project-relative subtree to scope the scan to (sub-second on a subtree). */
   scope?: string;
+  /**
+   * Changed-only scope: scan JUST these files (project-relative or absolute)
+   * instead of walking the tree. Non-`.ts/.tsx` entries are ignored. When set,
+   * an empty relevant set is reported as a loud skip, never a green pass.
+   */
+  files?: readonly string[];
+  /** Hard wall-clock budget (ms). The scan flushes partial results on timeout. */
+  budgetMs?: number;
+  /**
+   * Directory names the walk skips. Overrides {@link DEFAULT_REGISTRY_LIFECYCLE_SKIP_DIRS}
+   * so a repo that registers code under `tools/` / a non-standard root isn't
+   * silently blinded by a baked-in exclusion. Ignored on the changed-only path.
+   */
+  skipDirs?: readonly string[];
 }): IRegistryLifecycleReport {
   const { projectRoot } = input;
   const scope = input.scope && input.scope.length > 0 ? input.scope : undefined;
-  const walkRoot = scope ? join(projectRoot, scope) : projectRoot;
-  const files: string[] = [];
-  walk(walkRoot, projectRoot, files);
+  const changedOnly = input.files !== undefined;
+  const deadline = Date.now() + (input.budgetMs ?? DEFAULT_BUDGET_MS);
   const limit = input.limit ?? 2000;
+  const skipDirs = new Set(input.skipDirs ?? DEFAULT_REGISTRY_LIFECYCLE_SKIP_DIRS);
+
+  // Candidate files: either the explicit changed set (bypassing the walk) or a
+  // bounded tree walk. The changed set resolves relative paths under the root
+  // and keeps only scannable extensions.
+  let files: string[];
+  if (input.files !== undefined) {
+    files = input.files
+      .map((f) => (f.startsWith('/') ? f : join(projectRoot, f)))
+      .filter((f) => SCAN_EXTENSIONS.has(extname(f)));
+  } else {
+    const walkRoot = scope ? join(projectRoot, scope) : projectRoot;
+    files = [];
+    walk(walkRoot, projectRoot, files, skipDirs);
+  }
   const scanFiles = files.slice(0, limit);
   const matchedPairs: IRegistryPair[] = [];
   const missingRemovers: IRegistryMissingRemover[] = [];
   const oneShotBootstrap: IRegistryIgnored[] = [];
   const ignored: IRegistryIgnored[] = [];
   let registersFound = 0;
+  let timedOut = false;
+  let filesScanned = 0;
   for (const file of scanFiles) {
+    // Hard wall-clock budget checked between files — the scan is synchronous, so
+    // a Date.now() deadline is the only interruption point. Flush partial results.
+    if (Date.now() > deadline) {
+      timedOut = true;
+      break;
+    }
     let content: string;
     try {
       content = readFileSync(file, 'utf8');
     } catch {
       continue;
     }
+    // Per-file size cap: a huge file (a big command/aggregate module) is a
+    // catastrophic-backtracking / quadratic hazard and never holds a registry
+    // that owes a remover. Skip it rather than let one file wedge the scan.
+    if (content.length > MAX_SCAN_FILE_BYTES) continue;
     if (isGeneratedFile(file, content)) continue;
+    filesScanned += 1;
     // Scan declarations on code with comments/strings blanked out; keep the raw
     // content only for the comment-based @shrkcrft annotations.
     const code = stripCommentsAndLiterals(content);
-    const registers = findRegistersInFile(code);
+    const lineStarts = buildLineStarts(code);
+    const registers = findRegistersInFile(code, lineStarts);
     // Per-file lifecycle evidence: only a file that BOTH accumulates removable
     // state AND has a teardown-shaped API plausibly owes a per-register remover.
     const hasAccumulation = ACCUMULATION_RE.test(code);
@@ -299,7 +397,7 @@ export function buildRegistryLifecycleReport(input: {
         continue;
       }
       const candidates = expectedRemoverNames(reg.name);
-      const remover = findRemoverInContent(code, candidates);
+      const remover = findRemoverInContent(code, candidates, lineStarts);
       if (remover) {
         matchedPairs.push({
           registerName: reg.name,
@@ -335,9 +433,11 @@ export function buildRegistryLifecycleReport(input: {
   }
   return {
     schema: 'sharkcraft.registry-lifecycle/v1',
-    filesScanned: scanFiles.length,
+    filesScanned,
     totalFiles: files.length,
-    truncated: files.length > scanFiles.length,
+    truncated: files.length > scanFiles.length || timedOut,
+    timedOut,
+    changedOnly,
     ...(scope ? { scope } : {}),
     registersFound,
     matchedPairs,
@@ -352,9 +452,24 @@ export function renderRegistryLifecycleReportText(report: IRegistryLifecycleRepo
   const lines: string[] = [];
   lines.push('=== Registry lifecycle ===');
   if (report.scope) lines.push(`  scope             ${report.scope}`);
+  if (report.changedOnly) lines.push('  scope             changed-only');
+  // Loud skip: a changed diff that touches no scannable file was NOT verified —
+  // never let "scanned nothing" read as a clean pass.
+  if (report.changedOnly && report.filesScanned === 0) {
+    lines.push('');
+    lines.push('  ! 0 files in the changed scope — lifecycle NOT verified (this is not a pass).');
+    return lines.join('\n') + '\n';
+  }
+  if (report.timedOut) {
+    lines.push(
+      `  ! wall-clock budget hit — scanned ${report.filesScanned}/${report.totalFiles} before flushing partial results (re-run with --scope <dir> to finish).`,
+    );
+  }
   lines.push(
     `  files scanned     ${report.filesScanned}` +
-      (report.truncated ? ` ! capped (${report.totalFiles} candidates — re-run with --scope <dir> for the rest)` : ''),
+      (report.truncated && !report.timedOut
+        ? ` ! capped (${report.totalFiles} candidates — re-run with --scope <dir> for the rest)`
+        : ''),
   );
   lines.push(`  registers found   ${report.registersFound}`);
   lines.push(`  matched pairs     ${report.matchedPairs.length}`);

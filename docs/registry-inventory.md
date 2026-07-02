@@ -28,6 +28,8 @@ export default defineSharkCraftConfig({
       source: { files: ['src/**/*.command.ts'], pattern: "name:\\s*'([\\w-]+)'" },
       // Optional: where each id is consumed / bound (a dispatcher, allowlist…).
       consumer: { files: ['src/main.ts'], pattern: "register\\('([\\w-]+)'\\)" },
+      // Optional: human synonyms that resolve to a canonical id (see --resolve).
+      aliases: { 'ls': 'list', 'cmd-list': 'list' },
     },
   ],
 });
@@ -51,6 +53,21 @@ Exit codes are meaningful: `registry … exists <id>` returns `0` when the id is
 declared and `1` when it is not, so it composes in a script ("fail if the id is
 already taken"). An **unknown registry name** errors with exit `2` and lists the
 declared registries — it never silently succeeds with an empty answer.
+
+### Guard mode & alias resolution
+
+`registry <name> exists <id>` gains two guard flags that make it a drop-in
+precondition in a shell `&&` chain, plus a synonym resolver:
+
+- `--fail-if-taken` — exit **non-zero when the id IS registered** (`0` when
+  free), so `shrk registry <name> exists <id> --fail-if-taken && <author>` is a
+  natural pre-author guard: author only if the id is still free.
+- `--fail-if-missing` — the symmetric consume-side check: non-zero when the id is
+  **not** registered (assert an id you depend on exists before wiring to it).
+- `--resolve` — map a human synonym to the canonical id via the registry's
+  `aliases` map **before** the existence test, and print the resolved id. Declare
+  it as `registries[].aliases: { <synonym>: <canonicalId> }`; the `--json`
+  payload carries `resolvedId` when it differs from the input.
 
 The scan finds ids wherever the globs reach — built-in declarations *and*
 pack-contributed registration files — against ground truth, so the answer

@@ -37,7 +37,7 @@ describe('registry inventory verb', () => {
     writeFileSync(nodePath.join(dir, 'src', 'commands', 'b.command.ts'), "export const barCommand = { name: 'bar' };\n");
     writeFileSync(
       nodePath.join(dir, 'sharkcraft', 'sharkcraft.config.ts'),
-      `export default {\n  registries: [\n    { name: 'commands', source: { files: ['src/commands/*.command.ts'], pattern: "name:\\\\s*'([a-z]+)'" } },\n  ],\n};\n`,
+      `export default {\n  registries: [\n    { name: 'commands', source: { files: ['src/commands/*.command.ts'], pattern: "name:\\\\s*'([a-z]+)'" }, aliases: { fooCmd: 'foo' } },\n  ],\n};\n`,
     );
   });
 
@@ -51,6 +51,29 @@ describe('registry inventory verb', () => {
   test('exists is a hard yes/no with a distinguishable exit code', () => {
     expect(shrk(['registry', 'commands', 'exists', 'foo'], dir).code).toBe(0);
     expect(shrk(['registry', 'commands', 'exists', 'nope'], dir).code).toBe(1);
+  });
+
+  test('--fail-if-taken inverts the exit code so it scripts as a pre-author guard', () => {
+    // taken → non-zero (block the author), free → 0 (proceed).
+    expect(shrk(['registry', 'commands', 'exists', 'foo', '--fail-if-taken'], dir).code).toBe(1);
+    expect(shrk(['registry', 'commands', 'exists', 'free-id', '--fail-if-taken'], dir).code).toBe(0);
+  });
+
+  test('--fail-if-missing is the symmetric consume-side check', () => {
+    expect(shrk(['registry', 'commands', 'exists', 'foo', '--fail-if-missing'], dir).code).toBe(0);
+    expect(shrk(['registry', 'commands', 'exists', 'nope', '--fail-if-missing'], dir).code).toBe(1);
+  });
+
+  test('--resolve maps a synonym to the canonical id before the existence test', () => {
+    // Without --resolve, the synonym is free; with --resolve it maps to the taken slug.
+    expect(shrk(['registry', 'commands', 'exists', 'fooCmd'], dir).code).toBe(1);
+    const r = shrk(['registry', 'commands', 'exists', 'fooCmd', '--resolve', '--json'], dir);
+    expect(r.code).toBe(0);
+    const payload = JSON.parse(r.out);
+    expect(payload.resolvedId).toBe('foo');
+    expect(payload.exists).toBe(true);
+    // And the guard sees the collision through the alias.
+    expect(shrk(['registry', 'commands', 'exists', 'fooCmd', '--resolve', '--fail-if-taken'], dir).code).toBe(1);
   });
 
   test('where returns the declaration site (path:line)', () => {

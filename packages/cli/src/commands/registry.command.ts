@@ -4,6 +4,9 @@
  *   shrk registry lifecycle [--json]            # register/remove symmetry
  *   shrk registry <name> list [--json]          # every declared id
  *   shrk registry <name> exists <id> [--json]   # is the id taken? (exit 1 if not)
+ *       [--resolve]                             #   map a synonym → canonical id first
+ *       [--fail-if-taken]                       #   guard: non-zero when taken (free → 0)
+ *       [--fail-if-missing]                     #   guard: non-zero when NOT registered
  *   shrk registry <name> where <id> [--json]    # declaration (+ consumer) sites
  *
  * `<name>` resolves a `registries[]` declaration in sharkcraft.config.ts — one
@@ -13,6 +16,7 @@
 import {
   buildRegistryLifecycleReport,
   renderRegistryLifecycleReportText,
+  resolveChangedFiles,
   resolveProjectConfig,
 } from '@shrkcrft/inspector';
 import {
@@ -34,17 +38,40 @@ import { asJson } from '../output/format-output.ts';
 export const registryLifecycleCommand: ICommandHandler = {
   name: 'lifecycle',
   description: 'Scan the workspace for register/remove symmetry. Read-only.',
-  usage: 'shrk registry lifecycle [--scope <dir>] [--json]',
+  usage: 'shrk registry lifecycle [--scope <dir>] [--changed-only] [--since <ref>] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const scope = flagString(args, 'scope');
-    const report = buildRegistryLifecycleReport({ projectRoot: cwd, ...(scope ? { scope } : {}) });
+    const changedOnly = flagBool(args, 'changed-only');
+    const since = flagString(args, 'since');
+    let files: readonly string[] | undefined;
+    if (changedOnly || since) {
+      const changed = resolveChangedFiles({
+        projectRoot: cwd,
+        ...(since ? { since } : {}),
+        ...(changedOnly && !since ? { includeWorktree: true } : {}),
+      });
+      files = changed.files;
+    }
+    // Full-tree walk honors the project's skipDirs override.
+    let skipDirs: readonly string[] | undefined;
+    if (files === undefined) {
+      const loaded = await resolveProjectConfig(cwd);
+      if (loaded.ok) skipDirs = loaded.value.config.registryLifecycle?.skipDirs;
+    }
+    const report = buildRegistryLifecycleReport({
+      projectRoot: cwd,
+      ...(files !== undefined ? { files } : {}),
+      ...(scope ? { scope } : {}),
+      ...(skipDirs ? { skipDirs } : {}),
+    });
+    const exit = report.timedOut ? 2 : report.missingRemovers.length === 0 ? 0 : 1;
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(report) + '\n');
-      return report.missingRemovers.length === 0 ? 0 : 1;
+      return exit;
     }
     process.stdout.write(renderRegistryLifecycleReportText(report));
-    return report.missingRemovers.length === 0 ? 0 : 1;
+    return exit;
   },
 };
 
@@ -115,13 +142,45 @@ async function runRegistryInventory(args: ParsedArgs, name: string): Promise<num
 
   if (action === 'exists') {
     if (!id) {
-      process.stderr.write(`Usage: shrk registry ${name} exists <id>\n`);
+      process.stderr.write(`Usage: shrk registry ${name} exists <id> [--resolve] [--fail-if-taken|--fail-if-missing]\n`);
       return 2;
     }
-    const exists = registryExists(inventory, id);
-    if (json) process.stdout.write(asJson({ name: inventory.name, id, exists }) + '\n');
-    else process.stdout.write(`${exists ? 'yes' : 'no'} — "${id}" is ${exists ? 'declared' : 'NOT declared'} in registry "${inventory.name}".\n`);
-    return exists ? 0 : 1;
+    const failIfTaken = flagBool(args, 'fail-if-taken');
+    const failIfMissing = flagBool(args, 'fail-if-missing');
+    if (failIfTaken && failIfMissing) {
+      process.stderr.write('Pass at most one of --fail-if-taken / --fail-if-missing.\n');
+      return 2;
+    }
+    // `--resolve` maps a human noun to the canonical registered id via the
+    // registry's `aliases` map before the existence test — so a duplicate guard
+    // can't return a false "free" on a synonym of an already-taken slug.
+    const doResolve = flagBool(args, 'resolve');
+    const canonical = doResolve ? (decl.aliases?.[id] ?? id) : id;
+    const resolved = canonical !== id;
+    const exists = registryExists(inventory, canonical);
+    // Exit-code convention:
+    //   --fail-if-taken   → non-zero when the id is already registered (free → 0),
+    //                       so `exists <id> --fail-if-taken && <author>` is a natural guard.
+    //   --fail-if-missing → non-zero when the id is NOT registered (the consume-side check).
+    //   neither           → the historical query convention (taken → 0, free → 1).
+    const code = failIfTaken ? (exists ? 1 : 0) : exists ? 0 : 1;
+    if (json) {
+      process.stdout.write(
+        asJson({
+          name: inventory.name,
+          id,
+          ...(resolved ? { resolvedId: canonical } : {}),
+          exists,
+          exitCode: code,
+        }) + '\n',
+      );
+      return code;
+    }
+    if (resolved) process.stdout.write(`resolved "${id}" → "${canonical}" (alias)\n`);
+    process.stdout.write(
+      `${exists ? 'yes' : 'no'} — "${canonical}" is ${exists ? 'declared' : 'NOT declared'} in registry "${inventory.name}".\n`,
+    );
+    return code;
   }
 
   if (action === 'where') {
@@ -151,7 +210,12 @@ async function runRegistryInventory(args: ParsedArgs, name: string): Promise<num
 export const registryCommand: ICommandHandler = {
   name: 'registry',
   description: 'Registry inspections: lifecycle symmetry + declared-registry inventory. Read-only.',
-  usage: 'shrk registry lifecycle | <name> list | <name> exists <id> | <name> where <id>',
+  usage:
+    'shrk registry lifecycle | <name> list | <name> exists <id> [--resolve] [--fail-if-taken|--fail-if-missing] | <name> where <id>',
+  // Guard-mode + query flags take no value — declare them so `exists <id>
+  // --fail-if-taken` (flag last) and `exists --resolve <id>` (flag first) both
+  // keep the id as a positional instead of swallowing it.
+  booleanFlags: new Set(['json', 'resolve', 'fail-if-taken', 'fail-if-missing']),
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
     if (sub === 'lifecycle') {

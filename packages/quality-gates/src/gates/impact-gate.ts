@@ -40,8 +40,14 @@ function rankOf(risk: string): number {
  */
 export function impactGate(projectRoot: string, options: IImpactGateOptions = {}): IGateResult {
   const start = Date.now();
-  const failOn = options.failOn && options.failOn.length > 0 ? options.failOn : (['critical'] as const);
-  const failThreshold = Math.min(...failOn.map((f) => rankOf(f)));
+  // `undefined` failOn → the standalone default (`['critical']` fails). An
+  // EXPLICIT empty array → ADVISORY mode: blast-radius risk is inherently the
+  // pre-existing structure (touching a hub is risky but not a NEW failure this
+  // change introduced), so it warns rather than reds. The composite `gate`
+  // passes `[]` by default so its verdict clears for a clean inline change.
+  const failOn = options.failOn === undefined ? (['critical'] as const) : options.failOn;
+  const advisoryOnly = failOn.length === 0;
+  const failThreshold = advisoryOnly ? Number.POSITIVE_INFINITY : Math.min(...failOn.map((f) => rankOf(f)));
 
   // Scope: an explicit changed-file set (when no gitref is given) is analyzed
   // directly; otherwise diff against the gitref (default 'main').
@@ -71,13 +77,15 @@ export function impactGate(projectRoot: string, options: IImpactGateOptions = {}
       durationMs: Date.now() - start,
     };
   }
-  const status =
-    rankOf(analysis.risk) >= failThreshold ? 'fail' : analysis.risk === 'high' ? 'warn' : 'pass';
+  const rank = rankOf(analysis.risk);
+  const status = rank >= failThreshold ? 'fail' : rank >= (RISK_RANK['high'] ?? 2) ? 'warn' : 'pass';
   const message =
     status === 'fail'
       ? `Risk: ${analysis.risk}. ${analysis.directDependents.length} direct dependents.`
       : status === 'warn'
-        ? `Risk: ${analysis.risk}. Review the validation scope.`
+        ? advisoryOnly
+          ? `Risk: ${analysis.risk} (advisory — pre-existing blast radius, ${analysis.directDependents.length} direct dependents). Validate broadly; \`--fail-on ${analysis.risk === 'critical' ? 'critical' : 'high'}\` to block.`
+          : `Risk: ${analysis.risk}. Review the validation scope.`
         : `Risk: ${analysis.risk}. Looks safe.`;
   return {
     id: 'impact',

@@ -1,7 +1,7 @@
 import * as nodePath from 'node:path';
 import type { PolicySurface } from '@shrkcrft/core';
 import { runPolicyLint, type IPolicyFinding } from '@shrkcrft/boundaries';
-import { resolveChangedFiles, resolveProjectConfig } from '@shrkcrft/inspector';
+import { classifyChangedScope, resolveChangedFiles, resolveProjectConfig } from '@shrkcrft/inspector';
 import {
   flagBool,
   flagString,
@@ -18,11 +18,15 @@ export const policyLintCommand: ICommandHandler = {
   description:
     'Lint template/markup, stylesheet, and AOT-invisible TS surfaces against data-defined policyRules[] (e.g. flag raw markup when a primitive exists). Sees `.html` files AND inline `template:` strings — surfaces tsc/AOT cannot. Deterministic; no AI.',
   usage:
-    'shrk [--cwd <dir>] policy-lint [--surface template|style|ts] [--changed-only] [--since <ref>] [--only <ids>] [--json]',
+    'shrk [--cwd <dir>] policy-lint [--surface template|style|ts] [--changed-only] [--new-only] [--since <ref>] [--only <ids>] [--json]\n         (--changed-only SCANS just the changed files; --new-only scans the whole tree but shows only findings the change introduced, hiding pre-existing baseline debt)',
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const wantJson = flagBool(args, 'json');
     const changedOnly = flagBool(args, 'changed-only');
+    // --new-only: scan the WHOLE tree, then show only findings the current change
+    // introduced (baseline debt is bucketed as hidden, not printed) — the
+    // finding-level complement to --changed-only's file-level scoping.
+    const newOnly = flagBool(args, 'new-only');
     const since = flagString(args, 'since');
     const only = flagString(args, 'only');
 
@@ -84,11 +88,11 @@ export const policyLintCommand: ICommandHandler = {
     }
 
     let changedFiles: readonly string[] | undefined;
-    if (changedOnly || since) {
+    if (changedOnly || newOnly || since) {
       changedFiles = resolveChangedFiles({
         projectRoot: cwd,
         ...(since ? { since } : {}),
-        ...(changedOnly && !since ? { includeWorktree: true } : {}),
+        ...((changedOnly || newOnly) && !since ? { includeWorktree: true } : {}),
       }).files;
     }
 
@@ -99,19 +103,49 @@ export const policyLintCommand: ICommandHandler = {
 
     const reportRaw = runPolicyLint(cwd, rules, {
       ...(surfaces ? { surfaces } : {}),
-      ...(changedOnly || since ? { changedOnly: true, changedFiles: changedFiles ?? [] } : {}),
+      // --changed-only narrows the SCAN; --new-only scans the full tree so it can
+      // still diff findings (it filters after, below).
+      ...((changedOnly || since) && !newOnly ? { changedOnly: true, changedFiles: changedFiles ?? [] } : {}),
       ...(only ? { only: only.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
       ...(excludeDirs.length > 0 ? { excludeDirs } : {}),
     });
     // Surface pack-plane merge notes (missing/invalid pack policy files, dropped
     // collisions) in the same diagnostics array the engine already emits.
-    const report =
+    let report =
       planeDiagnostics.length > 0
         ? { ...reportRaw, diagnostics: [...reportRaw.diagnostics, ...planeDiagnostics] }
         : reportRaw;
 
+    // --new-only: partition the full-tree findings against the changed set and
+    // keep only the ones the current change introduced; pre-existing baseline
+    // debt is bucketed as hidden (reported as a count, never printed as green).
+    let hiddenBaseline = 0;
+    if (newOnly) {
+      const keyOf = (f: IPolicyFinding): string => `${f.ruleId}|${f.file}:${f.line}|${f.match}`;
+      const classification = classifyChangedScope({
+        projectRoot: cwd,
+        current: report.findings.map((f) => ({
+          key: keyOf(f),
+          file: f.file,
+          code: f.ruleId,
+          severity: f.severity,
+          message: f.message,
+        })),
+        changedFiles: changedFiles ?? [],
+      });
+      const newKeys = new Set(classification.newIssues.map((n) => n.key));
+      const newFindings = report.findings.filter((f) => newKeys.has(keyOf(f)));
+      hiddenBaseline = report.findings.length - newFindings.length;
+      const verdict = newFindings.some((f) => f.severity === 'error')
+        ? 'errors'
+        : newFindings.length > 0
+          ? report.verdict
+          : 'pass';
+      report = { ...report, findings: newFindings, verdict };
+    }
+
     if (wantJson) {
-      process.stdout.write(asJson(report) + '\n');
+      process.stdout.write(asJson({ ...report, ...(newOnly ? { newOnly: true, hiddenBaseline } : {}) }) + '\n');
       return report.verdict === 'errors' ? 1 : 0;
     }
 
@@ -130,12 +164,21 @@ export const policyLintCommand: ICommandHandler = {
     const errors = report.findings.filter((f) => f.severity === 'error').length;
     const warnings = report.findings.filter((f) => f.severity === 'warning').length;
     process.stdout.write(kv('findings', `${errors} error(s), ${warnings} warning(s)`) + '\n');
+    if (newOnly) {
+      process.stdout.write(
+        kv('scope', `new-only (${hiddenBaseline} pre-existing finding(s) hidden — run without --new-only to see all)`) + '\n',
+      );
+    }
     if (report.diagnostics.length > 0) {
       process.stdout.write('\nMisconfigured rules:\n');
       for (const d of report.diagnostics) process.stdout.write(`  ! ${d}\n`);
     }
     if (report.findings.length === 0 && report.diagnostics.length === 0) {
-      process.stdout.write('\nNo policy violations on the scanned surfaces. ✓\n');
+      process.stdout.write(
+        newOnly
+          ? `\nNo NEW policy violations from this change${hiddenBaseline > 0 ? ` (${hiddenBaseline} pre-existing hidden)` : ''}. ✓\n`
+          : '\nNo policy violations on the scanned surfaces. ✓\n',
+      );
       return 0;
     }
     // Group findings by rule.

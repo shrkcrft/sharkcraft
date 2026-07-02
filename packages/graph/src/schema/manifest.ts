@@ -33,6 +33,12 @@ export interface IGraphManifest {
   /** Total file nodes participating in any cycle. */
   filesInCycles?: number;
   /**
+   * Loops that exist ONLY via type-only import edges (erased at emit time —
+   * cannot deadlock or cause init-order bugs). Tracked separately as a
+   * non-blocking bucket so they never inflate `cycleCount`.
+   */
+  typeOnlyLoopCount?: number;
+  /**
    * Number of `imports-file` edges that resolved to the
    * `unresolved:<spec>` sentinel (relative / alias / workspace path
    * the resolver could not match against an on-disk file). Optional

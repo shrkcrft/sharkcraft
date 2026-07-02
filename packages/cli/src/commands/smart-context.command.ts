@@ -122,11 +122,13 @@ export const smartContextCommand: ICommandHandler = {
   description:
     'Build deterministic context and ask an AI provider to synthesise an enriched brief (default), structured plan (--plan), or two-stage development plan (--ai-plan).',
   usage:
-    'shrk smart-context "<task>" [--plus] [--budget <seconds>] [--plan] [--ai-plan] [--save] [--provider auto|ollama|llamacpp] [--enhance|--no-enhance] [--enhance-passes N] [--instructions <path>] [--no-instructions] [--model <id>] [--max-tokens N] [--stage1-max-tokens N] [--seed-tokens N] [--expansion-tokens N] [--expansion-limit N] [--log-prompt] [--save-conversation[=<path>]] [--dry-run] [--debug] [--json]',
+    'shrk smart-context "<task>" | --task "<task>" [--plus] [--budget <seconds>] [--plan] [--ai-plan] [--save] [--provider auto|ollama|llamacpp] [--enhance|--no-enhance] [--enhance-passes N] [--instructions <path>] [--no-instructions] [--model <id>] [--max-tokens N] [--stage1-max-tokens N] [--seed-tokens N] [--expansion-tokens N] [--expansion-limit N] [--log-prompt] [--save-conversation[=<path>]] [--dry-run] [--debug] [--json]',
   async run(args: ParsedArgs): Promise<number> {
-    const task = args.positional.join(' ').trim();
+    // Accept the documented `--task` form as well as the positional form, so the
+    // CLI surface matches the docs (which advertise `--task` broadly).
+    const task = (args.positional.join(' ').trim() || flagString(args, 'task') || '').trim();
     if (!task) {
-      process.stderr.write('Usage: shrk smart-context "<task>" [--plan] [--ai-plan] [--save]\n');
+      process.stderr.write('Usage: shrk smart-context "<task>" [--task "<task>"] [--plan] [--ai-plan] [--save]\n');
       return 2;
     }
     // Isolate the LLM / native-runtime work in a child process. On macOS the
@@ -241,9 +243,7 @@ export const smartContextCommand: ICommandHandler = {
         (originalContext.length > 0 && enhanced.value.content.trim() === originalContext);
       if (fullyDegraded) {
         if (!opts.json) {
-          process.stderr.write(
-            '[smart-context] enhancement fully degraded — returning deterministic context only.\n',
-          );
+          process.stderr.write(degradedRetrievalBanner(seed, 'enhancement fully degraded') + '\n');
         }
         const fallbackEnvelope = buildEnvelope({
           task,
@@ -310,9 +310,7 @@ export const smartContextCommand: ICommandHandler = {
       // exit 1. The agent that asked for fast grounding still gets usable
       // rules / paths / templates / candidate files. The error is advisory on
       // stderr (never stdout, so --json stays valid).
-      process.stderr.write(
-        '[smart-context] provider unavailable — returning deterministic context only.\n',
-      );
+      process.stderr.write(degradedRetrievalBanner(seed, 'provider unavailable') + '\n');
       const fallbackEnvelope = buildEnvelope({
         task,
         seed,
@@ -1790,6 +1788,22 @@ export function renderIndexFreshnessWarning(f: IIndexFreshness | undefined): str
     `> ⚠ Semantic index is ${f.behind} file(s) behind the working tree ` +
     `(${f.stale} changed, ${f.missing} deleted, ${f.untracked} new).${pruned} ` +
     'Verify the file suggestions above before editing — run `shrk smart-context --refresh` to rebuild.'
+  );
+}
+
+/**
+ * Loud one-liner for the degraded / provider-unavailable path. The returned
+ * content is the deterministic seed (rules/paths/templates/candidate files), NOT
+ * task-scoped semantic retrieval — so say so, and how far the index is behind,
+ * so a caller never trusts a stale generic dump as if it were curated retrieval.
+ */
+function degradedRetrievalBanner(seed: ISmartContextSeed, cause: string): string {
+  const behind = seed.indexFreshness?.behind ?? 0;
+  const behindClause = behind > 0 ? `, semantic index ${behind} file(s) behind the working tree` : '';
+  return (
+    `[smart-context] semantic retrieval unavailable (${cause})${behindClause} — ` +
+    'falling back to the deterministic seed (rules/paths/templates/candidate files), NOT task-scoped retrieval. ' +
+    'Run `shrk smart-context --refresh` to rebuild the index.'
   );
 }
 

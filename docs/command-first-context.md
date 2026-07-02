@@ -19,7 +19,11 @@ Schema: `sharkcraft.agent-task-prep/v1`.
 
 ## CLI
 
-- `shrk task "<task>"` continues to emit the R31 human + JSON shapes.
-- `shrk context --task "<task>"` is unchanged in form; future rounds
-  will add an inline `--commands-first` flag for human-friendly default
-  output. Today the equivalent is `shrk search "<task>" --actions-only`.
+- `shrk task "<task>"` and `shrk context --task "<task>"` now render the
+  **full body by default** in text mode — parity with `shrk why`, `shrk reuse`,
+  and `shrk knowledge get` — and **auto-widen the token budget** so the rich
+  sections (architecture, conventions, paths, workflows) aren't silently dropped
+  to fit a terse cap.
+- `--summary` (alias `--brief`) opts back into the terse, budget-capped view.
+- `--commands-first` / `--actions-only` still give the terse commands-first view
+  (what to run, not the full context body).

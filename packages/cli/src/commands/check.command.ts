@@ -696,8 +696,31 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
       ? { ...reportRaw, diagnostics: [...reportRaw.diagnostics, ...planeDiagnostics] }
       : reportRaw;
 
+  // Truthful evaluation accounting so a subset run never reads as a full green.
+  //   configured      — every wiring rule declared (the honest denominator).
+  //   selected        — rules that survived --changed-only / --only narrowing.
+  //   evaluated        — rules that actually ran a comparison (globs matched >0 files).
+  //   skippedByScope  — configured − selected (dropped by the diff/only narrowing).
+  //   matchedNothing  — selected − evaluated (in scope but matched 0 files).
+  const configured = rules.length;
+  const selected = report.rules.length;
+  const evaluated = report.evaluated;
+  const skippedByScope = Math.max(0, configured - selected);
+  const matchedNothing = Math.max(0, selected - evaluated);
+  const notVerified = Math.max(0, configured - evaluated);
+  const allEvaluated = evaluated === configured;
+  const scopeNote = changedOnly || since ? ' by --changed-only' : '';
+  const parts: string[] = [];
+  if (skippedByScope > 0) parts.push(`${skippedByScope} skipped${scopeNote}`);
+  if (matchedNothing > 0) parts.push(`${matchedNothing} matched no files`);
+  const breakdown = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+
   if (wantJson) {
-    process.stdout.write(asJson(report) + '\n');
+    // Carry the honest counts so a machine consumer can tell "0 evaluated" from
+    // a real green, and see how many rules the scope skipped.
+    process.stdout.write(
+      asJson({ ...report, configured, selected, evaluated, skippedByScope, matchedNothing, notVerified }) + '\n',
+    );
     return report.verdict === 'errors' ? 1 : 0;
   }
 
@@ -705,14 +728,14 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
   // `evaluated` counts rules that actually ran a comparison (globs matched >0
   // files). When 0 rules evaluated but rules ARE configured, say so loudly —
   // "checked nothing" must never read as the green "every token is wired" pass.
-  if (report.evaluated === 0) {
+  if (evaluated === 0) {
     process.stdout.write(
-      `  ! Nothing evaluated — ${report.rules.length} rule(s) configured but none matched files in scope` +
-        (changedOnly || since ? ' (changed-only).\n' : '.\n'),
+      `  ! 0 rules evaluated — NOT verified. ${configured} rule(s) configured${breakdown}; ` +
+        'none ran a comparison in scope. Wiring was not checked — this is not a pass.\n',
     );
     return 0;
   }
-  process.stdout.write(kv('rules evaluated', `${report.evaluated} of ${report.rules.length}`) + '\n');
+  process.stdout.write(kv('rules evaluated', `${evaluated} of ${configured}${breakdown}`) + '\n');
   const errors = report.violations.filter((v) => v.severity === 'error').length;
   const warnings = report.violations.filter((v) => v.severity === 'warning').length;
   process.stdout.write(kv('violations', `${errors} error(s), ${warnings} warning(s)`) + '\n');
@@ -723,7 +746,17 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
     for (const d of report.diagnostics) process.stdout.write(`  ! ${d}\n`);
   }
   if (report.violations.length === 0 && report.diagnostics.length === 0) {
-    process.stdout.write('\nNo wiring violations — every declared token is registered. ✓\n');
+    if (allEvaluated) {
+      // Every configured rule ran — the earned full green.
+      process.stdout.write('\nNo wiring violations — every declared token is registered. ✓\n');
+    } else {
+      // A subset ran: no violations AMONG WHAT RAN, but not a full green. Never
+      // print the unqualified "every declared token is wired" success sentence.
+      process.stdout.write(
+        `\nNo wiring violations among the ${evaluated} rule(s) evaluated — ` +
+          `${notVerified} of ${configured} NOT verified${breakdown}. Not a full green.\n`,
+      );
+    }
     return 0;
   }
   if (report.violations.length === 0) {
@@ -873,21 +906,47 @@ export const checkCommand: ICommandHandler = {
     if (sub === 'orphans') return checkOrphans(args);
     if (sub === 'registry-lifecycle') {
       const cwd = resolveCwd(args);
+      const changedOnly = flagBool(args, 'changed-only');
+      const since = flagString(args, 'since');
+      const scope = flagString(args, 'scope');
       const { buildRegistryLifecycleReport, renderRegistryLifecycleReportText } = await import('@shrkcrft/inspector');
-      // The scan is a single synchronous pass with no streamed output; on a
-      // large repo it can run for tens of seconds. Without a heartbeat that
-      // silence reads as a hang, so announce the work first (human path only —
-      // JSON consumers want a clean stdout).
-      if (!flagBool(args, 'json')) {
-        process.stderr.write('⏳ Scanning source + registries for lifecycle coverage (can take a while on large repos)…\n');
+      // `--changed-only` scopes the scan to the diff (tracked + untracked), so it
+      // runs inline in seconds; the full-tree scan is bounded by a wall-clock
+      // budget and flushes partial results on timeout instead of hanging.
+      let files: readonly string[] | undefined;
+      if (changedOnly || since) {
+        const changed = resolveChangedFiles({
+          projectRoot: cwd,
+          ...(since ? { since } : {}),
+          ...(changedOnly && !since ? { includeWorktree: true } : {}),
+        });
+        files = changed.files;
       }
-      const report = buildRegistryLifecycleReport({ projectRoot: cwd });
+      // Full-tree walk honors the project's skipDirs override (so a repo that
+      // registers code under tools/ etc. isn't blinded by the default set).
+      let skipDirs: readonly string[] | undefined;
+      if (files === undefined) {
+        const loaded = await resolveProjectConfig(cwd);
+        if (loaded.ok) skipDirs = loaded.value.config.registryLifecycle?.skipDirs;
+      }
+      // Only the slow full-tree path needs the heartbeat (JSON keeps stdout clean).
+      if (!flagBool(args, 'json') && files === undefined) {
+        process.stderr.write('⏳ Scanning source + registries for lifecycle coverage (bounded by a wall-clock budget)…\n');
+      }
+      const report = buildRegistryLifecycleReport({
+        projectRoot: cwd,
+        ...(files !== undefined ? { files } : {}),
+        ...(scope ? { scope } : {}),
+        ...(skipDirs ? { skipDirs } : {}),
+      });
+      // Deterministic non-zero on timeout so a wedged scan fails loud, not silent.
+      const exit = report.timedOut ? 2 : report.missingRemovers.length === 0 ? 0 : 1;
       if (flagBool(args, 'json')) {
         process.stdout.write(asJson(report) + '\n');
-        return report.missingRemovers.length === 0 ? 0 : 1;
+        return exit;
       }
       process.stdout.write(renderRegistryLifecycleReportText(report));
-      return report.missingRemovers.length === 0 ? 0 : 1;
+      return exit;
     }
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const readiness = buildAiReadinessReport(inspection);

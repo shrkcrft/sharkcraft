@@ -65,6 +65,71 @@ function setupFixture(): string {
   return root;
 }
 
+// Fixture with two templates: one PRECISE (emits a package index.ts — a
+// concrete basename) and one OVER-BROAD (emits a bare package directory).
+// Only the precise one should attribute coverage to the real index file.
+function setupTemplateFixture(): string {
+  const root = mkdtempSync(join(tmpdir(), 'shrk-rule-graph-tpl-'));
+  writeFileSync(
+    join(root, 'package.json'),
+    JSON.stringify({ name: 'demo-root', workspaces: ['packages/*'] }, null, 2),
+  );
+  mkdirSync(join(root, 'packages', 'alpha', 'src'), { recursive: true });
+  mkdirSync(join(root, 'sharkcraft'), { recursive: true });
+  writeFileSync(
+    join(root, 'packages', 'alpha', 'package.json'),
+    JSON.stringify({ name: '@demo/alpha', main: 'src/index.ts' }, null, 2),
+  );
+  writeFileSync(join(root, 'packages', 'alpha', 'src', 'index.ts'), 'export const alpha = 1;');
+  writeFileSync(
+    join(root, 'sharkcraft', 'sharkcraft.config.ts'),
+    ["export default {", "  projectName: 'demo',", "  templateFiles: ['templates.ts'],", "};"].join('\n'),
+  );
+  writeFileSync(
+    join(root, 'sharkcraft', 'templates.ts'),
+    [
+      'export default [',
+      '  {',
+      "    id: 'precise.pkg-index',",
+      "    name: 'Package index',",
+      "    variables: [{ name: 'pkg', required: true }],",
+      '    targetPath: (v) => `packages/${v.pkg}/src/index.ts`,',
+      "    content: 'export const x = 1;',",
+      '  },',
+      '  {',
+      "    id: 'broad.pkg-dir',",
+      "    name: 'Package dir (over-broad)',",
+      "    variables: [{ name: 'pkg', required: true }],",
+      '    targetPath: (v) => `packages/${v.pkg}`,',
+      "    content: 'x',",
+      '  },',
+      '];',
+    ].join('\n'),
+  );
+  return root;
+}
+
+describe('buildBridge — template coverage precision (§1.8)', () => {
+  test('attributes only the precise emit-path template, never the over-broad one', async () => {
+    const root = setupTemplateFixture();
+    try {
+      buildFullIndex({ projectRoot: root });
+      const inspection = await inspectSharkcraft({ cwd: root });
+      await buildBridge({ projectRoot: root, inspection });
+      const api = RuleGraphQueryApi.fromStores(root);
+      const forFile = api.forFile('packages/alpha/src/index.ts');
+      const templateIds = (forFile?.templates ?? []).map((h) => h.target.id);
+      // The precise template emits exactly this path → attributed.
+      expect(templateIds).toContain('template:precise.pkg-index');
+      // The over-broad `packages/*` (wildcard basename, a bare dir) is NOT an
+      // emit-path claim → must be dropped, not falsely attributed.
+      expect(templateIds).not.toContain('template:broad.pkg-dir');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('buildBridge', () => {
   test('emits applies-rule, matches-path bridge edges', async () => {
     const root = setupFixture();

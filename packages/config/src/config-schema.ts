@@ -107,6 +107,8 @@ export const RegistryDeclarationSchema = z
     description: z.string().optional(),
     source: WiringSourceSchema,
     consumer: WiringSourceSchema.optional(),
+    // Human-noun → canonical-id synonym map for `exists <id> --resolve`.
+    aliases: z.record(z.string(), z.string()).optional(),
   })
   .strict();
 
@@ -198,6 +200,15 @@ export const SharkCraftConfigSchema = z
     policyRules: z.array(PolicyRuleSchema).optional(),
     // Reuse primitives — role-keyed canonical symbols for `shrk reuse`.
     reusePrimitives: z.array(ReusePrimitiveSchema).optional(),
+    // registry-lifecycle scan tuning. `skipDirs` OVERRIDES the default
+    // source-only skip set so a repo that registers code under tools/ / a
+    // non-standard root isn't silently blinded by a baked-in exclusion.
+    registryLifecycle: z
+      .object({
+        skipDirs: z.array(z.string()).optional(),
+      })
+      .strict()
+      .optional(),
     // Verification commands available to `shrk apply --validate --verification`.
     verificationCommands: z
       .array(

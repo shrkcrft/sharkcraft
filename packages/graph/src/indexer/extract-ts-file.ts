@@ -80,6 +80,14 @@ export interface IRawImportSpecifier {
   line: number;
   /** Best-effort kind: 'static' | 'side-effect' | 'dynamic' | 'require'. */
   kind: string;
+  /**
+   * True when the WHOLE import is type-only (`import type …`, or a named import
+   * where every binding is `type X`, or `export type … from`). Such an edge is
+   * erased at emit time — it cannot deadlock or cause an init-order bug — so the
+   * default cycle detector excludes it. A mixed import with any value binding is
+   * NOT type-only (the value binding keeps the edge a real runtime dependency).
+   */
+  isTypeOnly?: boolean;
 }
 
 export interface IImportBinding {
@@ -257,20 +265,24 @@ function walkAst(absPath: string, text: string): {
   // the visitor below).
   for (const stmt of sf.statements) {
     if (ts.isImportDeclaration(stmt) && ts.isStringLiteral(stmt.moduleSpecifier)) {
+      const importTypeOnly = isImportStatementTypeOnly(stmt);
       rawSpecs.push({
         specifier: stmt.moduleSpecifier.text,
         line: lineOf(sf, stmt),
         kind: stmt.importClause ? 'static' : 'side-effect',
+        ...(importTypeOnly ? { isTypeOnly: true } : {}),
       });
     } else if (
       ts.isExportDeclaration(stmt) &&
       stmt.moduleSpecifier &&
       ts.isStringLiteral(stmt.moduleSpecifier)
     ) {
+      const exportTypeOnly = isExportStatementTypeOnly(stmt);
       rawSpecs.push({
         specifier: stmt.moduleSpecifier.text,
         line: lineOf(sf, stmt),
         kind: 'static',
+        ...(exportTypeOnly ? { isTypeOnly: true } : {}),
       });
     } else if (
       ts.isImportEqualsDeclaration(stmt) &&
@@ -456,6 +468,39 @@ function isCallCallee(id: ts.Identifier): boolean {
 
 function lineOf(sf: ts.SourceFile, node: ts.Node): number {
   return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+}
+
+/**
+ * True when an import declaration is WHOLLY type-only: `import type { … }`, or a
+ * named import where every element is `type X` (and there is no value default or
+ * namespace binding). A side-effect import (`import './x'`, no clause) is a real
+ * runtime dependency and is never type-only. A namespace import (`import * as X`)
+ * binds a value and is likewise not type-only.
+ */
+function isImportStatementTypeOnly(stmt: ts.ImportDeclaration): boolean {
+  const clause = stmt.importClause;
+  if (!clause) return false; // side-effect import — runtime
+  if (clause.isTypeOnly) return true;
+  if (clause.name) return false; // value default binding
+  const named = clause.namedBindings;
+  if (named && ts.isNamedImports(named)) {
+    return named.elements.length > 0 && named.elements.every((e) => e.isTypeOnly);
+  }
+  return false; // namespace import or empty — treat as value
+}
+
+/**
+ * True when an `export … from` re-export is wholly type-only: `export type { … }
+ * from`, or a named re-export where every element is `type X`. `export * from`
+ * (no clause) is a value re-export and is never type-only.
+ */
+function isExportStatementTypeOnly(stmt: ts.ExportDeclaration): boolean {
+  if (stmt.isTypeOnly) return true;
+  const clause = stmt.exportClause;
+  if (clause && ts.isNamedExports(clause)) {
+    return clause.elements.length > 0 && clause.elements.every((e) => e.isTypeOnly);
+  }
+  return false;
 }
 
 /**

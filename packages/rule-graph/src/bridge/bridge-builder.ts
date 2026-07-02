@@ -197,13 +197,19 @@ export async function buildBridge(
       kind: NodeKind.Template,
       label: t.name ?? t.id,
     });
-    const pattern = resolveTemplatePattern(t as unknown as ITemplateLike);
-    if (!pattern) continue;
-    const re = globToRegex(pattern);
+    // Only attribute coverage on a REAL emit-path match: a file must match one
+    // of the template's actual output paths whose basename is a concrete
+    // emitted filename. A wildcarded/loose pattern (bare `*`, a `**` segment, or
+    // a wildcard basename) is NOT an emit-path claim — dropping it prevents the
+    // "covered by an unrelated template" false provenance.
+    const patterns = precisePatterns(resolveTemplatePatterns(t as unknown as ITemplateLike));
+    if (patterns.length === 0) continue;
+    const matchers = patterns.map((p) => ({ pattern: p, re: globToRegex(p) }));
     for (const f of files) {
-      if (!re.test(f.path!)) continue;
+      const hit = matchers.find((m) => m.re.test(f.path!));
+      if (!hit) continue;
       edges.push(
-        edge(f.id, `template:${t.id}`, EdgeKind.CoveredByTemplate, { pattern }),
+        edge(f.id, `template:${t.id}`, EdgeKind.CoveredByTemplate, { pattern: hit.pattern }),
       );
       sourceCounts['template']! += 1;
     }
@@ -258,31 +264,52 @@ interface ITemplateLike {
 }
 
 /**
- * Invert a template's path resolver to a glob pattern by substituting
- * `*` for every declared variable. Handles:
- *   - string targetPath
- *   - function targetPath called with { var: '*' } for each declared var
- *   - first-file targetPath from files() / changes() resolvers
+ * Invert a template's path resolvers to the FULL set of emit-path globs by
+ * substituting `*` for every declared variable. Unlike the previous
+ * single-pattern version, this collects every output path (string targetPath,
+ * function targetPath, and every entry of files()/changes()), so a multi-file
+ * template is modeled by its real emit set rather than a collapsed first path.
  *
- * Returns undefined when the template doesn't expose a single-pattern
- * target (multi-file with divergent paths) or when the resolver throws.
+ * Returns an empty list when a resolver throws.
  */
-function resolveTemplatePattern(t: ITemplateLike): string | undefined {
+function resolveTemplatePatterns(t: ITemplateLike): string[] {
   const dummy: Record<string, unknown> = {};
   for (const v of t.variables ?? []) dummy[v.name] = '*';
+  const out: string[] = [];
   try {
-    if (typeof t.targetPath === 'string') return t.targetPath;
-    if (typeof t.targetPath === 'function') return t.targetPath(dummy);
-    if (t.files) {
-      const f = t.files(dummy);
-      if (f.length === 1) return f[0]?.targetPath;
+    if (typeof t.targetPath === 'string') out.push(t.targetPath);
+    else if (typeof t.targetPath === 'function') {
+      const p = t.targetPath(dummy);
+      if (p) out.push(p);
     }
-    if (t.changes) {
-      const c = t.changes(dummy);
-      if (c.length > 0 && c[0]) return c[0].targetPath;
-    }
+    if (t.files) for (const f of t.files(dummy)) if (f?.targetPath) out.push(f.targetPath);
+    if (t.changes) for (const c of t.changes(dummy)) if (c?.targetPath) out.push(c.targetPath);
   } catch {
-    return undefined;
+    return [];
   }
-  return undefined;
+  return out;
+}
+
+/**
+ * Keep only patterns precise enough to be a real emit-path claim, and dedupe.
+ * A pattern is precise when its basename (the emitted filename) is concrete —
+ * a template scaffolds a named file, not "everything under a dir". This drops
+ * bare `*`, `.`/`/`, any `**` segment, and wildcard basenames (`src/*`,
+ * `packages/*`), which are path-prefix overlaps, not emit-path matches.
+ */
+function precisePatterns(patterns: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of patterns) {
+    const p = raw.trim();
+    if (!p || p === '*' || p === '**' || p === '.' || p === '/') continue;
+    const segments = p.split('/');
+    if (segments.some((seg) => seg === '**')) continue;
+    const base = segments[segments.length - 1] ?? '';
+    if (base === '' || base.includes('*') || base.includes('?')) continue;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
 }

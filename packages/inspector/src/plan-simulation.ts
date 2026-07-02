@@ -619,6 +619,17 @@ export async function simulatePlan(
   if (potentialBoundaryConcerns.length > 0 || planIntroducedBoundaryConcerns.length > 0) {
     requiredValidations.add('shrk architecture violations');
   }
+  // Scale the required-validation wall to BLAST RADIUS: a one-file scaffold and a
+  // multi-file / multi-package construct shouldn't get the same wall. A broad
+  // change earns the composite changed-only "safe to finish?" verdict (project-
+  // agnostic — always a valid shrk command) on top of the per-file checks.
+  const touchedPackages = new Set(
+    sourceList.map((c) => /^((?:packages|apps|libs|modules|services)\/[^/]+)\//.exec(c.relativePath)?.[1] ?? '(root)'),
+  );
+  const blastRadius = { files: sourceList.length, packages: touchedPackages.size };
+  if (blastRadius.files >= 5 || blastRadius.packages >= 2) {
+    requiredValidations.add('shrk finish');
+  }
 
   // Affected constructs / playbooks (lightweight).
   await loadConstructs(inspection);

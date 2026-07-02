@@ -32,4 +32,12 @@ export interface IRegistryDeclaration {
    * declaration and the binding site.
    */
   readonly consumer?: IWiringSource;
+  /**
+   * Optional human-noun → canonical-id map. The noun an author types is not
+   * always the exact registered slug; `exists <id> --resolve` maps it to the
+   * canonical id before the existence test, so a "is this taken?" check can't
+   * miss on a synonym of an already-registered id. Keys are the aliases, values
+   * the canonical ids.
+   */
+  readonly aliases?: Readonly<Record<string, string>>;
 }

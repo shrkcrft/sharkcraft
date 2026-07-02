@@ -11,6 +11,7 @@
  *
  * Read-only; no AI; deterministic. Schema: sharkcraft.changes-summary/v1.
  */
+import { globToRegex } from '@shrkcrft/boundaries';
 import { getChangedFiles } from './git-helpers.ts';
 import { resolveVerificationCommands } from './resolve-verification-commands.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
@@ -48,7 +49,13 @@ export enum ChangeArea {
 
 export interface IChangedFileSummary {
   path: string;
-  area: ChangeArea;
+  /**
+   * Resolved area. One of the built-in {@link ChangeArea} slugs, OR a
+   * project-declared area (a boundary-rule tag/id or a monorepo package name)
+   * when the built-in taxonomy doesn't cover the file. `'unknown'` only when no
+   * declared taxonomy matches either — a high unknown rate is itself a signal.
+   */
+  area: string;
   isTest: boolean;
   isDoc: boolean;
   isMcpTool: boolean;
@@ -67,6 +74,14 @@ export interface IChangesSummaryReport {
   roundLabel?: string;
   totalFiles: number;
   filesByArea: Record<string, readonly string[]>;
+  /**
+   * Fraction (0..1) of changed files that resolved to no declared area. A high
+   * rate is a classifier self-diagnostic — the declared taxonomy is missing
+   * globs, not that the diff is low-risk.
+   */
+  unknownRate: number;
+  /** Count of files bucketed as `unknown` (the numerator behind `unknownRate`). */
+  unknownFiles: number;
   files: readonly IChangedFileSummary[];
   /** Touched CLI command files (relative). */
   touchedCommands: readonly string[];
@@ -136,8 +151,50 @@ function classifyArea(file: string): ChangeArea {
   return ChangeArea.Unknown;
 }
 
-function classifyFile(file: string): IChangedFileSummary {
-  const area = classifyArea(file);
+/** A file→area matcher sourced from the project's declared taxonomy. */
+type AreaResolver = (file: string) => string;
+
+/** Generic monorepo package/app root → area name. */
+const PACKAGE_ROOT_RE = /^(?:packages|apps|libs|modules|services)\/([^/]+)\//;
+
+/**
+ * Build a resolver that maps a file to a declared area, falling back to the
+ * built-in SharkCraft prefixes. Sources, in priority order:
+ *   1. the built-in {@link classifyArea} slugs (nice names for this repo);
+ *   2. the boundary gate's own `from` globs — the declared layer/area taxonomy;
+ *   3. a generic monorepo package/app root (`packages/<name>/…` → `<name>`), so
+ *      a foreign monorepo's packages resolve instead of bucketing to `unknown`.
+ * A file only stays `unknown` when NONE of these match — and a high unknown rate
+ * is surfaced as a self-diagnostic (`unknownRate`), not a low-risk diff.
+ */
+function buildAreaResolver(inspection: ISharkcraftInspection): AreaResolver {
+  const boundaryMatchers: { area: string; matchers: RegExp[] }[] = [];
+  try {
+    for (const rule of inspection.boundaryRegistry?.list() ?? []) {
+      const from = rule.from ?? [];
+      if (from.length === 0) continue;
+      boundaryMatchers.push({
+        area: rule.tags?.[0] ?? rule.id,
+        matchers: from.map((g) => globToRegex(g)),
+      });
+    }
+  } catch {
+    // Boundary registry unavailable — fall through to built-ins + package roots.
+  }
+  return (file: string): string => {
+    const builtin = classifyArea(file);
+    if (builtin !== ChangeArea.Unknown) return builtin;
+    for (const b of boundaryMatchers) {
+      if (b.matchers.some((re) => re.test(file))) return b.area;
+    }
+    const pkg = PACKAGE_ROOT_RE.exec(file);
+    if (pkg?.[1]) return pkg[1];
+    return ChangeArea.Unknown;
+  };
+}
+
+function classifyFile(file: string, resolveArea: AreaResolver): IChangedFileSummary {
+  const area = resolveArea(file);
   const lower = file.toLowerCase();
   const isTest =
     lower.includes('__tests__/') ||
@@ -296,8 +353,11 @@ export async function buildChangesSummary(
     changedFiles = getChangedFiles(cwd, { includeWorktree: true });
     source = 'working-tree';
   }
-  const classified = changedFiles.map(classifyFile);
+  const resolveArea = buildAreaResolver(inspection);
+  const classified = changedFiles.map((f) => classifyFile(f, resolveArea));
   const filesByArea = groupByArea(classified);
+  const unknownFiles = classified.filter((c) => c.area === ChangeArea.Unknown).length;
+  const unknownRate = classified.length > 0 ? unknownFiles / classified.length : 0;
   const touchedCommands = classified.filter((c) => c.isCliCommand).map((c) => c.path);
   const touchedMcpTools = classified.filter((c) => c.isMcpTool).map((c) => c.path);
   const touchedSchemas = classified.filter((c) => c.isSchema).map((c) => c.path);
@@ -314,6 +374,8 @@ export async function buildChangesSummary(
     ...(options.roundLabel ? { roundLabel: options.roundLabel } : {}),
     totalFiles: classified.length,
     filesByArea,
+    unknownRate,
+    unknownFiles,
     files: classified,
     touchedCommands,
     touchedMcpTools,
@@ -345,6 +407,11 @@ export function renderChangesSummaryMarkdown(report: IChangesSummaryReport): str
   for (const [area, files] of Object.entries(report.filesByArea)) {
     lines.push(`### ${area} (${files.length})`);
     for (const f of files) lines.push(`- ${f}`);
+  }
+  if (report.unknownFiles > 0) {
+    lines.push(
+      `> ⚠ ${report.unknownFiles}/${report.totalFiles} file(s) (${Math.round(report.unknownRate * 100)}%) matched no declared area — the layer/area taxonomy may be missing globs (classifier diagnostic).`,
+    );
   }
   if (report.touchedCommands.length > 0) {
     lines.push('');

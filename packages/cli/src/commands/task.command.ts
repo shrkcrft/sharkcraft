@@ -26,6 +26,13 @@ import {
 import { asJson, header, kv } from '../output/format-output.ts';
 import { buildTaskNextReport } from '../task-next/task-next-ranker.ts';
 
+/**
+ * Budget for the DEFAULT full human-text packet when no explicit `--max-tokens`
+ * is set — large enough to hold every planned context section so orientation
+ * isn't silently thinner than the sibling verbs. JSON/terse callers keep 3500.
+ */
+const WIDE_TASK_BUDGET = 100_000;
+
 function compactTaskPacket(p: ITaskPacket): Record<string, unknown> {
   return {
     task: p.task,
@@ -165,14 +172,27 @@ export const taskCommand: ICommandHandler = {
       return 2;
     }
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
-    const maxTokens = flagNumber(args, 'max-tokens') ?? 3500;
     const scope = flagList(args, 'scope');
     const explainRanking = flagBool(args, 'explain-ranking') || flagBool(args, 'json');
-    // `--full` (or `--verbose`, which already affects text rendering) opts
-    // out of the compact packet — pass it when an agent genuinely needs
-    // the full ranking + uncapped action-hint aggregates. Default is the
-    // tight packet (5 rules / 3 templates / 5 hints per field).
-    const compact = !flagBool(args, 'full') && !flagBool(args, 'verbose');
+    // Orientation renders the full packet by default now (parity with why /
+    // reuse / knowledge get / `shrk context`) so the agent's first read isn't
+    // thinner than every adjacent command. `--summary`/`--brief` (or
+    // `--commands-first`/`--actions-only`) opts back into the terse view.
+    const wantsJson = flagBool(args, 'json');
+    const terse =
+      flagBool(args, 'summary') ||
+      flagBool(args, 'brief') ||
+      flagBool(args, 'commands-first') ||
+      flagBool(args, 'actions-only');
+    // Compact packet (5 rules / 3 templates / 5 hints per field) still backs the
+    // default JSON shape and the terse text view; the full text view is uncapped.
+    const compact = wantsJson
+      ? !flagBool(args, 'full') && !flagBool(args, 'verbose')
+      : terse;
+    // Auto-widen the context budget for the default full human view so no rich
+    // section is dropped purely to fit a tight budget; JSON/terse keep 3500.
+    const wideView = !wantsJson && !terse;
+    const maxTokens = flagNumber(args, 'max-tokens') ?? (wideView ? WIDE_TASK_BUDGET : 3500);
     const packet = buildTaskPacket(inspection, task, {
       maxTokens,
       ...(scope.length ? { scope } : {}),
@@ -219,14 +239,13 @@ export const taskCommand: ICommandHandler = {
     );
     process.stdout.write(kv('total token est.', String(packet.tokenEstimate)) + '\n');
 
-    // Commands-first summary at the top so the agent sees the action
-    // path before the long context body. `--commands-first` collapses the
-    // output to just commands + uncertainty.
-    // Text mode defaults to commands-first; pass `--verbose` or
-    // `--full` to print the full packet. JSON output is unchanged.
+    // Commands-first summary at the top so the agent sees the action path
+    // before the long context body. The full packet then prints by default;
+    // `--commands-first`/`--actions-only`/`--summary` collapse to just the
+    // commands + uncertainty footer.
     const commandsFirst = flagBool(args, 'commands-first');
     const actionsOnly = flagBool(args, 'actions-only');
-    const verbose = flagBool(args, 'verbose') || flagBool(args, 'full');
+    const summaryOnly = flagBool(args, 'summary') || flagBool(args, 'brief');
     if (packet.recommendedCliCommands.length > 0) {
       process.stdout.write('\nTop commands (command-first):\n');
       for (const c of packet.recommendedCliCommands.slice(0, 5)) {
@@ -237,13 +256,13 @@ export const taskCommand: ICommandHandler = {
       process.stdout.write('\nSuggested generation:\n');
       process.stdout.write(`  $ ${packet.suggestedGen.dryRunCommand}\n`);
     }
-    if (commandsFirst || actionsOnly || !verbose) {
-      if (!verbose && !commandsFirst && !actionsOnly) {
+    if (commandsFirst || actionsOnly || summaryOnly) {
+      if (summaryOnly && !commandsFirst && !actionsOnly) {
         process.stdout.write(
-          '\n(text mode is summary-only — pass --verbose for the full packet, --json for machine output.)\n',
+          '\n(summary mode — omit --summary for the full packet, --json for machine output.)\n',
         );
       }
-      // Render uncertainty and stop — caller asked for action-only output.
+      // Render uncertainty and stop — caller asked for terse output.
       process.stdout.write('\n' + renderUncertaintyText(uncertainty) + '\n');
       return 0;
     }

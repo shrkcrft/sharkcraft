@@ -43,3 +43,15 @@ fileName: user-profile
 ```
 
 These are merged with the user's `--var key=value` flags before validation.
+
+## Inspecting & validating before apply
+
+- `shrk gen --print` (alias of `--show-content`) renders the file bodies inline,
+  so you inspect exactly what would be written in one step.
+- `shrk gen --typecheck` compiles the emitted **create** files (`.ts` / `.tsx`)
+  against the **detected `tsconfig`** *in memory*, before apply. It is a
+  **pre-write gate**: the check runs on a dry-run render FIRST, so a
+  project-template bug fails at **generation time** (exit `1`) and — with
+  `--write` — the write is **refused** (`writeRefused: true`, nothing lands on
+  disk) instead of surfacing at the human's next build. Only diagnostics **in the
+  emitted files** are reported — pre-existing errors elsewhere don't fail the run.

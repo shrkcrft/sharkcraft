@@ -51,3 +51,11 @@ Reference Docs               10
 ```
 
 Sections are added in priority order until the budget runs out. The last partial section is truncated rather than dropped if it can fit a useful slice.
+
+## CLI text-mode fidelity
+
+In text mode `shrk context` / `shrk task` render the **full body by default**
+(parity with `why` / `reuse` / `knowledge get`) and auto-widen `maxTokens` so the
+high-priority sections above aren't dropped to fit a terse cap. Pass `--summary`
+(alias `--brief`) for the terse, budget-capped view, or `--commands-first` /
+`--actions-only` for the commands-only view.

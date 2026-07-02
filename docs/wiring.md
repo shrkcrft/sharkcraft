@@ -147,6 +147,18 @@ Exit code is `1` when any `error`-severity rule has a violation, `0`
 otherwise. `--changed-only` makes it cheap and diff-aware for pre-commit hooks
 and CI.
 
+### Honest scope accounting under `--changed-only`
+
+A scoped run **never renders a green over zero evaluated rules**. When the scope
+selects nothing to run, it prints `0 rules evaluated — NOT verified` (loud), and
+every run reports `rules evaluated M of N (K skipped by --changed-only)` where N
+is the **total** configured rule count. The unqualified "every declared token is
+registered ✓" prints **only when all N configured rules evaluated**; otherwise
+you get the qualified "No wiring violations among the M evaluated rule(s) —
+(N−M) NOT verified". The `--json` report carries `configured`, `selected`,
+`evaluated`, `skippedByScope`, `matchedNothing`, and `notVerified`, so the
+accounting is machine-checkable.
+
 ## Inspecting a rule before you commit it (`explain` / `test`)
 
 Authoring a wiring rule is a tuning loop: a rule is only as good as the

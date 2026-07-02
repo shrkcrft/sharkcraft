@@ -33,7 +33,7 @@ HTML wraps each diff in a static `<details>` block — no JS).
 - **Boundary impact**: current-state boundary violations on the planned paths, plus boundary violations the plan would *introduce* (computed from the re-rendered virtual contents when the template is in the live registry).
 - **Ownership review**: files that match a `requiredReview: true` ownership rule.
 - **Likely tests**: missing `*.spec.ts` companions for changed `src/**` TS files.
-- **Required validations**: `bun test`, `shrk doctor`, `shrk check boundaries`, plus extras driven by the plan's surface (API report, packs doctor, …).
+- **Required validations**: `bun test`, `shrk doctor`, `shrk check boundaries`, plus extras driven by the plan's surface (API report, packs doctor, …). The wall **scales to blast radius** — a change touching **≥5 files or ≥2 packages** additionally requires `shrk finish`.
 - **Affected constructs / recommended playbooks**.
 - **Apply readiness**: one of `ready / ready-with-review / blocked-conflicts / blocked-policy / blocked-boundary / blocked-signature / blocked-missing-review`.
 

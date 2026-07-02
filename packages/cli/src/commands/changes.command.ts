@@ -75,6 +75,12 @@ async function runChangesSummary(args: ParsedArgs): Promise<number> {
   for (const [area, list] of Object.entries(report.filesByArea)) {
     process.stdout.write(`  ${area.padEnd(20)} (${list.length})\n`);
   }
+  if (report.unknownFiles > 0) {
+    process.stdout.write(
+      `  ! ${report.unknownFiles}/${report.totalFiles} file(s) (${Math.round(report.unknownRate * 100)}%) matched no declared area — ` +
+        'the layer/area taxonomy may be missing globs (classifier diagnostic, not a low-risk signal).\n',
+    );
+  }
   if (report.touchedMcpTools.length > 0) {
     process.stdout.write('\nMCP tools touched (verify read-only invariant):\n');
     for (const m of report.touchedMcpTools) process.stdout.write(`  • ${m}\n`);

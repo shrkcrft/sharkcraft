@@ -3,12 +3,30 @@ import type { INode } from '../schema/node.ts';
 import { EdgeKind } from '../schema/edge-kind.ts';
 
 export interface ICycleSummary {
-  /** Number of strongly-connected components of size ≥ 2. */
+  /** Number of strongly-connected components of size ≥ 2 (VALUE edges only). */
   cycleCount: number;
   /** Size of the largest SCC of size ≥ 2 (0 if no cycles). */
   largestCycleSize: number;
   /** Total number of file nodes participating in some cycle. */
   filesInCycles: number;
+  /**
+   * Loops that exist ONLY once type-only import edges are included — i.e. purely
+   * compile-time reference loops that are erased at emit time and can't deadlock
+   * or cause init-order bugs. Reported separately as a NON-blocking bucket so
+   * they never inflate the runtime cycle count.
+   */
+  typeOnlyLoopCount: number;
+}
+
+/** Options for {@link findFileCycles}. */
+export interface IFindFileCyclesOptions {
+  /**
+   * Include type-only import edges (`import type`, fully type-only named
+   * imports, `export type … from`). Default false — a type-only edge is erased
+   * at emit time, so it cannot participate in a runtime cycle. `true` is for
+   * auditing (`graph cycles --include-type-edges`).
+   */
+  includeTypeEdges?: boolean;
 }
 
 /**
@@ -39,8 +57,9 @@ export function findFileCycles(
   nodes: readonly INode[],
   edges: readonly IEdge[],
   pathById?: ReadonlyMap<string, string>,
+  options: IFindFileCyclesOptions = {},
 ): readonly IFileCycle[] {
-  const adj = buildFileAdjacency(nodes, edges);
+  const adj = buildFileAdjacency(nodes, edges, options.includeTypeEdges === true);
   const sccs = stronglyConnectedComponentsIterative(adj);
   const out: IFileCycle[] = [];
   for (const scc of sccs) {
@@ -71,6 +90,7 @@ export function summarizeCycles(
   nodes: readonly INode[],
   edges: readonly IEdge[],
 ): ICycleSummary {
+  // Default (runtime) cycles exclude type-only edges.
   const cycles = findFileCycles(nodes, edges);
   let largestCycleSize = 0;
   let filesInCycles = 0;
@@ -78,16 +98,21 @@ export function summarizeCycles(
     if (c.size > largestCycleSize) largestCycleSize = c.size;
     filesInCycles += c.size;
   }
+  // Loops that appear ONLY once type-only edges are counted — the non-blocking
+  // bucket. (Approximated by the extra SCCs the type-inclusive pass surfaces.)
+  const allCycles = findFileCycles(nodes, edges, undefined, { includeTypeEdges: true });
   return {
     cycleCount: cycles.length,
     largestCycleSize,
     filesInCycles,
+    typeOnlyLoopCount: Math.max(0, allCycles.length - cycles.length),
   };
 }
 
 function buildFileAdjacency(
   nodes: readonly INode[],
   edges: readonly IEdge[],
+  includeTypeEdges: boolean,
 ): Map<string, string[]> {
   const fileIds = new Set<string>();
   for (const n of nodes) {
@@ -97,6 +122,9 @@ function buildFileAdjacency(
   for (const id of fileIds) adj.set(id, []);
   for (const e of edges) {
     if (e.kind !== EdgeKind.ImportsFile) continue;
+    // A type-only import edge is erased at emit time — exclude it from the
+    // default runtime cycle set (opt back in with includeTypeEdges).
+    if (!includeTypeEdges && e.data?.['typeOnly'] === true) continue;
     if (!fileIds.has(e.from) || !fileIds.has(e.to)) continue;
     adj.get(e.from)!.push(e.to);
   }

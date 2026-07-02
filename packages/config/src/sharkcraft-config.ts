@@ -98,6 +98,16 @@ export interface ISharkCraftConfig {
   reusePrimitives?: readonly IReusePrimitive[];
 
   /**
+   * `check registry-lifecycle` scan tuning. `skipDirs` OVERRIDES the default
+   * source-only skip set (build artefacts + examples/e2e/scripts/tools/…) so a
+   * repo that genuinely registers code under `tools/` or a non-standard root is
+   * not silently blinded by a baked-in exclusion.
+   */
+  registryLifecycle?: {
+    readonly skipDirs?: readonly string[];
+  };
+
+  /**
    * Adaptive surface gating.
    *
    *   - `enabled`: experimental commands the project opts into.

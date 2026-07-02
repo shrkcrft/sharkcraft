@@ -230,6 +230,7 @@ import { movePlanCommand } from './commands/move-plan.command.ts';
 import { watchCommand, watchListCommand, watchPruneCommand, watchStopCommand } from './commands/watch.command.ts';
 import { mcpCommand } from './commands/mcp.command.ts';
 import { versionCommand } from './commands/version.command.ts';
+import { changelogCommand } from './commands/changelog.command.ts';
 import { makeHelpCommand } from './commands/help.command.ts';
 import { qualityCommand } from './commands/quality.command.ts';
 import { ciCommand } from './commands/ci.command.ts';
@@ -489,6 +490,7 @@ export function buildRegistry(): CommandRegistry {
   registry.registerSubcommand('watch', watchPruneCommand);
   registry.register(mcpCommand);
   registry.register(versionCommand);
+  registry.register(changelogCommand);
   registry.register(qualityCommand);
   registry.register(ciCommand);
   registry.register(eslintCommand);

@@ -160,6 +160,9 @@ export function buildFullIndex(options: IIndexBuilderOptions): IFullIndexResult 
         line: raw.line,
         importKind: raw.kind,
         resolutionKind: r.kind,
+        // Tag type-only imports so the default cycle detector can exclude edges
+        // that are erased at emit time (see extract-ts-file `isTypeOnly`).
+        typeOnly: raw.isTypeOnly === true,
       } as Record<string, unknown>;
       if (r.targetPath) {
         const targetId = `file:${r.targetPath}`;
@@ -204,13 +207,27 @@ export function buildFullIndex(options: IIndexBuilderOptions): IFullIndexResult 
 
   // Drop duplicate edges (extractor may emit identical edges for `export
   // { foo } from './foo'` and an `import` re-using the same line — same
-  // hashed id, last write wins; a re-export rewrite can also collide ids).
+  // hashed id; a re-export rewrite can also collide ids). For ImportsFile
+  // edges, a VALUE import between the same two files wins over a type-only one:
+  // if any occurrence of A→B is a value import, the merged edge is a real
+  // runtime dependency (not type-only), so it counts toward cycles.
+  const valueImportEdgeIds = new Set<string>();
+  for (const e of resolvedEdges) {
+    if (e.kind === EdgeKind.ImportsFile && e.data?.['typeOnly'] !== true) {
+      valueImportEdgeIds.add(e.id);
+    }
+  }
   const seen = new Set<string>();
   const dedupedEdges: IEdge[] = [];
   for (const e of resolvedEdges) {
     if (seen.has(e.id)) continue;
     seen.add(e.id);
-    dedupedEdges.push(e);
+    if (e.kind === EdgeKind.ImportsFile) {
+      const typeOnly = !valueImportEdgeIds.has(e.id);
+      dedupedEdges.push({ ...e, data: { ...(e.data ?? {}), typeOnly } });
+    } else {
+      dedupedEdges.push(e);
+    }
   }
 
   const store = new GraphStore(projectRoot);
@@ -228,6 +245,7 @@ export function buildFullIndex(options: IIndexBuilderOptions): IFullIndexResult 
     cycleCount: cycles.cycleCount,
     largestCycleSize: cycles.largestCycleSize,
     filesInCycles: cycles.filesInCycles,
+    typeOnlyLoopCount: cycles.typeOnlyLoopCount,
     unresolvedImportCount: unresolved.unresolvedImportCount,
     filesWithUnresolvedImports: unresolved.filesWithUnresolvedImports,
     unresolvedImportSamples: unresolved.unresolvedImportSamples,

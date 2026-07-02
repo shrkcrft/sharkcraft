@@ -5,8 +5,17 @@ import type { IArchViolation } from '../schema/violation.ts';
  * Find directed cycles in the `imports-file` graph (Tarjan SCC) and
  * report each as a violation. Severity scales with cycle size: 2-node
  * cycle = warning (often refactor-friendly), 3+ = error.
+ *
+ * Type-only import edges (`import type`, `export type … from`) are excluded by
+ * default — they are erased at emit time and cannot cause a runtime cycle, so
+ * counting them would produce a phantom "critical" cycle that can never be
+ * driven to zero. Pass `includeTypeEdges` to audit them.
  */
-export function detectCycles(api: GraphQueryApi): readonly IArchViolation[] {
+export function detectCycles(
+  api: GraphQueryApi,
+  options: { includeTypeEdges?: boolean } = {},
+): readonly IArchViolation[] {
+  const includeTypeEdges = options.includeTypeEdges === true;
   // Build adjacency from imports-file edges among file nodes only.
   const adj = new Map<string, string[]>();
   for (const f of api.allFiles()) {
@@ -15,6 +24,7 @@ export function detectCycles(api: GraphQueryApi): readonly IArchViolation[] {
     const list: string[] = [];
     for (const e of out.out) {
       if (e.edge.kind !== EdgeKind.ImportsFile) continue;
+      if (!includeTypeEdges && e.edge.data?.['typeOnly'] === true) continue;
       if (e.edge.to.startsWith('file:')) list.push(e.edge.to);
     }
     adj.set(f.id, list);

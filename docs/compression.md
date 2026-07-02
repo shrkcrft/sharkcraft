@@ -64,6 +64,16 @@ never rewrites code — only selects which lines to show — and the original is
 always recoverable via CCR, so an approximate scan costs a few extra/fewer
 kept lines, never corruption. Typical reduction: 40–60% on real files.
 
+**Code outline is LOSSY — bulk context, not reading.** Because function bodies
+are elided, `shrk compress --type code` prints a fidelity banner to stderr —
+*"code outline is LOSSY (bodies elided) — for bulk context, not line-accurate
+reading; use `Read` or `--lossless` for inspection"* — and the `--json` payload
+carries a `fidelity` field (`lossy-outline (not line-accurate; use Read or
+--lossless to inspect)` | `lossy` | `lossless`). For a single file you actually
+need to *read*, reach for a plain `Read` or `--lossless` (which returns the file
+verbatim, a passthrough); the outline is for feeding many files' shape to the
+model cheaply, not line-accurate inspection.
+
 Each dropped run becomes a `… N lines omitted …` marker. These passes are
 **lossy but reversible** — see CCR below.
 

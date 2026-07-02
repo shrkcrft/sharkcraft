@@ -337,7 +337,14 @@ export async function runGraphCycles(args: ParsedArgs): Promise<number> {
   }
   const api = loadGuarded(() => GraphQueryApi.fromStore(cwd), wantJson);
   if (!api) return 1;
-  const allCycles = api.cycles();
+  // Type-only import edges (`import type`, `export type … from`) are erased at
+  // emit time, so they cannot cause a runtime cycle — excluded by default.
+  // `--include-type-edges` opts back in for auditing. The type-only-loop delta
+  // is reported as a non-blocking bucket.
+  const includeTypeEdges = flagBool(args, 'include-type-edges');
+  const allCycles = api.cycles({ includeTypeEdges });
+  const runtimeCycles = includeTypeEdges ? api.cycles() : allCycles;
+  const typeOnlyLoopCount = Math.max(0, api.cycles({ includeTypeEdges: true }).length - runtimeCycles.length);
   const filtered = allCycles.filter((c) => c.size >= minSize);
   const limited = filtered.slice(0, limit);
   if (wantJson) {
@@ -346,6 +353,8 @@ export async function runGraphCycles(args: ParsedArgs): Promise<number> {
         ok: true,
         total: filtered.length,
         truncated: filtered.length > limit,
+        includeTypeEdges,
+        typeOnlyLoopCount,
         cycles: limited.map((c) => ({
           size: c.size,
           paths: c.paths ?? c.nodeIds.map((id) => id.replace(/^file:/, '')),
@@ -356,8 +365,15 @@ export async function runGraphCycles(args: ParsedArgs): Promise<number> {
   }
   process.stdout.write(header('Graph cycles'));
   process.stdout.write(kv('total', String(filtered.length)) + '\n');
+  if (!includeTypeEdges && typeOnlyLoopCount > 0) {
+    process.stdout.write(
+      kv('type-only loops', `${typeOnlyLoopCount} (excluded — compile-time only; --include-type-edges to audit)`) + '\n',
+    );
+  }
   if (filtered.length === 0) {
-    process.stdout.write('\nNo cycles in the file-import graph. ✓\n');
+    process.stdout.write(
+      `\nNo ${includeTypeEdges ? '' : 'runtime '}cycles in the file-import graph. ✓\n`,
+    );
     return 0;
   }
   process.stdout.write(kv('shown', `${limited.length}/${filtered.length}`) + '\n');

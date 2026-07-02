@@ -113,6 +113,23 @@ describe('shrk smart-context — argument handling', () => {
 });
 
 describe('shrk smart-context — enriched seed', () => {
+  test('accepts the documented --task flag as well as the positional form', async () => {
+    // No positional; the task is supplied via --task. Must build a brief (exit 0),
+    // not hit the "Usage" guard (exit 2).
+    const { value, stdout } = await captureStdio(() =>
+      smartContextCommand.run(
+        makeArgs([], [
+          ['cwd', REPO_ROOT],
+          ['task', 'improve the smart-context command'],
+          ['dry-run', true],
+          ['no-instructions', true],
+        ]),
+      ),
+    );
+    expect(value).toBe(0);
+    expect(stdout).toContain('STRICT GROUNDING');
+  });
+
   test('dry-run brief includes graph candidates, verification commands, and stricter system prompt', async () => {
     const { value, stdout } = await captureStdio(() =>
       smartContextCommand.run(
