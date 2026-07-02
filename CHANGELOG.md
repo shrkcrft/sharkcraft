@@ -5,6 +5,57 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [0.1.0-alpha.26] — Honest exit codes
+
+alpha.24/alpha.25 made the STDOUT verdicts honest (`not verified`, `degraded`,
+`0 rules evaluated`) but left the exit code returning `0` over those same
+unverified paths — the one channel an agent actually chains on (`shrk <cmd> &&
+<next>`). This round finishes the fix: a single, documented exit-code contract
+so a chained gate can finally tell apart **passed**, **failed**, and **never
+ran**. Deterministic; the suite is green at ~3487.
+
+### The exit-code contract (P0)
+
+- **One meaning across every gate/verify/check verb** — `0` verified pass
+  (checks ran over a non-empty scope and passed), `1` failure (checks ran, found
+  violations), `2` NOT-verified (empty evaluation scope, degraded fallback,
+  short-circuit, timeout). Documented in `docs/exit-codes.md`.
+- **Global `--strict`** promotes a NOT-verified (`2`) result to a failure-class
+  nonzero (`1`), so an agent opts into "unverified = failure" for a hard CI gate
+  with one switch. Existing per-command `--strict` semantics are preserved.
+- **`check wiring` (0 rules evaluated)** and **`registry lifecycle` /
+  `check registry-lifecycle` (0 registrations, or wall-clock timeout)** now exit
+  `2`, never a green `0`.
+
+### False-signal fixes
+
+- **The graph/query family rejects unknown flags.** A typo'd/renamed flag on
+  `graph cycles|hubs|callers|impact|search|context|…` now prints
+  `unknown option --x` and exits `2` instead of parsing as a silent `true` that
+  reads as a confident opt-in.
+- **Piped lists no longer crash with `write EPIPE`.** A downstream early-close
+  (`… | head`, `| grep`) is swallowed globally; the command keeps its real exit
+  code instead of forging a false failure.
+
+### Partial landings finished
+
+- **`shrk gate`** counts only change-attributable (diff-vs-HEAD) architecture
+  errors as blocking; stale-baseline drift in untouched files is informational.
+  New `shrk gate baseline --refreeze` operational reset.
+- **`shrk check wiring`** — `--help` now documents its own scoping flags,
+  `--base <ref>` is accepted (synonym of `--since`), and a scoped run surfaces
+  the rule ids selected by footprint (declared ∪ registered side).
+- **`shrk reuse`** returns a scored top-K did-you-mean (score per row) on a
+  weak/no-match intent; `--all` shows the full catalog.
+- **`shrk registry … exists <id> --resolve`** also normalizes (case-fold,
+  singular/plural, suffix strip/append) beyond the declared `aliases` map.
+- **`shrk compress`** prints a `fidelity: lossy|lossless|passthrough` banner on
+  the human text path (parity with `--json`).
+- **`shrk changes summary`** ships a built-in config/tooling area for non-lib
+  paths — only genuinely unclassifiable files stay `unknown`.
+- **`shrk gen`** saved plans persist the rendered file `body` + a per-entry
+  `sha256` digest (reviewable/diffable/re-appliable), not just `sizeBytes`.
+
 ## [0.1.0-alpha.25] — Earned & change-attributable verdicts
 
 A correctness/labeling round: every gate's verdict is now **earned and

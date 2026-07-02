@@ -3,6 +3,7 @@ import {
   renderGateReportMarkdown,
   runQualityGates,
 } from '@shrkcrft/quality-gates';
+import { ArchReportStore, runArchCheck } from '@shrkcrft/architecture-guard';
 import {
   inspectSharkcraft,
   resolveChangedFiles,
@@ -37,7 +38,7 @@ export const gateCommand: ICommandHandler = {
   description:
     'Aggregator: runs the code-intelligence quality gates (graph freshness, architecture, impact-since-ref) and reports a single pass/fail.',
   usage:
-    'shrk gate [--since <gitref>] [--changed-only] [--staged] [--files a,b,c] [--fail-on critical,high] [--arch-all] [--disable arch,impact,policy,knowledge-symbol,api-diff] [--api-baseline <path>] [--no-fail-on-breaking] [--strict] [--no-persist] [--json] [--markdown] [--output <path>]\n         (the arch gate is baseline-relative once a baseline is frozen — fails only on NEW errors; with no baseline it warns on errors rather than going perpetually red — --arch-all fails on total, --strict escalates the warn)\n         (--changed-only / --staged / --files / --since scope the wiring + policy + knowledge-symbol gates to the changeset; they also drive the impact gate — --since diffs the gitref, the others analyze the changed-file set)\n         shrk gate scaffold-ci [--provider github|generic] [--force] [--json]\n         shrk gate scaffold-hook [--provider husky|raw] [--force] [--json]',
+    'shrk gate [--since <gitref>] [--changed-only] [--staged] [--files a,b,c] [--fail-on critical,high] [--arch-all] [--disable arch,impact,policy,knowledge-symbol,api-diff] [--api-baseline <path>] [--no-fail-on-breaking] [--strict] [--no-persist] [--json] [--markdown] [--output <path>]\n         (the arch gate is change-scoped once a baseline is frozen — a NEW error blocks only when the working diff vs HEAD touched its origin file; drift in untouched files is informational — --arch-all fails on total, --strict escalates the warn)\n         (--changed-only / --staged / --files / --since scope the wiring + policy + knowledge-symbol gates to the changeset; they also drive the impact gate — --since diffs the gitref, the others analyze the changed-file set)\n         shrk gate scaffold-ci [--provider github|generic] [--force] [--json]\n         shrk gate scaffold-hook [--provider husky|raw] [--force] [--json]\n         shrk gate baseline --refreeze [--json]  (operational reset: re-freeze the arch baseline to the current state — NOT the change-scoped gate)',
   async run(args: ParsedArgs): Promise<number> {
     if (args.positional[0] === 'scaffold-ci') {
       const sliced = { ...args, positional: args.positional.slice(1) };
@@ -46,6 +47,10 @@ export const gateCommand: ICommandHandler = {
     if (args.positional[0] === 'scaffold-hook') {
       const sliced = { ...args, positional: args.positional.slice(1) };
       return runGateScaffoldHook(sliced);
+    }
+    if (args.positional[0] === 'baseline') {
+      const sliced = { ...args, positional: args.positional.slice(1) };
+      return runGateBaseline(sliced);
     }
     const cwd = resolveCwd(args);
     const wantJson = flagBool(args, 'json');
@@ -122,6 +127,17 @@ export const gateCommand: ICommandHandler = {
     const scopeOpts = wantChangedScope
       ? { changedOnly: true, changedFiles: changedFiles ?? [] }
       : {};
+    // §3.1 — the architecture gate's "NEW" is ALWAYS change-scoped: a NEW error
+    // means one introduced by the working change (diff vs HEAD), never drift
+    // against a frozen (possibly months-old) baseline in a file the change never
+    // touched. When an explicit scope flag is passed we reuse its resolution;
+    // otherwise we default to the worktree diff vs HEAD — empty in a clean tree,
+    // so pre-existing baseline drift stays informational and can't red the gate
+    // on its own. `--arch-all` (baselineRelative:false) ignores this and fails
+    // on total errors, keeping a clean-tree CI demand expressible.
+    const archChangedFiles: readonly string[] = wantChangedScope
+      ? changedFiles ?? []
+      : resolveChangedFiles({ projectRoot: cwd, includeWorktree: true }).files;
     // Knowledge symbol-ref integrity needs the loaded knowledge entries. The
     // inspection is async, so we build it here and inject it; the gate stays
     // synchronous and resolves the code graph itself. Best-effort — a failed
@@ -136,7 +152,10 @@ export const gateCommand: ICommandHandler = {
     }
     const report = runQualityGates({
       projectRoot: cwd,
-      ...(archAll ? { arch: { baselineRelative: false } } : {}),
+      arch: {
+        ...(archAll ? { baselineRelative: false } : {}),
+        changedFiles: archChangedFiles,
+      },
       wiring: {
         ...(configError
           ? { configError }
@@ -429,6 +448,50 @@ async function runGateScaffoldCi(args: ParsedArgs): Promise<number> {
     return 0;
   }
   process.stdout.write(`Scaffolded ${provider} CI runner → ${target}\n`);
+  return 0;
+}
+
+/**
+ * `shrk gate baseline --refreeze` — deliberate operational reset that re-freezes
+ * the architecture baseline to the CURRENT state, absorbing accumulated drift so
+ * the informational "baseline drift" line resets to zero.
+ *
+ * This is an operational complement, NOT the gate itself: the gate's blocking
+ * verdict is change-scoped (a NEW error blocks only when the working diff touched
+ * its origin file), so a stale baseline never reds the gate on its own. Refreeze
+ * is only for tidying the informational drift line. It mirrors `shrk arch
+ * baseline write`.
+ */
+async function runGateBaseline(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json');
+  const refreeze = flagBool(args, 'refreeze');
+  if (!refreeze) {
+    process.stderr.write(
+      'Usage: shrk gate baseline --refreeze [--json]\n' +
+        '  Re-freeze the architecture baseline to the current state (operational reset,\n' +
+        '  not the change-scoped gate). Equivalent to `shrk arch baseline write`.\n',
+    );
+    return 2;
+  }
+  const report = runArchCheck({ projectRoot: cwd });
+  if (report.diagnostics.some((d) => d.includes('code-graph store missing'))) {
+    process.stderr.write('Cannot refreeze — graph index missing. Run `shrk graph index` first.\n');
+    return 2;
+  }
+  const store = new ArchReportStore(cwd);
+  const snap = store.writeBaseline(report);
+  if (wantJson) {
+    process.stdout.write(asJson({ ok: true, wrote: store.baselinePath, baseline: snap }) + '\n');
+    return 0;
+  }
+  process.stdout.write(`Architecture baseline re-frozen → ${store.baselinePath}\n`);
+  process.stdout.write(
+    kv(
+      'violations',
+      `${snap.countsBySeverity.error} error, ${snap.countsBySeverity.warning} warning`,
+    ) + '\n',
+  );
   return 0;
 }
 

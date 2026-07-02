@@ -572,3 +572,22 @@ export function flagVars(args: ParsedArgs): Record<string, string> {
   }
   return out;
 }
+
+/**
+ * Return the first parsed flag whose name is NOT in `allowed`, or `undefined`
+ * when every flag is recognized. The parser does not reject unknown flags on its
+ * own — without a per-command allow-list a typo'd flag (`--no-such-flag`) parses
+ * as `true`, reads as a confident opt-in, and the verb runs the bare command at
+ * exit `0`. A verb that opts into strict flag handling calls this with its known
+ * set and rejects the result loudly, so a mistyped/renamed flag can never read
+ * as success (see docs/exit-codes.md · a25 §2.1).
+ */
+export function firstUnknownFlag(
+  args: ParsedArgs,
+  allowed: ReadonlySet<string>,
+): string | undefined {
+  for (const key of args.flags.keys()) {
+    if (!allowed.has(key)) return key;
+  }
+  return undefined;
+}

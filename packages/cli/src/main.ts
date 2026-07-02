@@ -7,6 +7,7 @@ import {
   parseArgs,
   type ICommandHandler,
 } from './command-registry.ts';
+import { argvHasStrict, promoteForStrict } from './exit-codes.ts';
 import { runCommandWithCompression } from './output/output-compression.ts';
 import { initCommand } from './commands/init.command.ts';
 import { inspectCommand } from './commands/inspect.command.ts';
@@ -777,9 +778,15 @@ export function buildRegistry(): CommandRegistry {
 export async function runCli(argv: readonly string[]): Promise<number> {
   const usageStart = performance.now();
   const { cwd: probeCwd, rest: probeArgv } = extractGlobalCwd(argv);
+  // Global `--strict` promotes a NotVerified (`2`) verdict to a Failure-class
+  // nonzero across every gate/verify verb — one switch to make an "unverified"
+  // result fail a hard CI gate. A real pass (`0`) or failure (`1`) is untouched,
+  // and each command's own `--strict` semantics (e.g. `check --strict`) still
+  // apply beneath this (a25 §1.1).
+  const strict = argvHasStrict(argv);
   let exitCode = 0;
   try {
-    exitCode = await runCliInner(argv);
+    exitCode = promoteForStrict(await runCliInner(argv), strict);
     return exitCode;
   } finally {
     // append one local usage entry. Failure is silent.
@@ -1218,6 +1225,21 @@ if (
   // test). Commands that re-exec themselves in an isolated child gate on this
   // so unit tests calling `run()` in-process never spawn a subprocess.
   process.env.SHRK_CLI = '1';
+  // Global broken-pipe containment. When a downstream reader closes early
+  // (`shrk registry <name> list | head`, `… | grep`), Node raises `write EPIPE`
+  // on stdout from the async write/flush path — with no `error` listener that
+  // becomes an uncaught exception and a nonzero exit, forging a false failure on
+  // a happy-path query whose data was fine (a25 §2.2). Swallowing EPIPE here (a
+  // no-op listener) turns it back into a benign early-close: the command keeps
+  // its REAL exit code, and nothing is written to the dead pipe. Registered once
+  // at startup so every verb that streams a list is covered.
+  const swallowPipeError = (err: NodeJS.ErrnoException): void => {
+    if (err && err.code === 'EPIPE') return;
+    // Any other stdio error (ENOSPC, …) is unrecoverable mid-write; there is
+    // nothing safe to print, so contain it rather than crash the shutdown path.
+  };
+  process.stdout.on('error', swallowPipeError);
+  process.stderr.on('error', swallowPipeError);
   loadDotenv(process.cwd());
   const argv = process.argv.slice(2);
   const cleanShutdown = async (code: number): Promise<void> => {

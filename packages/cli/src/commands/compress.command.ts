@@ -4,6 +4,7 @@ import {
   compressContent,
   ECompressionStrategy,
   EContentType,
+  type ICompressionResult,
   type ICompressOptions,
 } from '@shrkcrft/compress';
 import {
@@ -60,6 +61,31 @@ function resolveContentType(raw: string | undefined): IResolvedContentType {
 // legitimately have nothing to compress). Above it, a silent `−0%` re-emit is
 // the opposite of the tool's purpose — nudge the user toward `--type`.
 const PASSTHROUGH_HINT_MIN_BYTES = 128;
+
+/**
+ * The no-win / passthrough test, shared by the `--json` envelope and the human
+ * text banner: a Passthrough strategy or a non-positive saving means the engine
+ * declined to compress and `compressed` is the verbatim original. Keeping it in
+ * one place is what makes the two output paths agree on fidelity.
+ */
+function isNoWin(result: ICompressionResult): boolean {
+  return result.strategy === ECompressionStrategy.Passthrough || result.savings.saved <= 0;
+}
+
+/**
+ * The fidelity label for the human text path, mirroring the `fidelity` field
+ * the `--json` envelope surfaces: `passthrough` for a no-win re-emit, `lossy`
+ * for a reduction that drops detail (markdown line-omission or the code
+ * outline), and `lossless` otherwise. Same classification as `--json` — the
+ * text path just names the no-win case explicitly instead of via a separate
+ * `passthrough` boolean, so an agent reading stderr sees the fidelity at a
+ * glance.
+ */
+function textFidelity(result: ICompressionResult): 'passthrough' | 'lossy' | 'lossless' {
+  if (isNoWin(result)) return 'passthrough';
+  if (result.strategy === ECompressionStrategy.Code || result.lossy) return 'lossy';
+  return 'lossless';
+}
 
 function readInput(args: ParsedArgs): string {
   const positional = args.positional[0];
@@ -161,7 +187,7 @@ export const compressCommand: ICommandHandler = {
       // VERBATIM original as `compressed`. Echoing it back inside the JSON
       // envelope (plus scaffold) costs more tokens than the input. Signal
       // passthrough and omit the duplicated content — the caller still has it.
-      const noWin = result.strategy === ECompressionStrategy.Passthrough || result.savings.saved <= 0;
+      const noWin = isNoWin(result);
       const payload = noWin
         ? { ...base, passthrough: true, inputBytes: Buffer.byteLength(content, 'utf8') }
         : { ...base, compressed: result.compressed };
@@ -174,6 +200,11 @@ export const compressCommand: ICommandHandler = {
     process.stderr.write(
       `${result.strategy}: ~${result.savings.before} → ~${result.savings.after} tokens (−${pct}%, est.)${cached}\n`,
     );
+    // Fidelity parity with `--json`: print the same classification the JSON
+    // envelope carries as a one-line banner so an agent reading only stderr can
+    // see the output was lossy — and see the no-win `passthrough` case named
+    // explicitly rather than inferred from a bare `−0%` ratio.
+    process.stderr.write(`fidelity: ${textFidelity(result)}\n`);
     // Fidelity banner: the code outline elides function bodies, so it is a
     // footgun as a cheaper Read. Say so loudly — same failure mode as a lossy
     // result that doesn't *look* lossy.

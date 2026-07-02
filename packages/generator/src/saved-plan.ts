@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { AppErrorImpl, ERROR_CODES, err, ok, type AppError, type Result } from '@shrkcrft/core';
 import type { IGenerationPlan } from './generation-plan.ts';
 import type { IPlannedOperation } from './planned-change.ts';
@@ -18,6 +19,24 @@ export interface ISavedPlanExpectedChange {
   type: string;
   relativePath: string;
   sizeBytes: number;
+  /**
+   * SHA-256 hex digest of the exact rendered body that `gen --print` shows.
+   * Always emitted by `buildSavedPlan`; may be absent on legacy plans written
+   * before body/digest persistence. The plan is the review/apply artifact, so
+   * this digest lets a later review or apply verify — WITHOUT re-rendering —
+   * that the live content still matches what was previewed. Covered by the
+   * HMAC signature (canonical JSON includes the whole `expectedChanges`).
+   */
+  sha256?: string;
+  /**
+   * The exact rendered file body that would be written — byte-identical to
+   * what `gen --print` / `--show-content` displays. Embedded so the saved
+   * plan carries enough to be reviewed for correctness, diffed against HEAD,
+   * and re-applied deterministically instead of storing only a byte count.
+   * Always emitted by `buildSavedPlan`; may be absent on legacy plans. Covered
+   * by the HMAC signature.
+   */
+  body?: string;
   /**
    * v2-only — the operation intent that produced this change. Present iff
    * the schema is `sharkcraft.plan/v2`. Tampering with this field invalidates
@@ -104,6 +123,11 @@ export function buildSavedPlan(input: BuildSavedPlanInput): ISavedPlan {
       type: String(c.type),
       relativePath: c.relativePath,
       sizeBytes: c.sizeBytes,
+      // Persist the exact rendered body (what `--print` shows) plus its
+      // digest, so the saved plan IS the reviewable / re-appliable artifact
+      // rather than a bare byte count. Both are covered by the HMAC signature.
+      sha256: sha256Hex(c.contents),
+      body: c.contents,
     };
     if (c.operation !== undefined) entry.operation = c.operation;
     return entry;
@@ -120,6 +144,11 @@ export function buildSavedPlan(input: BuildSavedPlanInput): ISavedPlan {
   if (input.note !== undefined) out.note = input.note;
   if (hasFolderOps) out.folderOps = [...input.folderOps!];
   return out;
+}
+
+/** SHA-256 hex digest of a rendered file body (UTF-8). */
+export function sha256Hex(body: string): string {
+  return createHash('sha256').update(body, 'utf8').digest('hex');
 }
 
 export function savePlanToFile(plan: ISavedPlan, filePath: string): Result<void, AppError> {
@@ -271,8 +300,20 @@ function validateSavedPlanShape(value: unknown): Result<ISavedPlan, AppError> {
 
 export interface IPlanDiff {
   relativePath: string;
-  /** "added" | "removed" | "type-changed" | "size-changed" | "operation-changed" */
-  kind: 'added' | 'removed' | 'type-changed' | 'size-changed' | 'operation-changed';
+  /**
+   * "added" | "removed" | "type-changed" | "size-changed" |
+   * "operation-changed" | "content-changed". `content-changed` fires when the
+   * live body's digest differs from the saved `sha256` even though the byte
+   * count matches — a same-size content edit that a size check alone would
+   * miss.
+   */
+  kind:
+    | 'added'
+    | 'removed'
+    | 'type-changed'
+    | 'size-changed'
+    | 'operation-changed'
+    | 'content-changed';
   detail?: string;
 }
 
@@ -343,6 +384,17 @@ export function diffPlanChanges(
         relativePath: expected.relativePath,
         kind: 'size-changed',
         detail: `${expected.sizeBytes}B → ${actual.sizeBytes}B`,
+      });
+    } else if (
+      expected.sha256 !== undefined &&
+      sha256Hex(actual.contents) !== expected.sha256
+    ) {
+      // Same byte count, different bytes: only the persisted digest catches
+      // this. Legacy plans without `sha256` skip the check (size-only).
+      out.push({
+        relativePath: expected.relativePath,
+        kind: 'content-changed',
+        detail: 'body digest mismatch (same size, different content)',
       });
     }
   }

@@ -158,4 +158,42 @@ describe('registry-lifecycle heuristic', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // a25 §2.5 — the wall-clock budget is a REAL deadline (bare full-scope path),
+  // not just an advertised banner. A zero budget flushes partial results with
+  // `timedOut` set instead of running to completion.
+  test('an exhausted wall-clock budget flushes partial results (timedOut) fast', () => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 200; i += 1) {
+      files[`src/mod-${i}.ts`] =
+        `const m${i} = new Map();\n` +
+        `export function registerThing${i}(id, x) { m${i}.set(id, x); }\n` +
+        `export function removeThing${i}(id) { m${i}.delete(id); }\n`;
+    }
+    const root = repo(files);
+    try {
+      const start = Date.now();
+      const report = buildRegistryLifecycleReport({ projectRoot: root, budgetMs: 0 });
+      const elapsed = Date.now() - start;
+      expect(report.timedOut).toBe(true);
+      // Returns essentially immediately — the deadline is enforced, not ignored.
+      expect(elapsed).toBeLessThan(5_000);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // a25 §1 / §2.5 — a scope with zero registrations checked NOTHING; the honest
+  // renderer says so loudly (never a green "all removers present" pass).
+  test('zero registrations in scope renders a loud NOT-verified line', () => {
+    const root = repo({ 'src/plain.ts': 'export const x = 1;\n' });
+    try {
+      const report = buildRegistryLifecycleReport({ projectRoot: root });
+      expect(report.registersFound).toBe(0);
+      const text = renderRegistryLifecycleReportText(report);
+      expect(text).toContain('NOT verified');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

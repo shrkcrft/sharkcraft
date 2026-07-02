@@ -51,16 +51,53 @@ export function archGate(projectRoot: string, options: IArchGateOptions = {}): I
     const delta = diffSnapshots(baseline, current);
     const newIds = new Set(delta.newViolationIds);
     const newViolations = report.violations.filter((v) => newIds.has(violationId(v)));
-    const newErrors = newViolations.filter((v) => v.severity === 'error').length;
-    const newWarnings = newViolations.filter((v) => v.severity === 'warning').length;
     const baselineErrors = baseline.countsBySeverity.error;
+
+    // §3.1 — change-scoped attribution. "NEW since baseline" is a drift measure
+    // against a frozen (possibly months-old) snapshot; on its own it red-fails
+    // on structural debt the current change never touched, training the agent to
+    // ignore the gate. Redefine the BLOCKING set as the intersection of the
+    // baseline-new violations with the files the working diff actually touched
+    // (diff vs HEAD). A NEW violation whose origin file is NOT in the changed set
+    // becomes INFORMATIONAL baseline drift — it never flips the exit code
+    // (mirroring how baseline debt is already non-blocking). When no changed set
+    // is supplied (`changedFiles === undefined`), fall back to the legacy
+    // behaviour where any NEW violation blocks.
+    const scoped = options.changedFiles !== undefined;
+    const changedSet = new Set((options.changedFiles ?? []).map(normaliseRel));
+    const attributable = scoped
+      ? newViolations.filter((v) => fileInChangedSet(v.file, changedSet))
+      : newViolations;
+    const drift = scoped
+      ? newViolations.filter((v) => !fileInChangedSet(v.file, changedSet))
+      : [];
+
+    const newErrors = attributable.filter((v) => v.severity === 'error').length;
+    const newWarnings = attributable.filter((v) => v.severity === 'warning').length;
+    const driftErrors = drift.filter((v) => v.severity === 'error').length;
+    const driftWarnings = drift.filter((v) => v.severity === 'warning').length;
+    const driftNote =
+      scoped && driftErrors + driftWarnings > 0
+        ? ` Baseline drift in untouched files: ${driftErrors} error(s), ${driftWarnings} warning(s) (informational — re-freeze with \`shrk gate baseline --refreeze\`).`
+        : '';
+
     if (newErrors > 0) {
       return {
         id: 'arch',
         label: 'Architecture',
         status: 'fail',
-        message: `${newErrors} NEW architecture error(s) since baseline (baseline debt: ${baselineErrors}, informational).`,
-        details: { newErrors, newWarnings, baselineErrors, totalErrors: errors, newViolationIds: delta.newViolationIds },
+        message: `${newErrors} NEW architecture error(s) introduced by this change (baseline debt: ${baselineErrors}, informational).${driftNote}`,
+        details: {
+          newErrors,
+          newWarnings,
+          baselineErrors,
+          totalErrors: errors,
+          driftErrors,
+          driftWarnings,
+          changeScoped: scoped,
+          newViolationIds: attributable.map(violationId),
+          driftViolationIds: drift.map(violationId),
+        },
         nextCommands: ['shrk arch check', 'shrk arch baseline show'],
         durationMs: Date.now() - start,
       };
@@ -70,21 +107,42 @@ export function archGate(projectRoot: string, options: IArchGateOptions = {}): I
         id: 'arch',
         label: 'Architecture',
         status: 'warn',
-        message: `${newWarnings} new architecture warning(s) since baseline (baseline debt: ${baselineErrors} error(s), informational).`,
-        details: { newWarnings, baselineErrors, totalErrors: errors, totalWarnings: warnings },
+        message: `${newWarnings} new architecture warning(s) introduced by this change (baseline debt: ${baselineErrors} error(s), informational).${driftNote}`,
+        details: {
+          newWarnings,
+          baselineErrors,
+          totalErrors: errors,
+          totalWarnings: warnings,
+          driftErrors,
+          driftWarnings,
+          changeScoped: scoped,
+        },
         nextCommands: ['shrk arch check'],
         durationMs: Date.now() - start,
       };
     }
+    // No change-attributable NEW violation. This is a PASS for THIS change even
+    // when baseline drift persists in untouched files — surface that drift as
+    // informational rather than reporting a misleading all-clear over zero
+    // attributed errors (the honest exit-code posture).
+    const passMessage =
+      scoped && driftErrors + driftWarnings > 0
+        ? `No change-attributable architecture errors (baseline debt: ${baselineErrors} error(s), informational).${driftNote}`
+        : errors > 0
+          ? `No NEW architecture violations (baseline debt: ${baselineErrors} error(s), informational).`
+          : 'No architecture violations.';
     return {
       id: 'arch',
       label: 'Architecture',
       status: 'pass',
-      message:
-        errors > 0
-          ? `No NEW architecture violations (baseline debt: ${baselineErrors} error(s), informational).`
-          : 'No architecture violations.',
-      details: { baselineErrors, totalErrors: errors },
+      message: passMessage,
+      details: {
+        baselineErrors,
+        totalErrors: errors,
+        driftErrors,
+        driftWarnings,
+        changeScoped: scoped,
+      },
       durationMs: Date.now() - start,
     };
   }
@@ -138,4 +196,27 @@ export function archGate(projectRoot: string, options: IArchGateOptions = {}): I
     message: 'No architecture violations.',
     durationMs: Date.now() - start,
   };
+}
+
+/** Slash-normalise a project-relative path and strip a leading `./`. */
+function normaliseRel(input: string): string {
+  return input.split(/[\\/]/).join('/').replace(/^\.\//, '');
+}
+
+/**
+ * True when a violation's origin file is in the changed-file set. Both sides are
+ * project-relative; the suffix match is a safety net for callers that pass
+ * changed paths with a differing prefix depth (mirrors the boundary changed-only
+ * filter's fuzzy tail match).
+ */
+function fileInChangedSet(file: string, changedSet: ReadonlySet<string>): boolean {
+  if (changedSet.size === 0) return false;
+  const norm = normaliseRel(file);
+  if (changedSet.has(norm)) return true;
+  for (const cf of changedSet) {
+    if (cf.length > 0 && (norm === cf || norm.endsWith('/' + cf) || cf.endsWith('/' + norm))) {
+      return true;
+    }
+  }
+  return false;
 }

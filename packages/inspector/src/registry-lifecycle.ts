@@ -101,7 +101,18 @@ function isGeneratedFile(file: string, content: string): boolean {
   return false;
 }
 
-function walk(dir: string, projectRoot: string, out: string[], skipDirs: ReadonlySet<string>): void {
+function walk(
+  dir: string,
+  projectRoot: string,
+  out: string[],
+  skipDirs: ReadonlySet<string>,
+  deadline?: number,
+): void {
+  // The wall-clock budget must bound the TREE WALK too, not only the per-file
+  // scan loop — a pathological tree could otherwise eat the whole budget before
+  // the loop's deadline check ever runs (a25 §2.5). Bail the walk on expiry;
+  // partial candidates flow through and the caller flags timedOut.
+  if (deadline !== undefined && Date.now() > deadline) return;
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -109,6 +120,7 @@ function walk(dir: string, projectRoot: string, out: string[], skipDirs: Readonl
     return;
   }
   for (const e of entries) {
+    if (deadline !== undefined && Date.now() > deadline) return;
     if (skipDirs.has(e.name)) continue;
     if (e.name.startsWith('.') && e.name !== '.sharkcraft') {
       // skip hidden dotfiles
@@ -116,7 +128,7 @@ function walk(dir: string, projectRoot: string, out: string[], skipDirs: Readonl
     }
     const abs = join(dir, e.name);
     if (e.isDirectory()) {
-      walk(abs, projectRoot, out, skipDirs);
+      walk(abs, projectRoot, out, skipDirs, deadline);
     } else if (e.isFile() && SCAN_EXTENSIONS.has(extname(e.name))) {
       out.push(abs);
     }
@@ -344,7 +356,7 @@ export function buildRegistryLifecycleReport(input: {
   } else {
     const walkRoot = scope ? join(projectRoot, scope) : projectRoot;
     files = [];
-    walk(walkRoot, projectRoot, files, skipDirs);
+    walk(walkRoot, projectRoot, files, skipDirs, deadline);
   }
   const scanFiles = files.slice(0, limit);
   const matchedPairs: IRegistryPair[] = [];
@@ -352,7 +364,11 @@ export function buildRegistryLifecycleReport(input: {
   const oneShotBootstrap: IRegistryIgnored[] = [];
   const ignored: IRegistryIgnored[] = [];
   let registersFound = 0;
-  let timedOut = false;
+  // The tree walk itself is now deadline-bounded (a25 §2.5), so an exhausted
+  // budget can leave `scanFiles` empty and the per-file loop below would never
+  // run to set the flag. Seed it from the deadline so a walk-level timeout is
+  // reported (NOT-verified `2`) rather than read as a clean zero-registration pass.
+  let timedOut = Date.now() > deadline;
   let filesScanned = 0;
   for (const file of scanFiles) {
     // Hard wall-clock budget checked between files — the scan is synchronous, so
@@ -476,6 +492,13 @@ export function renderRegistryLifecycleReportText(report: IRegistryLifecycleRepo
   lines.push(`  missing removers  ${report.missingRemovers.length}`);
   lines.push(`  one-shot bootstrap ${report.oneShotBootstrap.length}`);
   lines.push(`  ignored           ${report.ignored.length}`);
+  // Zero registrations in scope means nothing was actually checked — say so
+  // loudly so it never reads as the green "all removers present" pass (the exit
+  // code is NOT-verified `2` to match; a25 §1 / §2.5).
+  if (report.registersFound === 0 && !report.timedOut) {
+    lines.push('');
+    lines.push('  ! 0 registrations found in scope — lifecycle NOT verified (this is not a pass).');
+  }
   lines.push('');
   if (report.missingRemovers.length > 0) {
     lines.push('Missing removers:');

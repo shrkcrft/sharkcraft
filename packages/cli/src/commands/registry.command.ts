@@ -33,7 +33,9 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { ExitCode } from '../exit-codes.ts';
 import { asJson } from '../output/format-output.ts';
+import { resolveRegistryNoun } from './registry-resolve.ts';
 
 export const registryLifecycleCommand: ICommandHandler = {
   name: 'lifecycle',
@@ -65,7 +67,15 @@ export const registryLifecycleCommand: ICommandHandler = {
       ...(scope ? { scope } : {}),
       ...(skipDirs ? { skipDirs } : {}),
     });
-    const exit = report.timedOut ? 2 : report.missingRemovers.length === 0 ? 0 : 1;
+    // Honest exit-code contract (a25 §1 / §2.5): a wedged/timed-out scan OR a
+    // scope with zero registrations to check is NOT verified (`2`), never a
+    // green `0` an agent's `&& next` would march past.
+    const exit =
+      report.timedOut || report.registersFound === 0
+        ? ExitCode.NotVerified
+        : report.missingRemovers.length === 0
+          ? ExitCode.VerifiedPass
+          : ExitCode.Failure;
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(report) + '\n');
       return exit;
@@ -151,11 +161,16 @@ async function runRegistryInventory(args: ParsedArgs, name: string): Promise<num
       process.stderr.write('Pass at most one of --fail-if-taken / --fail-if-missing.\n');
       return 2;
     }
-    // `--resolve` maps a human noun to the canonical registered id via the
-    // registry's `aliases` map before the existence test — so a duplicate guard
-    // can't return a false "free" on a synonym of an already-taken slug.
+    // `--resolve` maps a human noun to the canonical registered id before the
+    // existence test — via the registry's declared `aliases` map AND generic
+    // normalization (case-fold, singular/plural, suffix strip/append) — so a
+    // duplicate guard can't return a false "free" on a synonym of an
+    // already-taken slug (a25 §2.4).
     const doResolve = flagBool(args, 'resolve');
-    const canonical = doResolve ? (decl.aliases?.[id] ?? id) : id;
+    const resolution = doResolve
+      ? resolveRegistryNoun(inventory.entries.map((e) => e.id), decl.aliases, id)
+      : undefined;
+    const canonical = resolution ? resolution.canonical : id;
     const resolved = canonical !== id;
     const exists = registryExists(inventory, canonical);
     // Exit-code convention:
@@ -169,14 +184,16 @@ async function runRegistryInventory(args: ParsedArgs, name: string): Promise<num
         asJson({
           name: inventory.name,
           id,
-          ...(resolved ? { resolvedId: canonical } : {}),
+          ...(resolved ? { resolvedId: canonical, resolvedVia: resolution?.via } : {}),
           exists,
           exitCode: code,
         }) + '\n',
       );
       return code;
     }
-    if (resolved) process.stdout.write(`resolved "${id}" → "${canonical}" (alias)\n`);
+    if (resolved) {
+      process.stdout.write(`resolved "${id}" → "${canonical}" (${resolution?.via})\n`);
+    }
     process.stdout.write(
       `${exists ? 'yes' : 'no'} — "${canonical}" is ${exists ? 'declared' : 'NOT declared'} in registry "${inventory.name}".\n`,
     );

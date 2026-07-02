@@ -92,7 +92,11 @@ describe('check wiring — earned verdict (§1.1/§3.1)', () => {
       const capJson = capture();
       const code = await checkCommand.run(makeArgs(['wiring'], root, { json: true, 'changed-only': true }));
       const out = JSON.parse(capJson.restore());
-      expect(code).toBe(0);
+      // a25 §1.1 — 0 evaluated is NOT verified: the exit code must be `2`, not a
+      // green `0` an agent's `&& next` would march past. The JSON carries the
+      // same verdict so a machine consumer can branch without re-deriving it.
+      expect(code).toBe(2);
+      expect(out.exitCode).toBe(2);
       expect(out.configured).toBe(1);
       expect(out.evaluated).toBe(0);
       expect(out.skippedByScope).toBe(1);

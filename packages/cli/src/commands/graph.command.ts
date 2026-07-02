@@ -9,13 +9,71 @@ import {
 } from '@shrkcrft/inspector';
 import type { GraphNodeKind, IKnowledgeGraph } from '@shrkcrft/inspector';
 import {
+  firstUnknownFlag,
   flagBool,
   flagString,
   resolveCwd,
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { ExitCode } from '../exit-codes.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+
+/**
+ * The code-intelligence subverbs that share one arg parser. Each is guarded so
+ * an unrecognized/misspelled flag is rejected loudly instead of parsing as a
+ * silent `true` that reads as a confident opt-in (a25 §2.1). The allow-set is
+ * the UNION of every flag any code-graph subverb reads, plus the global flags,
+ * so a real flag is never false-rejected — only a genuinely unknown token is.
+ */
+const CODE_GRAPH_SUBVERBS: ReadonlySet<string> = new Set([
+  'index',
+  'status',
+  'search',
+  'context',
+  'impact',
+  'path',
+  'hubs',
+  'callers',
+  'cycles',
+  'unresolved',
+  'deps',
+]);
+
+const CODE_GRAPH_ALLOWED_FLAGS: ReadonlySet<string> = new Set([
+  // code-subverb flags (union across index/status/search/context/impact/path/
+  // hubs/callers/cycles/unresolved/deps)
+  'changed',
+  'compact',
+  'depth',
+  'full',
+  'has-unresolved-imports',
+  'include-type-edges',
+  'json',
+  'kind',
+  'limit',
+  'max-depth',
+  'min-size',
+  'mode',
+  'no-bridge',
+  'no-framework',
+  'no-refresh',
+  'path',
+  'since',
+  'table',
+  // --watch loop (graph index --watch)
+  'watch',
+  'paths',
+  'debounce',
+  'once',
+  // global / meta flags that reach any verb
+  'cwd',
+  'strict',
+  'help',
+  'h',
+  'no-color',
+  'color',
+]);
 import {
   runGraphCallers,
   runGraphContext,
@@ -55,6 +113,20 @@ export const graphCommand: ICommandHandler = {
     // Code-intelligence subverbs (R65) don't need the knowledge graph —
     // dispatch them before the expensive inspection so they stay fast.
     const earlySub = args.positional[0];
+    // Reject unknown/misspelled flags on the code-graph family BEFORE dispatch:
+    // an unrecognized flag must never parse as a silent success (a25 §2.1). Any
+    // real flag is in the union allow-set, so this only fires on a genuine typo.
+    if (typeof earlySub === 'string' && CODE_GRAPH_SUBVERBS.has(earlySub)) {
+      const unknown = firstUnknownFlag(args, CODE_GRAPH_ALLOWED_FLAGS);
+      if (unknown) {
+        const dash = unknown.length === 1 ? '-' : '--';
+        process.stderr.write(
+          `unknown option '${dash}${unknown}' for 'shrk graph ${earlySub}'. ` +
+            `Run 'shrk graph --help' for valid flags.\n`,
+        );
+        return ExitCode.NotVerified;
+      }
+    }
     if (earlySub === 'index') return runGraphIndex(args);
     if (earlySub === 'status') return runGraphStatus(args);
     if (earlySub === 'search') return runGraphSearch(args);

@@ -114,18 +114,53 @@ interface IReuseSuggestion {
   roles: readonly string[];
 }
 
+/**
+ * Rank ALL primitives by the matcher's own score (descending; ties broken by
+ * symbol name so the order is deterministic), then return the top-`k` as scored
+ * did-you-mean suggestions. Pure — no graph, no IO — so it is directly
+ * unit-testable. When every candidate scores 0 (a nonsense intent that shares no
+ * term) the result is the alphabetically-first `k` primitives, each with
+ * `score: 0`; the caller states "no candidate shares any term" in that case
+ * rather than dumping the whole catalog.
+ */
+export function rankReuseSuggestions(
+  primitives: readonly IReusePrimitive[],
+  tokens: readonly string[],
+  k: number,
+): IReuseSuggestion[] {
+  const cap = Math.max(1, Math.floor(k));
+  return primitives
+    .map((p) => ({ p, detail: scorePrimitive(p, tokens) }))
+    .sort((a, b) => b.detail.score - a.detail.score || a.p.symbol.localeCompare(b.p.symbol))
+    .slice(0, cap)
+    .map(({ p, detail }) => ({
+      symbol: p.symbol,
+      score: detail.score,
+      confidence: tokens.length === 0 ? 0 : detail.matched.length / tokens.length,
+      matched: detail.matched,
+      roles: p.roles,
+    }));
+}
+
 export const reuseCommand: ICommandHandler = {
   name: 'reuse',
   description:
     'Intent → the canonical primitive to reuse. Matches your intent against configured reusePrimitives[], then resolves the symbol in the code graph to its declaration, public import path, sibling exports, and real consumer files to copy. Deterministic; no AI.',
-  usage: 'shrk reuse "<what I want to build>" [--limit N] [--json]',
+  usage: 'shrk reuse "<what I want to build>" [--limit N] [--all] [--json]',
+  booleanFlags: new Set(['json', 'all']),
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const wantJson = flagBool(args, 'json');
-    const limit = flagNumber(args, 'limit') ?? 3;
+    const wantAll = flagBool(args, 'all');
+    // `--limit N` caps both the confident results (historic default 3) and the
+    // did-you-mean suggestion list. When omitted, suggestions default to 5 (a
+    // couple more than results — the point of a did-you-mean is a short menu).
+    const limitFlag = flagNumber(args, 'limit');
+    const limit = limitFlag ?? 3;
+    const suggestK = limitFlag ?? 5;
     const intent = args.positional.join(' ').trim();
     if (!intent) {
-      process.stderr.write('Usage: shrk reuse "<what I want to build>" [--limit N] [--json]\n');
+      process.stderr.write('Usage: shrk reuse "<what I want to build>" [--limit N] [--all] [--json]\n');
       return 2;
     }
 
@@ -176,16 +211,43 @@ export const reuseCommand: ICommandHandler = {
     const store = new GraphStore(cwd);
     const api = store.exists() ? GraphQueryApi.fromStore(cwd) : null;
 
-    // Zero keyword overlap: nothing matched at all → surface available roles.
+    // Zero keyword overlap: nothing matched at all. Rather than dump the entire
+    // declared catalog (dozens of lines an agent must re-read), rank ALL
+    // candidates and surface the nearest top-K by name — every score is 0 here,
+    // so this is an alphabetized short menu, stated as such. The full catalog is
+    // available only behind an explicit `--all`.
     if (scored.length === 0) {
+      const suggestions = rankReuseSuggestions(primitives, tokens, suggestK);
       const roles = [...new Set(primitives.flatMap((p) => p.roles))].sort();
       if (wantJson) {
-        process.stdout.write(asJson({ schema: 'sharkcraft.reuse/v1', intent, results: [], availableRoles: roles, ...planeJson }) + '\n');
+        process.stdout.write(
+          asJson({
+            schema: 'sharkcraft.reuse/v1',
+            intent,
+            confident: false,
+            results: [],
+            suggestions,
+            ...(wantAll ? { availableRoles: roles } : {}),
+            ...planeJson,
+          }) + '\n',
+        );
         return 0;
       }
       process.stdout.write(header(`Reuse: "${intent}"`));
-      process.stdout.write('  No primitive matched. Available roles:\n');
-      for (const r of roles.slice(0, 40)) process.stdout.write(`    • ${r}\n`);
+      if (wantAll) {
+        process.stdout.write(
+          '  No primitive matched — no candidate shares any term — showing full catalog:\n',
+        );
+        for (const r of roles.slice(0, 40)) process.stdout.write(`    • ${r}\n`);
+      } else {
+        process.stdout.write(
+          '  No strong match — no candidate shares any term with the intent.\n' +
+            '  Nearest primitives (pass --all for the full catalog):\n',
+        );
+        for (const s of suggestions) {
+          process.stdout.write(`    • ${s.symbol}  (score ${s.score}; roles: ${s.roles.join(', ') || '—'})\n`);
+        }
+      }
       writePlaneNotes();
       return 0;
     }
@@ -194,16 +256,29 @@ export const reuseCommand: ICommandHandler = {
     // entry): below the confidence floor. A miss must look like a miss — never
     // return the nearest collision as a confident answer. Offer did-you-mean.
     if (ranked.length === 0) {
-      const didYouMean: IReuseSuggestion[] = scored.slice(0, 5).map((x) => ({
+      // Rank the weakly-overlapping candidates (score > 0) and cap at K — never
+      // the whole catalog. `suggestions` and the legacy `didYouMean` alias carry
+      // the same scored rows; `--all` additionally dumps every declared role.
+      const suggestions: IReuseSuggestion[] = scored.slice(0, Math.max(1, suggestK)).map((x) => ({
         symbol: x.p.symbol,
         score: x.detail.score,
         confidence: confidenceOf(x.detail.matched.length),
         matched: x.detail.matched,
         roles: x.p.roles,
       }));
+      const roles = [...new Set(primitives.flatMap((p) => p.roles))].sort();
       if (wantJson) {
         process.stdout.write(
-          asJson({ schema: 'sharkcraft.reuse/v1', intent, confident: false, results: [], didYouMean, ...planeJson }) + '\n',
+          asJson({
+            schema: 'sharkcraft.reuse/v1',
+            intent,
+            confident: false,
+            results: [],
+            suggestions,
+            didYouMean: suggestions,
+            ...(wantAll ? { availableRoles: roles } : {}),
+            ...planeJson,
+          }) + '\n',
         );
         return 0;
       }
@@ -212,10 +287,14 @@ export const reuseCommand: ICommandHandler = {
         '  No confident match — the intent only weakly overlaps existing primitives.\n' +
           '  Did you mean (weak, verify before reusing):\n',
       );
-      for (const s of didYouMean) {
+      for (const s of suggestions) {
         process.stdout.write(
           `    • ${s.symbol}  (score ${s.score}, ${Math.round(s.confidence * 100)}% of intent; matched: ${s.matched.join(', ') || '—'})\n`,
         );
+      }
+      if (wantAll) {
+        process.stdout.write('  Full catalog (all declared roles):\n');
+        for (const r of roles.slice(0, 40)) process.stdout.write(`    • ${r}\n`);
       }
       writePlaneNotes();
       return 0;

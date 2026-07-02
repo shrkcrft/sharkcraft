@@ -2,8 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { IReusePrimitive } from '@shrkcrft/core';
 import { buildFullIndex } from '@shrkcrft/graph';
-import { reuseCommand } from '../commands/reuse.command.ts';
+import { reuseCommand, rankReuseSuggestions } from '../commands/reuse.command.ts';
 
 function setup(withGraph: boolean): string {
   const root = mkdtempSync(join(tmpdir(), 'shrk-reuse-'));
@@ -30,11 +31,28 @@ function setup(withGraph: boolean): string {
   return root;
 }
 
-function makeArgs(positional: string[], cwd: string) {
+function makeArgs(positional: string[], cwd: string, extra?: Record<string, string | boolean>) {
   const flags = new Map<string, string | boolean>();
   flags.set('cwd', cwd);
   flags.set('json', true);
+  for (const [k, v] of Object.entries(extra ?? {})) flags.set(k, v);
   return { positional, flags, multiFlags: new Map<string, string[]>() };
+}
+
+/** A temp project whose config declares `count` fake reuse primitives. */
+function setupMany(count: number): string {
+  const root = mkdtempSync(join(tmpdir(), 'shrk-reuse-many-'));
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'demo', version: '0.0.0' }));
+  mkdirSync(join(root, 'sharkcraft'), { recursive: true });
+  const prims = Array.from({ length: count }, (_, i) => {
+    const n = i + 1;
+    return `    { symbol: 'Prim${n}', roles: ['role${n}', 'group${n}'], keywords: ['kw${n}'] }`;
+  }).join(',\n');
+  writeFileSync(
+    join(root, 'sharkcraft', 'sharkcraft.config.ts'),
+    `export default {\n  reusePrimitives: [\n${prims}\n  ],\n};\n`,
+  );
+  return root;
 }
 
 function capture(): { restore: () => string } {
@@ -74,17 +92,73 @@ describe('shrk reuse', () => {
     }
   });
 
-  test('non-matching intent returns no results + the available roles', async () => {
-    const root = setup(true);
+  test('nonsense intent → ranked top-K suggestions (not the full catalog); --all reveals the catalog', async () => {
+    const root = setupMany(12);
     try {
+      // No shared term with any primitive: every candidate scores 0.
       const cap = capture();
       const code = await reuseCommand.run(makeArgs(['quantum', 'flux', 'capacitor'], root));
       const out = JSON.parse(cap.restore());
       expect(code).toBe(0);
       expect(out.results).toEqual([]);
-      expect(out.availableRoles).toContain('button');
+      expect(out.confident).toBe(false);
+      // Capped at the default K (5) — NOT the full 12-entry catalog.
+      expect(Array.isArray(out.suggestions)).toBe(true);
+      expect(out.suggestions.length).toBe(5);
+      expect(out.suggestions.length).toBeLessThan(12);
+      // Every suggestion row carries a (numeric) score.
+      for (const s of out.suggestions) expect(typeof s.score).toBe('number');
+      // Full catalog stays behind --all.
+      expect(out.availableRoles).toBeUndefined();
+
+      const cap2 = capture();
+      await reuseCommand.run(makeArgs(['quantum', 'flux', 'capacitor'], root, { all: true }));
+      const out2 = JSON.parse(cap2.restore());
+      expect(Array.isArray(out2.availableRoles)).toBe(true);
+      expect(out2.availableRoles.length).toBe(24); // 12 primitives × 2 roles each
+      expect(out2.suggestions.length).toBe(5); // suggestions still capped
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('--limit N caps the did-you-mean suggestion list', async () => {
+    const root = setupMany(12);
+    try {
+      const cap = capture();
+      await reuseCommand.run(makeArgs(['quantum', 'flux'], root, { limit: '3' }));
+      const out = JSON.parse(cap.restore());
+      expect(out.suggestions.length).toBe(3);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rankReuseSuggestions: capped, score-sorted, each row carries a score', () => {
+    const primitives: IReusePrimitive[] = Array.from({ length: 12 }, (_, i) => ({
+      symbol: `Prim${i + 1}`,
+      roles: [`role${i + 1}`],
+      keywords: [`kw${i + 1}`],
+    }));
+    // Nonsense intent → no shared term → every score is 0.
+    const nonsense = rankReuseSuggestions(primitives, ['zzz', 'qqq'], 5);
+    expect(nonsense.length).toBe(5); // capped at K, not the full 12
+    for (const s of nonsense) {
+      expect(typeof s.score).toBe('number');
+      expect(s.score).toBe(0);
+    }
+    // Ties broken by symbol name → deterministic, alphabetical.
+    expect(nonsense.map((s) => s.symbol)).toEqual([
+      'Prim1', 'Prim10', 'Prim11', 'Prim12', 'Prim2',
+    ]);
+
+    // A token that hits one primitive floats it to the top, score descending.
+    const focused = rankReuseSuggestions(primitives, ['role7', 'zzz'], 3);
+    expect(focused.length).toBe(3);
+    expect(focused[0]!.symbol).toBe('Prim7');
+    expect(focused[0]!.score).toBeGreaterThan(0);
+    for (let i = 1; i < focused.length; i += 1) {
+      expect(focused[i]!.score).toBeLessThanOrEqual(focused[i - 1]!.score);
     }
   });
 
@@ -104,6 +178,8 @@ describe('shrk reuse', () => {
       // The score is exposed so a caller can judge the match strength.
       expect(typeof out.didYouMean[0].score).toBe('number');
       expect(out.didYouMean[0].confidence).toBeLessThan(1);
+      // The canonical `suggestions` key mirrors the legacy `didYouMean` alias.
+      expect(out.suggestions).toEqual(out.didYouMean);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

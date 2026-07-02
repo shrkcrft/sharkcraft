@@ -262,4 +262,40 @@ describe('runWiring (fs-backed)', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // a25 §3.2 — footprint (not just changed-FILE) selection: a change on the
+  // REGISTERED side (registry/r.ts) must fire a rule whose violation lives on
+  // the DECLARED side (src/a.ts). A wiring bug is typically introduced in file A
+  // and manifested by a registration array in file B — the whole value of
+  // diff-scoping is running the rule for the change's blast radius.
+  test('a registered-side change fires the rule (footprint = declared ∪ registered)', () => {
+    const root = setup();
+    try {
+      // Edit ONLY the registered file — the rule still runs and surfaces the
+      // unregistered token from the declared side.
+      const run = runWiring(root, [RULE], {
+        changedOnly: true,
+        changedFiles: ['registry/r.ts'],
+      });
+      expect(run.rules.map((r) => r.ruleId)).toEqual(['demo.use-must-register']);
+      expect(run.evaluated).toBe(1);
+      expect(run.violations.map((v) => v.token)).toEqual(['ghost']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('an unrelated change selects NO rule by footprint (negative control)', () => {
+    const root = setup();
+    try {
+      const run = runWiring(root, [RULE], {
+        changedOnly: true,
+        changedFiles: ['README.md', 'unrelated/other.ts'],
+      });
+      expect(run.rules).toEqual([]);
+      expect(run.evaluated).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

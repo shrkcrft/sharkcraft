@@ -91,6 +91,11 @@ describe('registry inventory verb', () => {
 
   test('lifecycle subverb still resolves', () => {
     const r = shrk(['registry', 'lifecycle', '--json'], dir);
-    expect(r.code === 0 || r.code === 1).toBe(true);
+    // This fixture declares no register*() functions, so the scan finds zero
+    // registrations to check → NOT verified (`2`) under the a25 §1 exit contract
+    // (a real miss would be `1`, a clean symmetric pass `0`).
+    expect([0, 1, 2]).toContain(r.code);
+    const payload = JSON.parse(r.out);
+    expect(payload.registersFound).toBe(0);
   });
 });

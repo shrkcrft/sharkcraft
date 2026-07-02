@@ -82,4 +82,28 @@ export const RELEASE_SURFACE_DELTAS: readonly IReleaseSurfaceDelta[] = [
     ],
     removed: [],
   },
+  {
+    version: '0.1.0-alpha.26',
+    title: 'Honest exit codes',
+    added: [
+      'A unified exit-code contract across every gate/verify/check verb: `0` verified pass, `1` failure, `2` NOT-verified (empty scope / degraded / timeout). See docs/exit-codes.md.',
+      'Global `--strict` — promote a NOT-verified (`2`) verdict to a failure-class nonzero (`1`) across every gate, for a hard CI gate in one switch.',
+      '`shrk gate baseline --refreeze` — re-freeze the architecture baseline to the current state (operational reset).',
+      '`shrk check wiring --base <ref>` (synonym of `--since`); `check wiring` now shows the rule ids selected by footprint under a scoped run.',
+      '`shrk reuse … --all` — the full candidate catalog (default is now a scored top-K did-you-mean).',
+    ],
+    changed: [
+      '`shrk check wiring` (0 rules evaluated) and `shrk registry lifecycle` / `check registry-lifecycle` (0 registrations, or wall-clock timeout) now exit `2` (NOT verified), not a green `0` a chained `&& next` would march past.',
+      'The graph/query family (`graph cycles|hubs|callers|impact|search|context|…`) rejects an unknown/misspelled flag (`unknown option --x`, exit `2`) instead of silently swallowing it as a confident success.',
+      'Piping any streaming list (`… | head`, `| grep`) no longer crashes with `write EPIPE` — a downstream early-close is swallowed and the real exit code is preserved.',
+      '`shrk check wiring --help` documents its own scoping flags instead of running the bare check.',
+      '`shrk reuse "<intent>"` returns a scored top-K did-you-mean (score per row) on a weak/no-match intent instead of dumping the whole catalog.',
+      '`shrk registry <name> exists <id> --resolve` also normalizes (case-fold, singular/plural, suffix strip/append), not just the declared `aliases` map.',
+      '`shrk compress` prints a `fidelity: lossy|lossless|passthrough` banner on the human text path (parity with `--json`).',
+      '`shrk changes summary` ships a built-in config/tooling area for non-lib paths — only genuinely unclassifiable files stay `unknown`.',
+      '`shrk gen` saved plans persist the rendered file `body` + a per-entry `sha256` digest (reviewable/diffable/re-appliable), not just `sizeBytes`.',
+      '`shrk gate` counts only change-attributable (diff-vs-HEAD) architecture errors as blocking; stale-baseline drift in untouched files is informational.',
+    ],
+    removed: [],
+  },
 ];

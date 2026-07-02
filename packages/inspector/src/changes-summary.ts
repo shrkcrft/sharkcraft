@@ -41,6 +41,14 @@ export enum ChangeArea {
   Tests = 'tests',
   Examples = 'examples',
   Scripts = 'scripts',
+  /**
+   * Build / CI / tooling directories (`.github/`, `.husky/`, `ci/`, `tooling/`,
+   * `build/`). A generic, project-agnostic bucket so tooling paths stop
+   * falling through to {@link ChangeArea.Unknown}. Distinct from
+   * {@link ChangeArea.Config} (which is for manifest/config *files*) and from
+   * {@link ChangeArea.Scripts} (the dedicated `scripts/` area).
+   */
+  Tooling = 'tooling',
   E2E = 'e2e',
   Sharkcraft = 'sharkcraft-self-config',
   Reports = 'reports',
@@ -148,7 +156,61 @@ function classifyArea(file: string): ChangeArea {
   // (e.g. a foreign monorepo's `architecture/*.md`) instead of bucketing every
   // doc as `unknown`.
   if (/\.mdx?$/i.test(file)) return ChangeArea.Docs;
+  // NOTE: generic config / tooling / manifest paths are NOT resolved here. They
+  // are a FALLBACK layer applied by `buildAreaResolver` *after* the declared
+  // taxonomy (see `classifyConfigTooling`), so a project's own area declaration
+  // still wins for config paths it explicitly claims.
   return ChangeArea.Unknown;
+}
+
+/**
+ * Built-in, project-AGNOSTIC config / tooling / manifest classifier.
+ *
+ * This is a FALLBACK layer: `buildAreaResolver` consults it only *after* the
+ * declared taxonomy (boundary `from` globs + monorepo package roots), so a
+ * project that explicitly claims a config path keeps its own area. It exists so
+ * the large slice of a typical changeset that is build / CI / tooling /
+ * manifest / config stops falling through to {@link ChangeArea.Unknown} — which
+ * (with its loud `unknown = taxonomy gap` diagnostic) is now reserved for
+ * *genuinely* unclassifiable paths.
+ *
+ * Ordering is deterministic and most-specific-wins: a recognized manifest /
+ * config *filename* (→ {@link ChangeArea.Config}) is matched before a generic
+ * tooling *directory* (→ {@link ChangeArea.Tooling}). Returns `undefined` when
+ * nothing matches so the caller can fall through to `unknown`.
+ */
+function classifyConfigTooling(file: string): ChangeArea | undefined {
+  const base = file.slice(file.lastIndexOf('/') + 1).toLowerCase();
+  // Manifests / config files (matched by basename, at repo root or anywhere) →
+  // config. Covers: package.json, tsconfig*.json, *.config.{ts,js,mjs,cjs,json},
+  // nx.json, biome.json, .eslintrc*, .prettierrc*, bunfig.toml, lockfiles,
+  // .npmrc, .editorconfig.
+  if (
+    base === 'package.json' ||
+    base === 'nx.json' ||
+    base === 'biome.json' ||
+    base === 'bunfig.toml' ||
+    base === '.npmrc' ||
+    base === '.editorconfig' ||
+    base === 'package-lock.json' ||
+    /^tsconfig(?:\..+)?\.json$/.test(base) ||
+    /\.config\.(?:ts|js|mjs|cjs|json)$/.test(base) ||
+    /^\.eslintrc(?:\..+)?$/.test(base) ||
+    /^\.prettierrc(?:\..+)?$/.test(base) ||
+    // Lockfiles: yarn.lock, pnpm-lock.yaml, bun.lock(b), *.lock / *.lockb.
+    base === 'pnpm-lock.yaml' ||
+    /\.lockb?$/.test(base)
+  ) {
+    return ChangeArea.Config;
+  }
+  // CI / build / tooling directories → tooling. (`scripts/` is intentionally
+  // handled earlier by `classifyArea` as its own dedicated area.) `build/` is
+  // treated as build *scripts*; genuine build *output* dirs (e.g. `dist/`) are
+  // not claimed here.
+  if (/(?:^|\/)(?:\.github|\.husky|ci|tooling|build)\//.test(file)) {
+    return ChangeArea.Tooling;
+  }
+  return undefined;
 }
 
 /** A file→area matcher sourced from the project's declared taxonomy. */
@@ -163,7 +225,11 @@ const PACKAGE_ROOT_RE = /^(?:packages|apps|libs|modules|services)\/([^/]+)\//;
  *   1. the built-in {@link classifyArea} slugs (nice names for this repo);
  *   2. the boundary gate's own `from` globs — the declared layer/area taxonomy;
  *   3. a generic monorepo package/app root (`packages/<name>/…` → `<name>`), so
- *      a foreign monorepo's packages resolve instead of bucketing to `unknown`.
+ *      a foreign monorepo's packages resolve instead of bucketing to `unknown`;
+ *   4. built-in, project-agnostic config / tooling / manifest patterns
+ *      ({@link classifyConfigTooling}) — the FALLBACK layer that runs after the
+ *      declared taxonomy so config paths (manifests, lockfiles, CI/build dirs)
+ *      resolve to `config` / `tooling` instead of `unknown`.
  * A file only stays `unknown` when NONE of these match — and a high unknown rate
  * is surfaced as a self-diagnostic (`unknownRate`), not a low-risk diff.
  */
@@ -189,6 +255,10 @@ function buildAreaResolver(inspection: ISharkcraftInspection): AreaResolver {
     }
     const pkg = PACKAGE_ROOT_RE.exec(file);
     if (pkg?.[1]) return pkg[1];
+    // Built-in config / tooling fallback — runs last, before `unknown`, so the
+    // declared taxonomy (steps 2–3) still wins where it applies.
+    const configTooling = classifyConfigTooling(file);
+    if (configTooling) return configTooling;
     return ChangeArea.Unknown;
   };
 }

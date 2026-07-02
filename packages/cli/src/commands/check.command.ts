@@ -28,6 +28,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { ExitCode } from '../exit-codes.ts';
 import { maybeRunInWatchMode } from '../output/watch-loop.ts';
 import { computeDeletedOrphans } from '../diff/deleted-orphans.ts';
 import { renderWiringExplain } from './wiring.command.ts';
@@ -608,11 +609,31 @@ async function checkBoundariesOnce(args: ParsedArgs): Promise<number> {
 // ────────────────────────────────────────────────────────────────────────
 // Subcommand: wiring — "declared but not wired" completeness checks
 // ────────────────────────────────────────────────────────────────────────
+const WIRING_CHECK_USAGE =
+  'shrk check wiring [--changed-only] [--since <ref>] [--base <ref>] [--only <ids>] [--explain <ruleId>] [--json] [--strict]\n' +
+  '  Cross-file "declared but not wired" completeness gate. Scope flags select rules by\n' +
+  '  FOOTPRINT — a rule fires when the diff touches EITHER its declared or its registered\n' +
+  '  side (so a registration edited in file B fires a rule declared in file A).\n' +
+  '    --changed-only   run only rules whose footprint intersects the working diff\n' +
+  '    --since <ref>    scope the diff to changes since <ref> (--base is a synonym)\n' +
+  '    --only <ids>     run only these rule ids (comma-separated)\n' +
+  '    --explain <id>   dry-run ONE rule and print the declared/registered sets it extracts\n' +
+  '  Exit: 0 verified pass · 1 violations · 2 not-verified (0 rules evaluated in scope).';
+
 async function checkWiring(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
+  // `--help`/`-h` on the subverb documents its own scoping flags instead of
+  // silently running the bare check (a25 §3.2). The check dispatcher doesn't
+  // intercept a subverb-level `--help`, so handle it here.
+  if (flagBool(args, 'help') || flagBool(args, 'h')) {
+    process.stdout.write(WIRING_CHECK_USAGE + '\n');
+    return 0;
+  }
   const wantJson = flagBool(args, 'json');
   const changedOnly = flagBool(args, 'changed-only');
-  const since = flagString(args, 'since');
+  // `--base <ref>` is an accepted synonym for `--since <ref>` (a25 §3.2) —
+  // scope the footprint diff to changes since an arbitrary ref.
+  const since = flagString(args, 'since') ?? flagString(args, 'base');
   const only = flagString(args, 'only');
 
   // Distinguish "config is invalid" from "config valid with no wiring rules":
@@ -715,27 +736,58 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
   if (matchedNothing > 0) parts.push(`${matchedNothing} matched no files`);
   const breakdown = parts.length > 0 ? ` (${parts.join(', ')})` : '';
 
+  // Rule ids selected by footprint (declared OR registered side intersecting the
+  // diff) — positive evidence the gate ran the RIGHT rules for the change's
+  // blast radius, not just the rules whose literal files were edited (a25 §3.2).
+  const selectedRuleIds = report.rules.map((r) => r.ruleId);
+  const scoped = changedOnly || since !== undefined;
+
   if (wantJson) {
     // Carry the honest counts so a machine consumer can tell "0 evaluated" from
-    // a real green, and see how many rules the scope skipped.
+    // a real green, and see how many rules the scope skipped + which fired.
     process.stdout.write(
-      asJson({ ...report, configured, selected, evaluated, skippedByScope, matchedNothing, notVerified }) + '\n',
+      asJson({
+        ...report,
+        configured,
+        selected,
+        evaluated,
+        skippedByScope,
+        matchedNothing,
+        notVerified,
+        selectedRuleIds,
+        // Distinguish verified-pass / failure / not-verified for a chained gate.
+        exitCode: evaluated === 0 ? ExitCode.NotVerified : report.verdict === 'errors' ? ExitCode.Failure : ExitCode.VerifiedPass,
+      }) + '\n',
     );
-    return report.verdict === 'errors' ? 1 : 0;
+    // `evaluated === 0` = nothing checked in scope → NOT verified (`2`), never a
+    // silent `0` an agent's `&& next` would march past (a25 §1.1).
+    return evaluated === 0
+      ? ExitCode.NotVerified
+      : report.verdict === 'errors'
+        ? ExitCode.Failure
+        : ExitCode.VerifiedPass;
   }
 
   process.stdout.write(header('Wiring check'));
   // `evaluated` counts rules that actually ran a comparison (globs matched >0
   // files). When 0 rules evaluated but rules ARE configured, say so loudly —
-  // "checked nothing" must never read as the green "every token is wired" pass.
+  // "checked nothing" must never read as the green "every token is wired" pass,
+  // and the exit code must say NOT verified (`2`) too, not a lying `0`.
   if (evaluated === 0) {
     process.stdout.write(
       `  ! 0 rules evaluated — NOT verified. ${configured} rule(s) configured${breakdown}; ` +
         'none ran a comparison in scope. Wiring was not checked — this is not a pass.\n',
     );
-    return 0;
+    return ExitCode.NotVerified;
   }
   process.stdout.write(kv('rules evaluated', `${evaluated} of ${configured}${breakdown}`) + '\n');
+  if (scoped && selectedRuleIds.length > 0) {
+    // Show WHICH rules the diff's footprint selected so the scoping is provable,
+    // not indistinguishable from plain changed-file scoping.
+    process.stdout.write(
+      kv('selected by footprint', selectedRuleIds.join(', ')) + '\n',
+    );
+  }
   const errors = report.violations.filter((v) => v.severity === 'error').length;
   const warnings = report.violations.filter((v) => v.severity === 'warning').length;
   process.stdout.write(kv('violations', `${errors} error(s), ${warnings} warning(s)`) + '\n');
@@ -939,8 +991,19 @@ export const checkCommand: ICommandHandler = {
         ...(scope ? { scope } : {}),
         ...(skipDirs ? { skipDirs } : {}),
       });
-      // Deterministic non-zero on timeout so a wedged scan fails loud, not silent.
-      const exit = report.timedOut ? 2 : report.missingRemovers.length === 0 ? 0 : 1;
+      // Honest exit-code contract (a25 §1 / §2.5):
+      //   timedOut          → NOT verified (2): the budget flushed partial results.
+      //   registersFound=0  → NOT verified (2): nothing to check in scope — a
+      //                       "nothing to verify" run must never read as a green
+      //                       pass (an agent's `&& next` would march past it).
+      //   missingRemovers>0 → failure (1).
+      //   otherwise         → verified pass (0).
+      const exit =
+        report.timedOut || report.registersFound === 0
+          ? ExitCode.NotVerified
+          : report.missingRemovers.length === 0
+            ? ExitCode.VerifiedPass
+            : ExitCode.Failure;
       if (flagBool(args, 'json')) {
         process.stdout.write(asJson(report) + '\n');
         return exit;

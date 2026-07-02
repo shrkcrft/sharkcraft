@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +9,8 @@ import {
   type IGenerationPlan,
   readPlanFromFile,
   SAVED_PLAN_SCHEMA,
-  savePlanToFile
+  savePlanToFile,
+  sha256Hex,
 } from '../index.ts';
 
 function makeTmp(): string {
@@ -50,6 +52,51 @@ describe('buildSavedPlan', () => {
     expect(saved.expectedChanges?.[0]?.relativePath).toBe(
       'src/services/user-profile.service.ts',
     );
+  });
+});
+
+describe('buildSavedPlan — persisted body + digest', () => {
+  test('embeds the rendered body and a matching sha256 per entry', () => {
+    const saved = buildSavedPlan({
+      templateId: 'typescript.service',
+      name: 'user-profile',
+      variables: { className: 'UserProfileService' },
+      projectRoot: '/abs',
+      plan: examplePlan,
+    });
+    const entry = saved.expectedChanges?.[0];
+    expect(entry).toBeDefined();
+    // Body is byte-identical to the rendered content (what `--print` shows).
+    expect(entry?.body).toBe(examplePlan.changes[0]!.contents);
+    // Digest is present and matches the body.
+    expect(typeof entry?.sha256).toBe('string');
+    expect(entry?.sha256).toHaveLength(64);
+    const independentDigest = createHash('sha256')
+      .update(examplePlan.changes[0]!.contents, 'utf8')
+      .digest('hex');
+    expect(entry?.sha256).toBe(independentDigest);
+    expect(entry?.sha256).toBe(sha256Hex(entry!.body!));
+    // sizeBytes is retained (backward-compatible, additive fields only).
+    expect(entry?.sizeBytes).toBe(examplePlan.changes[0]!.sizeBytes);
+  });
+
+  test('body + digest survive a save/read round-trip on disk', () => {
+    const root = makeTmp();
+    const path = join(root, 'plan.json');
+    const saved = buildSavedPlan({
+      templateId: 'typescript.service',
+      variables: {},
+      projectRoot: root,
+      plan: examplePlan,
+    });
+    savePlanToFile(saved, path);
+    const read = readPlanFromFile(path);
+    expect(read.ok).toBe(true);
+    if (read.ok) {
+      const entry = read.value.expectedChanges?.[0];
+      expect(entry?.body).toBe(examplePlan.changes[0]!.contents);
+      expect(entry?.sha256).toBe(sha256Hex(entry!.body!));
+    }
   });
 });
 
@@ -146,5 +193,25 @@ describe('diffPlanChanges', () => {
     const bigger = { ...examplePlan.changes[0]!, sizeBytes: 999 };
     const diff = diffPlanChanges(saved, { ...examplePlan, changes: [bigger] });
     expect(diff[0]?.kind).toBe('size-changed');
+  });
+
+  test('reports content-changed when body differs at the same byte count', () => {
+    const saved = buildSavedPlan({
+      templateId: 't',
+      variables: {},
+      projectRoot: '/x',
+      plan: examplePlan,
+    });
+    const original = examplePlan.changes[0]!.contents;
+    // Same length, different bytes — a size check alone would miss this.
+    const swapped = original.replace('UserProfileService', 'UserProfileServvce');
+    expect(swapped.length).toBe(original.length);
+    const mutated = {
+      ...examplePlan.changes[0]!,
+      contents: swapped,
+      sizeBytes: examplePlan.changes[0]!.sizeBytes,
+    };
+    const diff = diffPlanChanges(saved, { ...examplePlan, changes: [mutated] });
+    expect(diff[0]?.kind).toBe('content-changed');
   });
 });

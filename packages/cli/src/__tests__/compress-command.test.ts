@@ -85,6 +85,62 @@ describe('shrk compress / expand', () => {
     }
   });
 
+  test('text path prints `fidelity: lossy` for a lossy reduction (parity with --json)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
+    try {
+      const lines: string[] = [];
+      for (let i = 0; i < 40; i += 1) lines.push(`INFO step ${i} routine work`);
+      lines.push('ERROR fatal boom');
+      const file = join(dir, 'log.txt');
+      writeFileSync(file, lines.join('\n'), 'utf8');
+
+      const text = capture(() => compressCommand.run(makeArgs([file], {}, dir)) as number);
+      expect(text.code).toBe(0);
+      // The one-line fidelity banner mirrors the JSON `fidelity` field.
+      expect(text.err).toContain('fidelity: lossy');
+
+      // ...and it must agree with what --json reports for the same input.
+      const json = capture(() => compressCommand.run(makeArgs([file], { json: true }, dir)) as number);
+      expect((JSON.parse(json.out) as Record<string, unknown>).fidelity).toBe('lossy');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('text path prints `fidelity: lossless` for a lossless table', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
+    try {
+      const arr = Array.from({ length: 20 }, (_, i) => ({ id: `n${i}`, kind: 'rule', title: `T${i}` }));
+      const file = join(dir, 'data.json');
+      writeFileSync(file, JSON.stringify(arr), 'utf8');
+      const text = capture(() => compressCommand.run(makeArgs([file], {}, dir)) as number);
+      expect(text.code).toBe(0);
+      expect(text.err).toContain('fidelity: lossless');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('text path explicitly labels the no-win passthrough case as `fidelity: passthrough`', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
+    try {
+      const prose =
+        'He went to the market today and bought apples and oranges. ' +
+        'She stayed home reading a long book about gardening and weather. ' +
+        'They later met for dinner and talked about the upcoming trip north.';
+      const file = join(dir, 'prose.txt');
+      writeFileSync(file, prose, 'utf8');
+      const text = capture(() => compressCommand.run(makeArgs([file], {}, dir)) as number);
+      expect(text.code).toBe(0);
+      // The no-win case is named explicitly, not left as a bare `−0%` hint.
+      expect(text.err).toContain('fidelity: passthrough');
+      // stdout is still the verbatim blob (passthrough re-emit).
+      expect(text.out).toBe(prose + '\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('trivial input passthrough does NOT warn', () => {
     const dir = mkdtempSync(join(tmpdir(), 'shrk-compress-'));
     try {

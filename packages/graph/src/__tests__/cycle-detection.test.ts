@@ -163,3 +163,55 @@ describe('summarizeCycles', () => {
     expect(r.cycleCount).toBe(0);
   });
 });
+
+/**
+ * §2.3 regression lock — the type-only cycle exclusion must stay *live*, not
+ * inert. The default `findFileCycles` walk drops edges with
+ * `data.typeOnly === true`; `{ includeTypeEdges: true }` re-adds them. On any
+ * tree containing a pure type-only loop the two views MUST diverge:
+ * default-count < opt-in-count. These fixtures fail loudly if someone ever
+ * reverts the exclusion so that default == opt-in (the inert regression).
+ */
+describe('findFileCycles — type-only exclusion divergence (§2.3)', () => {
+  test('value A→B + type-only B→A: cycle exists ONLY with includeTypeEdges', () => {
+    const nodes = ['a.ts', 'b.ts'].map(fileNode);
+    // A→B is a real (value) import; B→A is `import type` — erased at emit.
+    const edges = [importEdge('a.ts', 'b.ts'), typeOnlyImportEdge('b.ts', 'a.ts')];
+
+    const defaultCycles = findFileCycles(nodes, edges);
+    const optInCycles = findFileCycles(nodes, edges, undefined, { includeTypeEdges: true });
+
+    expect(defaultCycles).toHaveLength(0); // runtime: only A→B survives → no loop
+    expect(optInCycles).toHaveLength(1); // audit: type edge closes the A↔B loop
+    // The load-bearing divergence: default strictly fewer than opt-in.
+    expect(defaultCycles.length).toBeLessThan(optInCycles.length);
+  });
+
+  test('pure type-only cycle (both edges typeOnly): absent by default, present with opt-in', () => {
+    const nodes = ['a.ts', 'b.ts'].map(fileNode);
+    // Interface-to-interface loop: both directions are declaration-only.
+    const edges = [typeOnlyImportEdge('a.ts', 'b.ts'), typeOnlyImportEdge('b.ts', 'a.ts')];
+
+    const defaultCycles = findFileCycles(nodes, edges);
+    const optInCycles = findFileCycles(nodes, edges, undefined, { includeTypeEdges: true });
+
+    expect(defaultCycles).toHaveLength(0); // no runtime cycle at all
+    expect(optInCycles).toHaveLength(1); // the compile-time A↔B loop
+    expect(optInCycles[0]!.size).toBe(2);
+    expect(defaultCycles.length).toBeLessThan(optInCycles.length);
+  });
+
+  test('runtime cycle (both edges value) is counted in BOTH modes — exclusion never over-drops', () => {
+    const nodes = ['a.ts', 'b.ts'].map(fileNode);
+    // Genuine runtime cycle: neither edge is type-only.
+    const edges = [importEdge('a.ts', 'b.ts'), importEdge('b.ts', 'a.ts')];
+
+    const defaultCycles = findFileCycles(nodes, edges);
+    const optInCycles = findFileCycles(nodes, edges, undefined, { includeTypeEdges: true });
+
+    expect(defaultCycles).toHaveLength(1);
+    expect(optInCycles).toHaveLength(1);
+    // Same view: a real cycle is never dropped by the type-only filter.
+    expect(defaultCycles.length).toBe(optInCycles.length);
+  });
+});
