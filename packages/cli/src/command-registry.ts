@@ -447,6 +447,35 @@ export function extractGlobalCompress(argv: readonly string[]): {
 }
 
 /**
+ * Strip the global `--exit-trailer` flag so it can appear anywhere (even after a
+ * command) without any per-command flag-guard rejecting it as unknown — exactly
+ * like `--cwd`. The stripped `rest` is what the trie descent + `parseArgs` see;
+ * the returned `trailer` boolean tells {@link runCli} whether to emit the
+ * `shrk-exit: <code>` trailer. Everything after the POSIX `--` sentinel is a
+ * literal positional and is preserved verbatim.
+ */
+export function extractGlobalExitTrailer(argv: readonly string[]): {
+  trailer: boolean;
+  rest: string[];
+} {
+  const rest: string[] = [];
+  let trailer = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    const t = argv[i]!;
+    if (t === '--') {
+      rest.push(...argv.slice(i));
+      break;
+    }
+    if (t === '--exit-trailer') {
+      trailer = true;
+      continue;
+    }
+    rest.push(t);
+  }
+  return { trailer, rest };
+}
+
+/**
  * Returns the absolute cwd for the current command:
  * 1. Command-level --cwd flag (if passed after the command)
  * 2. Global --cwd (extracted at the top level)

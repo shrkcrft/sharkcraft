@@ -222,6 +222,11 @@ Then query it:
 shrk wiring chain <token>     # declared → provided → consumed, file:line per hop + verdict
 shrk wiring unprovided        # tokens declared/injected but NEVER provided
 shrk wiring orphans           # tokens provided but NOTHING consumes them
+
+# Scope the verdict to a changeset (the tokens THIS change touched):
+shrk wiring unprovided --changed-only     # vs the working tree
+shrk wiring unprovided --base main        # vs a git ref
+shrk wiring orphans --changed-only
 ```
 
 - **`unprovided`** is the silent-at-runtime class: typecheck/AOT-green, but the
@@ -231,10 +236,23 @@ shrk wiring orphans           # tokens provided but NOTHING consumes them
   often a renamed/removed consumer. Advisory (exit `0`).
 - **`chain`** is the full hop-by-hop trace for one token, tagged
   `wired` / `unprovided` / `orphan`.
+- **`--changed-only` / `--base <ref>`** scope `unprovided` / `orphans` to tokens
+  with a role-site in the changeset — the change-attributed "did *I* leave a
+  token unprovided?" question a pre-commit gate wants. An **empty** changed scope
+  evaluated nothing, so it exits `2` (NOT verified), never a green `0`; this is
+  the gate that slots into `shrk finish` (see [exit-codes.md](exit-codes.md)).
 
 This is the natural superset of the "is X registered" wiring rules: a real
 registration graph turns the question from a hand-authored regex into a query
 (schema `sharkcraft.registration-graph/v1`).
+
+Agents can reach the same graph read-only over MCP via **`get_wiring_graph`**
+(returns `unprovided` + `orphans`, plus a token's `chain` when `token` is
+passed) — no shell-out, and it never writes the on-disk cache (the CLI owns
+that). And `shrk finish` runs the `unprovided` query as a **diff-aware** gate:
+besides a newly-injected token with no provider, it flags a token whose last
+**provider you deleted** — the most common way DI wiring silently breaks, which
+leaves no site in the changed file for post-change scoping to see.
 
 The scan is **cached by the code-graph digest** (`.sharkcraft/cache/`), so
 repeated session queries (`chain` + `unprovided` + `orphans`) reuse one scan; a

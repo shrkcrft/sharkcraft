@@ -104,6 +104,19 @@ describe('extractTsFile', () => {
       ]) {
         expect(specs.has(ghost)).toBe(false);
       }
+
+      // The `import type { T } from './type-only'` line is captured with the
+      // `isTypeOnly` flag set on its raw import specifier — the signal the
+      // index-builder copies onto the ImportsFile edge (`data.typeOnly`) so the
+      // default cycle detector can erase the edge. This is the SOURCE end of the
+      // real `import type` → excluded-cycle flow.
+      const typeOnlySpec = ex.rawImportSpecifiers.find((r) => r.specifier === './type-only');
+      expect(typeOnlySpec).toBeDefined();
+      expect(typeOnlySpec!.isTypeOnly).toBe(true);
+      // A value import carries no type-only flag — it stays a real runtime edge.
+      const valueSpec = ex.rawImportSpecifiers.find((r) => r.specifier === './real');
+      expect(valueSpec).toBeDefined();
+      expect(valueSpec!.isTypeOnly).not.toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

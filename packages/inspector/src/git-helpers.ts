@@ -88,6 +88,31 @@ export function getChangedFiles(cwd: string, opts: IGitChangedOptions = {}): str
   return [...set].sort();
 }
 
+/**
+ * True when `ref` resolves to a commit in `cwd`'s repo. Lets a caller tell a
+ * genuinely-empty diff apart from a bad ref — `getChangedFiles` returns `[]` for
+ * both (a failed `git diff <bad-ref>` yields no names), so a gate that scopes on
+ * `--base <ref>` must validate the ref first or it reports "nothing changed"
+ * (a false verified-nothing) over a typo'd ref.
+ */
+export function refExists(cwd: string, ref: string): boolean {
+  if (!ref) return false;
+  const r = runGit(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  return r.ok && r.stdout.trim().length > 0;
+}
+
+/**
+ * The content of `relPath` at `ref` (e.g. `git show HEAD:src/x.ts`), or `null`
+ * when the path did not exist at that ref (a newly-added file) or git failed.
+ * `relPath` is repo-root-relative. Used to diff a file's PAST state against the
+ * working tree without a checkout — e.g. to see what a now-edited file used to
+ * provide/register.
+ */
+export function gitShowFile(cwd: string, ref: string, relPath: string): string | null {
+  const r = runGit(cwd, ['show', `${ref}:${relPath}`]);
+  return r.ok ? r.stdout : null;
+}
+
 export function getStatusSummary(cwd: string): IGitStatusSummary {
   const empty: IGitStatusSummary = {
     branch: null,

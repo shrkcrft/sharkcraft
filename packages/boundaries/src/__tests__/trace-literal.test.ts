@@ -127,6 +127,42 @@ describe('traceLiteral', () => {
     }
   });
 
+  test('classifies JSX/template/render sites as Render, leaving declare/register/consume intact', () => {
+    const root = mkdtempSync(join(tmpdir(), 'shrk-trace-render-'));
+    try {
+      mkdirSync(join(root, 'src'), { recursive: true });
+      // The existing declare → register → consume chain for 'greeting' ...
+      writeFileSync(join(root, 'src', 'msg.ts'), "export const GREETING = 'greeting';\n");
+      writeFileSync(join(root, 'src', 'reg.ts'), "register('greeting');\n");
+      writeFileSync(join(root, 'src', 'guard.ts'), "if (k === 'greeting') ok();\n");
+      // ... plus three render/handle sites that used to fall to `reference`:
+      // JSX child interpolation, template interpolation, and a render() call.
+      writeFileSync(
+        join(root, 'src', 'view.tsx'),
+        "export const View = () => <div>{'greeting'}</div>;\n",
+      );
+      writeFileSync(join(root, 'src', 'tpl.ts'), "const s = `${'greeting'}`;\n");
+      writeFileSync(join(root, 'src', 'server.ts'), "res.render('greeting');\n");
+
+      const report = traceLiteral(root, 'greeting');
+
+      // The three render sites are captured as Render ...
+      const renderFiles = new Set(report.byRole[TraceRole.Render].map((s) => s.file));
+      expect(renderFiles.has('src/view.tsx')).toBe(true);
+      expect(renderFiles.has('src/tpl.ts')).toBe(true);
+      expect(renderFiles.has('src/server.ts')).toBe(true);
+      // ... and none of them leaked into the `reference` catch-all.
+      expect(report.byRole[TraceRole.Reference].length).toBe(0);
+
+      // The higher-precision roles are UNCHANGED — Render never steals from them.
+      expect(report.byRole[TraceRole.Declare].some((s) => s.file === 'src/msg.ts')).toBe(true);
+      expect(report.byRole[TraceRole.Register].some((s) => s.file === 'src/reg.ts')).toBe(true);
+      expect(report.byRole[TraceRole.Consume].some((s) => s.file === 'src/guard.ts')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('matches the EXACT literal only, never a substring of a longer string', () => {
     const root = mkdtempSync(join(tmpdir(), 'shrk-trace-exact-'));
     try {

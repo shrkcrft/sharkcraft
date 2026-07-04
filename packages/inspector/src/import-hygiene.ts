@@ -313,6 +313,16 @@ function stripCommentsPreservingOffsets(source: string): string {
   return buf.join('');
 }
 
+/**
+ * Files import-hygiene never gates: test + fixture sources. Their whole PURPOSE
+ * is often to CONTAIN import-like text (`"const x = require('./y')"` as a string
+ * literal feeding a scanner test), so gating them produces false positives. The
+ * whole-tree scan has always excluded them; this constant makes the explicit
+ * `files` path (changed-only / `finish`) apply the SAME rule so the two can't
+ * drift — a change to a test file no longer spuriously fails an imports gate.
+ */
+const EXCLUDED_FROM_HYGIENE = /__tests__|\/__fixtures__/;
+
 function defaultRoots(projectRoot: string): string[] {
   const pkgsDir = nodePath.join(projectRoot, 'packages');
   if (!existsSync(pkgsDir)) return [projectRoot];
@@ -336,9 +346,10 @@ export function buildImportHygieneReport(
   if (options.files && options.files.length > 0) {
     scanned = options.files
       .map((f) => (nodePath.isAbsolute(f) ? f : nodePath.join(projectRoot, f)))
-      .filter((f) => existsSync(f) && /\.(ts|tsx)$/.test(f) && !/\.d\.ts$/.test(f));
+      .filter((f) => existsSync(f) && /\.(ts|tsx)$/.test(f) && !/\.d\.ts$/.test(f))
+      .filter((f) => !EXCLUDED_FROM_HYGIENE.test(f));
   } else {
-    scanned = roots.flatMap(listSourceFiles).filter((f) => !/__tests__|\/__fixtures__/.test(f));
+    scanned = roots.flatMap(listSourceFiles).filter((f) => !EXCLUDED_FROM_HYGIENE.test(f));
   }
   const findings: IImportHygieneFinding[] = [];
   const strictReasons = options.strictAllowlistReasons === true;

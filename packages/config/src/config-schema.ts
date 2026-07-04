@@ -1,6 +1,17 @@
 import { z } from 'zod';
 
-/** One delegate-worker recipe (see `IDelegateRecipe`). */
+/**
+ * One delegate-worker recipe (see `IDelegateRecipe`).
+ *
+ * Two disjoint modes. A `patch` recipe (default) carries the write-fence
+ * (`guardrailGlobs`/`allowedOps`/`verificationIds`) and no `groundedOn`. An
+ * `analysis` recipe is read-only: it carries `groundedOn` and NO write-fence.
+ * The write-fence arrays are `.optional()` at the object level and the
+ * `superRefine` below enforces the per-mode presence/absence rules — so a
+ * malformed recipe fails to LOAD with a clear field path (the richer semantic
+ * checks — known grounding id, dangling verification id — live in
+ * `validateConfig`, mirroring how `guardrailGlobs` is gated in both places).
+ */
 const DelegateRecipeSchema = z
   .object({
     id: z.string(),
@@ -12,16 +23,73 @@ const DelegateRecipeSchema = z
       })
       .strict()
       .optional(),
-    guardrailGlobs: z.array(z.string()),
-    allowedOps: z.array(z.string()),
+    mode: z.enum(['patch', 'analysis']).optional(),
+    groundedOn: z.string().optional(),
+    outputShape: z.string().optional(),
+    allowedQueries: z.array(z.string()).optional(),
+    maxQueryRounds: z.number().int().min(0).max(4).optional(),
+    fanOut: z.boolean().optional(),
+    maxFanOut: z.number().int().min(2).max(6).optional(),
+    escalateTo: z.string().optional(),
+    guardrailGlobs: z.array(z.string()).optional(),
+    allowedOps: z.array(z.string()).optional(),
     provider: z.enum(['auto', 'ollama', 'llamacpp']).optional(),
     model: z.string().optional(),
     maxAttempts: z.number().int().positive().optional(),
     maxBudgetMs: z.number().int().positive().optional(),
     riskCeiling: z.enum(['low', 'medium']).optional(),
-    verificationIds: z.array(z.string()),
+    verificationIds: z.array(z.string()).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((r, ctx) => {
+    const WRITE_FENCE = ['guardrailGlobs', 'allowedOps', 'verificationIds'] as const;
+    if (r.mode === 'analysis') {
+      if (r.groundedOn === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['groundedOn'],
+          message: 'an analysis recipe must declare `groundedOn`',
+        });
+      }
+      // Analysis is read-only — a write-fence field is a category error.
+      for (const f of WRITE_FENCE) {
+        if (r[f] !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [f],
+            message: `an analysis recipe must NOT declare \`${f}\` (analysis mode never writes)`,
+          });
+        }
+      }
+    } else {
+      // Patch mode (default): the write-fence is mandatory, grounding invalid.
+      if (r.groundedOn !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['groundedOn'],
+          message: '`groundedOn` is only valid for `mode: "analysis"`',
+        });
+      }
+      for (const f of ['allowedQueries', 'maxQueryRounds', 'fanOut', 'maxFanOut', 'escalateTo'] as const) {
+        if (r[f] !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [f],
+            message: `\`${f}\` is only valid for \`mode: "analysis"\``,
+          });
+        }
+      }
+      for (const f of WRITE_FENCE) {
+        if (r[f] === undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [f],
+            message: `a patch recipe must declare \`${f}\``,
+          });
+        }
+      }
+    }
+  });
 
 /** One side (declared / registered) of a wiring rule. */
 const WiringSourceSchema = z

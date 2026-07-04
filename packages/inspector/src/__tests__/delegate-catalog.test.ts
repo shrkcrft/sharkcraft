@@ -103,3 +103,57 @@ describe('resolveDelegateCatalog — pack recipes + overrides', () => {
     expect(cat[0]?.unboundVerificationIds).toEqual(['ghost']);
   });
 });
+
+describe('resolveDelegateCatalog — analysis recipes', () => {
+  const ANALYSIS = { id: 'arch-risk-review', mode: 'analysis' as const, groundedOn: 'task-risk' as const };
+
+  test('a patch recipe defaults to mode "patch"', () => {
+    const cat = resolveDelegateCatalog(cfg({ recipes: [RECIPE] }));
+    expect(cat[0]?.mode).toBe('patch');
+  });
+
+  test('an analysis recipe grounded on a known report is delegatable (no verification needed)', () => {
+    const cat = resolveDelegateCatalog(cfg({ recipes: [ANALYSIS] }, []));
+    expect(cat[0]?.mode).toBe('analysis');
+    expect(cat[0]?.groundingBound).toBe(true);
+    expect(cat[0]?.delegatable).toBe(true);
+    // The write-fence arrays are normalised to present-but-empty.
+    expect(cat[0]?.verificationIds).toEqual([]);
+    expect(cat[0]?.allowedOps).toEqual([]);
+  });
+
+  test('an analysis recipe with an unknown groundedOn is NOT usable', () => {
+    const cat = resolveDelegateCatalog(cfg({ recipes: [{ id: 'x', mode: 'analysis', groundedOn: 'bogus' } as never] }, []));
+    expect(cat[0]?.groundingBound).toBe(false);
+    expect(cat[0]?.delegatable).toBe(false);
+  });
+
+  test('test-impact grounding is a known, delegatable analysis recipe', () => {
+    const cat = resolveDelegateCatalog(cfg({ recipes: [{ id: 'test-gap-scan', mode: 'analysis', groundedOn: 'test-impact' }] }, []));
+    expect(cat[0]?.groundingBound).toBe(true);
+    expect(cat[0]?.delegatable).toBe(true);
+  });
+
+  test('a bounded query loop (allowedQueries + maxQueryRounds) resolves through the catalog', () => {
+    const cat = resolveDelegateCatalog(
+      cfg({ recipes: [{ ...ANALYSIS, allowedQueries: ['coverage', 'test-impact'], maxQueryRounds: 2 }] }, []),
+    );
+    expect(cat[0]?.allowedQueries).toEqual(['coverage', 'test-impact']);
+    expect(cat[0]?.maxQueryRounds).toBe(2);
+  });
+
+  test('plan-simulation grounding is known + delegatable', () => {
+    const cat = resolveDelegateCatalog(cfg({ recipes: [{ id: 'plan-critique', mode: 'analysis', groundedOn: 'plan-simulation' }] }, []));
+    expect(cat[0]?.groundingBound).toBe(true);
+    expect(cat[0]?.delegatable).toBe(true);
+  });
+
+  test('fan-out + escalation fields resolve through the catalog', () => {
+    const cat = resolveDelegateCatalog(
+      cfg({ recipes: [{ ...ANALYSIS, fanOut: true, maxFanOut: 4, escalateTo: 'some-patch' }] }, []),
+    );
+    expect(cat[0]?.fanOut).toBe(true);
+    expect(cat[0]?.maxFanOut).toBe(4);
+    expect(cat[0]?.escalateTo).toBe('some-patch');
+  });
+});

@@ -8,18 +8,35 @@
  * `shrk delegate explain` can show an author the fence is real before trusting
  * it. Pack-contributed recipes (Phase 4) will merge in here too.
  */
-import type { IDelegateRecipe, ISharkCraftConfig } from '@shrkcrft/config';
+import { DELEGATE_GROUNDING_IDS, type DelegateRecipeMode, type IDelegateRecipe, type ISharkCraftConfig } from '@shrkcrft/config';
 
 export interface IResolvedDelegateRecipe extends IDelegateRecipe {
+  /**
+   * Recipe mode after defaulting (`'patch'` when unset). Explicit so downstream
+   * surfaces (doctor, list/explain, the analyze path) don't re-derive it.
+   */
+  mode: DelegateRecipeMode;
   /** Provider after applying the delegation-level default (never undefined). */
   resolvedProvider: 'auto' | 'ollama' | 'llamacpp';
   /** Model after applying the delegation-level default (undefined = provider default). */
   resolvedModel?: string;
-  /** verificationIds that do NOT resolve to a `verificationCommands[].id`. */
+  /**
+   * (patch) The write-fence arrays, normalised to present (empty when unset) so
+   * patch consumers never juggle `undefined`. Analysis recipes leave them `[]`.
+   */
+  guardrailGlobs: readonly string[];
+  allowedOps: readonly string[];
+  verificationIds: readonly string[];
+  /** (patch) verificationIds that do NOT resolve to a `verificationCommands[].id`. */
   unboundVerificationIds: readonly string[];
-  /** True when every verificationId resolves AND at least one is declared. */
+  /** (patch) True when every verificationId resolves AND at least one is declared. */
   verificationBound: boolean;
-  /** True when the recipe is safe to delegate (verification fully bound). */
+  /** (analysis) True when `groundedOn` resolves to a known grounding report. */
+  groundingBound: boolean;
+  /**
+   * True when the recipe is safe to run — for a patch recipe, its verification is
+   * fully bound; for an analysis recipe, its grounding report is known.
+   */
   delegatable: boolean;
   /** Where the recipe came from. */
   source: 'config' | 'pack';
@@ -65,15 +82,29 @@ export function resolveDelegateCatalog(
       ...(ov?.verificationIds !== undefined ? { verificationIds: ov.verificationIds } : {}),
       ...(ov?.guardrailGlobs !== undefined ? { guardrailGlobs: ov.guardrailGlobs } : {}),
     };
+    const mode: DelegateRecipeMode = merged.mode ?? 'patch';
     const unbound = (merged.verificationIds ?? []).filter((id) => !known.has(id));
     const verificationBound = unbound.length === 0 && (merged.verificationIds ?? []).length > 0;
+    const groundingBound =
+      typeof merged.groundedOn === 'string' &&
+      (DELEGATE_GROUNDING_IDS as readonly string[]).includes(merged.groundedOn);
+    // A patch recipe is runnable when its verification binds; an analysis recipe
+    // when its grounding report is known. `delegatable` unifies "safe to run".
+    const delegatable = mode === 'analysis' ? groundingBound : verificationBound;
     out.push({
       ...merged,
+      mode,
+      // Normalise the write-fence arrays to present so patch consumers of the
+      // resolved recipe never juggle `undefined` (analysis recipes stay `[]`).
+      guardrailGlobs: merged.guardrailGlobs ?? [],
+      allowedOps: merged.allowedOps ?? [],
+      verificationIds: merged.verificationIds ?? [],
       resolvedProvider: merged.provider ?? delegation.provider ?? 'auto',
       ...(merged.model ?? delegation.model ? { resolvedModel: merged.model ?? delegation.model } : {}),
       unboundVerificationIds: unbound,
       verificationBound,
-      delegatable: verificationBound,
+      groundingBound,
+      delegatable,
       source,
       ...(packageName ? { packageName } : {}),
     });

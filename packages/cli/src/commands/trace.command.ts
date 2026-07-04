@@ -37,6 +37,7 @@ const TRACE_ROLE_ORDER: readonly TraceRole[] = [
   TraceRole.Declare,
   TraceRole.Register,
   TraceRole.Consume,
+  TraceRole.Render,
   TraceRole.Reference,
 ];
 
@@ -52,7 +53,7 @@ function renderTraceLiteral(report: ITraceReport, limit: number): void {
   }
   // Mirror `shrk registry <name> where`'s `<role>  file:line` line idiom so the
   // two surfaces read the same — `trace literal` is the same scanner + classifier
-  // without a pre-declared registry, just with two extra roles (`registered`,
+  // without a pre-declared registry, just with extra roles (`register`, `render`,
   // `reference`). The raw source line stays in `--json` (`text`); the human view
   // is classification-first (direction), not a grep-style text dump.
   process.stdout.write('\n');
@@ -182,6 +183,13 @@ export const traceCommand: ICommandHandler = {
     process.stdout.write(header(`Trace: ${query}`));
     if (!resolution.bestMatch) {
       process.stdout.write('  no matches found.\n');
+      // The bare-`trace` path resolves a FUZZY registry query, not an exact
+      // string literal — quotes are stripped by the shell, so we can't tell a
+      // literal from a query and must not auto-route. Point the agent at the
+      // exact-literal tracer (`trace literal`) so a no-match here isn't a dead end.
+      process.stderr.write(
+        `hint: to trace an exact string literal across files, use: shrk trace literal "${query}"\n`,
+      );
       return 1;
     }
     process.stdout.write(`Confidence: ${resolution.confidence}\n`);

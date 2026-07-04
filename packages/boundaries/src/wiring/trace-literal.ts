@@ -20,12 +20,18 @@ export const TRACE_DEFAULT_GLOBS: readonly string[] = [
  *  - `declare`  — a canonical definition (`const X = 'lit'`, `kind: 'lit'`, an enum value).
  *  - `register` — added to a collection / mapping (`register('lit')`, an array element, `{ 'lit': … }`).
  *  - `consume`  — compared / switched / handled (`=== 'lit'`, `case 'lit':`).
+ *  - `render`   — rendered / emitted at the boundary (JSX child `>{ 'lit' }`, template
+ *                 interpolation `${ 'lit' }`, a `render('lit')` / `res.send('lit')` call).
  *  - `reference`— an occurrence we can't confidently classify (still reported, with context).
+ *
+ * `render` only ever refines what would otherwise be a `reference`; it never
+ * steals a site from `declare` / `register` / `consume`.
  */
 export enum TraceRole {
   Declare = 'declare',
   Register = 'register',
   Consume = 'consume',
+  Render = 'render',
   Reference = 'reference',
 }
 
@@ -123,6 +129,16 @@ function classifyRole(before: string, after: string): TraceRole {
   if (/\b(kind|type|id|name|slug|key|tag|code|token|permission|route|event|action|channel|topic|status|provide|providerToken)\s*[:=]$/i.test(b)) {
     return TraceRole.Declare;
   }
+  // Render/handle site — REACHED ONLY after every higher-precision rule above
+  // has declined, so this can only refine an occurrence that would otherwise be
+  // `reference`; it never steals from declare/register/consume:
+  //  - JSX child interpolation:        `<tag>{ 'lit' }`  (before ends `>{`).
+  //  - template-literal interpolation: `` `${ 'lit' }` `` (before ends `${`).
+  //  - a render / send-to-client call: `render('lit')`, `res.render('lit')`, `res.send('lit')`.
+  if (/>\s*\{$/.test(b)) return TraceRole.Render;
+  if (/\$\{$/.test(b)) return TraceRole.Render;
+  if (/\brender\w*\s*\($/i.test(b)) return TraceRole.Render;
+  if (/\bsend\w*\s*\($/i.test(b)) return TraceRole.Render;
   return TraceRole.Reference;
 }
 
@@ -210,6 +226,7 @@ export function traceLiteral(
     [TraceRole.Declare]: [],
     [TraceRole.Register]: [],
     [TraceRole.Consume]: [],
+    [TraceRole.Render]: [],
     [TraceRole.Reference]: [],
   };
   for (const s of sites) byRole[s.role].push(s);
@@ -223,6 +240,7 @@ export function traceLiteral(
       [TraceRole.Declare]: sortSites(byRole[TraceRole.Declare]),
       [TraceRole.Register]: sortSites(byRole[TraceRole.Register]),
       [TraceRole.Consume]: sortSites(byRole[TraceRole.Consume]),
+      [TraceRole.Render]: sortSites(byRole[TraceRole.Render]),
       [TraceRole.Reference]: sortSites(byRole[TraceRole.Reference]),
     },
     aliases: [...aliasNames].sort(),

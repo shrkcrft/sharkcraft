@@ -146,6 +146,7 @@ export * from './migration-readiness.ts';
 export * from './contract-file-rule.ts';
 export * from './check-guardrail-globs.ts';
 export * from './delegate-catalog.ts';
+export * from './delegate-grounding.ts';
 export * from './delegate-pack-recipes.ts';
 export * from './delegate-doctor.ts';
 export * from './agent-contract.ts';

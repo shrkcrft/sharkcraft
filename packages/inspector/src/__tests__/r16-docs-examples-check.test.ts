@@ -10,11 +10,18 @@ describe('r16 docs/examples check', () => {
     const report = buildDocsCheck(root);
     expect(report.ok).toBe(false);
     expect(report.findings.some((f) => f.code === 'required-doc-missing')).toBe(true);
+    // exit-codes.md is a required doc — its absence must be reported so a
+    // future deletion can't slip past `shrk docs check` (a26 §3b).
+    expect(
+      report.findings.some(
+        (f) => f.code === 'required-doc-missing' && f.message.includes('exit-codes.md'),
+      ),
+    ).toBe(true);
   });
   test('valid repo passes docs check', () => {
     const root = mkdtempSync(nodePath.join(tmpdir(), 'r16-docs-good-'));
     mkdirSync(nodePath.join(root, 'docs'), { recursive: true });
-    for (const f of ['overview.md', 'philosophy.md', 'safety-model.md', 'testing.md']) {
+    for (const f of ['overview.md', 'philosophy.md', 'safety-model.md', 'testing.md', 'exit-codes.md']) {
       writeFileSync(nodePath.join(root, 'docs', f), '# ' + f + '\n', 'utf8');
     }
     writeFileSync(

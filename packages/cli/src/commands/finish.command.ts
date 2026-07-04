@@ -50,7 +50,7 @@ function renderText(report: IFinishReport): void {
   } else if (report.impact.note) {
     process.stdout.write(kv('impact', `(skipped — ${report.impact.note})`) + '\n');
   }
-  process.stdout.write(kv('verdict', report.verdict) + '\n\n');
+  process.stdout.write(kv('verdict', `${report.verdict} (exit ${report.exit})`) + '\n\n');
   process.stdout.write(report.summary + '\n');
 
   const failing = report.gates.filter((g) => g.status === 'fail');
@@ -70,7 +70,7 @@ function renderText(report: IFinishReport): void {
 export const finishCommand: ICommandHandler = {
   name: 'finish',
   description:
-    'Composite "is this changeset safe to finish?" gate: EXECUTES every deterministic changed-only check inline — boundaries + import-hygiene + wiring + policy + deleted-orphans — plus an impact summary, and returns ONE pass/fail. The single trustworthy "done?" call after editing (superset of `diff-check`; honors 0-rules→skipped). Read-only.',
+    'Composite "is this changeset safe to finish?" gate: EXECUTES every deterministic changed-only check inline — boundaries + import-hygiene + wiring + unprovided (DI graph) + policy + deleted-orphans + arch (advisory cycles) — over tracked AND untracked changes, and returns ONE honest 0/1/2 verdict (0 pass · 1 fail · 2 not-verified — "evaluated nothing" is 2, never a green 0). The single trustworthy "done?" call after editing (superset of `diff-check`). Read-only.',
   usage:
     'shrk [--cwd <dir>] finish [files... | --files a.ts,b.ts | --staged | --since <ref>] [--json]',
   booleanFlags: new Set(['json', 'staged']),
@@ -81,9 +81,9 @@ export const finishCommand: ICommandHandler = {
     const report = await runFinishGates({ cwd, mode, scope: options });
     if (wantJson) {
       process.stdout.write(asJson(report) + '\n');
-      return report.verdict === 'fail' ? 1 : 0;
+      return report.exit;
     }
     renderText(report);
-    return report.verdict === 'fail' ? 1 : 0;
+    return report.exit;
   },
 };

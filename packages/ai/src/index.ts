@@ -11,3 +11,6 @@ export * from './llm-hints.ts';
 export * from './llm-recommendations.ts';
 export * from './delegate/delegate-edit-schema.ts';
 export * from './delegate/parse-delegate-edit.ts';
+export * from './delegate/delegate-analysis-schema.ts';
+export * from './delegate/parse-delegate-analysis.ts';
+export * from './delegate/query-loop.ts';

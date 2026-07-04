@@ -12,9 +12,14 @@
  *   3. singular/plural normalization (`commands` ↔ `command`),
  *   4. suffix strip/append (`button` ↔ `button-command`, `foo` ↔ `foo.tool`).
  *
- * The first layer that lands on a DECLARED id wins; when nothing resolves, the
- * noun is returned unchanged and unmatched (the honest "genuinely not declared"
- * answer). No layer invents an id that isn't in the registry.
+ * Layers 3 and 4 CHAIN: the singular/plural variants and the suffix transform
+ * compose, so a doubly-off noun still lands (`buttons` →(plural)→ `button`
+ * →(suffix)→ `button-command`) where a single layer would no-op. When both
+ * transforms fire, the resolution reports `SingularPluralSuffix`.
+ *
+ * The first candidate that lands on a DECLARED id wins; when nothing resolves,
+ * the noun is returned unchanged and unmatched (the honest "genuinely not
+ * declared" answer). No layer invents an id that isn't in the registry.
  */
 
 /** How a noun resolved to its canonical registered id (for a truthful report). */
@@ -24,6 +29,8 @@ export enum ERegistryResolveVia {
   Case = 'case-fold',
   SingularPlural = 'singular/plural',
   Suffix = 'suffix',
+  /** Both a singular/plural AND a suffix transform were applied (chained). */
+  SingularPluralSuffix = 'singular/plural+suffix',
 }
 
 export interface IRegistryResolution {
@@ -77,29 +84,50 @@ export function resolveRegistryNoun(
     return { canonical: ciHit, matched: true, via: ERegistryResolveVia.Case };
   }
 
-  // 3. Singular/plural.
-  for (const variant of singularPluralVariants(noun)) {
-    const v = variant.toLowerCase();
-    const hit = declaredIds.find((d) => d.toLowerCase() === v);
-    if (hit !== undefined) {
-      return { canonical: hit, matched: true, via: ERegistryResolveVia.SingularPlural };
-    }
-  }
+  // 3 + 4. Chained singular/plural × suffix strip/append.
+  //
+  // Build an ordered candidate list — the noun itself first, then its
+  // singular/plural variants (plural variants BEFORE the suffix test) — and for
+  // EACH candidate test an exact (case-insensitive) match against the declared
+  // ids, then a suffix strip, then a suffix append. The first candidate that
+  // lands on a DECLARED id wins. Because the transforms compose, a doubly-off
+  // noun (`buttons` →(plural)→ `button` →(suffix)→ `button-command`) resolves
+  // where either layer alone would no-op. `via` records which transforms fired:
+  // a variant matching exactly is `SingularPlural`, the original noun matching
+  // by suffix is `Suffix`, and a variant matching by suffix is the chained
+  // `SingularPluralSuffix`. The original noun can never match here EXACTLY (the
+  // identity / case-fold short-circuits above already handled that).
+  const candidates = [noun, ...singularPluralVariants(noun)];
+  for (const candidate of candidates) {
+    const isVariant = candidate !== noun;
+    const cLower = candidate.toLowerCase();
 
-  // 4. Suffix strip/append. A declared id whose trailing `-`/`.`/`_` segment,
-  //    once stripped, equals the noun (`button` ← `button-command`); or the noun
-  //    plus a suffix another declared id carries yields a declared id.
-  const suffixStripped = declaredIds.find((d) => {
-    const stripped = d.replace(/[-_.][a-z0-9]+$/i, '');
-    return stripped.toLowerCase() === lower && stripped.toLowerCase() !== d.toLowerCase();
-  });
-  if (suffixStripped !== undefined) {
-    return { canonical: suffixStripped, matched: true, via: ERegistryResolveVia.Suffix };
-  }
-  for (const d of declaredIds) {
-    const m = d.match(/([-_.][a-z0-9]+)$/i);
-    if (m && `${lower}${m[1]!.toLowerCase()}` === d.toLowerCase()) {
-      return { canonical: d, matched: true, via: ERegistryResolveVia.Suffix };
+    const exact = declaredIds.find((d) => d.toLowerCase() === cLower);
+    if (exact !== undefined && isVariant) {
+      return { canonical: exact, matched: true, via: ERegistryResolveVia.SingularPlural };
+    }
+
+    const suffixStripped = declaredIds.find((d) => {
+      const stripped = d.replace(/[-_.][a-z0-9]+$/i, '');
+      return stripped.toLowerCase() === cLower && stripped.toLowerCase() !== d.toLowerCase();
+    });
+    if (suffixStripped !== undefined) {
+      return {
+        canonical: suffixStripped,
+        matched: true,
+        via: isVariant ? ERegistryResolveVia.SingularPluralSuffix : ERegistryResolveVia.Suffix,
+      };
+    }
+
+    for (const d of declaredIds) {
+      const m = d.match(/([-_.][a-z0-9]+)$/i);
+      if (m && `${cLower}${m[1]!.toLowerCase()}` === d.toLowerCase()) {
+        return {
+          canonical: d,
+          matched: true,
+          via: isVariant ? ERegistryResolveVia.SingularPluralSuffix : ERegistryResolveVia.Suffix,
+        };
+      }
     }
   }
 

@@ -16,20 +16,40 @@ import * as nodePath from 'node:path';
 import { containsTraversal, safeResolveTargetPath } from '@shrkcrft/core';
 import {
   AiMessageRole,
+  DELEGATE_ANALYSIS_JSON_SCHEMA,
   callDelegateWithRetry,
+  callDelegateAnalysisWithRetry,
+  delegateAnalysisRepromptMessage,
   delegateRepromptMessage,
+  parseDelegateAnalysis,
+  runBoundedQueryLoop,
   selectAiProvider,
   type IAiMessage,
   type IAiProvider,
+  type IQueryDescriptor,
+  type QueryExecutor,
 } from '@shrkcrft/ai';
 import { loadProjectConfig, type IDelegateRecipe, type ISharkCraftConfig } from '@shrkcrft/config';
 import { compressCode, compressDiff } from '@shrkcrft/compress';
 import { listIndexableFiles } from '@shrkcrft/embeddings';
+import { loadGraphApiCached, type GraphQueryApi } from '@shrkcrft/graph';
 import {
+  analyzeTestImpact,
+  buildCoverageReport,
+  buildDelegateAnalysisReport,
+  buildDelegateFailureFacts,
+  buildTaskRiskReport,
   checkGuardrailGlobs,
+  crossCheckFindings,
+  inspectSharkcraft,
   resolveDelegateCatalogForProject,
+  runGroundingReport,
   unifiedDiff,
+  type IDelegateAnalysisReport,
+  type IDelegateFailureContext,
+  type IGroundingFacts,
   type IResolvedDelegateRecipe,
+  type ISharkcraftInspection,
 } from '@shrkcrft/inspector';
 import {
   evaluateSavedPlanInPlace,
@@ -78,6 +98,14 @@ export interface IExecuteDelegateRunInput {
   planSecret?: string;
   /** Validation report dir. Default `.sharkcraft/delegate/reports`. */
   reportDir?: string;
+  /**
+   * Optional retry advisor (Phase 2, `--assisted-retry`). Between retryable
+   * failures it may return a corrected-instruction string, appended to the
+   * deterministic retry feedback. Best-effort: a null return / throw is ignored,
+   * so the deterministic loop is never blocked by the advisor. Injectable for
+   * tests; the cli wires one from a `retry-analysis` recipe.
+   */
+  retryAdvisor?: (failure: IDelegateFailureContext, attempt: number) => Promise<string | null>;
 }
 
 export interface IExecuteDelegateRunResult {
@@ -136,7 +164,7 @@ export function gatherRecipeContext(projectRoot: string, recipe: IDelegateRecipe
   let candidates: readonly string[];
   try {
     const all = listIndexableFiles(projectRoot, 3000);
-    candidates = checkGuardrailGlobs(all, recipe.guardrailGlobs).allowed;
+    candidates = checkGuardrailGlobs(all, recipe.guardrailGlobs ?? []).allowed;
   } catch {
     return '';
   }
@@ -157,12 +185,14 @@ export function gatherRecipeContext(projectRoot: string, recipe: IDelegateRecipe
 }
 
 function systemPrompt(recipe: IDelegateRecipe): string {
-  const example = recipe.allowedOps.map(opExample).find((e) => e !== null);
+  const allowedOps = recipe.allowedOps ?? [];
+  const guardrailGlobs = recipe.guardrailGlobs ?? [];
+  const example = allowedOps.map(opExample).find((e) => e !== null);
   const lines = [
     'You are a deterministic mechanical code-edit worker.',
     'Output ONLY a single JSON object matching the provided schema — no prose, no markdown fences.',
-    `You may emit ONLY operations of these kinds: ${recipe.allowedOps.join(', ')}.`,
-    `You may target ONLY files matching one of these globs: ${recipe.guardrailGlobs.join(', ')}.`,
+    `You may emit ONLY operations of these kinds: ${allowedOps.join(', ')}.`,
+    `You may target ONLY files matching one of these globs: ${guardrailGlobs.join(', ')}.`,
     'Make the SMALLEST mechanical edit that satisfies the task. Never invent files, never change unrelated code, never reformat.',
     'Each op has a "targetPath" (relative to project root) and an "operation" with a "kind" and the fields that kind needs.',
   ];
@@ -217,28 +247,64 @@ export async function executeDelegateRun(
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     last = { ...(await runOneDelegateAttempt(input, [...baseMessages, ...feedback])), attempts: attempt };
     if (!RETRYABLE_STATUSES.has(last.status) || attempt === maxAttempts) return last;
-    feedback.push(buildRetryFeedback(last, input.recipe));
+    // Best-effort LLM diagnosis of the failure (Phase 2). Never blocks the loop:
+    // a null return or a throw simply means no extra hint this round.
+    let advisory: string | undefined;
+    if (input.retryAdvisor) {
+      try {
+        const adv = await input.retryAdvisor(failureContextOf(last, input.recipe, attempt), attempt);
+        advisory = adv ?? undefined;
+      } catch {
+        advisory = undefined;
+      }
+    }
+    feedback.push(buildRetryFeedback(last, input.recipe, advisory));
   }
   return last;
 }
 
-/** Build the User message that tells the worker why the previous attempt failed. */
-function buildRetryFeedback(r: IExecuteDelegateRunResult, recipe: IDelegateRecipe): IAiMessage {
+/** Map a delegate run result onto the layer-neutral failure context for grounding. */
+function failureContextOf(
+  r: IExecuteDelegateRunResult,
+  recipe: IDelegateRecipe,
+  attempt: number,
+): IDelegateFailureContext {
+  return {
+    status: r.status,
+    message: r.message,
+    ...(r.conflicts ? { conflicts: r.conflicts } : {}),
+    ...(r.verification?.commandsFailed ? { commandsFailed: r.verification.commandsFailed } : {}),
+    ...(r.refused ? { refused: r.refused } : {}),
+    ...(r.droppedOps ? { droppedOps: r.droppedOps.map((d) => ({ kind: d.kind, targetPath: d.targetPath })) } : {}),
+    ...(recipe.guardrailGlobs ? { guardrailGlobs: recipe.guardrailGlobs } : {}),
+    ...(recipe.allowedOps ? { allowedOps: recipe.allowedOps } : {}),
+    attempt,
+  };
+}
+
+/**
+ * Build the User message that tells the worker why the previous attempt failed.
+ * `advisory` (optional) is a corrected-instruction hint from a `retry-analysis`
+ * pass (Phase 2, `--assisted-retry`); it augments — never replaces — the
+ * deterministic failure detail.
+ */
+function buildRetryFeedback(r: IExecuteDelegateRunResult, recipe: IDelegateRecipe, advisory?: string): IAiMessage {
   let detail: string;
   if (r.conflicts && r.conflicts.length > 0) {
     detail = `Your previous edit was REFUSED with conflicts: ${r.conflicts.join('; ')}. Fix the target paths / anchors and try again.`;
   } else if (r.status === 'verify-failed') {
     detail = `Your previous edit FAILED verification (${r.verification?.commandsFailed.join(', ') || 'see logs'}) and was reverted. Produce a CORRECT edit.`;
   } else if (r.status === 'guardrail-refused') {
-    detail = `You targeted files outside the allowed scope (${(r.refused ?? []).join(', ')}). You may ONLY touch files matching: ${recipe.guardrailGlobs.join(', ')}.`;
+    detail = `You targeted files outside the allowed scope (${(r.refused ?? []).join(', ')}). You may ONLY touch files matching: ${(recipe.guardrailGlobs ?? []).join(', ')}.`;
   } else if (r.status === 'package-error') {
-    detail = `${r.message}. You may ONLY use op kinds: ${recipe.allowedOps.join(', ')}.`;
+    detail = `${r.message}. You may ONLY use op kinds: ${(recipe.allowedOps ?? []).join(', ')}.`;
   } else {
     detail = `Your previous reply was unusable: ${r.message}.`;
   }
+  const advisoryLine = advisory && advisory.trim().length > 0 ? `\nDiagnostic hint: ${advisory.trim()}` : '';
   return {
     role: AiMessageRole.User,
-    content: `${detail}\nReturn a corrected single JSON object matching the schema — no prose.`,
+    content: `${detail}${advisoryLine}\nReturn a corrected single JSON object matching the schema — no prose.`,
   };
 }
 
@@ -298,7 +364,7 @@ async function runOneDelegateAttempt(
       };
     }
   }
-  const guard = checkGuardrailGlobs(normalizedTargets, recipe.guardrailGlobs);
+  const guard = checkGuardrailGlobs(normalizedTargets, recipe.guardrailGlobs ?? []);
   if (!guard.ok) {
     return {
       status: 'guardrail-refused',
@@ -312,7 +378,7 @@ async function runOneDelegateAttempt(
   // 4. Package into a synthetic plan (drops disallowed ops, evaluates conflicts).
   const packaged = packageDelegatePlan({
     ops: edit.ops,
-    allowedOps: recipe.allowedOps,
+    allowedOps: recipe.allowedOps ?? [],
     recipeId: recipe.id,
     projectRoot,
   });
@@ -374,7 +440,7 @@ async function runOneDelegateAttempt(
   // A recipe with no verification has no deterministic gate — refuse to apply an
   // unverified edit (runValidationLoop reports passed:true when no command runs,
   // so this must be caught here). The plan is already signed + saved on disk.
-  if (recipe.verificationIds.length === 0) {
+  if ((recipe.verificationIds ?? []).length === 0) {
     return {
       ...baseResult,
       status: 'no-verification',
@@ -410,7 +476,7 @@ async function runOneDelegateAttempt(
   // 7. Deterministic verification gate.
   const validation = await runValidationLoop({
     cwd: projectRoot,
-    verificationIds: recipe.verificationIds,
+    verificationIds: recipe.verificationIds ?? [],
     allVerifications: false,
     allowPackCommands: false,
     reportDir: input.reportDir ?? nodePath.join(projectRoot, '.sharkcraft', 'delegate', 'reports'),
@@ -539,7 +605,7 @@ async function loadResolvedCatalog(
 async function resolveRecipe(
   cwd: string,
   recipeId: string | undefined,
-): Promise<{ ok: true; recipe: IDelegateRecipe; projectRoot: string } | { ok: false; message: string }> {
+): Promise<{ ok: true; recipe: IResolvedDelegateRecipe; projectRoot: string } | { ok: false; message: string }> {
   const c = await loadResolvedCatalog(cwd);
   if (!c.ok) return { ok: false, message: c.message };
   const delegation = c.config.delegation;
@@ -554,8 +620,9 @@ async function resolveRecipe(
   if (!found) {
     return { ok: false, message: `unknown recipe "${recipeId}". Available: ${c.catalog.map((r) => r.id).join(', ')}` };
   }
-  // Fold the resolved provider/model onto the recipe for executeDelegateRun.
-  const recipe: IDelegateRecipe = {
+  // Fold the resolved provider/model onto the recipe (keeping the resolved type
+  // so patch consumers see present write-fence arrays) for the run/analyze cores.
+  const recipe: IResolvedDelegateRecipe = {
     ...found,
     provider: found.resolvedProvider,
     ...(found.resolvedModel ? { model: found.resolvedModel } : {}),
@@ -563,7 +630,532 @@ async function resolveRecipe(
   return { ok: true, recipe, projectRoot: c.projectRoot };
 }
 
+// ─── analysis (read-only, grounded) ──────────────────────────────────────────
+
+export type DelegateAnalyzeStatus = 'no-provider' | 'analyze-failed' | 'analyzed';
+
+export interface IExecuteDelegateAnalyzeInput {
+  task: string;
+  /** An analysis recipe (mode === 'analysis'); its provider/model are folded. */
+  recipe: IResolvedDelegateRecipe;
+  /** The deterministic ground truth produced by `runGroundingReport`. */
+  facts: IGroundingFacts;
+  /** Injectable for tests; `null` means no local LLM is reachable. */
+  provider: IAiProvider | null;
+  /** Drop non-grounded findings instead of keeping+flagging them. */
+  strict?: boolean;
+  /**
+   * Read-only query executor for the bounded query loop (Phase 3). Injected by
+   * the cli from the inspection; absent (or a recipe with no `allowedQueries` /
+   * `maxQueryRounds`) ⇒ single-shot analysis. Tests inject a fake.
+   */
+  queryExecutor?: QueryExecutor;
+  /** Human-readable provider label for the report when no model id is returned. */
+  providerLabel: string;
+  /** Timestamp source (kept out of the core so tests are deterministic). */
+  generatedAt: string;
+}
+
+/** Human descriptions of the read-only queries shown to the model in the loop. */
+export const DELEGATE_QUERY_CATALOG: readonly IQueryDescriptor[] = [
+  { name: 'task-risk', description: 'deterministic per-task risk (level, reasons, affected files). args: {task?}' },
+  { name: 'coverage', description: 'project-intelligence coverage gaps (weakest categories). args: {}' },
+  { name: 'test-impact', description: 'likely + missing tests and risk areas. args: {files?: string[]}' },
+  { name: 'graph-callers', description: 'who calls/references a symbol, as path:line. args: {symbol: string}' },
+  { name: 'graph-context', description: 'a symbol\'s declaring file + importers/imports (is it wired?). args: {symbol: string}' },
+];
+
+/**
+ * Build the read-only query executor: maps each `DELEGATE_QUERY_IDS` value to a
+ * deterministic inspector function. Every query is read-only — there is no
+ * write/apply query. Returns compact text + the entities it surfaced (merged
+ * into the analysis ground truth so a finding citing a pulled fact is grounded).
+ */
+export function buildAnalysisQueryExecutor(inspection: ISharkcraftInspection, task: string): QueryExecutor {
+  // The graph index is loaded lazily (only when a graph query is actually asked)
+  // and cached across queries in one run. `undefined` = not yet attempted.
+  let graphApi: GraphQueryApi | null | undefined;
+  const graph = (): GraphQueryApi | null => {
+    if (graphApi === undefined) graphApi = loadGraphApiCached(inspection.projectRoot);
+    return graphApi;
+  };
+  return async (name, args) => {
+    switch (name) {
+      case 'task-risk': {
+        const r = await buildTaskRiskReport(typeof args.task === 'string' ? args.task : task, inspection, {});
+        const entities = [...r.affectedFiles, ...r.highFanInFiles, ...r.reasons.map((x) => x.code)];
+        const content = `risk=${r.riskLevel} score=${r.score}; reasons: ${r.reasons.slice(0, 6).map((x) => x.code).join(', ') || '(none)'}; files: ${r.affectedFiles.slice(0, 8).join(', ') || '(none)'}`;
+        return { content, entities };
+      }
+      case 'coverage': {
+        const c = buildCoverageReport(inspection);
+        const weak = c.categories.filter((cat) => cat.score < 100).slice(0, 6);
+        return {
+          content: `overall=${c.overall}%; weakest: ${weak.map((cat) => `${cat.id} ${cat.score}%`).join(', ') || '(all covered)'}`,
+          entities: weak.map((cat) => cat.id),
+        };
+      }
+      case 'test-impact': {
+        const files = Array.isArray(args.files)
+          ? (args.files as unknown[]).filter((x): x is string => typeof x === 'string')
+          : [];
+        const t = analyzeTestImpact(inspection, { task, ...(files.length > 0 ? { files } : {}) });
+        return {
+          content: `existing: ${t.likelyTestFiles.slice(0, 8).join(', ') || '(none)'}; missing: ${t.missingTestFiles.slice(0, 8).join(', ') || '(none)'}; risk: ${t.riskAreas.slice(0, 4).join('; ') || '(none)'}`,
+          entities: [...t.missingTestFiles, ...t.likelyTestFiles, ...t.riskAreas],
+        };
+      }
+      case 'graph-callers': {
+        const api = graph();
+        if (!api) return { content: 'graph index missing — run `shrk graph index`', entities: [] };
+        const symbol = typeof args.symbol === 'string' ? args.symbol.trim() : '';
+        if (!symbol) return { content: 'graph-callers needs {symbol}', entities: [] };
+        const sym = api.findSymbol(symbol, { limit: 1 })[0];
+        if (!sym) return { content: `no symbol matched "${symbol}"`, entities: [] };
+        const sites = api.callerSitesOf(sym.id).slice(0, 15);
+        const lines = sites.map((s) => `${s.node.path ?? s.node.label}${s.line ? `:${s.line}` : ''}`);
+        return {
+          content: `${symbol}: ${sites.length} caller site(s)\n${lines.join('\n') || '(none)'}`,
+          entities: sites.map((s) => s.node.path ?? '').filter((p) => p.length > 0),
+        };
+      }
+      case 'graph-context': {
+        const api = graph();
+        if (!api) return { content: 'graph index missing — run `shrk graph index`', entities: [] };
+        const symbol = typeof args.symbol === 'string' ? args.symbol.trim() : '';
+        if (!symbol) return { content: 'graph-context needs {symbol}', entities: [] };
+        const sym = api.findSymbol(symbol, { limit: 1 })[0];
+        if (!sym) return { content: `no symbol matched "${symbol}"`, entities: [] };
+        const file = api.declaringFileOf(sym.id);
+        const importers = file ? api.importersOf(file.id).slice(0, 10) : [];
+        const imports = file ? api.importsFrom(file.id).slice(0, 10) : [];
+        const ent = [sym.path, file?.path, ...importers.map((n) => n.path), ...imports.map((n) => n.path)].filter(
+          (x): x is string => typeof x === 'string' && x.length > 0,
+        );
+        return {
+          content: `${symbol} declared in ${sym.path ?? file?.path ?? '?'}${sym.line ? `:${sym.line}` : ''}; importers=${importers.length}, imports=${imports.length}`,
+          entities: ent,
+        };
+      }
+      default:
+        return { content: `unknown query "${name}"`, entities: [] };
+    }
+  };
+}
+
+/** Split `xs` into `g` contiguous, deterministic chunks (last may be smaller). */
+function contiguousChunks<T>(xs: readonly T[], g: number): T[][] {
+  const groups = Math.max(1, Math.min(g, xs.length));
+  const size = Math.ceil(xs.length / groups);
+  const out: T[][] = [];
+  for (let i = 0; i < xs.length; i += size) out.push(xs.slice(i, i + size));
+  return out;
+}
+
+/** Dedup raw findings by normalised message, preserving first-seen order. */
+function dedupeFindingsByMessage(
+  findings: readonly { id?: string; message: string; refs?: readonly string[] }[],
+): { id?: string; message: string; refs?: readonly string[] }[] {
+  const seen = new Set<string>();
+  const out: { id?: string; message: string; refs?: readonly string[] }[] = [];
+  for (const f of findings) {
+    const key = f.message.trim().toLowerCase();
+    if (key.length === 0 || seen.has(key)) continue;
+    seen.add(key);
+    out.push(f);
+  }
+  return out;
+}
+
+export interface IExecuteDelegateAnalyzeResult {
+  status: DelegateAnalyzeStatus;
+  recipeId: string;
+  report: IDelegateAnalysisReport;
+  usage?: { inputTokens?: number; outputTokens?: number };
+  retried?: boolean;
+}
+
+function analysisSystemPrompt(recipe: IResolvedDelegateRecipe): string {
+  return [
+    'You are a READ-ONLY code-analysis assistant. You add judgment on top of a deterministic report; you never propose edits.',
+    'Output ONLY a single JSON object matching the provided schema — no prose, no markdown fences.',
+    'Return a "findings" array. Each finding has a "message" (your judgment) and "refs" (the files / constructs / reason-codes it is about).',
+    'CRITICAL: every ref MUST be copied verbatim from the ground truth provided below. Do NOT invent files, symbols, or codes. If you cannot ground a claim in the report, omit it.',
+    `Recipe: ${recipe.title ?? recipe.id} — prioritise and explain the risks; flag which ones need human judgment.`,
+  ].join('\n');
+}
+
+/**
+ * The testable analysis core (no I/O beyond the injected provider). Runs the
+ * model on the deterministic ground truth, cross-checks its findings, and
+ * assembles the advisory report. NEVER writes — analysis mode is read-only.
+ * `provider === null` degrades to a deterministic grounding-only report (ok).
+ */
+export async function executeDelegateAnalyze(
+  input: IExecuteDelegateAnalyzeInput,
+): Promise<IExecuteDelegateAnalyzeResult> {
+  const { recipe, task, facts, provider } = input;
+
+  // No local LLM → deterministic grounding only (NOT an error).
+  if (provider === null) {
+    const crossCheck = crossCheckFindings([], facts, {});
+    return {
+      status: 'no-provider',
+      recipeId: recipe.id,
+      report: buildDelegateAnalysisReport({
+        recipeId: recipe.id,
+        groundedOn: facts.groundedOn,
+        task,
+        provider: 'none',
+        facts,
+        crossCheck,
+        modelUnavailable: true,
+        generatedAt: input.generatedAt,
+      }),
+    };
+  }
+
+  const messages: IAiMessage[] = [
+    { role: AiMessageRole.System, content: analysisSystemPrompt(recipe) },
+    {
+      role: AiMessageRole.User,
+      content: `Task: ${task}\n\nGround truth (do NOT contradict; cite only entities from it in "refs"):\n${facts.summary}`,
+    },
+  ];
+  const model = recipe.model ?? recipe.resolvedModel;
+
+  // Phase 4 — fan-out. Split the grounding entities into deterministic slices,
+  // run one focused pass per slice, then merge + dedup. Engine-owned control flow
+  // (the model never schedules anything). Takes precedence over the query loop.
+  if (recipe.fanOut === true && facts.entities.length >= 2) {
+    const g = Math.max(2, Math.min(6, recipe.maxFanOut ?? 3));
+    const slices = contiguousChunks(facts.entities, g);
+    const merged: { id?: string; message: string; refs?: readonly string[] }[] = [];
+    let anySuccess = false;
+    for (const slice of slices) {
+      const sliceMessages: IAiMessage[] = [
+        { role: AiMessageRole.System, content: analysisSystemPrompt(recipe) },
+        {
+          role: AiMessageRole.User,
+          content: `Task: ${task}\n\nFocus your analysis ONLY on these items from the ground truth: ${slice.join(', ')}.\n\nGround truth (cite refs only from it):\n${facts.summary}`,
+        },
+      ];
+      const call = await callDelegateAnalysisWithRetry({
+        provider,
+        messages: sliceMessages,
+        ...(model ? { model } : {}),
+        timeoutMs: recipe.maxBudgetMs ?? DEFAULT_MAX_BUDGET_MS,
+      });
+      if (call.ok) {
+        anySuccess = true;
+        merged.push(...call.value.analysis.findings);
+      }
+    }
+    if (!anySuccess) {
+      return {
+        status: 'analyze-failed',
+        recipeId: recipe.id,
+        report: buildDelegateAnalysisReport({
+          recipeId: recipe.id,
+          groundedOn: facts.groundedOn,
+          task,
+          provider: input.providerLabel,
+          facts,
+          crossCheck: crossCheckFindings([], facts, {}),
+          modelUnavailable: true,
+          modelNote: 'every fan-out slice failed to produce a valid analysis',
+          fanOutSlices: slices.length,
+          generatedAt: input.generatedAt,
+        }),
+      };
+    }
+    const crossCheck = crossCheckFindings(dedupeFindingsByMessage(merged), facts, { strict: input.strict ?? false });
+    return {
+      status: 'analyzed',
+      recipeId: recipe.id,
+      report: buildDelegateAnalysisReport({
+        recipeId: recipe.id,
+        groundedOn: facts.groundedOn,
+        task,
+        provider: input.providerLabel,
+        facts,
+        crossCheck,
+        fanOutSlices: slices.length,
+        ...(recipe.escalateTo ? { escalateTo: recipe.escalateTo } : {}),
+        generatedAt: input.generatedAt,
+      }),
+    };
+  }
+
+  // Phase 3 — bounded read-only query loop. When the recipe opts in
+  // (allowedQueries + maxQueryRounds > 0) and a query executor is injected, let
+  // the model pull a few read-only facts before answering; entities it surfaces
+  // are merged into the ground truth so a finding citing them is grounded.
+  if ((recipe.allowedQueries?.length ?? 0) > 0 && (recipe.maxQueryRounds ?? 0) > 0 && input.queryExecutor) {
+    const loop = await runBoundedQueryLoop({
+      provider,
+      messages,
+      ...(model ? { model } : {}),
+      timeoutMs: recipe.maxBudgetMs ?? DEFAULT_MAX_BUDGET_MS,
+      allowedQueries: recipe.allowedQueries ?? [],
+      maxQueryRounds: recipe.maxQueryRounds ?? 0,
+      ...(recipe.maxBudgetMs ? { budgetMs: recipe.maxBudgetMs } : {}),
+      catalog: DELEGATE_QUERY_CATALOG,
+      executeQuery: input.queryExecutor,
+      finalInstruction:
+        'Now output ONLY your findings as a single JSON object matching the schema — no prose, no markdown fences. Cite refs only from the ground truth and the query results.',
+      finalResponseFormat: { type: 'json_schema', schema: DELEGATE_ANALYSIS_JSON_SCHEMA, schemaName: 'DelegateAnalysis' },
+    });
+    if (!loop.ok) {
+      return {
+        status: 'analyze-failed',
+        recipeId: recipe.id,
+        report: buildDelegateAnalysisReport({
+          recipeId: recipe.id,
+          groundedOn: facts.groundedOn,
+          task,
+          provider: input.providerLabel,
+          facts,
+          crossCheck: crossCheckFindings([], facts, {}),
+          modelUnavailable: true,
+          modelNote: `query loop failed: ${loop.error.message}`,
+          generatedAt: input.generatedAt,
+        }),
+      };
+    }
+    const parsed = parseDelegateAnalysis(loop.value.content);
+    if (!parsed.ok) {
+      return {
+        status: 'analyze-failed',
+        recipeId: recipe.id,
+        report: buildDelegateAnalysisReport({
+          recipeId: recipe.id,
+          groundedOn: facts.groundedOn,
+          task,
+          provider: loop.value.model || input.providerLabel,
+          facts,
+          crossCheck: crossCheckFindings([], facts, {}),
+          modelUnavailable: true,
+          modelNote: `model produced an unparseable analysis: ${parsed.error.message}`,
+          queriesRun: loop.value.roundsRun,
+          generatedAt: input.generatedAt,
+        }),
+      };
+    }
+    // Merge query-surfaced entities into the ground truth for the cross-check —
+    // a finding citing a fact the model legitimately pulled is grounded.
+    const enrichedFacts: IGroundingFacts = { ...facts, entities: [...facts.entities, ...loop.value.gatheredEntities] };
+    const crossCheck = crossCheckFindings(parsed.value.findings, enrichedFacts, { strict: input.strict ?? false });
+    return {
+      status: 'analyzed',
+      recipeId: recipe.id,
+      report: buildDelegateAnalysisReport({
+        recipeId: recipe.id,
+        groundedOn: facts.groundedOn,
+        task,
+        provider: loop.value.model || input.providerLabel,
+        facts: enrichedFacts,
+        crossCheck,
+        ...(parsed.value.note ? { modelNote: parsed.value.note } : {}),
+        queriesRun: loop.value.roundsRun,
+        ...(recipe.escalateTo ? { escalateTo: recipe.escalateTo } : {}),
+        generatedAt: input.generatedAt,
+      }),
+      ...(loop.value.usage ? { usage: loop.value.usage } : {}),
+    };
+  }
+
+  const call = await callDelegateAnalysisWithRetry({
+    provider,
+    messages,
+    ...(model ? { model } : {}),
+    timeoutMs: recipe.maxBudgetMs ?? DEFAULT_MAX_BUDGET_MS,
+    reprompt: (bad, error) => [...messages, delegateAnalysisRepromptMessage(bad, error)],
+  });
+  if (!call.ok) {
+    // The model ran but failed — degrade to grounding-only, note the failure.
+    const crossCheck = crossCheckFindings([], facts, {});
+    return {
+      status: 'analyze-failed',
+      recipeId: recipe.id,
+      report: buildDelegateAnalysisReport({
+        recipeId: recipe.id,
+        groundedOn: facts.groundedOn,
+        task,
+        provider: input.providerLabel,
+        facts,
+        crossCheck,
+        modelUnavailable: true,
+        modelNote: `model failed to produce a valid analysis: ${call.error.message}`,
+        generatedAt: input.generatedAt,
+      }),
+    };
+  }
+
+  const analysis = call.value.analysis;
+  const crossCheck = crossCheckFindings(analysis.findings, facts, { strict: input.strict ?? false });
+  return {
+    status: 'analyzed',
+    recipeId: recipe.id,
+    report: buildDelegateAnalysisReport({
+      recipeId: recipe.id,
+      groundedOn: facts.groundedOn,
+      task,
+      provider: call.value.model || input.providerLabel,
+      facts,
+      crossCheck,
+      ...(analysis.note ? { modelNote: analysis.note } : {}),
+      ...(recipe.escalateTo ? { escalateTo: recipe.escalateTo } : {}),
+      generatedAt: input.generatedAt,
+    }),
+    ...(call.value.usage ? { usage: call.value.usage } : {}),
+    retried: call.value.retried,
+  };
+}
+
+/** The single corrected instruction to feed back: a grounded finding wins. */
+export function correctedInstruction(report: IDelegateAnalysisReport): string | null {
+  const grounded = report.findings.find((f) => f.grounded);
+  if (grounded) return grounded.message;
+  if (report.findings.length > 0) return report.findings[0]!.message;
+  return report.modelNote ?? null;
+}
+
+export interface IRetryAdvisorDeps {
+  /** A `mode: 'analysis'`, `groundedOn: 'delegate-failure'` recipe. */
+  retryRecipe: IResolvedDelegateRecipe;
+  provider: IAiProvider | null;
+  providerLabel: string;
+  /** The patch recipe being retried (named in the advisor prompt). */
+  patchRecipeId: string;
+}
+
+/**
+ * Build a retry advisor from a `retry-analysis` recipe: it grounds on the failed
+ * attempt (`buildDelegateFailureFacts`), runs the analysis model, and returns the
+ * single corrected instruction. Read-only — it never writes; a null provider or
+ * an empty analysis yields `null` (no enrichment). The corrected instruction is
+ * cross-checked against the failure ground truth just like any analysis finding.
+ */
+export function buildRetryAnalysisAdvisor(
+  deps: IRetryAdvisorDeps,
+): (failure: IDelegateFailureContext, attempt: number) => Promise<string | null> {
+  return async (failure, attempt) => {
+    if (deps.provider === null) return null;
+    const facts = buildDelegateFailureFacts(failure);
+    const result = await executeDelegateAnalyze({
+      task: `The delegate patch recipe "${deps.patchRecipeId}" failed on attempt ${attempt} (${failure.status}). Diagnose why and give ONE corrected mechanical instruction, citing the affected files/ops from the ground truth.`,
+      recipe: deps.retryRecipe,
+      facts,
+      provider: deps.provider,
+      providerLabel: deps.providerLabel,
+      generatedAt: new Date().toISOString(),
+    });
+    return correctedInstruction(result.report);
+  };
+}
+
 // ─── CLI surface ─────────────────────────────────────────────────────────────
+
+async function runDelegateAnalyze(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json');
+  const strict = flagBool(args, 'strict-grounding');
+  const task = args.positional.slice(1).join(' ').trim();
+  if (!task) {
+    process.stderr.write('Usage: shrk delegate analyze "<task>" --recipe <id> [--provider auto] [--strict-grounding] [--json]\n');
+    return 2;
+  }
+  const resolved = await resolveRecipe(cwd, flagString(args, 'recipe'));
+  if (!resolved.ok) {
+    if (wantJson) process.stdout.write(asJson({ ok: false, error: resolved.message }) + '\n');
+    else process.stderr.write(resolved.message + '\n');
+    return 1;
+  }
+  const recipe = resolved.recipe;
+  if (recipe.mode !== 'analysis') {
+    const msg = `recipe "${recipe.id}" is a patch recipe — use \`shrk delegate run\`. \`analyze\` requires mode: "analysis".`;
+    if (wantJson) process.stdout.write(asJson({ ok: false, error: msg }) + '\n');
+    else process.stderr.write(msg + '\n');
+    return 1;
+  }
+  if (!recipe.groundedOn) {
+    const msg = `analysis recipe "${recipe.id}" has no groundedOn — nothing to ground the model against.`;
+    if (wantJson) process.stdout.write(asJson({ ok: false, error: msg }) + '\n');
+    else process.stderr.write(msg + '\n');
+    return 1;
+  }
+
+  const planPath = flagString(args, 'plan');
+  const inspection = await inspectSharkcraft({ cwd: resolved.projectRoot });
+  const facts = await runGroundingReport(recipe.groundedOn, task, inspection, { ...(planPath ? { planPath } : {}) });
+  const providerKind = flagString(args, 'provider') ?? recipe.provider ?? 'auto';
+  const { provider } = selectAiProvider(providerKind);
+  const result = await executeDelegateAnalyze({
+    task,
+    recipe,
+    facts,
+    provider,
+    strict,
+    queryExecutor: buildAnalysisQueryExecutor(inspection, task),
+    providerLabel: provider ? providerKind : 'none',
+    generatedAt: new Date().toISOString(),
+  });
+
+  // Phase 4 escalation: `--escalate` GENERATES (never applies) the target patch
+  // recipe's signed plan through the four fences, from the advisory task. The
+  // human reviews + applies — analysis never writes.
+  let escalationPlan: IExecuteDelegateRunResult | undefined;
+  if (flagBool(args, 'escalate') && result.report.escalation && provider) {
+    const patch = await resolveRecipe(cwd, result.report.escalation.recipe);
+    if (patch.ok && patch.recipe.mode !== 'analysis') {
+      escalationPlan = await executeDelegateRun({
+        task: result.report.escalation.task,
+        recipe: patch.recipe,
+        projectRoot: resolved.projectRoot,
+        provider,
+        apply: false, // generate-only — the human runs the write
+      });
+    }
+  }
+
+  // --save: persist the advisory report under `.sharkcraft/reports/` (writes-drafts,
+  // never source). Markdown for humans + JSON for tooling.
+  let savedPath: string | undefined;
+  if (flagBool(args, 'save')) {
+    const slug = task.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'analysis';
+    const dir = nodePath.join(resolved.projectRoot, '.sharkcraft', 'reports');
+    mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    savedPath = nodePath.join(dir, `delegate-analysis-${slug}-${stamp}.md`);
+    writeFileSync(savedPath, result.report.markdown, 'utf8');
+    writeFileSync(savedPath.replace(/\.md$/, '.json'), asJson(result.report) + '\n', 'utf8');
+  }
+
+  const exit = result.status === 'analyze-failed' ? 1 : 0;
+  if (wantJson) {
+    process.stdout.write(
+      asJson({ ok: exit === 0, ...result, ...(escalationPlan ? { escalationPlan } : {}), ...(savedPath ? { savedPath } : {}) }) + '\n',
+    );
+    return exit;
+  }
+  const rep = result.report;
+  process.stdout.write(header(`Delegate analysis: ${result.recipeId}`));
+  process.stdout.write(kv('status', result.status) + '\n');
+  process.stdout.write(kv('grounded on', rep.groundedOn) + '\n');
+  process.stdout.write(kv('provider', rep.provider) + '\n');
+  process.stdout.write(kv('findings', `${rep.findings.length} (grounded ${rep.groundedCount}, unverified ${rep.unverifiedCount})`) + '\n');
+  if (savedPath) process.stdout.write(kv('saved', savedPath) + '\n');
+  process.stdout.write('\n' + rep.markdown + '\n');
+  if (escalationPlan) {
+    process.stdout.write(`\n── Escalation (generate-only, review before applying) ──\n`);
+    process.stdout.write(kv('patch recipe', escalationPlan.recipeId) + '\n');
+    process.stdout.write(kv('status', escalationPlan.status) + '\n');
+    if (escalationPlan.planPath) process.stdout.write(kv('signed plan', escalationPlan.planPath) + '\n');
+    process.stdout.write(kv('message', escalationPlan.message) + '\n');
+  }
+  return exit;
+}
 
 async function runDelegateRun(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
@@ -581,12 +1173,34 @@ async function runDelegateRun(args: ParsedArgs): Promise<number> {
   }
   const providerKind = flagString(args, 'provider') ?? resolved.recipe.provider ?? 'auto';
   const { provider } = selectAiProvider(providerKind);
+
+  // Opt-in assisted retry: enrich the deterministic retry feedback with an LLM
+  // diagnosis from a `retry-analysis` recipe (mode: analysis, groundedOn:
+  // delegate-failure). Best-effort — absent a recipe or provider, the loop runs
+  // exactly as before.
+  let retryAdvisor: IExecuteDelegateRunInput['retryAdvisor'];
+  if (flagBool(args, 'assisted-retry') && provider) {
+    const cat = await loadResolvedCatalog(cwd);
+    const retryRecipe = cat.ok
+      ? cat.catalog.find((r) => r.mode === 'analysis' && r.groundedOn === 'delegate-failure' && r.delegatable)
+      : undefined;
+    if (retryRecipe) {
+      retryAdvisor = buildRetryAnalysisAdvisor({
+        retryRecipe,
+        provider,
+        providerLabel: providerKind,
+        patchRecipeId: resolved.recipe.id,
+      });
+    }
+  }
+
   const result = await executeDelegateRun({
     task,
     recipe: resolved.recipe,
     projectRoot: resolved.projectRoot,
     provider,
     apply: flagBool(args, 'apply'),
+    ...(retryAdvisor ? { retryAdvisor } : {}),
   });
 
   if (wantJson) {
@@ -680,10 +1294,22 @@ async function runDelegateList(args: ParsedArgs): Promise<number> {
   }
   for (const r of catalog) {
     const src = r.source === 'pack' ? `  [pack: ${r.packageName}]` : '';
-    process.stdout.write(`  ${r.delegatable ? '✓' : '✗'} ${r.id}  — ${r.title ?? r.id}${src}\n`);
-    process.stdout.write(`      ops: ${r.allowedOps.join(', ')}  |  globs: ${r.guardrailGlobs.join(', ')}  |  verify: ${r.verificationIds.join(', ') || '(none)'}\n`);
-    if (!r.delegatable) {
-      process.stdout.write(`      ⚠ NOT delegatable — ${r.unboundVerificationIds.length > 0 ? `unbound verificationIds: ${r.unboundVerificationIds.join(', ')}` : 'no verificationIds declared'}\n`);
+    process.stdout.write(`  ${r.delegatable ? '✓' : '✗'} ${r.id}  — ${r.title ?? r.id}  [${r.mode}]${src}\n`);
+    if (r.mode === 'analysis') {
+      const extras = [
+        (r.allowedQueries?.length ?? 0) > 0 ? `queries: ${r.allowedQueries!.join('/')}` : '',
+        r.fanOut ? 'fan-out' : '',
+        r.escalateTo ? `→ ${r.escalateTo}` : '',
+      ].filter((x) => x.length > 0);
+      process.stdout.write(`      grounded on: ${r.groundedOn ?? '(unset)'}${extras.length ? `  |  ${extras.join('  |  ')}` : ''}   (read-only)\n`);
+      if (!r.delegatable) {
+        process.stdout.write(`      ⚠ NOT usable — groundedOn "${r.groundedOn ?? '(unset)'}" is not a known grounding report\n`);
+      }
+    } else {
+      process.stdout.write(`      ops: ${r.allowedOps.join(', ')}  |  globs: ${r.guardrailGlobs.join(', ')}  |  verify: ${r.verificationIds.join(', ') || '(none)'}\n`);
+      if (!r.delegatable) {
+        process.stdout.write(`      ⚠ NOT delegatable — ${r.unboundVerificationIds.length > 0 ? `unbound verificationIds: ${r.unboundVerificationIds.join(', ')}` : 'no verificationIds declared'}\n`);
+      }
     }
   }
   process.stdout.write(`\nRun \`shrk delegate explain <id>\` for the full fence.\n`);
@@ -719,6 +1345,24 @@ async function runDelegateExplain(args: ParsedArgs): Promise<number> {
   process.stdout.write(header(`Delegate recipe: ${r.id}`));
   process.stdout.write(kv('title', r.title ?? r.id) + '\n');
   process.stdout.write(kv('source', r.source === 'pack' ? `pack: ${r.packageName}` : 'config') + '\n');
+  process.stdout.write(kv('mode', r.mode) + '\n');
+  if (r.mode === 'analysis') {
+    process.stdout.write(
+      kv('grounded on', `${r.groundedOn ?? '(unset)'}${r.groundingBound ? '' : ' — NOT a known grounding report'}`) + '\n',
+    );
+    process.stdout.write(kv('usable', r.delegatable ? 'yes (read-only, grounded)' : 'no — set a known groundedOn first') + '\n');
+    process.stdout.write(kv('provider', `${r.resolvedProvider}${r.resolvedModel ? ` (${r.resolvedModel})` : ''}`) + '\n');
+    if ((r.allowedQueries?.length ?? 0) > 0) {
+      process.stdout.write(kv('query loop', `${r.allowedQueries!.join(', ')}  (max ${r.maxQueryRounds ?? 0} round(s))`) + '\n');
+    }
+    if (r.fanOut) process.stdout.write(kv('fan-out', `yes (max ${r.maxFanOut ?? 3} slices)`) + '\n');
+    if (r.escalateTo) process.stdout.write(kv('escalates to', r.escalateTo) + '\n');
+    process.stdout.write(
+      '\nAnalysis recipes are READ-ONLY: a local model adds judgment on top of the grounded\n' +
+        'deterministic report; findings citing entities absent from it are flagged unverified.\nNo write is ever performed.\n',
+    );
+    return r.delegatable ? 0 : 1;
+  }
   process.stdout.write(kv('delegatable', r.delegatable ? 'yes' : 'no — fix the verification binding first') + '\n');
   process.stdout.write(kv('allowed ops', r.allowedOps.join(', ')) + '\n');
   process.stdout.write(kv('guardrail globs', r.guardrailGlobs.join(', ')) + '\n');
@@ -748,18 +1392,20 @@ export const delegateCommand: ICommandHandler = {
   description:
     'Hand a mechanical, deterministically-verifiable edit to a local-LLM worker. The engine verifies the result (config verificationCommands) and auto-reverts on failure — a bad generation costs a retry, never a wrong write. Local-only.',
   usage:
-    'shrk delegate run "<task>" --recipe <id> [--apply] [--provider auto|ollama|llamacpp] [--json]\n' +
+    'shrk delegate run "<task>" --recipe <id> [--apply] [--assisted-retry] [--provider auto|ollama|llamacpp] [--json]\n' +
+    'shrk delegate analyze "<task>" --recipe <id> [--strict-grounding] [--plan <p>] [--escalate] [--save] [--provider ...] [--json]  — read-only grounded analysis (no write)\n' +
     'shrk delegate brief "<task>" --recipe <id> [--json]\n' +
     'shrk delegate list [--json]                 — recipes + whether each is safely delegatable\n' +
     'shrk delegate explain <id> [--json]         — the full fence for one recipe',
-  booleanFlags: new Set(['apply', 'json']),
+  booleanFlags: new Set(['apply', 'json', 'strict-grounding', 'assisted-retry', 'escalate', 'save']),
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
     if (sub === 'run') return runDelegateRun(args);
+    if (sub === 'analyze') return runDelegateAnalyze(args);
     if (sub === 'brief') return runDelegateBrief(args);
     if (sub === 'list') return runDelegateList(args);
     if (sub === 'explain') return runDelegateExplain(args);
-    process.stderr.write('Usage: shrk delegate run|brief|list|explain ...\n');
+    process.stderr.write('Usage: shrk delegate run|analyze|brief|list|explain ...\n');
     return 2;
   },
 };

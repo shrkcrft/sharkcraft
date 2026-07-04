@@ -4,10 +4,11 @@ import {
   CommandRegistry,
   extractGlobalCompress,
   extractGlobalCwd,
+  extractGlobalExitTrailer,
   parseArgs,
   type ICommandHandler,
 } from './command-registry.ts';
-import { argvHasStrict, promoteForStrict } from './exit-codes.ts';
+import { argvHasExitTrailer, argvHasStrict, emitPipeExitSignal, promoteForStrict } from './exit-codes.ts';
 import { runCommandWithCompression } from './output/output-compression.ts';
 import { initCommand } from './commands/init.command.ts';
 import { inspectCommand } from './commands/inspect.command.ts';
@@ -784,14 +785,28 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   // and each command's own `--strict` semantics (e.g. `check --strict`) still
   // apply beneath this (a25 §1.1).
   const strict = argvHasStrict(argv);
+  // Derive the command path from an argv with the global --exit-trailer stripped:
+  // otherwise a LEADING `--exit-trailer` makes extractCommandPath break on the '-'
+  // and return "" — zeroing out both the pipe-exit signal and the usage record.
+  const command = extractCommandPath(extractGlobalExitTrailer(probeArgv).rest);
   let exitCode = 0;
   try {
     exitCode = promoteForStrict(await runCliInner(argv), strict);
+    // Keep the honest 0/1/2 verdict readable through a trailing pipe (the shape
+    // an agent reaches for first). A no-op for non-gate verbs. Skipped inside the
+    // smart-context worker child and the --compress re-run child, whose stdout is
+    // a pipe by construction — a spurious "stdout is piped" note there (the user
+    // never piped) would be noise, not signal.
+    if (!process.env.SHRK_WORKER_EXITCODE_FILE && !process.env.SHRK_COMPRESS_CHILD) {
+      emitPipeExitSignal(command, exitCode, {
+        piped: !process.stdout.isTTY,
+        trailer: argvHasExitTrailer(argv),
+      });
+    }
     return exitCode;
   } finally {
     // append one local usage entry. Failure is silent.
     try {
-      const command = extractCommandPath(probeArgv);
       if (command.length > 0) {
         const flags = sanitizeFlagNames(probeArgv);
         const enabled = await isUsageEnabled(probeCwd ?? process.cwd());
@@ -832,8 +847,11 @@ async function runCliInner(argv: readonly string[]): Promise<number> {
 
   // Pre-parse the global --cwd so it can appear anywhere (incl. before the command).
   const { cwd: globalCwd, rest: cwdCleanArgv } = extractGlobalCwd(argv);
+  // Strip the global --exit-trailer here so no per-command flag-guard sees it;
+  // runCli reads it off the raw argv to decide whether to print the trailer.
+  const { rest: trailerCleanArgv } = extractGlobalExitTrailer(cwdCleanArgv);
   // Pre-parse the global --compress / --ccr output-compression flags.
-  const { directive: compressDirective, rest: cleanArgv } = extractGlobalCompress(cwdCleanArgv);
+  const { directive: compressDirective, rest: cleanArgv } = extractGlobalCompress(trailerCleanArgv);
   const [first] = cleanArgv;
 
   // `--compress` / `--ccr` on a real command: re-run it and compress its stdout.

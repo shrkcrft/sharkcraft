@@ -50,4 +50,19 @@ describe('resolveRegistryNoun', () => {
     expect(r.matched).toBe(false);
     expect(r.canonical).toBe('nonexistent-thing');
   });
+
+  test('chains plural-strip THEN suffix-append for a doubly-off noun', () => {
+    // `buttons` →(plural)→ `button` →(suffix)→ `button-command`. Neither the
+    // singular/plural layer nor the suffix layer alone lands it.
+    const r = resolveRegistryNoun(['button-command'], undefined, 'buttons');
+    expect(r.matched).toBe(true);
+    expect(r.canonical).toBe('button-command');
+    expect(r.via).toBe(ERegistryResolveVia.SingularPluralSuffix);
+  });
+
+  test('does not over-resolve when no candidate lands on a declared id', () => {
+    const r = resolveRegistryNoun(['button-command'], undefined, 'widgets');
+    expect(r.matched).toBe(false);
+    expect(r.canonical).toBe('widgets');
+  });
 });

@@ -9,6 +9,63 @@ function firstSentence(description: string): string {
   return head.length > 100 ? head.slice(0, 97).trimEnd() + '…' : head;
 }
 
+/** Levenshtein edit distance — small, local helper for the unknown-topic guard. */
+function editDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let curr = new Array<number>(n + 1);
+  for (let i = 1; i <= m; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j]! + 1, curr[j - 1]! + 1, prev[j - 1]! + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n]!;
+}
+
+/**
+ * The set of real, callable help topics: every registered top-level command
+ * and group name, plus every top-level verb in the catalog. Used only to
+ * suggest a near-typo when an unknown topic is requested — never to fabricate
+ * one that isn't real.
+ */
+function realHelpTopics(registry: CommandRegistry): Set<string> {
+  const topics = new Set<string>();
+  for (const c of registry.list()) topics.add(c.name);
+  for (const g of registry.listGroups()) topics.add(g);
+  for (const entry of COMMAND_CATALOG) {
+    const verb = entry.command.split(/\s+/)[0];
+    if (verb) topics.add(verb);
+  }
+  return topics;
+}
+
+/**
+ * Nearest real topic to `attempt` within a typo-tolerant edit-distance bound,
+ * or undefined when nothing is close enough. Mirrors main.ts's confidence
+ * tolerance (`max(1, len/4)` edits) so a fingers-on-keys typo suggests but a
+ * genuinely-unrelated token does not. Deterministic: ties break lexically.
+ */
+function nearestHelpTopic(attempt: string, topics: Set<string>): string | undefined {
+  const lower = attempt.toLowerCase();
+  const tolerance = Math.max(1, Math.floor(lower.length / 4));
+  let best: string | undefined;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const topic of topics) {
+    const dist = editDistance(lower, topic.toLowerCase());
+    if (dist < bestDist || (dist === bestDist && best !== undefined && topic < best)) {
+      bestDist = dist;
+      best = topic;
+    }
+  }
+  return best !== undefined && bestDist <= tolerance ? best : undefined;
+}
+
 const EXTRA_HELP_LINES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   graph: [
     '',
@@ -95,6 +152,19 @@ export function makeHelpCommand(registry: CommandRegistry) {
           ? args.positional[0]!.split(/\s+/).filter(Boolean)
           : args.positional.filter(Boolean);
         const { handler, matchedPath, node } = registry.resolve(tokens);
+        if (matchedPath.length === 0 && tokens.length > 0) {
+          // Unknown topic: the descent matched NOTHING and stopped at the root
+          // (which carries every top-level verb as a child). Do NOT fall through
+          // to the group-listing branch below — that reprints the entire real
+          // catalog re-prefixed with the bogus token, a false self-discovery
+          // that exits 0. Error out honestly instead, with a did-you-mean when
+          // a real topic is a near-typo of the request.
+          const attempt = tokens.join(' ');
+          process.stderr.write(`no such help topic: '${attempt}'\n`);
+          const suggestion = nearestHelpTopic(attempt, realHelpTopics(registry));
+          if (suggestion) process.stderr.write(`Did you mean: ${suggestion}?\n`);
+          return 1;
+        }
         if (handler && matchedPath.join(' ') === tokens.join(' ') && node.children.size === 0) {
           // Exact match on a callable command.
           const canonical = registry.listCommandAliases().get(tokens[0]!);

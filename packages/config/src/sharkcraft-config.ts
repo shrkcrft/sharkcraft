@@ -147,7 +147,8 @@ export interface ISharkCraftConfig {
 
 // The recipe contract lives in `core` so the pack contract (`@shrkcrft/plugin-api`)
 // can share it; re-export it here for `import { IDelegateRecipe } from '@shrkcrft/config'`.
-export type { IDelegateRecipe, IDelegateRecipeMatch } from '@shrkcrft/core';
+export type { IDelegateRecipe, IDelegateRecipeMatch, DelegateRecipeMode, DelegateGroundingId, DelegateQueryId } from '@shrkcrft/core';
+export { DELEGATE_GROUNDING_IDS, DELEGATE_QUERY_IDS } from '@shrkcrft/core';
 import type { IDelegateRecipe } from '@shrkcrft/core';
 // Wiring rules live in core so config (validation) + boundaries (engine) share
 // one contract; re-export for `import { IWiringRule } from '@shrkcrft/config'`.

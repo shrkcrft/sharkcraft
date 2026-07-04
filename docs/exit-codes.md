@@ -57,12 +57,43 @@ touched.
 - **The graph/query family** (`graph cycles|hubs|callers|impact|…`) — an
   unrecognized/misspelled flag is rejected with `unknown option '--x'` and exits
   `2` rather than silently swallowing the flag and reading as a confident `0`.
+- **`finish`** — the composite "safe to finish?" gate returns the tri-state
+  directly: `1` if any deciding sub-gate failed, `2` if it evaluated **nothing**
+  (a markdown-only change / an empty scope — never a green `0`), else `0`. The
+  `--json` body carries both `verdict` and `exit`.
+- **`wiring unprovided` / `wiring orphans`** — an empty `--changed-only` / `--base`
+  scope is `2`; a real unprovided token is `1`.
+
+## Surviving a pipe (`--exit-trailer`)
+
+A true `2`/`1` **evaporates the moment stdout is piped**: `<gate> | head`,
+`| grep`, `| tee` all report the *downstream* command's `$?` (a `head` that read
+one line exits `0`), so the honest code is masked on the invocation an agent
+reaches for first. Two stderr channels — which survive the pipe — keep the
+verdict readable:
+
+- When a gate/verify verb's stdout is **not a TTY** and its exit is **non-zero**,
+  it prints a one-line note to **stderr**: `note: stdout is piped — $? reflects
+  the downstream command, not shrk (exit N); use PIPESTATUS[0] or --exit-trailer
+  …`. (A masked `0`→`0` is harmless, so the note is reserved for a real `1`/`2`.)
+- **`--exit-trailer`** (global) prints the verdict as the **last stderr line**,
+  `shrk-exit: <code>`, on any code — a machine channel a pipe can't swallow:
+
+  ```bash
+  shrk check boundaries --exit-trailer | head   # stdout piped to head…
+  #   …stderr still carries:  shrk-exit: 0
+  ```
+
+The shell-native answer (`set -o pipefail` / `${PIPESTATUS[0]}`) still works and
+is bash-only; the trailer removes the need to remember it per-chain.
 
 ## Implementation
 
 `packages/cli/src/exit-codes.ts` is the single source of truth: the `ExitCode`
 enum plus `promoteForStrict(code, strict)`, applied once in `runCli` after the
-handler returns. The `gen --typecheck` pre-write gate already refuses-to-nonzero
-rather than emit an unverified artifact — this generalizes that instinct across
-the whole gate surface, adding the third code so "unverified" is distinguishable
-from "broken."
+handler returns. The same module owns `emitPipeExitSignal(commandPath, code, …)`
+— also called once in `runCli` — which writes the piped-stdout note and the
+`--exit-trailer` line for the gate-verb set (`isGateVerb`). The `gen --typecheck`
+pre-write gate already refuses-to-nonzero rather than emit an unverified artifact
+— this generalizes that instinct across the whole gate surface, adding the third
+code so "unverified" is distinguishable from "broken."

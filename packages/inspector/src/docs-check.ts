@@ -48,6 +48,7 @@ const REQUIRED_DOCS = [
   'philosophy.md',
   'safety-model.md',
   'testing.md',
+  'exit-codes.md',
 ];
 
 const README_REQUIRED_KEYWORDS = ['quick demo', 'onboard', 'safety'];

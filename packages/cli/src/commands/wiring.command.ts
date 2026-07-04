@@ -10,11 +10,18 @@ import {
   type IWiringExplain,
 } from '@shrkcrft/boundaries';
 import type { IRegistrationIdiom, IWiringRule } from '@shrkcrft/core';
-import { resolveProjectConfig } from '@shrkcrft/inspector';
+import { refExists, resolveChangedFiles, resolveProjectConfig, type IChangedScopeOptions } from '@shrkcrft/inspector';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { flagBool, resolveCwd, type ICommandHandler, type ParsedArgs } from '../command-registry.ts';
+import {
+  flagBool,
+  flagString,
+  resolveCwd,
+  type ICommandHandler,
+  type ParsedArgs,
+} from '../command-registry.ts';
+import { ExitCode } from '../exit-codes.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 const SITE_DISPLAY_CAP = 50;
@@ -286,6 +293,42 @@ function siteLine(s: IRegistrationSite): string {
   return `${s.file}:${s.line} [${s.idiom}]`;
 }
 
+interface IChangedScopeResult {
+  /** `undefined` = no scoping requested (whole-graph query). */
+  readonly files?: readonly string[];
+  /** Set when the requested scope could not be resolved (e.g. a bad --base ref). */
+  readonly error?: string;
+}
+
+/**
+ * The changed-file scope for a `--changed-only` / `--base <ref>` query, or an
+ * empty result when neither flag is set (whole-graph query). `--base <ref>` diffs
+ * against that ref; bare `--changed-only` uses the working tree. Reuses the same
+ * {@link resolveChangedFiles} the `finish` composite and boundary gates use, so
+ * the scope semantics match across every changed-only surface.
+ *
+ * Two honesty guards: an unresolvable `--base` ref returns a distinct `error`
+ * (never a silent empty scope that reads as "nothing changed" over a typo'd ref);
+ * and SHRK's own engine-written state under `.sharkcraft/` (this command writes a
+ * cache + usage log) is excluded so it can't pollute an otherwise-clean tree into
+ * a false non-empty scope.
+ */
+function changedScopeFor(args: ParsedArgs, cwd: string): IChangedScopeResult {
+  const base = flagString(args, 'base');
+  const changedOnly = flagBool(args, 'changed-only');
+  if (!base && !changedOnly) return {};
+  if (base && !refExists(cwd, base)) {
+    return { error: `cannot resolve --base ref '${base}' — not a valid commit/branch` };
+  }
+  const opts: IChangedScopeOptions = base
+    ? { projectRoot: cwd, since: base }
+    : { projectRoot: cwd, includeWorktree: true };
+  const files = resolveChangedFiles(opts).files.filter(
+    (f) => f !== '.sharkcraft' && !f.startsWith('.sharkcraft/'),
+  );
+  return { files };
+}
+
 async function wiringChain(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const wantJson = flagBool(args, 'json');
@@ -346,17 +389,44 @@ async function wiringUnprovided(args: ParsedArgs): Promise<number> {
   }
   if (!loaded.graph) return noIdiomsHint(wantJson);
 
-  const unprovided = registrationUnprovided(loaded.graph);
+  const scoped = changedScopeFor(args, cwd);
+  if (scoped.error) {
+    if (wantJson) {
+      process.stdout.write(asJson({ schema: loaded.graph.schema, scoped: true, error: scoped.error, verified: false }) + '\n');
+    } else {
+      process.stderr.write(`error: ${scoped.error}\n`);
+    }
+    return ExitCode.NotVerified;
+  }
+  const scope = scoped.files;
+  // An empty changed scope evaluated NOTHING — honest `2` (not-verified), never
+  // a green `0` that reads as "no unprovided tokens" (a25 §1.1 exit contract).
+  if (scope && scope.length === 0) {
+    if (wantJson) {
+      process.stdout.write(
+        asJson({ schema: loaded.graph.schema, scoped: true, total: 0, unprovided: [], verified: false }) + '\n',
+      );
+      return ExitCode.NotVerified;
+    }
+    process.stdout.write(header('Unprovided tokens (declared/injected but never provided)'));
+    process.stdout.write('  – No files in the changed scope — nothing to verify (not verified).\n');
+    return ExitCode.NotVerified;
+  }
+
+  const unprovided = registrationUnprovided(loaded.graph, scope);
   if (wantJson) {
     process.stdout.write(
-      asJson({ schema: loaded.graph.schema, total: unprovided.length, unprovided }) + '\n',
+      asJson({ schema: loaded.graph.schema, scoped: scope !== undefined, total: unprovided.length, unprovided }) + '\n',
     );
-    return unprovided.length > 0 ? 1 : 0;
+    return unprovided.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass;
   }
   process.stdout.write(header('Unprovided tokens (declared/injected but never provided)'));
+  if (scope) process.stdout.write(kv('scope', `changed-only (${scope.length} file(s))`) + '\n');
   if (unprovided.length === 0) {
-    process.stdout.write('  ✓ Every declared/injected token has a provider. ✓\n');
-    return 0;
+    process.stdout.write(
+      `  ✓ Every declared/injected token${scope ? ' in the changed scope' : ''} has a provider. ✓\n`,
+    );
+    return ExitCode.VerifiedPass;
   }
   process.stdout.write(`  ${unprovided.length} token(s) resolve to nothing at runtime:\n`);
   for (const u of unprovided) {
@@ -364,7 +434,7 @@ async function wiringUnprovided(args: ParsedArgs): Promise<number> {
     const where = site ? `  (${siteLine(site)})` : '';
     process.stdout.write(`  ✗ ${u.token}${where}\n`);
   }
-  return 1;
+  return ExitCode.Failure;
 }
 
 async function wiringOrphans(args: ParsedArgs): Promise<number> {
@@ -378,14 +448,41 @@ async function wiringOrphans(args: ParsedArgs): Promise<number> {
   }
   if (!loaded.graph) return noIdiomsHint(wantJson);
 
-  const orphans = registrationOrphans(loaded.graph);
+  const scoped = changedScopeFor(args, cwd);
+  if (scoped.error) {
+    if (wantJson) {
+      process.stdout.write(asJson({ schema: loaded.graph.schema, scoped: true, error: scoped.error, verified: false }) + '\n');
+    } else {
+      process.stderr.write(`error: ${scoped.error}\n`);
+    }
+    return ExitCode.NotVerified;
+  }
+  const scope = scoped.files;
+  if (scope && scope.length === 0) {
+    if (wantJson) {
+      process.stdout.write(
+        asJson({ schema: loaded.graph.schema, scoped: true, total: 0, orphans: [], verified: false }) + '\n',
+      );
+      return ExitCode.NotVerified;
+    }
+    process.stdout.write(header('Orphan registrations (provided but nothing consumes)'));
+    process.stdout.write('  – No files in the changed scope — nothing to verify (not verified).\n');
+    return ExitCode.NotVerified;
+  }
+
+  const orphans = registrationOrphans(loaded.graph, scope);
   if (wantJson) {
-    process.stdout.write(asJson({ schema: loaded.graph.schema, total: orphans.length, orphans }) + '\n');
+    process.stdout.write(
+      asJson({ schema: loaded.graph.schema, scoped: scope !== undefined, total: orphans.length, orphans }) + '\n',
+    );
     return 0;
   }
   process.stdout.write(header('Orphan registrations (provided but nothing consumes)'));
+  if (scope) process.stdout.write(kv('scope', `changed-only (${scope.length} file(s))`) + '\n');
   if (orphans.length === 0) {
-    process.stdout.write('  ✓ Every provided token is consumed somewhere. ✓\n');
+    process.stdout.write(
+      `  ✓ Every provided token${scope ? ' in the changed scope' : ''} is consumed somewhere. ✓\n`,
+    );
     return 0;
   }
   process.stdout.write(`  ${orphans.length} provided token(s) nothing injects:\n`);
@@ -397,14 +494,14 @@ async function wiringOrphans(args: ParsedArgs): Promise<number> {
 }
 
 const WIRING_USAGE =
-  'shrk wiring explain <ruleId> | test <candidate.json|inline> | chain <token> | unprovided | orphans [--json]';
+  'shrk wiring explain <ruleId> | test <candidate.json|inline> | chain <token> | unprovided | orphans [--changed-only | --base <ref>] [--json]';
 
 export const wiringCommand: ICommandHandler = {
   name: 'wiring',
   description:
-    'Author-loop + runtime-wiring queries (no config write): `explain <ruleId>` / `test <candidate>` show what a wiring rule extracts; `chain <token>` / `unprovided` / `orphans` query the DI/registration graph (declared→provided→consumed) for the silent-at-runtime bugs imports can\'t see.',
+    'Author-loop + runtime-wiring queries (no config write): `explain <ruleId>` / `test <candidate>` show what a wiring rule extracts; `chain <token>` / `unprovided` / `orphans` query the DI/registration graph (declared→provided→consumed) for the silent-at-runtime bugs imports can\'t see. `unprovided` / `orphans` accept `--changed-only` (working tree) or `--base <ref>` to scope the verdict to the changeset.',
   usage: WIRING_USAGE,
-  booleanFlags: new Set(['json']),
+  booleanFlags: new Set(['json', 'changed-only']),
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
     if (sub === 'explain') return wiringExplain(args);

@@ -106,4 +106,25 @@ export const RELEASE_SURFACE_DELTAS: readonly IReleaseSurfaceDelta[] = [
     ],
     removed: [],
   },
+  {
+    version: '0.1.0-alpha.27',
+    title: 'Runtime-wiring queries, the composite finish verdict & pipe-safe exit codes',
+    added: [
+      '`shrk wiring unprovided | orphans --changed-only | --base <ref>` — scope the DI/registration-graph verdict to the changeset (the silent-at-runtime tokens THIS change left unprovided); an empty changed scope exits `2` (NOT verified), never a green `0`.',
+      '`shrk finish` returns an honest `0`/`1`/`2` (0 pass · 1 fail · 2 not-verified) and now runs two more sub-gates over tracked AND untracked changes: `unprovided` (the DI-graph gate — diff-aware, so it also catches a DELETED provider that leaves a token silently unresolved) and an advisory `arch` (does a changed file sit in a runtime import cycle).',
+      'Global `--exit-trailer` — print the final verdict as the LAST stderr line (`shrk-exit: <code>`) so a piped gate’s exit survives `| head` / `| grep` (which report the downstream command’s `$?`).',
+      '`shrk trace literal "<string>"` classifies a distinct `render`/handle role, completing the declare → register → consume → render chain; a bare `trace "<literal>"` with no fuzzy match now hints the `trace literal` form.',
+      'MCP: `get_wiring_graph` — the read-only registration/DI-graph query (unprovided / orphans / chain) exposed to agents, mirroring `shrk wiring` without a shell-out.',
+    ],
+    changed: [
+      '`shrk finish` no longer paints a green `0` when it evaluated NOTHING — a markdown-only change or an empty scope is now `2` (not-verified). Only deciding (non-advisory) gates set the verdict; a change to non-code files skips the boundary/import/wiring gates loudly instead of trivially passing.',
+      'Any gate/verify verb whose stdout is piped prints a one-line stderr note when a NON-zero exit would otherwise be masked by the downstream command’s `$?` (a masked `0`→`0` is harmless, so the note is reserved for a real `1`/`2`).',
+      '`shrk help <unknown-topic>` errors to stderr with a nearest-topic did-you-mean and a nonzero exit, instead of re-printing the whole command list re-prefixed with the bogus topic (false self-discovery).',
+      '`shrk registry <name> exists <id> --resolve` chains normalization strategies (plural-strip THEN suffix strip/append) so a doubly-off noun (`buttons` → `button` → `button-command`) resolves instead of no-op’ing.',
+      'Cycle detection’s type-only exclusion is verified end-to-end from real `import type` source (not just synthetic edges): a pure interface↔interface loop is `0` runtime cycles by default and `1` under `--include-type-edges`.',
+      '`shrk finish`’s import-hygiene sub-gate no longer false-fails on a changed TEST file whose fixture strings contain import-like text — the explicit-files path now applies the same `__tests__`/`__fixtures__` exclusion `check imports` already used (both paths share one rule).',
+      '`shrk wiring unprovided|orphans` reject a bad `--base <ref>` with a distinct error (not a silent empty "nothing changed" scope), and exclude SHRK’s own `.sharkcraft/` writes so a clean tree with `--changed-only` reads as not-verified (`2`), never a false green.',
+    ],
+    removed: [],
+  },
 ];

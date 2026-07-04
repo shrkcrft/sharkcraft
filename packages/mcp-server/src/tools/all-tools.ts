@@ -40,6 +40,7 @@ import { recommendPresetsTool } from './recommend-presets.tool.ts';
 import { previewPresetApplicationTool } from './preview-preset-application.tool.ts';
 import { getTaskPacketTool } from './get-task-packet.tool.ts';
 import { checkBoundariesTool } from './check-boundaries.tool.ts';
+import { getWiringGraphTool } from './get-wiring-graph.tool.ts';
 import { listBoundaryRulesTool } from './list-boundary-rules.tool.ts';
 import { getBoundaryRuleTool } from './get-boundary-rule.tool.ts';
 import { getImportGraphSummaryTool } from './get-import-graph-summary.tool.ts';
@@ -51,6 +52,7 @@ import { getGraphPathTool } from './get-graph-path.tool.ts';
 import { getGraphHubsTool } from './get-graph-hubs.tool.ts';
 import { getGraphCallersTool } from './get-graph-callers.tool.ts';
 import { delegateTaskTool } from './delegate-task.tool.ts';
+import { delegateAnalyzeTool } from './delegate-analyze.tool.ts';
 import { getGraphCyclesTool } from './get-graph-cycles.tool.ts';
 import { getGraphUnresolvedTool } from './get-graph-unresolved.tool.ts';
 import { getGraphDepsTool } from './get-graph-deps.tool.ts';
@@ -378,6 +380,7 @@ export const ALL_TOOLS: readonly IToolDefinition[] = Object.freeze([
   previewPresetApplicationTool,
   getTaskPacketTool,
   checkBoundariesTool,
+  getWiringGraphTool,
   listBoundaryRulesTool,
   getBoundaryRuleTool,
   getImportGraphSummaryTool,
@@ -389,6 +392,7 @@ export const ALL_TOOLS: readonly IToolDefinition[] = Object.freeze([
   getGraphHubsTool,
   getGraphCallersTool,
   delegateTaskTool,
+  delegateAnalyzeTool,
   getGraphCyclesTool,
   getGraphUnresolvedTool,
   getGraphDepsTool,

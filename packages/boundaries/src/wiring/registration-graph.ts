@@ -161,6 +161,25 @@ export function registrationGraphSignature(
   return createHash('sha1').update(parts.join('\n')).digest('hex').slice(0, 16);
 }
 
+/**
+ * The set of tokens the given file entries PROVIDE under any idiom. Used to diff
+ * a base-ref snapshot against the worktree: a REMOVED provider leaves NO site in
+ * the changed file (so post-change site-scoping can't see it), but the base
+ * content still shows the token was provided there — so a provider deletion
+ * (the most common way DI wiring silently breaks) stays change-attributable.
+ */
+export function providedTokensFromEntries(
+  idioms: readonly IRegistrationIdiom[],
+  entries: readonly IWiringFileEntry[],
+): Set<string> {
+  const tokens = new Set<string>();
+  for (const idiom of idioms) {
+    const files = entries.filter((f) => matchesAny(f.path, idiom.provided.files));
+    for (const s of collectSourceSites(idiom.provided, files).sites) tokens.add(s.token);
+  }
+  return tokens;
+}
+
 /** A token's full registration chain, with role presence flags. */
 export interface IRegistrationChain extends IRegistrationNode {
   readonly isDeclared: boolean;
@@ -193,15 +212,56 @@ export interface IUnprovidedToken {
   readonly consumed: readonly IRegistrationSite[];
 }
 
+/** Project-relative path normalizer so site files and git changed-files compare. */
+function normalizeRel(p: string): string {
+  return p.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+/** True when ANY of `sites` falls in the changed-file scope. */
+function anySiteInScope(
+  sites: readonly IRegistrationSite[],
+  scope: ReadonlySet<string>,
+): boolean {
+  return sites.some((s) => scope.has(normalizeRel(s.file)));
+}
+
+/**
+ * Does the changed-file set touch ANY role-site of ANY token in the graph? Lets
+ * a changed-only gate tell "evaluated the registration scope, found it clean"
+ * (a real pass) apart from "the change touched no wiring at all" (nothing to
+ * verify → the caller should skip, never paint green). An empty `changedFiles`
+ * is vacuously false.
+ */
+export function registrationTouchesChanged(
+  graph: IRegistrationGraph,
+  changedFiles: readonly string[],
+): boolean {
+  if (changedFiles.length === 0) return false;
+  const scope = new Set(changedFiles.map(normalizeRel));
+  return graph.tokens.some((t) =>
+    anySiteInScope([...t.declared, ...t.provided, ...t.consumed], scope),
+  );
+}
+
 /**
  * `wiring unprovided` — tokens that are DECLARED or CONSUMED but have ZERO
  * provided sites. This is the silent-at-runtime class: typecheck/AOT-green, but
  * the provider is never registered (or the injected token has no provider
  * anywhere), so it resolves to undefined at runtime. The thing imports can't see.
+ *
+ * When `changedFiles` is supplied the result is CHANGESET-SCOPED: a token is
+ * kept only if one of its declared/consumed sites is in the changed set — i.e.
+ * "did THIS change leave a token unprovided", the change-attributed question a
+ * `wiring unprovided --changed-only` gate needs.
  */
-export function registrationUnprovided(graph: IRegistrationGraph): readonly IUnprovidedToken[] {
+export function registrationUnprovided(
+  graph: IRegistrationGraph,
+  changedFiles?: readonly string[],
+): readonly IUnprovidedToken[] {
+  const scope = changedFiles ? new Set(changedFiles.map(normalizeRel)) : undefined;
   return graph.tokens
     .filter((t) => t.provided.length === 0 && (t.declared.length > 0 || t.consumed.length > 0))
+    .filter((t) => !scope || anySiteInScope([...t.declared, ...t.consumed], scope))
     .map((t) => ({ token: t.token, declared: t.declared, consumed: t.consumed }));
 }
 
@@ -215,9 +275,17 @@ export interface IOrphanRegistration {
  * `wiring orphans` — tokens that ARE provided/registered but have ZERO consumed
  * sites: a provider/registration nothing injects (a build-clean no-op, or a
  * sign the consumer was renamed/removed).
+ *
+ * `changedFiles`, when supplied, scopes the result to orphans whose provided
+ * site is in the changed set (the registration THIS change added/touched).
  */
-export function registrationOrphans(graph: IRegistrationGraph): readonly IOrphanRegistration[] {
+export function registrationOrphans(
+  graph: IRegistrationGraph,
+  changedFiles?: readonly string[],
+): readonly IOrphanRegistration[] {
+  const scope = changedFiles ? new Set(changedFiles.map(normalizeRel)) : undefined;
   return graph.tokens
     .filter((t) => t.provided.length > 0 && t.consumed.length === 0)
+    .filter((t) => !scope || anySiteInScope(t.provided, scope))
     .map((t) => ({ token: t.token, provided: t.provided }));
 }

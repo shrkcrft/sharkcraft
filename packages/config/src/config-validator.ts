@@ -1,3 +1,4 @@
+import { DELEGATE_GROUNDING_IDS, DELEGATE_QUERY_IDS } from '@shrkcrft/core';
 import type { ISharkCraftConfig } from './sharkcraft-config.ts';
 
 export interface ConfigValidationIssue {
@@ -50,6 +51,8 @@ export function validateConfig(config: ISharkCraftConfig): ConfigValidationResul
     (config.verificationCommands ?? []).map((v) => v.id),
   );
   const recipes = config.delegation?.recipes ?? [];
+  // Patch recipe ids — the only valid targets for an analysis recipe's escalateTo.
+  const patchRecipeIds = new Set(recipes.filter((r) => r.mode !== 'analysis').map((r) => r.id));
   const seenRecipeIds = new Set<string>();
   for (const recipe of recipes) {
     if (seenRecipeIds.has(recipe.id)) {
@@ -60,6 +63,57 @@ export function validateConfig(config: ISharkCraftConfig): ConfigValidationResul
       });
     }
     seenRecipeIds.add(recipe.id);
+
+    // Analysis recipes are read-only + grounded — a different fence than patch.
+    // They must name a known grounding report and must NOT carry any write-fence
+    // field (guardrailGlobs / allowedOps / verificationIds). The two modes are
+    // disjoint; mixing them is a category error.
+    if (recipe.mode === 'analysis') {
+      if (!recipe.groundedOn) {
+        issues.push({
+          field: `delegation.recipes[${recipe.id}].groundedOn`,
+          message: `analysis recipe "${recipe.id}" must declare a groundedOn report (one of: ${DELEGATE_GROUNDING_IDS.join(', ')})`,
+          severity: 'error',
+        });
+      } else if (!(DELEGATE_GROUNDING_IDS as readonly string[]).includes(recipe.groundedOn)) {
+        issues.push({
+          field: `delegation.recipes[${recipe.id}].groundedOn`,
+          message: `unknown groundedOn "${recipe.groundedOn}" — must be one of: ${DELEGATE_GROUNDING_IDS.join(', ')}`,
+          severity: 'error',
+        });
+      }
+      for (const f of ['guardrailGlobs', 'allowedOps', 'verificationIds'] as const) {
+        if (recipe[f] !== undefined) {
+          issues.push({
+            field: `delegation.recipes[${recipe.id}].${f}`,
+            message: `analysis recipe "${recipe.id}" must not declare ${f} — analysis mode is read-only and never writes`,
+            severity: 'error',
+          });
+        }
+      }
+      // The bounded query loop (Phase 3): every allowedQueries entry must be a
+      // known read-only query. An unknown query would silently do nothing.
+      for (const q of recipe.allowedQueries ?? []) {
+        if (!(DELEGATE_QUERY_IDS as readonly string[]).includes(q)) {
+          issues.push({
+            field: `delegation.recipes[${recipe.id}].allowedQueries`,
+            message: `unknown query "${q}" — must be one of: ${DELEGATE_QUERY_IDS.join(', ')}`,
+            severity: 'error',
+          });
+        }
+      }
+      // Escalation (Phase 4): escalateTo must name an existing PATCH recipe — an
+      // analysis recipe only ever escalates into the fenced patch write path.
+      if (recipe.escalateTo !== undefined && !patchRecipeIds.has(recipe.escalateTo)) {
+        issues.push({
+          field: `delegation.recipes[${recipe.id}].escalateTo`,
+          message: `escalateTo "${recipe.escalateTo}" must reference an existing patch recipe (available: ${[...patchRecipeIds].join(', ') || '(none)'})`,
+          severity: 'error',
+        });
+      }
+      continue; // patch checks below don't apply to analysis recipes
+    }
+
     if ((recipe.guardrailGlobs ?? []).length === 0) {
       issues.push({
         field: `delegation.recipes[${recipe.id}].guardrailGlobs`,

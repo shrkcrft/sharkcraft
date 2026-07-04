@@ -23,12 +23,30 @@ describe('buildDelegateRecipeChecks', () => {
     expect(buildDelegateRecipeChecks(null)).toEqual([]);
   });
 
-  test('one Ok check when every recipe is delegatable', () => {
+  test('one Ok check when every recipe is healthy', () => {
     const checks = buildDelegateRecipeChecks(cfg([RECIPE]));
     expect(checks).toHaveLength(1);
     expect(checks[0]?.severity).toBe(DoctorSeverity.Ok);
     expect(checks[0]?.category).toBe('delegate');
-    expect(checks[0]?.message).toContain('all delegatable');
+    expect(checks[0]?.message).toContain('all healthy');
+  });
+
+  test('warns on an analysis recipe with an unknown allowedQueries entry', () => {
+    const checks = buildDelegateRecipeChecks(
+      cfg([{ id: 'ctx', mode: 'analysis', groundedOn: 'task-risk', allowedQueries: ['coverage', 'bogus'] } as never]),
+    );
+    const warn = checks.find((c) => c.code === 'recipe-unknown-query');
+    expect(warn?.severity).toBe(DoctorSeverity.Warning);
+    expect(warn?.message).toContain('bogus');
+  });
+
+  test('warns when escalateTo does not resolve to a patch recipe', () => {
+    const checks = buildDelegateRecipeChecks(
+      cfg([{ id: 'gaps', mode: 'analysis', groundedOn: 'test-impact', escalateTo: 'nope' } as never]),
+    );
+    const warn = checks.find((c) => c.code === 'recipe-bad-escalation');
+    expect(warn?.severity).toBe(DoctorSeverity.Warning);
+    expect(warn?.message).toContain('nope');
   });
 
   test('a Warning per non-delegatable recipe (unbound verificationId)', () => {

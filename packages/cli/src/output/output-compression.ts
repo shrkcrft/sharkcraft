@@ -42,7 +42,10 @@ export function runCommandWithCompression(
   const res = spawnSync(runtime, [entry, ...childArgv], {
     encoding: 'utf8',
     maxBuffer: MAX_BUFFER,
-    env: process.env,
+    // Mark the child so it suppresses the piped-stdout exit note: its stdout is
+    // captured here (always "piped") but the USER may not have piped anything —
+    // the parent decides the note from the real user-facing stdout instead.
+    env: { ...process.env, SHRK_COMPRESS_CHILD: '1' },
   });
   if (res.error) {
     process.stderr.write(

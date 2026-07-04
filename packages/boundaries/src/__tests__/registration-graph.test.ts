@@ -9,6 +9,7 @@ import {
   registrationChain,
   registrationGraphSignature,
   registrationOrphans,
+  registrationTouchesChanged,
   registrationUnprovided,
 } from '../wiring/registration-graph.ts';
 
@@ -105,6 +106,59 @@ describe('buildRegistrationGraph', () => {
         { ...IDIOM, declared: { files: ['src/**/*.ts'], pattern: 'export const \\w+' } },
       ]);
       expect(graph.diagnostics.join(' ')).toContain('capture group');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('changeset scoping (wiring unprovided/orphans --changed-only)', () => {
+  test('unprovided is kept only when a declared/consumed site is in the changed set', () => {
+    const root = fixture();
+    try {
+      const graph = buildRegistrationGraph(root, [IDIOM]);
+      // GhostToken is declared in tokens.ts and consumed in service.ts.
+      expect(registrationUnprovided(graph, ['src/service.ts']).map((u) => u.token)).toEqual(['GhostToken']);
+      expect(registrationUnprovided(graph, ['src/tokens.ts']).map((u) => u.token)).toEqual(['GhostToken']);
+      // module.ts holds no site of any unprovided token → the change is clean there.
+      expect(registrationUnprovided(graph, ['src/module.ts'])).toEqual([]);
+      // Unscoped (no changedFiles) still reports the whole-graph truth.
+      expect(registrationUnprovided(graph).map((u) => u.token)).toEqual(['GhostToken']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('orphans is kept only when its provided site is in the changed set', () => {
+    const root = fixture();
+    try {
+      const graph = buildRegistrationGraph(root, [IDIOM]);
+      // DbToken is provided (and never consumed) in module.ts.
+      expect(registrationOrphans(graph, ['src/module.ts']).map((o) => o.token)).toEqual(['DbToken']);
+      // service.ts touches no provided-orphan site → nothing in scope.
+      expect(registrationOrphans(graph, ['src/service.ts'])).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('scope matching tolerates ./-prefixed and back-slashed paths', () => {
+    const root = fixture();
+    try {
+      const graph = buildRegistrationGraph(root, [IDIOM]);
+      expect(registrationUnprovided(graph, ['./src/service.ts']).map((u) => u.token)).toEqual(['GhostToken']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('registrationTouchesChanged distinguishes "clean scope" from "nothing touched"', () => {
+    const root = fixture();
+    try {
+      const graph = buildRegistrationGraph(root, [IDIOM]);
+      expect(registrationTouchesChanged(graph, ['src/tokens.ts'])).toBe(true);
+      expect(registrationTouchesChanged(graph, ['src/unrelated.ts'])).toBe(false);
+      expect(registrationTouchesChanged(graph, [])).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
