@@ -7,7 +7,24 @@ import {
 } from '@shrkcrft/boundaries';
 import type { IWorkspacePackage } from './detect-workspace.ts';
 
-const PROBE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
+// Source extensions the graph resolves to a real file node. The trailing
+// single-file-component formats (Vue SFCs, Svelte, Astro) resolve by their
+// exact on-disk path — they carry no `JS_TO_TS_EXTS` rewrite, so an
+// `import './Button.svelte'` whose file exists is a real dependency edge, not
+// an unresolved reference.
+const PROBE_EXTS = [
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.mts',
+  '.cts',
+  '.vue',
+  '.svelte',
+  '.astro',
+];
 
 /**
  * Extensions for non-code assets a TS/JS file can legitimately import

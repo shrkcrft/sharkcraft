@@ -34,6 +34,10 @@ beforeAll(() => {
   // An impl + its declaration: the implementation must win.
   writeFileSync(join(root, 'src', 'dual.ts'), 'export const d = 1;\n');
   writeFileSync(join(root, 'src', 'dual.d.ts'), 'export declare const d: number;\n');
+  // Framework single-file components — resolve by their exact on-disk path.
+  writeFileSync(join(root, 'src', 'component.vue'), '<template><div/></template>\n');
+  writeFileSync(join(root, 'src', 'widget.svelte'), '<div>{count}</div>\n');
+  writeFileSync(join(root, 'src', 'page.astro'), '---\n---\n<html/>\n');
   // The importing file.
   writeFileSync(join(root, 'src', 'a.ts'), '');
 });
@@ -85,6 +89,23 @@ describe('resolveImport — NodeNext .js → .ts', () => {
       ['./cjs-mod.cjs', 'src/cjs-mod.cts'],
       ['./comp.jsx', 'src/comp.tsx'],
       ['./view.js', 'src/view.tsx'], // .js falls through .ts (absent) to .tsx
+    ];
+    for (const [spec, expected] of cases) {
+      const r = resolveImport(spec, from, ctx);
+      expect(r.kind).toBe(ImportResolution.Relative);
+      expect(r.targetPath).toBe(expected);
+    }
+  });
+});
+
+describe('resolveImport — framework single-file components', () => {
+  test('exact `.vue` / `.svelte` / `.astro` imports resolve to the on-disk file', () => {
+    const ctx = createImportResolverContext(root, []);
+    const from = join(root, 'src', 'a.ts');
+    const cases: Array<[string, string]> = [
+      ['./component.vue', 'src/component.vue'],
+      ['./widget.svelte', 'src/widget.svelte'],
+      ['./page.astro', 'src/page.astro'],
     ];
     for (const [spec, expected] of cases) {
       const r = resolveImport(spec, from, ctx);
