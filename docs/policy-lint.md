@@ -74,7 +74,56 @@ shrk policy-lint --only id1,id2        # only the named rules
 shrk policy-lint --json                # machine-readable (schema: sharkcraft.policy-lint/v1)
 ```
 
-Exit code is `1` when any `error`-severity rule matches, `0` otherwise.
+Exit code is `1` when any `error`-severity rule matches, `2` when the run
+evaluated nothing (see below), `0` otherwise.
+
+## Scan zones — seeing past comments and into strings
+
+`scan` narrows a rule to one lexical zone of the file. The default is `all`
+(a plain text scan, the historical behaviour):
+
+| `scan` | Counts a hit in | Use for |
+|---|---|---|
+| `all` (default) | every byte | a rule where zone doesn't matter |
+| `code` | executable code only | killing the dominant false positive — a hit inside a "we used to do this" comment |
+| `strings` | string / template literals only | exactly what a language-scoped linter cannot see (an inline template, an embedded query) |
+| `comments` | comments only | forbidden content in the prose itself (a leaked token, a stale directive) |
+
+Zoning is lexical and C/JS-family (`'`/`"`/`` ` `` strings, `//` and block
+comments), designed for the `ts` and `style` surfaces. It is **not** applied to
+inline-template units, whose content is already a string body. A regex literal
+containing `//` is read as a comment — an explicit, documented limit.
+
+## Exemptions are first-class, and visible
+
+| Field | Effect |
+|---|---|
+| `exemptFiles` | project-relative globs whose hits are dropped |
+| `exemptLines` | a marker substring (e.g. `policy-allow:no-nondeterminism`); a hit on that line **or the line above** is dropped |
+
+A legitimate exception is config, not something to grep around. Crucially,
+exempted hits are **reported as suppressed, not deleted** — a silently-dropped
+exemption is indistinguishable from a stale glob, which is the failure this
+plane exists to prevent:
+
+```bash
+shrk policy-lint explain <ruleId>
+```
+
+```
+Hits that COUNT (0):
+
+Hits an exemption DROPPED (18):
+  – require('node:  (packages/ai/src/__tests__/provider-resolver.test.ts:89)  via exemptFiles
+  – require('node:  (packages/inspector/src/import-hygiene.ts:227)  via scanZone
+```
+
+## Rules that scan nothing
+
+A rule whose globs match 0 content units is `skipped`, and `policy-lint` returns
+`2` (not verified) rather than a green `0`. `failOnEmpty: true` promotes that to
+a failure — see [the loud-skip contract](./gate-rules.md#the-loud-skip-contract)
+and [`shrk gates coverage`](./gate-rules.md), which audits every plane at once.
 
 ## Authoring patterns safely
 

@@ -33,8 +33,12 @@ _The agentic write flow._
 - `shrk dev reports` — List reports in a session. _(read-only)_
 - **★** `shrk dev start` — Start a dev session under .sharkcraft/sessions/. _(writes-session)_
 - **★** `shrk gen` — Generate from a template (dry-run by default, --save-plan/--write to apply). _(writes-source)_
+- **★** `shrk generated check` — Regenerate into a temp dir and diff BOTH ways — catching a hand-edited generated file AND a regen that writes a subset — plus the provenance-header contract (missing header on a generated file, header on a hand-written one). `--headers-only` never spawns. Rules from sharkcraft.config.ts generatedArtifacts[]. [--id X] [--headers-only] [--json] _(runs-shell)_
+- **★** `shrk generated explain` — What ONE generated-artifact rule sees right now: files matched, header-contract results, mislabel candidates — without running the regen. [--id X] [--json] _(read-only)_
+- **★** `shrk generated list` — Every declared generated-artifact rule: its globs, regen command, and "do not edit" header contract. [--json] _(read-only)_
 - **★** `shrk generated protect --write-drafts` — Write recommended protect rules under sharkcraft/ingestion/. Never overwrites live policies. _(writes-drafts)_
 - **★** `shrk generated report` — Classify generated vs hand-written code (@generated, DO NOT EDIT, openapi-generator, …). Read-only. _(read-only)_
+- **★** `shrk generated update` — Run the declared regen command in place — the one-command bless step after an intentional source change. Writes files. [--id X] [--json] _(writes-source)_
 - `shrk plan` — Inspect, review, sign, or verify a saved plan file. _(read-only)_
 - `shrk plan check` — Validate an external plan/spec file against the live workspace. Read-only. Two built-in extractors (sharkcraft.spec/v1, markdown-frontmatter-loose). _(read-only)_
 - **★** `shrk plan review` — Review a saved plan file (read-only). _(read-only)_
@@ -133,6 +137,7 @@ _Safety audit, compliance, policy, decisions._
 - `shrk policy test` — Test policy checks with fixtures or inline input. _(read-only)_
 - `shrk policy test --update-snapshot` — Update the saved snapshot for a policy fixture. _(writes-drafts)_
 - `shrk policy-lint` — Lint template/markup, stylesheet, and AOT-invisible TS surfaces against config-defined policyRules[] — sees `.html` files AND inline `template:` strings that tsc/AOT cannot. Deterministic; no AI. [--surface template|style|ts] [--changed-only] [--only <ids>] [--json] _(read-only)_
+- `shrk policy-lint explain` — Dry-run ONE policyRule and print every hit with file:line — INCLUDING the hits an exemption (exemptFiles / exemptLines) or the lexical scan zone dropped, each labelled with which one applied. The author-loop view of what the gate sees. [--json] _(read-only)_
 - **★** `shrk safety audit` — Audit the SharkCraft safety model (commands, MCP, packs, plan signing). _(read-only)_
 - **★** `shrk safety audit --deep` — Deep safety audit (report-site external JS, demo destructive lines, CI permissions). _(read-only)_
 

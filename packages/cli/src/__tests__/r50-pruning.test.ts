@@ -171,7 +171,13 @@ describe('surface lockdown holds', () => {
     // test` (author-loop dry-runs), and the registration/DI graph surface
     // `wiring chain`/`wiring unprovided`/`wiring orphans` + `trace literal`
     // (cross-fence string-contract tracer). Ceiling 435.
-    expect(COMMAND_CATALOG.length).toBeLessThan(435);
+    // The gate-planes round (prompts/round-shrk-capabilities.md) adds 14: the
+    // two new planes `baseline` {list/check/diff/update/explain} (committed-
+    // ledger drift, two-way) and the `generated` drift gate {list/check/update/
+    // explain}; the cross-plane trust layer `gates` {list/coverage/explain} —
+    // the stale-selector detector that keeps every other plane honest; plus
+    // `policy-lint explain` and `registry duplicates`. Ceiling 442.
+    expect(COMMAND_CATALOG.length).toBeLessThan(442);
     // Sanity: not absurdly small.
     expect(COMMAND_CATALOG.length).toBeGreaterThan(250);
   });

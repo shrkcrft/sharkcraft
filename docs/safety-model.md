@@ -92,7 +92,8 @@ MCP.
 - Never renames or removes plugins, applies helper plans, or signs packs.
   R28's `get_changed_boundary_report` / `preview_plugin_rename` /
   `preview_plugin_remove` / `list_helpers` / `get_helper` /
-  `preview_helper_plan` / `get_pack_dev_status` / `preview_pack_tests` /
+  `preview_helper_plan` / `list_pack_helpers` / `get_pack_helper` /
+  `get_pack_dev_status` / `preview_pack_tests` /
   `get_registry_lifecycle_report` / `get_language_runner_policy` all
   return data + a next-command hint. The destructive lifecycle plans
   require explicit human approval and CLI-applied signature verification.

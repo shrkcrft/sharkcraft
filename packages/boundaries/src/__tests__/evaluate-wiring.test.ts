@@ -61,7 +61,7 @@ describe('evaluateWiring (pure)', () => {
     }).not.toThrow();
     expect(report.verdict).toBe('errors');
     expect(report.diagnostics.length).toBe(1);
-    expect(report.diagnostics[0]).toContain('invalid regex');
+    expect(report.diagnostics[0]).toContain('invalid regular expression');
     expect(report.rules[0]!.error).toBeDefined();
   });
 
@@ -73,7 +73,7 @@ describe('evaluateWiring (pure)', () => {
     };
     const report = evaluateWiring([bad], resolver([{ path: 'src/a.ts', content: "use('x')\n" }]));
     expect(report.verdict).toBe('errors');
-    expect(report.diagnostics[0]).toContain('invalid regex');
+    expect(report.diagnostics[0]).toContain('invalid regular expression');
   });
 
   test('a pattern with no capture group is a diagnostic, not a silent pass', () => {
@@ -211,7 +211,7 @@ describe('evaluateWiring — config-authorable primitives', () => {
     };
     const report = evaluateWiring([bad], resolver([{ path: 'src/a.ts', content: 'x\n' }]));
     expect(report.verdict).toBe('errors');
-    expect(report.diagnostics[0]).toContain('neither pattern nor arrayProperty');
+    expect(report.diagnostics[0]).toContain('sets no extraction mode');
     // Misconfigured rules still count as evaluated so the gate surfaces the error.
     expect(report.evaluated).toBe(1);
   });

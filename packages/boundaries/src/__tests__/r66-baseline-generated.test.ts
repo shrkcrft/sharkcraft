@@ -1,0 +1,176 @@
+/**
+ * The baseline-drift and generated-drift engines.
+ *
+ * The property both exist to guarantee is SYMMETRY: the historical failure of
+ * hand-rolled drift checks is being one-directional, so a silent deletion (an
+ * entry dropped from a ledger, a file a regen stopped producing) sails through.
+ */
+import { describe, expect, test } from 'bun:test';
+import type { IBaselineRule, IGeneratedArtifactRule } from '@shrkcrft/core';
+import { baselineCount, baselineFails, diffBaseline } from '../baseline/diff-baseline.ts';
+import { canonicalizeOne, canonicalizePair } from '../baseline/canonicalize.ts';
+import { compareGeneratedTrees } from '../generated/compare-trees.ts';
+import { checkProvenanceHeaders, deriveOutsideGlobs } from '../generated/check-provenance.ts';
+
+const RULE: IBaselineRule = {
+  id: 'b',
+  baseline: 'baselines/b.json',
+  compute: { kind: 'command', run: 'echo' },
+};
+
+describe('baseline canonicalization', () => {
+  test('key order is never mistaken for drift', () => {
+    const pair = canonicalizePair('{"b":1,"a":{"d":1,"c":2}}', '{"a":{"c":2,"d":1},"b":1}');
+    expect(pair.expected.text).toBe(pair.actual.text);
+    expect(pair.expected.form).toBe('json-sorted-keys');
+  });
+
+  test('`auto` resolves to `lines` when either side is not JSON', () => {
+    expect(canonicalizePair('a\nb', '{"a":1}').expected.form).toBe('lines');
+  });
+
+  test('lines-sorted makes ordering irrelevant; lines does not', () => {
+    expect(canonicalizeOne('b\na', 'lines-sorted')).toBe('a\nb');
+    expect(canonicalizeOne('b\na', 'lines')).toBe('b\na');
+  });
+});
+
+describe('baseline diff + direction', () => {
+  test('keyBy compares as a keyed SET and names the entry, not the line', () => {
+    const rule: IBaselineRule = { ...RULE, keyBy: 'symbols[*].name' };
+    const diff = diffBaseline(
+      rule,
+      JSON.stringify({ symbols: [{ name: 'a' }, { name: 'b' }] }),
+      JSON.stringify({ symbols: [{ name: 'b' }, { name: 'c' }] }),
+    );
+    expect(diff).toMatchObject({ added: ['c'], removed: ['a'], mode: 'keyed-set' });
+  });
+
+  test('two-way (the default) fails on a LOST entry, not only a gained one', () => {
+    const diff = diffBaseline(RULE, 'a\nb\nc', 'a\nb');
+    expect(diff.removed).toEqual(['c']);
+    expect(baselineFails(RULE, diff)).toBe(true);
+  });
+
+  test('additions-only ignores a removal; no-shrink ignores an addition', () => {
+    const lost = diffBaseline(RULE, 'a\nb', 'a');
+    const gained = diffBaseline(RULE, 'a', 'a\nb');
+    expect(baselineFails({ ...RULE, direction: 'additions-only' }, lost)).toBe(false);
+    expect(baselineFails({ ...RULE, direction: 'additions-only' }, gained)).toBe(true);
+    expect(baselineFails({ ...RULE, direction: 'no-shrink' }, lost)).toBe(true);
+    expect(baselineFails({ ...RULE, direction: 'no-shrink' }, gained)).toBe(false);
+  });
+
+  test('an identical value is never drift', () => {
+    const diff = diffBaseline(RULE, 'a\nb\n', 'a\nb');
+    expect(diff.identical).toBe(true);
+    expect(baselineFails(RULE, diff)).toBe(false);
+  });
+
+  test('baselineCount matches the comparison mode', () => {
+    expect(baselineCount(RULE, 'a\nb\nc')).toBe(3);
+    expect(
+      baselineCount({ ...RULE, keyBy: 'x[*]' }, JSON.stringify({ x: ['p', 'q'] })),
+    ).toBe(2);
+  });
+});
+
+describe('generated tree comparison', () => {
+  const committed = new Map([
+    ['g/a.ts', 'A'],
+    ['g/b.ts', 'B'],
+  ]);
+
+  test('a hand-edited file shows as a content difference', () => {
+    const diff = compareGeneratedTrees(committed, new Map([['g/a.ts', 'A-EDITED'], ['g/b.ts', 'B']]));
+    expect(diff.differences).toEqual([{ file: 'g/a.ts', kind: 'content' }]);
+  });
+
+  test('a regen that writes a SUBSET is caught (the one-way blind spot)', () => {
+    const diff = compareGeneratedTrees(committed, new Map([['g/a.ts', 'A']]));
+    expect(diff.differences).toEqual([{ file: 'g/b.ts', kind: 'only-committed' }]);
+  });
+
+  test('a file the regen produces but nobody committed is caught too', () => {
+    const diff = compareGeneratedTrees(
+      committed,
+      new Map([['g/a.ts', 'A'], ['g/b.ts', 'B'], ['g/c.ts', 'C']]),
+    );
+    expect(diff.differences).toEqual([{ file: 'g/c.ts', kind: 'only-regenerated' }]);
+  });
+
+  test('normalized-whitespace ignores trailing WS and line endings; bytes does not', () => {
+    const regen = new Map([['g/a.ts', 'A  \r\n'], ['g/b.ts', 'B']]);
+    expect(compareGeneratedTrees(committed, regen, 'bytes').differences).toHaveLength(1);
+    expect(compareGeneratedTrees(committed, regen, 'normalized-whitespace').differences).toHaveLength(0);
+  });
+});
+
+describe('provenance headers', () => {
+  const rule: IGeneratedArtifactRule = {
+    id: 'g',
+    generatedGlob: ['src/gen/**/*.ts'],
+    provenanceHeader: { mustMatch: 'GENERATED .* do not edit', forbidOutside: true },
+  };
+
+  test('a generated file with no header is flagged', () => {
+    const res = checkProvenanceHeaders(
+      rule,
+      new Map([['src/gen/a.ts', '// GENERATED by x — do not edit\nA'], ['src/gen/b.ts', 'B']]),
+      new Map(),
+    );
+    expect(res.findings).toEqual([
+      expect.objectContaining({ file: 'src/gen/b.ts', kind: 'missing-header' }),
+    ]);
+  });
+
+  test('a hand-written file WEARING the header is flagged as a mislabel', () => {
+    const res = checkProvenanceHeaders(
+      rule,
+      new Map([['src/gen/a.ts', '// GENERATED by x — do not edit\nA']]),
+      new Map([['src/hand.ts', '// GENERATED by x — do not edit\nH']]),
+    );
+    expect(res.findings).toEqual([
+      expect.objectContaining({ file: 'src/hand.ts', kind: 'mislabeled' }),
+    ]);
+  });
+
+  test('the header is only read within `withinLines`', () => {
+    const deep = '\n'.repeat(20) + '// GENERATED by x — do not edit';
+    const res = checkProvenanceHeaders(
+      { ...rule, provenanceHeader: { mustMatch: 'GENERATED .* do not edit', withinLines: 3 } },
+      new Map([['src/gen/a.ts', deep]]),
+      new Map(),
+    );
+    expect(res.findings[0]!.kind).toBe('missing-header');
+  });
+
+  test('pointsToRegenCommand is advisory (warning), never a hard failure', () => {
+    const res = checkProvenanceHeaders(
+      {
+        ...rule,
+        regen: 'npm run codegen -- --out {TMP}',
+        provenanceHeader: { mustMatch: 'GENERATED', pointsToRegenCommand: true },
+      },
+      new Map([['src/gen/a.ts', '// GENERATED\nA']]),
+      new Map(),
+    );
+    expect(res.findings[0]).toMatchObject({ kind: 'no-regen-pointer', severity: 'warning' });
+  });
+
+  test('outside globs are derived from the generated extensions, bounded', () => {
+    expect(deriveOutsideGlobs(['src/**/gen/*.ts', 'app/**/*.kt', 'x/*.ts'])).toEqual([
+      '**/*.kt',
+      '**/*.ts',
+    ]);
+  });
+
+  test('an uncompilable header regex is an error, not a throw', () => {
+    const res = checkProvenanceHeaders(
+      { ...rule, provenanceHeader: { mustMatch: '([' } },
+      new Map([['src/gen/a.ts', 'A']]),
+      new Map(),
+    );
+    expect(res.error).toContain('provenanceHeader');
+  });
+});

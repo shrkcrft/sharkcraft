@@ -505,35 +505,66 @@ export const contradictionsCommand: ICommandHandler = {
   },
 };
 
-export const generatedCommand: ICommandHandler = {
-  name: 'generated',
-  description: 'Generated-code classifier. Subcommands: `report` (default), `protect --write-drafts`. Read-only by default.',
-  usage: 'shrk [--cwd <dir>] generated [report|protect] [--format text|markdown|json] [--write-drafts]',
+/** Classify the tree's generated code (the `report` half of `shrk generated`). */
+export const generatedReportCommand: ICommandHandler = {
+  name: 'report',
+  description: 'Classify which parts of the tree are generated code. Read-only.',
+  usage: 'shrk [--cwd <dir>] generated report [--format text|markdown|json]',
   async run(args: ParsedArgs): Promise<number> {
-    const sub = args.positional[0] === 'protect' ? 'protect' : 'report';
-    const rest = { ...args, positional: args.positional.slice(args.positional[0] === 'report' || args.positional[0] === 'protect' ? 1 : 0) };
-    const cwd = resolveCwd(rest);
-    const format = parseFormat(flagString(rest, 'format'));
+    const cwd = resolveCwd(args);
+    const format = parseFormat(flagString(args, 'format'));
     const inspection = await inspectSharkcraft({ cwd });
     const report = buildGeneratedCodeReport({ inspection });
-    if (sub === 'protect') {
-      const writeDrafts = flagBool(rest, 'write-drafts');
-      const outDir = nodePath.join(cwd, INGEST_BASE);
-      if (writeDrafts) {
-        if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
-        const target = nodePath.join(outDir, 'GENERATED_PROTECT.md');
-        writeFileSync(target, renderGeneratedCodeReportMarkdown(report), 'utf8');
-        process.stdout.write(`Wrote ${target}\n`);
-        return 0;
-      }
-      process.stdout.write(renderGeneratedCodeReportMarkdown(report) + '\n');
-      process.stdout.write('\nRe-run with --write-drafts to save the recommended protect rules under sharkcraft/ingestion/.\n');
-      return 0;
-    }
     if (format === 'json') process.stdout.write(renderGeneratedCodeReportJson(report) + '\n');
     else if (format === 'markdown') process.stdout.write(renderGeneratedCodeReportMarkdown(report) + '\n');
     else process.stdout.write(renderGeneratedCodeReportText(report) + '\n');
     return 0;
+  },
+};
+
+/** Recommend protect rules for the classified generated roots. */
+export const generatedProtectCommand: ICommandHandler = {
+  name: 'protect',
+  description:
+    'Recommend protect rules for the detected generated roots. Read-only unless --write-drafts (writes under sharkcraft/ingestion/).',
+  usage: 'shrk [--cwd <dir>] generated protect [--write-drafts]',
+  booleanFlags: new Set(['write-drafts']),
+  async run(args: ParsedArgs): Promise<number> {
+    const cwd = resolveCwd(args);
+    const inspection = await inspectSharkcraft({ cwd });
+    const report = buildGeneratedCodeReport({ inspection });
+    if (flagBool(args, 'write-drafts')) {
+      const outDir = nodePath.join(cwd, INGEST_BASE);
+      if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
+      const target = nodePath.join(outDir, 'GENERATED_PROTECT.md');
+      writeFileSync(target, renderGeneratedCodeReportMarkdown(report), 'utf8');
+      process.stdout.write(`Wrote ${target}\n`);
+      return 0;
+    }
+    process.stdout.write(renderGeneratedCodeReportMarkdown(report) + '\n');
+    process.stdout.write('\nRe-run with --write-drafts to save the recommended protect rules under sharkcraft/ingestion/.\n');
+    return 0;
+  },
+};
+
+/**
+ * The `generated` group. The bare verb keeps its historical behaviour (the
+ * classifier report); `report` / `protect` are the classifier subverbs, and
+ * `list` / `check` / `update` / `explain` are the drift GATE (registered from
+ * `generated.command.ts`). One noun: that half FINDS what is generated, this
+ * half proves it has not drifted.
+ */
+export const generatedCommand: ICommandHandler = {
+  name: 'generated',
+  description:
+    'Generated-code classifier (`report` default, `protect --write-drafts`) + the generated-artifact drift GATE (`list | check | update | explain`, see docs/generated-drift.md). Read-only by default.',
+  usage:
+    'shrk [--cwd <dir>] generated [report|protect] [--format text|markdown|json] [--write-drafts]\n         (drift gate: shrk generated list | check [--headers-only] | update | explain --id <id>)',
+  booleanFlags: new Set(['write-drafts']),
+  async run(args: ParsedArgs): Promise<number> {
+    // Bare `shrk generated` (and any stray positional) → the classifier report,
+    // exactly as before the gate verbs joined the group.
+    return generatedReportCommand.run({ ...args, positional: [] });
   },
 };
 

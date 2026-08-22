@@ -1,8 +1,9 @@
 /**
  * Pack-aware project-config resolution.
  *
- * The four "cross-file invariant as DATA" planes — `wiringRules`, `registries`,
- * `policyRules`, `reusePrimitives` — can be authored inline in a repo's
+ * The "cross-file invariant as DATA" planes — `wiringRules`, `registries`,
+ * `registrationGraph`, `policyRules`, `baselines`, `generatedArtifacts`,
+ * `reusePrimitives` — can be authored inline in a repo's
  * `sharkcraft.config.ts`. They can ALSO be SHIPPED by a framework pack (e.g. a
  * NestJS pack contributing "every @Injectable must be registered in a module"
  * as a wiring rule) via the new `wiringRuleFiles` / `registryFiles` /
@@ -25,6 +26,8 @@ import {
   importModuleViaLoader,
   ok,
   type AppError,
+  type IBaselineRule,
+  type IGeneratedArtifactRule,
   type IPolicyRule,
   type IRegistrationIdiom,
   type IRegistryDeclaration,
@@ -33,6 +36,8 @@ import {
   type Result,
 } from '@shrkcrft/core';
 import {
+  BaselineRuleSchema,
+  GeneratedArtifactRuleSchema,
   loadProjectConfig,
   PolicyRuleSchema,
   RegistrationIdiomSchema,
@@ -44,7 +49,7 @@ import {
 import { discoverPacks, type IDiscoveredPack } from '@shrkcrft/packs';
 
 /**
- * A {@link LoadedConfig} whose four data planes have had pack contributions
+ * A {@link LoadedConfig} whose data planes have had pack contributions
  * merged in (local-wins), plus the human-readable notes from that merge.
  */
 export interface IResolvedProjectConfig extends LoadedConfig {
@@ -88,6 +93,12 @@ async function mergePlane<T>(
   keyOf: (item: T) => string,
   planeLabel: string,
   diagnostics: string[],
+  /**
+   * Optional per-item veto applied to PACK elements only. Returns the
+   * diagnostic to record when the element must not be adopted (used by the
+   * shell-executing planes — see the call sites).
+   */
+  packGuard?: (item: T, packName: string) => string | undefined,
 ): Promise<readonly T[]> {
   const merged = new Map<string, T>();
   const localKeys = new Set<string>();
@@ -132,6 +143,11 @@ async function mergePlane<T>(
         continue;
       }
       const item = parsed.data as T;
+      const veto = packGuard?.(item, contrib.packageName);
+      if (veto !== undefined) {
+        diagnostics.push(veto);
+        continue;
+      }
       const key = keyOf(item);
       if (merged.has(key)) {
         diagnostics.push(
@@ -155,7 +171,9 @@ function gatherPackContribs(
     | 'registryFiles'
     | 'registrationGraphFiles'
     | 'policyRuleFiles'
-    | 'reusePrimitiveFiles',
+    | 'reusePrimitiveFiles'
+    | 'baselineFiles'
+    | 'generatedArtifactFiles',
 ): IPackContribFile[] {
   const out: IPackContribFile[] = [];
   for (const pack of validPacks) {
@@ -229,6 +247,37 @@ export async function resolveProjectConfig(
     'policyRule',
     diagnostics,
   );
+  // The two SHELL-EXECUTING planes. A pack ships code the repo did not write;
+  // letting it also ship a command that `shrk baseline check` would then RUN is
+  // the same hazard the "pack-contributed verification commands are NOT
+  // auto-run" contract already forbids. So the merge keeps the safe subset —
+  // extractor computes and header-only generated rules — and drops the rest
+  // with a diagnostic. The guarantee is structural: no downstream caller has to
+  // remember to re-check provenance.
+  const baselines = await mergePlane<IBaselineRule>(
+    base.config.baselines ?? [],
+    gatherPackContribs(validPacks, 'baselineFiles'),
+    BaselineRuleSchema as IPlaneSchema,
+    (r) => r.id,
+    'baseline',
+    diagnostics,
+    (item, packName) =>
+      item.compute?.kind === 'command'
+        ? `pack ${packName}: baseline "${item.id}" declares a shell \`compute.run\` — pack-contributed commands are never auto-run — skipped`
+        : undefined,
+  );
+  const generatedArtifacts = await mergePlane<IGeneratedArtifactRule>(
+    base.config.generatedArtifacts ?? [],
+    gatherPackContribs(validPacks, 'generatedArtifactFiles'),
+    GeneratedArtifactRuleSchema as IPlaneSchema,
+    (r) => r.id,
+    'generatedArtifact',
+    diagnostics,
+    (item, packName) =>
+      item.regen !== undefined
+        ? `pack ${packName}: generatedArtifact "${item.id}" declares a \`regen\` command — pack-contributed commands are never auto-run — skipped`
+        : undefined,
+  );
   const reusePrimitives = await mergePlane<IReusePrimitive>(
     base.config.reusePrimitives ?? [],
     gatherPackContribs(validPacks, 'reusePrimitiveFiles'),
@@ -246,6 +295,8 @@ export async function resolveProjectConfig(
       registries,
       registrationGraph,
       policyRules,
+      baselines,
+      generatedArtifacts,
       reusePrimitives,
     },
     planeDiagnostics: diagnostics,

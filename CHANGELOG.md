@@ -5,6 +5,190 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [0.1.0-alpha.28] — The plane the compiler can't see
+
+A green build is not a correct repo. Four defect classes are invisible to a
+type-checker, to a single-language linter, and to an LLM agent (which cannot
+promise it checked all N sites, every commit): a value **declared** in one place
+that must be **registered** in another; a **generated** file someone
+**hand-edited**; a **forbidden pattern** hiding in a non-compiled artifact; a
+**committed baseline** that silently drifted. This round makes all four
+deterministic, CI-wired, and agent-free. Suite green at 3685.
+
+### One extraction DSL under every plane
+
+Six data-defined planes now share a single id-extraction primitive
+(`docs/extraction-dsl.md`), so a new extractor kind lands in all of them at once
+and they cannot drift apart.
+
+- **Nine extractor kinds** — `regex-capture` · `array-members` · `object-keys` ·
+  `enum-members` · `export-names` · `call-args` · `decorator-args` ·
+  `string-union-members` · `json-path`. Plus `anchor` (dotted anchors address a
+  method call: `registry.register`), `argIndex`, `capture: name|value`, and the
+  `match` / `exclude` allow+deny pair that lets a **known, deliberate exception
+  be declared as data** while a NEW omission still turns the rule red.
+- `pattern` / `arrayProperty` remain as sugar. Structural validation lives once
+  in `@shrkcrft/core`, so the loader, the pack-merge seam, and the engines give
+  identical answers — a rule that loads but cannot run is the silent-green this
+  plane exists to prevent.
+- The lexer handles the shapes that defeat a naive regex: wrapped literals
+  (`Object.freeze([ … ])`), a section comment before an element, commas inside
+  nested literals/strings, and re-export aliases (`export { local as Public }`).
+
+### The trust layer — `shrk gates` (new)
+
+A rule engine is only as trustworthy as your ability to see what a rule actually
+matched. The dominant real-world failure is a **stale selector that silently
+matches nothing**.
+
+- **`shrk gates coverage`** — what every rule MATCHED against the live tree,
+  flagging each rule that matched **0**. Run it in CI and a rule quietly dying
+  becomes a build failure in its own right.
+- **`shrk gates list`** / **`shrk gates explain <id>`** — the universal
+  introspection: for a rule of ANY plane, the files matched, the ids extracted
+  with `file:line`, and the computed diff. (`shrk gate`, singular, still runs the
+  quality-gate pipeline — different verb.)
+- **`selfTest` hooks** (`expectMatchesAtLeast` / `expectIds` / `expectNotIds`) —
+  a rule is TESTED like code instead of trusted like config; a negative fixture
+  is what keeps an `exclude` honest.
+
+### The loud-skip contract
+
+- A rule whose **source** side matches 0 files or extracts 0 ids is `skipped`,
+  and the check returns **`2` (not verified)** — never a green `0`.
+  **`failOnEmpty: true`** promotes it to a real failure (`1`). Applies to
+  `check wiring`, `policy-lint`, `baseline check`, `generated check`,
+  `gates coverage`, and `registry … duplicates`.
+- An empty **sink** is deliberately NOT a skip: it stays a failure, annotated
+  `emptySink`, because downgrading it would hide a real total-miss.
+
+### Baseline / ledger drift — `shrk baseline` (new plane)
+
+Retires the hand-rolled "committed file + recompute script + bespoke drift test"
+trio that repos re-implement per ledger, digest, ratchet, and allow-list.
+
+- `shrk baseline list | check | diff | update | explain`, driven by
+  `baselines[]`. **Two-way by default** — a silently LOST entry fails exactly
+  like a gained one, the blind spot most hand-rolled checks have.
+- `compute.kind: 'extractor'` (pure, no shell) or `'command'` (stdout is the
+  value). Canonical forms (`auto` / `json-sorted-keys` / `lines-sorted` /
+  `lines` / `raw`) so a reformat is never drift; `keyBy` compares as a keyed set;
+  JSON arrays diff **element-wise**, naming the entry rather than the line.
+- `update` is a **separate verb** — drift can never be blessed as a side effect
+  of running the gate. A recompute yielding 0 entries against a NON-empty
+  baseline is reported as drift (annotated `emptyCompute`), not swallowed.
+
+### Generated-artifact drift & provenance — `shrk generated check` (new plane)
+
+- Regenerates into a temp dir and diffs **both ways** — catching a hand-edited
+  file AND a regen that writes a subset (`content` / `only-committed` /
+  `only-regenerated`).
+- Provenance headers, checked with no regen and no spawn: `missing-header`,
+  `mislabeled` (a hand-written file WEARING a generated header), and an advisory
+  `no-regen-pointer`. `--headers-only` never spawns.
+
+### Policy-lint sees what it means to see
+
+- **`scan: all | code | strings | comments`** — a lexical zone classifier. `code`
+  kills the dominant false positive (a hit inside a "we used to do this"
+  comment); `strings` targets exactly what a language-scoped linter cannot see.
+- **`exemptFiles` / `exemptLines`** are first-class — and exempted hits are
+  reported as **suppressed, not deleted**, because a silently-dropped exemption
+  is indistinguishable from a stale glob. `shrk policy-lint explain <id>` shows
+  both lists with the exemption that applied.
+
+### Wiring relations
+
+- `mode: disjoint` (no token on both sides), `registeredMode: intersection`
+  (must be in EVERY sink — the explicit answer to "registered in the wrong one
+  of N"), multi-hop **`chain`** (declared → registered → wired as ONE rule, with
+  the failing hop named), and `{id}`/`{file}` message templating.
+
+### Registry
+
+- **`shrk registry <name> duplicates`** — ids declared in more than one place,
+  with every declaration site. Two roots claiming the same id compile fine;
+  whichever registration wins at runtime is an accident of load order.
+
+### Fixed
+
+- **Two MCP tools were registered under `get_helper`** — the helper-registry
+  tool (`r28-helpers.tool.ts`) and the pack-helper tool
+  (`r33-routing-helpers.tool.ts`). `toolsByName` is last-wins, so one was
+  **unreachable** via `tools/call` while `tools/list` advertised the name twice.
+  Found by `shrk registry mcp-tools duplicates` on its first run. The pack-side
+  tool is now **`get_pack_helper`**, completing the dedup pass that had already
+  renamed its sibling `list_helpers` → `list_pack_helpers`. Wire-name uniqueness
+  is now asserted against the real dispatch table
+  (`state.toolsByName.size === ALL_TOOLS.length`).
+- **`shrk finish` listed non-failing items as "failing items"** — the imports
+  gate mapped every finding into the fix-list, including allowlisted ones
+  (`info` by design). They padded the 15-item cap and could push a real error out
+  of view. It now lists only the findings that drive the verdict.
+
+### Pack distribution + safety
+
+- `baselines[]` and `generatedArtifacts[]` are pack-distributable, **except**
+  their shell-executing halves: the merge seam **drops** any pack-contributed
+  element declaring `compute.run` or `regen`, with a diagnostic. This mirrors the
+  existing "pack-contributed verification commands are NOT auto-run" contract and
+  is enforced structurally, so no downstream caller has to re-check provenance.
+
+### Notes
+
+- **No exit code `3`.** The spec this round came from proposed one for a loud
+  skip; shrk's documented `0`/`1`/`2` contract already defines `2` as exactly
+  that, so a zero-match maps to `2` and `failOnEmpty` to `1`.
+- `json-path` covers **JSON, not YAML** — a hand-rolled YAML reader would be a
+  silent-wrong-answer risk.
+- New docs: `docs/gate-rules.md`, `docs/extraction-dsl.md`,
+  `docs/baseline-drift.md`, `docs/generated-drift.md`.
+
+## [0.1.0-alpha.27] — Runtime-wiring queries, the composite finish verdict & pipe-safe exit codes
+
+> Documented retroactively: alpha.27 shipped to npm without a `CHANGELOG.md`
+> entry. The surface delta below is the one recorded in the binary itself
+> (`shrk changelog --since 0.1.0-alpha.26`), which was kept current at release.
+
+### Added
+
+- **`shrk wiring unprovided | orphans --changed-only | --base <ref>`** — scope
+  the DI/registration-graph verdict to the changeset (the silent-at-runtime
+  tokens THIS change left unprovided). An empty changed scope exits `2` (NOT
+  verified), never a green `0`.
+- **`shrk finish` returns an honest `0`/`1`/`2`** and runs two more sub-gates
+  over tracked AND untracked changes: `unprovided` (diff-aware, so it also
+  catches a DELETED provider that leaves a token unresolved) and an advisory
+  `arch` (does a changed file sit in a runtime import cycle).
+- **Global `--exit-trailer`** — print the final verdict as the LAST stderr line
+  (`shrk-exit: <code>`) so a piped gate's exit survives `| head` / `| grep`.
+- **`shrk trace literal "<string>"`** classifies a distinct `render`/handle role,
+  completing the declare → register → consume → render chain.
+- **MCP `get_wiring_graph`** — the read-only registration/DI-graph query
+  (unprovided / orphans / chain) exposed to agents without a shell-out.
+- **`shrk delegate`** grew into a bounded analysis+patch recipe catalog
+  (grounded read-only analysis recipes, query executor, retry/escalation),
+  documented in `docs/delegate.md`.
+
+### Changed
+
+- `shrk finish` no longer paints a green `0` when it evaluated NOTHING — a
+  markdown-only change or an empty scope is `2`. Only deciding (non-advisory)
+  gates set the verdict.
+- Any gate/verify verb whose stdout is piped prints a one-line stderr note when a
+  non-zero exit would otherwise be masked by the downstream command's `$?`.
+- `shrk help <unknown-topic>` errors with a nearest-topic did-you-mean and a
+  nonzero exit, instead of re-printing the whole command list re-prefixed with
+  the bogus topic (false self-discovery).
+- `shrk registry <name> exists <id> --resolve` chains normalization strategies
+  (plural-strip THEN suffix strip/append), so a doubly-off noun resolves.
+- Cycle detection's type-only exclusion is verified end-to-end from real
+  `import type` source, not just synthetic edges.
+- `shrk finish`'s import-hygiene sub-gate no longer false-fails on a changed TEST
+  file whose fixture strings contain import-like text.
+- `shrk wiring unprovided|orphans` reject a bad `--base <ref>` with a distinct
+  error, and exclude SHRK's own `.sharkcraft/` writes.
+
 ## [0.1.0-alpha.26] — Honest exit codes
 
 alpha.24/alpha.25 made the STDOUT verdicts honest (`not verified`, `degraded`,

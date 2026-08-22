@@ -127,4 +127,26 @@ export const RELEASE_SURFACE_DELTAS: readonly IReleaseSurfaceDelta[] = [
     ],
     removed: [],
   },
+  {
+    version: '0.1.0-alpha.28',
+    title: "The plane the compiler can't see — six data-defined gate planes on one extraction DSL",
+    added: [
+      '`shrk gates list | coverage | explain <id>` — the rule-authoring trust layer across EVERY data-defined plane (wiring / policy / registry / registration / baseline / generated). `coverage` is the stale-selector detector: it reports what each rule actually MATCHED and flags every rule matching 0, so a rule quietly dying is itself a CI failure.',
+      '`shrk baseline list | check | diff | update | explain` — the committed-ledger drift engine (`baselines[]`). TWO-WAY by default: a silently LOST entry fails exactly like a gained one. `update` is a separate, explicit bless verb.',
+      '`shrk generated list | check | update | explain` — generated-artifact drift + provenance (`generatedArtifacts[]`). Regenerates into a temp dir and diffs BOTH ways (hand-edited file AND a regen that writes a subset), plus the "do not edit" header contract. `--headers-only` never spawns.',
+      '`shrk policy-lint explain <ruleId>` — every hit with file:line, INCLUDING the hits an exemption or the scan zone dropped, each labelled with which one applied.',
+      '`shrk registry <name> duplicates` — ids declared in more than one place, with every declaration site (load-order roulette the compiler cannot see).',
+      'Extraction DSL on every rule source: `extract` with 9 kinds (`regex-capture`, `array-members`, `object-keys`, `enum-members`, `export-names`, `call-args`, `decorator-args`, `string-union-members`, `json-path`) plus `anchor` / `argIndex` / `capture` and the `match` + `exclude` allow/deny pair.',
+      'Wiring relations: `mode: disjoint`, `registeredMode: intersection`, multi-hop `chain`, `{id}` message templating, and `failOnEmpty` / `selfTest` on every plane.',
+      'Policy rules: `scan: all|code|strings|comments` (lexical zone classifier), `exemptFiles`, `exemptLines`.',
+    ],
+    changed: [
+      'Loud-skip contract: a rule whose SOURCE side matches 0 files / extracts 0 ids is `skipped` and the check exits `2` (NOT verified), never a green `0`; `failOnEmpty: true` promotes it to `1`. An empty SINK is deliberately NOT a skip — it stays a failure, annotated `emptySink`, so a real total-miss is never downgraded.',
+      '`shrk policy-lint` exits `2` when it evaluated nothing, and reports exemption-suppressed hits as a count instead of silently deleting them.',
+      "`shrk finish`'s import sub-gate lists only the findings that DRIVE the verdict — allowlisted (`info`) entries no longer pad the capped fix-list and push a real error out of view.",
+      'MCP: the pack-helper tool is now `get_pack_helper` (was `get_helper`, which collided with the helper-registry tool and made one of the two unreachable via `tools/call`). Completes the dedup that already renamed `list_helpers` → `list_pack_helpers`.',
+      'Pack safety: `baselines[]` / `generatedArtifacts[]` are pack-distributable, but the merge seam DROPS any pack-contributed element declaring a shell command (`compute.run` / `regen`) — mirroring the "pack-contributed verification commands are NOT auto-run" contract.',
+    ],
+    removed: [],
+  },
 ];

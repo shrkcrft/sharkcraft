@@ -53,7 +53,14 @@ export const listHelpersTool: IToolDefinition = {
 };
 
 export const getHelperTool: IToolDefinition = {
-  name: 'get_helper',
+  // Renamed from `get_helper` to dedup with the helper-registry tool in
+  // `r28-helpers.tool.ts`; both registered under the same name, and
+  // `toolsByName` is last-wins, so the r28 tool was unreachable via
+  // `tools/call` while `tools/list` advertised the name twice. Completes the
+  // dedup pass that already renamed this file's `list_helpers` →
+  // `list_pack_helpers`; the import-side alias (`getPackHelperTool`) was
+  // already pointing here.
+  name: 'get_pack_helper',
   description: 'Get one pack/local-contributed helper by id. Read-only.',
   inputSchema: {
     type: 'object',

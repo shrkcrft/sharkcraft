@@ -162,7 +162,7 @@ describe('resolveProjectConfig — pack-plane merge', () => {
       // "local('…')", the pack's uses "p('…')").
       const shared = wiring.filter((r) => r.id === 'shared-wiring');
       expect(shared.length).toBe(1);
-      expect(shared[0]!.declared.pattern).toContain('local');
+      expect(shared[0]!.declared!.pattern).toContain('local');
 
       const collisionDiag = resolved.value.planeDiagnostics.find(
         (d) => d.includes('shared-wiring') && d.includes('already provided by local config'),

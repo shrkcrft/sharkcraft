@@ -1,3 +1,5 @@
+import type { IRuleSelfTest } from '../wiring/wiring-rule.ts';
+
 /**
  * Policy-lint rules — the "template/markup/style/ts" plane.
  *
@@ -22,6 +24,22 @@ export type PolicySurface =
   /** Source files — for AOT-invisible shapes a project wants to forbid. */
   | 'ts';
 
+/**
+ * Which lexical zone of a file a rule's pattern may match in.
+ *
+ * `all` (default) is a plain text scan — every byte, including comments. The
+ * other three narrow it: `code` kills the dominant false positive (a hit inside
+ * a "we used to do this" comment), `strings` targets exactly what a
+ * single-language linter cannot see (an inline template / embedded query), and
+ * `comments` finds forbidden content in the prose itself (a leaked token, a
+ * stale directive).
+ *
+ * Zoning is lexical, C/JS-family (`'`/`"`/`` ` `` strings, `//` and block
+ * comments) — designed for the `ts` and `style` surfaces. It is not applied to
+ * inline-template units, whose content is already a string body.
+ */
+export type PolicyScanZone = 'all' | 'code' | 'strings' | 'comments';
+
 export interface IPolicyRule {
   /** Stable id, surfaced in findings and selectable with `--only`. */
   readonly id: string;
@@ -42,6 +60,28 @@ export interface IPolicyRule {
   readonly pattern: string;
   /** Extra regex flags combined with the always-on `g` (e.g. `i`, `m`, `s`). */
   readonly flags?: string;
+  /** Which lexical zone matches count in (default `all`). */
+  readonly scan?: PolicyScanZone;
+  /**
+   * Project-relative globs whose findings are dropped. A legitimate exception
+   * is first-class config, not a pattern the author has to grep around.
+   */
+  readonly exemptFiles?: readonly string[];
+  /**
+   * Inline suppression marker (a plain substring, e.g.
+   * `policy-allow:no-nondeterminism`). A finding is dropped when the marker
+   * appears on its line or the line immediately above it.
+   */
+  readonly exemptLines?: string;
+  /**
+   * Treat "this rule scanned nothing" as a FAILURE rather than a loud skip. A
+   * rule whose glob went stale matches nothing and would otherwise read as a
+   * green pass. Leave unset for a policy over a set that may legitimately be
+   * empty.
+   */
+  readonly failOnEmpty?: boolean;
+  /** Author-declared expectations checked by `shrk gates coverage`. */
+  readonly selfTest?: IRuleSelfTest;
   /** Human message describing the violation. */
   readonly message: string;
   /** Optional remediation — e.g. the primitive/component to use instead. */

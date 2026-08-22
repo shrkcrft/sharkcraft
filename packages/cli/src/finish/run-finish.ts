@@ -182,16 +182,24 @@ export async function runFinishGates(input: IRunFinishInput): Promise<IFinishRep
       report.counts?.['error'] ?? (report.verdict === 'errors' ? report.findings.length : 0);
     const warnings =
       report.counts?.['warning'] ?? (report.verdict === 'warnings' ? report.findings.length : 0);
+    // Only the findings that actually DRIVE the verdict become "failing items".
+    // An allowlisted import is downgraded to `info` by design and is not what
+    // failed — listing it anyway pads the renderer's 15-item cap and can push a
+    // real error out of view, while its allowlist justification reads like a
+    // fix instruction. A fix-list that names non-failures is not a fix-list.
+    const driving = report.findings.filter((f) =>
+      report.verdict === 'errors' ? f.severity === 'error' : f.severity === 'warning',
+    );
     gates.push({
       name: 'imports',
       status: report.verdict === 'errors' ? 'fail' : 'pass',
-      detail: `verdict=${report.verdict} (${report.findings.length} finding(s))`,
+      detail: `verdict=${report.verdict} (${driving.length} of ${report.findings.length} finding(s) drive it)`,
       errors,
       warnings,
-      items: report.findings.map((f) => ({
+      items: driving.map((f) => ({
         file: f.file,
         line: f.line,
-        message: `${f.kind}: ${f.suggestedFix || f.reason || f.snippet}`.trim(),
+        message: `[${f.severity}] ${f.kind}: ${f.suggestedFix || f.reason || f.snippet}`.trim(),
       })),
     });
   }

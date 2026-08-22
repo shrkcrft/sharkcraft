@@ -107,3 +107,15 @@ export function registryExists(inventory: IRegistryInventory, id: string): boole
 export function registryWhere(inventory: IRegistryInventory, id: string): IRegistryEntry | undefined {
   return inventory.entries.find((e) => e.id === id);
 }
+
+/**
+ * Ids declared in more than one place.
+ *
+ * A latent bug the compiler cannot see: two roots both claiming the same
+ * registry id compile fine, and whichever registration wins at runtime is an
+ * accident of load order. Reported with EVERY site so the duplicate can be
+ * resolved, not just detected.
+ */
+export function registryDuplicates(inventory: IRegistryInventory): readonly IRegistryEntry[] {
+  return inventory.entries.filter((e) => e.sites.length > 1);
+}

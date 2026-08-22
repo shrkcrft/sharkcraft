@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  EXTRACTOR_KINDS,
+  validateWiringSource,
+  type IWiringSource,
+} from '@shrkcrft/core';
 
 /**
  * One delegate-worker recipe (see `IDelegateRecipe`).
@@ -91,58 +96,62 @@ const DelegateRecipeSchema = z
     }
   });
 
-/** One side (declared / registered) of a wiring rule. */
+/** Author-declared rule expectations (see `IRuleSelfTest`). */
+const RuleSelfTestSchema = z
+  .object({
+    expectMatchesAtLeast: z.number().int().min(0).optional(),
+    expectIds: z.array(z.string()).optional(),
+    expectNotIds: z.array(z.string()).optional(),
+  })
+  .strict();
+
+/**
+ * One side (declared / registered) of a wiring rule — the extraction DSL.
+ *
+ * The structural rules (exactly one extraction mode, per-kind required fields,
+ * compilable regexes, capture group present) are enforced by
+ * `validateWiringSource` in `@shrkcrft/core` rather than re-stated here, so the
+ * loader, the pack-merge seam, and the engines cannot drift apart. A rule that
+ * LOADS but cannot RUN is exactly the silent-green this plane exists to prevent.
+ */
 const WiringSourceSchema = z
   .object({
     files: z.array(z.string()),
-    // Exactly one of pattern / arrayProperty must be set (enforced below).
+    extract: z.enum(EXTRACTOR_KINDS as unknown as [string, ...string[]]).optional(),
+    anchor: z.string().optional(),
+    argIndex: z.number().int().min(0).optional(),
+    jsonPath: z.string().optional(),
+    capture: z.enum(['name', 'value']).optional(),
+    match: z.string().optional(),
+    matchFlags: z.string().optional(),
+    exclude: z.string().optional(),
+    excludeFlags: z.string().optional(),
     pattern: z.string().optional(),
     flags: z.string().optional(),
     arrayProperty: z.string().optional(),
   })
   .strict()
   .superRefine((src, ctx) => {
-    const hasPattern = typeof src.pattern === 'string';
-    const hasArray = typeof src.arrayProperty === 'string';
-    // Exactly one extraction mode: a regex pattern OR a named array literal.
-    if (hasPattern === hasArray) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: hasPattern ? ['arrayProperty'] : ['pattern'],
-        message: 'set exactly one of `pattern` or `arrayProperty`',
-      });
-      return;
-    }
-    // arrayProperty needs no capture group — only validate a regex pattern.
-    if (!hasPattern) return;
-    // Catch a bad regex / bad flags at config-load time (clear field location)
-    // rather than at runtime. The engine also degrades gracefully, but this
-    // surfaces the typo through `shrk doctor` / the loader.
-    let re: RegExp | undefined;
-    try {
-      re = new RegExp(src.pattern!, src.flags ?? '');
-    } catch (e) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['pattern'],
-        message: `invalid regular expression: ${(e as Error).message}`,
-      });
-      return;
-    }
-    // Group 1 is the token contract — a pattern with no capture group matches
-    // nothing useful and would silently pass.
-    try {
-      const groups = (new RegExp(re.source + '|').exec('')?.length ?? 1) - 1;
-      if (groups < 1) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['pattern'],
-          message: 'pattern must contain at least one capture group (group 1 captures the token)',
-        });
-      }
-    } catch {
-      // Can't determine group count — don't block.
-    }
+    const problem = validateWiringSource(src as IWiringSource);
+    if (problem === undefined) return;
+    // Point at the most specific field the message is about, so the loader
+    // error lands on the line the author has to change.
+    const path = problem.startsWith('match ')
+      ? ['match']
+      : problem.startsWith('exclude ')
+        ? ['exclude']
+      : problem.includes('capture group') || problem.includes('invalid regular expression')
+        ? ['pattern']
+        : problem.includes('`anchor`')
+          ? ['anchor']
+          : problem.includes('`jsonPath`')
+            ? ['jsonPath']
+            : problem.includes('`argIndex`')
+              ? ['argIndex']
+              : problem.includes('`files`')
+                ? ['files']
+                : ['extract'];
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: problem });
   });
 
 /**
@@ -157,16 +166,65 @@ export const WiringRuleSchema = z
     id: z.string(),
     description: z.string().optional(),
     severity: z.enum(['error', 'warning']).optional(),
-    declared: WiringSourceSchema,
-    // A single source or a union array — a token is registered if any source has it.
-    registered: z.union([WiringSourceSchema, z.array(WiringSourceSchema)]),
+    declared: WiringSourceSchema.optional(),
+    // A single source or a union array — combined per `registeredMode`.
+    registered: z.union([WiringSourceSchema, z.array(WiringSourceSchema)]).optional(),
+    // Multi-hop: hop0 ⊆ hop1 ⊆ … — mutually exclusive with declared/registered.
+    chain: z.array(WiringSourceSchema).optional(),
+    registeredMode: z.enum(['union', 'intersection']).optional(),
     groupBy: z.enum(['dir', 'package']).optional(),
-    mode: z.enum(['subset', 'parity']).optional(),
+    mode: z.enum(['subset', 'parity', 'disjoint']).optional(),
+    message: z.string().optional(),
+    failOnEmpty: z.boolean().optional(),
+    selfTest: RuleSelfTestSchema.optional(),
     hint: z.string().optional(),
     hintDeclaredMissing: z.string().optional(),
     hintRegisteredMissing: z.string().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((rule, ctx) => {
+    const hasChain = Array.isArray(rule.chain) && rule.chain.length > 0;
+    const hasClassic = rule.declared !== undefined || rule.registered !== undefined;
+    if (hasChain && hasClassic) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['chain'],
+        message: '`chain` is mutually exclusive with `declared`/`registered`',
+      });
+      return;
+    }
+    if (hasChain) {
+      if (rule.chain!.length < 2) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['chain'],
+          message: '`chain` needs at least 2 hops',
+        });
+      }
+      if (rule.mode !== undefined && rule.mode !== 'subset') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['mode'],
+          message: `\`mode: ${rule.mode}\` is not supported on a chain rule (each hop is a subset relation)`,
+        });
+      }
+      return;
+    }
+    if (rule.declared === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['declared'],
+        message: 'set `declared` (or use `chain`)',
+      });
+    }
+    if (rule.registered === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['registered'],
+        message: 'set `registered` (or use `chain`)',
+      });
+    }
+  });
 
 /** One declarable registry inventory (see `IRegistryDeclaration`). Exported for the pack-plane merge seam. */
 export const RegistryDeclarationSchema = z
@@ -204,6 +262,11 @@ export const PolicyRuleSchema = z
     files: z.array(z.string()).optional(),
     pattern: z.string(),
     flags: z.string().optional(),
+    scan: z.enum(['all', 'code', 'strings', 'comments']).optional(),
+    exemptFiles: z.array(z.string()).optional(),
+    exemptLines: z.string().optional(),
+    failOnEmpty: z.boolean().optional(),
+    selfTest: RuleSelfTestSchema.optional(),
     message: z.string(),
     suggest: z.string().optional(),
     severity: z.enum(['error', 'warning']).optional(),
@@ -217,6 +280,131 @@ export const PolicyRuleSchema = z
         code: z.ZodIssueCode.custom,
         path: ['pattern'],
         message: `invalid regular expression: ${(e as Error).message}`,
+      });
+    }
+  });
+
+/**
+ * One baseline / ledger drift rule (see `IBaselineRule`). Exported for the
+ * pack-plane merge seam — which DROPS any pack-contributed rule whose compute
+ * is a shell command (see `resolveProjectConfig`), mirroring the
+ * "pack-contributed verification commands are NOT auto-run" contract.
+ */
+export const BaselineRuleSchema = z
+  .object({
+    id: z.string(),
+    description: z.string().optional(),
+    baseline: z.string(),
+    compute: z
+      .object({
+        kind: z.enum(['command', 'extractor']),
+        run: z.string().optional(),
+        source: WiringSourceSchema.optional(),
+        canonical: z
+          .enum(['auto', 'json-sorted-keys', 'lines-sorted', 'lines', 'raw'])
+          .optional(),
+        timeoutMs: z.number().int().positive().optional(),
+      })
+      .strict()
+      .superRefine((c, ctx) => {
+        if (c.kind === 'command') {
+          if (!c.run || c.run.trim() === '') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['run'],
+              message: 'a `command` compute must set `run`',
+            });
+          }
+          if (c.source !== undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['source'],
+              message: '`source` is only valid for `kind: "extractor"`',
+            });
+          }
+          return;
+        }
+        if (c.source === undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['source'],
+            message: 'an `extractor` compute must set `source`',
+          });
+        }
+        if (c.run !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['run'],
+            message: '`run` is only valid for `kind: "command"` (an extractor never spawns)',
+          });
+        }
+      }),
+    direction: z.enum(['two-way', 'additions-only', 'no-shrink']).optional(),
+    keyBy: z.string().optional(),
+    watchFiles: z.array(z.string()).optional(),
+    failOnEmpty: z.boolean().optional(),
+    selfTest: RuleSelfTestSchema.optional(),
+    severity: z.enum(['error', 'warning']).optional(),
+    hint: z.string().optional(),
+  })
+  .strict();
+
+/**
+ * One generated-artifact drift/provenance rule (see `IGeneratedArtifactRule`).
+ * Exported for the pack-plane merge seam — which DROPS any pack-contributed
+ * rule that declares a `regen` command (a header-only pack rule still merges).
+ */
+export const GeneratedArtifactRuleSchema = z
+  .object({
+    id: z.string(),
+    description: z.string().optional(),
+    generatedGlob: z.array(z.string()).min(1),
+    regen: z.string().optional(),
+    compare: z.enum(['bytes', 'normalized-whitespace']).optional(),
+    provenanceHeader: z
+      .object({
+        mustMatch: z.string(),
+        flags: z.string().optional(),
+        withinLines: z.number().int().positive().optional(),
+        forbidOutside: z.boolean().optional(),
+        outsideGlob: z.array(z.string()).optional(),
+        pointsToRegenCommand: z.boolean().optional(),
+      })
+      .strict()
+      .superRefine((h, ctx) => {
+        try {
+          new RegExp(h.mustMatch, h.flags ?? '');
+        } catch (e) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['mustMatch'],
+            message: `invalid regular expression: ${(e as Error).message}`,
+          });
+        }
+      })
+      .optional(),
+    failOnEmpty: z.boolean().optional(),
+    selfTest: RuleSelfTestSchema.optional(),
+    severity: z.enum(['error', 'warning']).optional(),
+    timeoutMs: z.number().int().positive().optional(),
+    hint: z.string().optional(),
+  })
+  .strict()
+  .superRefine((rule, ctx) => {
+    if (rule.regen === undefined && rule.provenanceHeader === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['regen'],
+        message:
+          'a generated-artifact rule must set `regen` (drift check), `provenanceHeader` (header check), or both — otherwise it checks nothing',
+      });
+    }
+    if (rule.regen !== undefined && !rule.regen.includes('{TMP}')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['regen'],
+        message:
+          '`regen` must contain the `{TMP}` placeholder — the engine regenerates into a temp dir and diffs, it never overwrites the tree to check it',
       });
     }
   });
@@ -266,6 +454,10 @@ export const SharkCraftConfigSchema = z
     registrationGraph: z.array(RegistrationIdiomSchema).optional(),
     // Policy-lint rules — the template/style/ts content plane.
     policyRules: z.array(PolicyRuleSchema).optional(),
+    // Baseline/ledger drift rules — `shrk baseline check|diff|update`.
+    baselines: z.array(BaselineRuleSchema).optional(),
+    // Generated-artifact drift + provenance rules — `shrk generated check`.
+    generatedArtifacts: z.array(GeneratedArtifactRuleSchema).optional(),
     // Reuse primitives — role-keyed canonical symbols for `shrk reuse`.
     reusePrimitives: z.array(ReusePrimitiveSchema).optional(),
     // registry-lifecycle scan tuning. `skipDirs` OVERRIDES the default

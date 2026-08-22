@@ -504,6 +504,132 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     taskRole: CommandTaskRole.Validate,
   }),
   entry({
+    command: 'policy-lint explain',
+    description:
+      'Dry-run ONE policyRule and print every hit with file:line — INCLUDING the hits an exemption (exemptFiles / exemptLines) or the lexical scan zone dropped, each labelled with which one applied. The author-loop view of what the gate sees. [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Explain,
+  }),
+  entry({
+    command: 'registry duplicates',
+    description:
+      'Ids declared more than once across roots in a config-defined registry — a latent bug the compiler cannot see (whichever registration wins at runtime is an accident of load order). Every declaration site is reported. Exit 1 on duplicates, 2 when the registry matched 0 ids. [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'gates list',
+    description:
+      'Every data-defined rule across every plane (wiring / policy / registry / registration / baseline / generated) with its severity and empty-match policy. [--plane <p>] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'gates coverage',
+    description:
+      'The stale-selector detector: what every data-defined rule actually MATCHED against the live tree, flagging each rule that matched 0 files/ids (a rule matching nothing is a bug in the rule, never a pass) and running each rule\'s declared selfTest expectations. Run it in CI so a rule quietly dying is itself a failure. Exit 2 when a rule matched nothing, 1 when it set failOnEmpty. [--plane <p>] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'gates explain',
+    description:
+      'Universal rule introspection: for a rule of ANY plane, print the concrete inputs it resolved — files matched, ids extracted with file:line, and the computed diff. Dispatches to the plane-specific explainer. [--plane <p>] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Explain,
+  }),
+  entry({
+    command: 'baseline list',
+    description:
+      'Every declared baseline: what it pins, how it recomputes, and which direction of drift fails. [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'baseline check',
+    description:
+      'Recompute every committed baseline (adoption ledger / API digest / coverage ratchet / allow-list) and fail on drift. TWO-WAY by default: a silently LOST entry fails exactly like a gained one. Rules from sharkcraft.config.ts baselines[]. Runs the declared compute command for `kind: "command"` rules. [--id X] [--changed-only] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.RunsShell,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'baseline diff',
+    description:
+      'Human-readable +added / −removed for each baseline, without a verdict — the inspection verb. [--id X] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.RunsShell,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Explain,
+  }),
+  entry({
+    command: 'baseline update',
+    description:
+      'Rewrite a committed baseline from the current value — the explicit, reviewable bless step (deliberately a separate verb from `check` so a drift can never be blessed by accident). Writes files. [--id X] [--dry-run] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSource,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Apply,
+  }),
+  entry({
+    command: 'baseline explain',
+    description:
+      'What ONE baseline computes and compares — the command or extractor, the canonical form, both entry counts, and the diff — without turning it into a verdict. [--id X] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.RunsShell,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Explain,
+  }),
+  entry({
+    command: 'generated list',
+    description:
+      'Every declared generated-artifact rule: its globs, regen command, and "do not edit" header contract. [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'generated check',
+    description:
+      'Regenerate into a temp dir and diff BOTH ways — catching a hand-edited generated file AND a regen that writes a subset — plus the provenance-header contract (missing header on a generated file, header on a hand-written one). `--headers-only` never spawns. Rules from sharkcraft.config.ts generatedArtifacts[]. [--id X] [--headers-only] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.RunsShell,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Validate,
+  }),
+  entry({
+    command: 'generated update',
+    description:
+      'Run the declared regen command in place — the one-command bless step after an intentional source change. Writes files. [--id X] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSource,
+    surface: CommandSurface.Common,
+    taskRole: CommandTaskRole.Apply,
+  }),
+  entry({
+    command: 'generated explain',
+    description:
+      'What ONE generated-artifact rule sees right now: files matched, header-contract results, mislabel candidates — without running the regen. [--id X] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Explain,
+  }),
+  entry({
     command: 'wiring explain',
     description:
       'Dry-run ONE configured wiringRule and print the declared set + registered set it extracts (token + file:line), the alias-resolved set-difference, and the verdict — the author-loop view of what `check wiring` sees, without re-running the gate. [--json]',

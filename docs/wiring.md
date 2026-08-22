@@ -277,6 +277,73 @@ slug, a permission id, a route key) so the type system can't link them,
 grep can't give. See also [registry-inventory](./registry-inventory.md) for the
 pre-declared-registry variant (`registry … where`).
 
+## Extracting the tokens
+
+Both sides use the shared **[extraction DSL](./extraction-dsl.md)** — nine
+extractor kinds (`array-members`, `object-keys`, `enum-members`, `export-names`,
+`call-args`, `decorator-args`, `string-union-members`, `json-path`,
+`regex-capture`) plus `match` / `exclude` filters:
+
+```ts
+declared: {
+  files: ['src/plugins/**/*.ts'],
+  extract: 'export-names',
+  match: '.*Plugin$',
+  exclude: '^legacyPlugin$',   // a known exception, declared as data
+},
+registered: {
+  files: ['src/registry.ts'],
+  extract: 'array-members',
+  anchor: 'PLUGINS',           // reads `export const PLUGINS = Object.freeze([ … ])` too
+},
+```
+
+`pattern` (regex) and `arrayProperty` remain as sugar for `regex-capture` and
+`array-members`.
+
+## Relations
+
+| Field | Values | Meaning |
+|---|---|---|
+| `mode` | `subset` (default) | every declared token must be registered |
+| | `parity` | also flags a registered token that was never declared (an orphan sink) |
+| | `disjoint` | no token may appear on **both** sides (an exclusion invariant) |
+| `registeredMode` | `union` (default) | registered if **any** sink has it |
+| | `intersection` | must appear in **every** sink — the explicit answer to "registered in the wrong one of N sinks" |
+
+### Multi-hop (`chain`)
+
+A "declared → registered → wired" seam is **one** rule, not three brittle ones.
+`chain` takes an ordered list of ≥2 sources and evaluates `hop0 ⊆ hop1`,
+`hop1 ⊆ hop2`, …; each violation names the hop that broke.
+
+```ts
+{
+  id: 'declared-registered-wired',
+  chain: [
+    { files: ['src/**/*.ts'], extract: 'export-names', match: 'Handler$' },
+    { files: ['src/registry.ts'], extract: 'array-members', anchor: 'HANDLERS' },
+    { files: ['src/router.ts'], extract: 'object-keys', anchor: 'ROUTES' },
+  ],
+}
+```
+
+`chain` is mutually exclusive with `declared`/`registered`, and each hop is a
+subset relation (`mode` must be `subset`).
+
+## Messages, empty rules, self-tests
+
+- **`message`** — the violation headline, with `{id}` / `{token}` / `{file}` /
+  `{line}` / `{rule}` substitution.
+- **`failOnEmpty`** — a rule whose *source* side matches 0 files or extracts 0
+  ids is `skipped`, and the check returns `2` (not verified), never a green `0`.
+  `failOnEmpty: true` promotes that to a real failure. An empty **sink** is
+  different: it stays a failure, annotated as `emptySink` because it is nearly
+  always a stale sink glob.
+- **`selfTest`** — declare `expectMatchesAtLeast` / `expectIds` /
+  `expectNotIds` and [`shrk gates coverage`](./gate-rules.md) tests the rule like
+  code instead of trusting it like config.
+
 ## In the quality gate
 
 When `wiringRules[]` is present, the `wiring` gate runs as part of

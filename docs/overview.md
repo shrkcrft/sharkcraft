@@ -55,4 +55,13 @@ Each file is **structured TypeScript** (typed entries) so retrieval is precise. 
 - **How big is this repo?** — `shrk stats` (R59). See [`docs/repository-stats.md`](repository-stats.md). Available as the **Statistics** dashboard page and the `get_repository_stats` MCP tool.
 - **Open the dashboard** — `shrk dashboard` (R59). See [`docs/dashboard.md`](dashboard.md).
 - **Cut the tokens an agent reads** — `shrk compress` / `shrk expand`, the `compress_context` + `retrieve_original` MCP tools, and `get_knowledge_graph format:"table"`. Deterministic, reversible (CCR), no model in the loop. See [`docs/compression.md`](compression.md).
+- **Catch what a green build can't see** — the data-defined gate planes:
+  [wiring](wiring.md) (declared-here → registered-there),
+  [policy-lint](policy-lint.md) (forbidden content in files the compiler ignores),
+  [registry inventories](registry-inventory.md),
+  [baseline drift](baseline-drift.md) (a committed ledger that silently changed), and
+  [generated-artifact drift](generated-drift.md) (a hand-edited generated file).
+  All six share one [extraction DSL](extraction-dsl.md), and
+  [`shrk gates`](gate-rules.md) shows what every rule actually matched — the
+  stale-selector detector that keeps the rest honest.
 - **What changed in this build's commands?** — `shrk changelog`: the command-surface delta of the running build (added/changed/removed verbs & flags); `--since <version>` for the cumulative delta.

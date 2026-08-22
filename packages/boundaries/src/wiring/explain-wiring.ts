@@ -4,7 +4,11 @@ import { readMatchingFiles } from '../util/walk-files.ts';
 import {
   collectSourceSites,
   evaluateWiring,
+  registeredSources,
+  wiringGlobsOf,
+  wiringSourceSide,
   type IWiringFileEntry,
+  type IWiringHopResult,
   type IWiringTokenSite,
 } from './evaluate-wiring.ts';
 
@@ -32,7 +36,8 @@ export interface IWiringExplain {
   readonly schema: typeof WIRING_EXPLAIN_SCHEMA;
   readonly ruleId: string;
   readonly description?: string;
-  readonly mode: 'subset' | 'parity';
+  readonly mode: 'subset' | 'parity' | 'disjoint';
+  readonly registeredMode: 'union' | 'intersection';
   readonly groupBy?: 'dir' | 'package';
   readonly severity: 'error' | 'warning';
   readonly declared: IWiringSideExplain;
@@ -41,6 +46,14 @@ export interface IWiringExplain {
   readonly declaredNotRegistered: readonly IWiringTokenSite[];
   /** Registered tokens absent from the declared set (parity-only `registered-missing`). */
   readonly registeredNotDeclared: readonly IWiringTokenSite[];
+  /** Tokens present on BOTH sides (disjoint-only `overlap`). */
+  readonly overlap: readonly IWiringTokenSite[];
+  /** Per-hop breakdown when the rule is a multi-hop `chain`. */
+  readonly hops?: readonly IWiringHopResult[];
+  /** `passed` / `failed` / `skipped` / `error` — skipped is never a pass. */
+  readonly status: 'passed' | 'failed' | 'skipped' | 'error';
+  /** Why the rule checked nothing, when it was skipped. */
+  readonly skipReason?: string;
   readonly verdict: 'pass' | 'errors' | 'warnings';
   /** Rule-level misconfiguration messages (engine degrades gracefully). */
   readonly diagnostics: readonly string[];
@@ -49,10 +62,6 @@ export interface IWiringExplain {
 export interface IExplainWiringOptions {
   /** Project-relative directories to prune from the walk. */
   readonly excludeDirs?: readonly string[];
-}
-
-function registeredSources(reg: IWiringRule['registered']): readonly IWiringSource[] {
-  return Array.isArray(reg) ? (reg as readonly IWiringSource[]) : [reg as IWiringSource];
 }
 
 function sortSites(sites: readonly IWiringTokenSite[]): IWiringTokenSite[] {
@@ -65,38 +74,41 @@ function sortSites(sites: readonly IWiringTokenSite[]): IWiringTokenSite[] {
  * Dry-run a single wiring rule against the live tree and return what each side
  * extracted (declared set, registered set, the set-difference, the verdict) —
  * WITHOUT writing config. Powers `wiring explain <ruleId>`, `wiring test
- * <candidate>`, and `check wiring --explain <ruleId>`: the author can SEE the
- * alias-resolved cross-file set-difference the gate computes before committing
- * a rule. The diff/verdict reuse {@link evaluateWiring} so they match the gate
- * exactly (incl. `groupBy` membership); the full per-site lists are extracted
- * with the shared {@link collectSourceSites}. Never throws.
+ * <candidate>`, `gates explain <id>`, and `check wiring --explain <ruleId>`: the
+ * author can SEE the cross-file set-difference the gate computes before
+ * committing a rule. The diff/verdict reuse {@link evaluateWiring} so they match
+ * the gate exactly (incl. `groupBy` membership). Never throws.
  */
 export function explainWiring(
   projectRoot: string,
   rule: IWiringRule,
   options: IExplainWiringOptions = {},
 ): IWiringExplain {
-  const regSources = registeredSources(rule.registered);
-  const allGlobs = [
-    ...new Set([...rule.declared.files, ...regSources.flatMap((s) => [...s.files])]),
-  ];
+  const sourceSide = wiringSourceSide(rule);
+  // For a chain, the reported "registered" side is the LAST hop (the far end).
+  const sinkSources: readonly IWiringSource[] =
+    rule.chain && rule.chain.length >= 2
+      ? [rule.chain[rule.chain.length - 1]!]
+      : registeredSources(rule.registered);
+
+  const allGlobs = [...new Set(wiringGlobsOf(rule))];
   const cache = readMatchingFiles(projectRoot, allGlobs, new Set(options.excludeDirs ?? []));
   const entries: IWiringFileEntry[] = [...cache.entries()].map(([path, content]) => ({
     path,
     content,
   }));
   const filesFor = (source: IWiringSource): IWiringFileEntry[] =>
-    entries.filter((f) => matchesAny(f.path, source.files));
+    entries.filter((f) => matchesAny(f.path, source.files ?? []));
 
-  // Declared side — full sites.
-  const declaredFiles = filesFor(rule.declared);
-  const declaredRes = collectSourceSites(rule.declared, declaredFiles);
+  const declaredFiles = sourceSide ? filesFor(sourceSide) : [];
+  const declaredRes = sourceSide
+    ? collectSourceSites(sourceSide, declaredFiles)
+    : { sites: [] as readonly IWiringTokenSite[], error: 'rule sets no source side' };
 
-  // Registered side — union of every source, full sites.
   const registeredFiles = new Set<string>();
   const registeredSites: IWiringTokenSite[] = [];
   let registeredError: string | undefined;
-  for (const source of regSources) {
+  for (const source of sinkSources) {
     const files = filesFor(source);
     for (const f of files) registeredFiles.add(f.path);
     const res = collectSourceSites(source, files);
@@ -107,22 +119,20 @@ export function explainWiring(
   // Canonical diff + counts + verdict from the gate engine (same groupBy logic).
   const report = evaluateWiring([rule], filesFor);
   const ruleResult = report.rules[0];
-  const declaredNotRegistered = sortSites(
-    (ruleResult?.violations ?? [])
-      .filter((v) => v.direction === 'declared-missing')
-      .map((v) => ({ token: v.token, file: v.file, line: v.line })),
-  );
-  const registeredNotDeclared = sortSites(
-    (ruleResult?.violations ?? [])
-      .filter((v) => v.direction === 'registered-missing')
-      .map((v) => ({ token: v.token, file: v.file, line: v.line })),
-  );
+  const byDirection = (d: string): IWiringTokenSite[] =>
+    sortSites(
+      (ruleResult?.violations ?? [])
+        .filter((v) => v.direction === d)
+        .map((v) => ({ token: v.token, file: v.file, line: v.line })),
+    );
+  const skip = report.skipped[0];
 
   return {
     schema: WIRING_EXPLAIN_SCHEMA,
     ruleId: rule.id,
     ...(rule.description ? { description: rule.description } : {}),
-    mode: rule.mode === 'parity' ? 'parity' : 'subset',
+    mode: rule.mode ?? 'subset',
+    registeredMode: rule.registeredMode ?? 'union',
     ...(rule.groupBy ? { groupBy: rule.groupBy } : {}),
     severity: rule.severity ?? 'error',
     declared: {
@@ -137,8 +147,12 @@ export function explainWiring(
       filesScanned: registeredFiles.size,
       ...(registeredError ? { error: registeredError } : {}),
     },
-    declaredNotRegistered,
-    registeredNotDeclared,
+    declaredNotRegistered: byDirection('declared-missing'),
+    registeredNotDeclared: byDirection('registered-missing'),
+    overlap: byDirection('overlap'),
+    ...(ruleResult?.hops ? { hops: ruleResult.hops } : {}),
+    status: ruleResult?.status ?? 'error',
+    ...(skip ? { skipReason: skip.reason } : {}),
     verdict: report.verdict,
     diagnostics: report.diagnostics,
   };

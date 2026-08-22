@@ -81,6 +81,29 @@ export interface ISharkCraftPackContributions {
    * local-wins by `symbol`.
    */
   reusePrimitiveFiles?: readonly string[];
+  /**
+   * Baseline/ledger drift rule files — the plane behind `shrk baseline check`.
+   * Each default-exports `readonly IBaselineRule[]`, merged local-wins by `id`.
+   *
+   * SAFETY: a `compute.kind: "command"` baseline spawns a shell command, so a
+   * pack-contributed one is DROPPED (with a diagnostic) by the merge seam —
+   * mirroring the "pack-contributed verification commands are NOT auto-run"
+   * contract. Pack-shipped `extractor` baselines are pure reads and merge
+   * normally.
+   */
+  baselineFiles?: readonly string[];
+  /**
+   * Generated-artifact drift/provenance rule files — the plane behind
+   * `shrk generated check`. Each default-exports
+   * `readonly IGeneratedArtifactRule[]`, merged local-wins by `id`.
+   *
+   * SAFETY: as with {@link baselineFiles}, a pack-contributed rule that declares
+   * a `regen` command is dropped by the merge seam. A HEADER-ONLY rule (no
+   * `regen`) never spawns anything and merges normally — which is exactly what a
+   * framework pack wants to ship ("files under this glob must carry this
+   * do-not-edit header").
+   */
+  generatedArtifactFiles?: readonly string[];
   /** Context regression test files. */
   contextTestFiles?: readonly string[];
   /** Agent contract test files. */
@@ -170,6 +193,8 @@ export const CONTRIBUTION_FILE_KEYS = [
   'registrationGraphFiles',
   'policyRuleFiles',
   'reusePrimitiveFiles',
+  'baselineFiles',
+  'generatedArtifactFiles',
   'contextTestFiles',
   'agentTestFiles',
   'delegateRecipeFiles',

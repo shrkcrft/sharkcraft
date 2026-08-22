@@ -1,19 +1,16 @@
-import type { IWiringRule, IWiringSource } from '@shrkcrft/core';
+import type { IWiringRule } from '@shrkcrft/core';
 import { matchesAny } from '../scan/glob.ts';
 import { readMatchingFiles } from '../util/walk-files.ts';
 import {
   evaluateWiring,
+  wiringGlobsOf,
   type IWiringFileEntry,
   type IWiringReport,
 } from './evaluate-wiring.ts';
 
-/** All file globs a rule references: its declared side + every registered source (union). */
+/** All file globs a rule references: every side / every hop. */
 function ruleGlobs(rule: IWiringRule): string[] {
-  const reg = rule.registered;
-  const sources: readonly IWiringSource[] = Array.isArray(reg)
-    ? (reg as readonly IWiringSource[])
-    : [reg as IWiringSource];
-  return [...rule.declared.files, ...sources.flatMap((s) => [...s.files])];
+  return wiringGlobsOf(rule);
 }
 
 export interface IRunWiringOptions {
@@ -55,6 +52,7 @@ export function runWiring(
       rules: [],
       violations: [],
       diagnostics: [],
+      skipped: [],
       evaluated: 0,
       verdict: 'pass',
     };

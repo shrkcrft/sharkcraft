@@ -144,7 +144,27 @@ import { archCommand } from './commands/arch.command.ts';
 import { frameworkCommand } from './commands/framework.command.ts';
 import { apiDiffCommand } from './commands/api-diff.command.ts';
 import { gateCommand } from './commands/gate.command.ts';
-import { policyLintCommand } from './commands/policy-lint.command.ts';
+import { policyLintCommand, policyLintExplainCommand } from './commands/policy-lint.command.ts';
+import {
+  baselineCheckCommand,
+  baselineCommand,
+  baselineDiffCommand,
+  baselineExplainCommand,
+  baselineListCommand,
+  baselineUpdateCommand,
+} from './commands/baseline.command.ts';
+import {
+  generatedCheckCommand,
+  generatedExplainCommand,
+  generatedListCommand,
+  generatedUpdateCommand,
+} from './commands/generated.command.ts';
+import {
+  gatesCommand,
+  gatesCoverageCommand,
+  gatesExplainCommand,
+  gatesListCommand,
+} from './commands/gates.command.ts';
 import { wiringCommand } from './commands/wiring.command.ts';
 import { reuseCommand } from './commands/reuse.command.ts';
 import { migrateCommand } from './commands/migrate.command.ts';
@@ -157,6 +177,8 @@ import { onboardCommand } from './commands/onboard.command.ts';
 import {
   contradictionsCommand,
   generatedCommand,
+  generatedProtectCommand,
+  generatedReportCommand,
   ingestCommand,
 } from './commands/ingest.command.ts';
 import {
@@ -447,6 +469,26 @@ export function buildRegistry(): CommandRegistry {
   registry.register(apiDiffCommand);
   registry.register(gateCommand);
   registry.register(policyLintCommand);
+  registry.registerSubcommand('policy-lint', policyLintExplainCommand);
+  // The two shell-executing planes (baseline/generated) + the trust layer.
+  registry.register(baselineCommand);
+  registry.registerSubcommand('baseline', baselineListCommand);
+  registry.registerSubcommand('baseline', baselineCheckCommand);
+  registry.registerSubcommand('baseline', baselineDiffCommand);
+  registry.registerSubcommand('baseline', baselineUpdateCommand);
+  registry.registerSubcommand('baseline', baselineExplainCommand);
+  // `generated` already exists as the generated-code CLASSIFIER (report /
+  // protect). These add the drift GATE under the same noun.
+  registry.registerSubcommand('generated', generatedReportCommand);
+  registry.registerSubcommand('generated', generatedProtectCommand);
+  registry.registerSubcommand('generated', generatedListCommand);
+  registry.registerSubcommand('generated', generatedCheckCommand);
+  registry.registerSubcommand('generated', generatedUpdateCommand);
+  registry.registerSubcommand('generated', generatedExplainCommand);
+  registry.register(gatesCommand);
+  registry.registerSubcommand('gates', gatesListCommand);
+  registry.registerSubcommand('gates', gatesCoverageCommand);
+  registry.registerSubcommand('gates', gatesExplainCommand);
   registry.register(wiringCommand);
   registry.register(reuseCommand);
   registry.register(migrateCommand);

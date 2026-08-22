@@ -73,6 +73,43 @@ The scan finds ids wherever the globs reach — built-in declarations *and*
 pack-contributed registration files — against ground truth, so the answer
 doesn't drift as contributions move between files.
 
+## `duplicates` — the latent bug the compiler can't see
+
+```bash
+shrk registry <name> duplicates [--json]
+```
+
+Two roots both claiming the same id compile fine; whichever registration wins at
+runtime is an accident of load order. `duplicates` reports every id declared more
+than once, **with every declaration site**, so the collision can be resolved
+rather than merely detected. Exit `1` on duplicates, `0` when clean, `2` when the
+registry matched 0 ids (not verified — the selector is probably stale).
+
+```
+Duplicate ids in registry "mcp-tools" (1):
+  ✗ get_helper  (2 declarations)
+      packages/mcp-server/src/tools/r28-helpers.tool.ts:28
+      packages/mcp-server/src/tools/r33-routing-helpers.tool.ts:56
+```
+
+That is the real output from this repo's **first** run of the verb. Two MCP
+tools had registered under `get_helper`; the server's dispatch table is
+last-wins, so one of them was unreachable via `tools/call` while `tools/list`
+advertised the name twice — green build, green types, tool silently absent. The
+pack-helper one is now `get_pack_helper`, and
+`packages/mcp-server/src/__tests__/r66-tool-name-uniqueness.test.ts` keeps the
+invariant mechanical. Re-run it today and the registry is clean:
+
+```
+No duplicate ids in registry "mcp-tools" (289 scanned). ✓
+```
+
+## Extraction
+
+`source` and `consumer` use the shared [extraction DSL](./extraction-dsl.md), so
+a registry can be harvested from an array literal, an enum, the nth argument of a
+factory call, a decorator, a string union, or a JSON path — not only a regex.
+
 ## When to reach for it
 
 Any "string-keyed contribution set spread across files" you'd otherwise grep:

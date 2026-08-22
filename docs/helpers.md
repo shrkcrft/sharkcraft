@@ -38,7 +38,19 @@ shrk helper plan <id> [--profile <id>] [--var k=v]
 
 ## MCP
 
-- `list_helpers`, `get_helper`, `preview_helper_plan` — read-only.
+Two distinct helper families, each with its own tools — read-only, both of them:
+
+| Family | Source | Tools |
+|---|---|---|
+| Helper registry (R32) | the engine's built-in `HELPERS` | `list_helpers`, `get_helper`, `preview_helper_plan` |
+| Pack/local helpers (R33) | `helperFiles[]` on a pack manifest | `list_pack_helpers`, `get_pack_helper` |
+
+The pack-side pair carries the `pack` prefix because both families previously
+registered under `list_helpers` / `get_helper`. The MCP dispatch table is
+last-wins, so a collision does not error — it makes one tool unreachable while
+`tools/list` advertises the name twice. `ALL_TOOLS` name uniqueness is now
+asserted mechanically (see
+`packages/mcp-server/src/__tests__/r66-tool-name-uniqueness.test.ts`).
 
 ## Safety
 

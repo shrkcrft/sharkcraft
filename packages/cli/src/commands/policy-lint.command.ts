@@ -1,6 +1,11 @@
 import * as nodePath from 'node:path';
-import type { PolicySurface } from '@shrkcrft/core';
-import { runPolicyLint, type IPolicyFinding } from '@shrkcrft/boundaries';
+import type { IPolicyRule, PolicySurface } from '@shrkcrft/core';
+import {
+  runPolicyLint,
+  type IPolicyFinding,
+  type IPolicyReport,
+  type IPolicySuppression,
+} from '@shrkcrft/boundaries';
 import { classifyChangedScope, resolveChangedFiles, resolveProjectConfig } from '@shrkcrft/inspector';
 import {
   flagBool,
@@ -13,12 +18,152 @@ import { asJson, header, kv } from '../output/format-output.ts';
 
 const VALID_SURFACES: ReadonlySet<string> = new Set(['template', 'style', 'ts']);
 
+
+export const POLICY_EXPLAIN_SCHEMA = 'sharkcraft.policy-explain/v1' as const;
+
+/** What ONE policy rule resolved to against the live tree. */
+export interface IPolicyExplain {
+  readonly schema: typeof POLICY_EXPLAIN_SCHEMA;
+  readonly ruleId: string;
+  readonly description?: string;
+  readonly surface: PolicySurface;
+  readonly severity: 'error' | 'warning';
+  readonly pattern: string;
+  readonly scan: string;
+  /** Content units the rule scanned (files, or inline-template bodies). */
+  readonly unitsScanned: number;
+  readonly status: string;
+  /** Every hit that COUNTED, with file:line. */
+  readonly findings: readonly IPolicyFinding[];
+  /** Every hit an exemption or the scan zone dropped, and which one applied. */
+  readonly suppressed: readonly IPolicySuppression[];
+  readonly exemptFiles: readonly string[];
+  readonly exemptLines?: string;
+  readonly diagnostics: readonly string[];
+  /** Why the rule scanned nothing, when it did. */
+  readonly skipReason?: string;
+}
+
+/**
+ * Dry-run ONE policy rule and return everything it saw — including the hits an
+ * exemption swallowed.
+ *
+ * Showing suppressed hits is the point: an exemption that silently deletes a
+ * finding is indistinguishable from a stale glob, so both the kept and the
+ * dropped hits are reported, each labelled with the exemption that applied.
+ */
+export function runPolicyExplain(
+  cwd: string,
+  rule: IPolicyRule,
+  excludeDirs: readonly string[],
+): IPolicyExplain {
+  const report: IPolicyReport = runPolicyLint(cwd, [rule], { excludeDirs });
+  const result = report.rules[0];
+  const skip = report.skipped[0];
+  return {
+    schema: POLICY_EXPLAIN_SCHEMA,
+    ruleId: rule.id,
+    ...(rule.description ? { description: rule.description } : {}),
+    surface: rule.surface,
+    severity: rule.severity ?? 'error',
+    pattern: rule.pattern,
+    scan: rule.scan ?? 'all',
+    unitsScanned: result?.unitsScanned ?? 0,
+    status: result?.status ?? 'error',
+    findings: report.findings,
+    suppressed: report.suppressed,
+    exemptFiles: rule.exemptFiles ?? [],
+    ...(rule.exemptLines ? { exemptLines: rule.exemptLines } : {}),
+    diagnostics: report.diagnostics,
+    ...(skip ? { skipReason: skip.reason } : {}),
+  };
+}
+
+/** Render an {@link IPolicyExplain}. Always returns 0 — explain is informational. */
+export function renderPolicyExplain(explain: IPolicyExplain, wantJson: boolean): number {
+  if (wantJson) {
+    process.stdout.write(asJson(explain) + '\n');
+    return 0;
+  }
+  process.stdout.write(header(`Policy explain: ${explain.ruleId} (${explain.surface})`));
+  if (explain.description) process.stdout.write(`  ${explain.description}\n`);
+  process.stdout.write(kv('pattern', `/${explain.pattern}/`) + '\n');
+  process.stdout.write(kv('scan zone', explain.scan) + '\n');
+  process.stdout.write(kv('units scanned', String(explain.unitsScanned)) + '\n');
+  process.stdout.write(kv('status', explain.status) + '\n');
+  if (explain.exemptFiles.length > 0) {
+    process.stdout.write(kv('exemptFiles', explain.exemptFiles.join(', ')) + '\n');
+  }
+  if (explain.exemptLines) process.stdout.write(kv('exemptLines', explain.exemptLines) + '\n');
+
+  process.stdout.write(`\nHits that COUNT (${explain.findings.length}):\n`);
+  for (const f of explain.findings.slice(0, 60)) {
+    process.stdout.write(
+      `  ✗ ${f.match}  (${f.file}:${f.line})${f.inlineTemplate ? ' [inline template]' : ''}\n`,
+    );
+  }
+  if (explain.findings.length > 60) {
+    process.stdout.write(`  … (${explain.findings.length - 60} more)\n`);
+  }
+  if (explain.suppressed.length > 0) {
+    process.stdout.write(`\nHits an exemption DROPPED (${explain.suppressed.length}):\n`);
+    for (const s of explain.suppressed.slice(0, 60)) {
+      process.stdout.write(`  – ${s.match}  (${s.file}:${s.line})  via ${s.via}\n`);
+    }
+    if (explain.suppressed.length > 60) {
+      process.stdout.write(`  … (${explain.suppressed.length - 60} more)\n`);
+    }
+  }
+  if (explain.skipReason) {
+    process.stdout.write(
+      `\n! SKIPPED — ${explain.skipReason}. A rule that scans nothing is a bug in the rule,\n` +
+        '  not a pass. Fix the glob, or set `failOnEmpty: true` to make this a hard failure.\n',
+    );
+  }
+  for (const d of explain.diagnostics) process.stdout.write(`  ! ${d}\n`);
+  return 0;
+}
+
+
+export const policyLintExplainCommand: ICommandHandler = {
+  name: 'explain',
+  description:
+    'Dry-run ONE policyRule and print every hit with file:line — INCLUDING the hits an exemption or the scan zone dropped, each labelled with which one applied.',
+  usage: 'shrk policy-lint explain <ruleId> [--json]',
+  booleanFlags: new Set(['json']),
+  async run(args: ParsedArgs): Promise<number> {
+    const id = args.positional[0] ?? flagString(args, 'id');
+    if (!id) {
+      process.stderr.write('Usage: shrk policy-lint explain <ruleId> [--json]\n');
+      return 2;
+    }
+    const cwd = resolveCwd(args);
+    const loaded = await resolveProjectConfig(cwd);
+    if (!loaded.ok) {
+      process.stderr.write(`Could not load config: ${loaded.error.message}\n`);
+      return 2;
+    }
+    const rules = loaded.value.config.policyRules ?? [];
+    const rule = rules.find((r) => r.id === id);
+    if (!rule) {
+      process.stderr.write(
+        `No policy rule "${id}". Configured: ${rules.map((r) => r.id).join(', ') || '(none)'}\n`,
+      );
+      return 2;
+    }
+    const rel = nodePath.relative(cwd, loaded.value.sharkcraftDir).split(nodePath.sep).join('/');
+    const excludeDirs = rel && !rel.startsWith('..') ? [rel] : [];
+    return renderPolicyExplain(runPolicyExplain(cwd, rule, excludeDirs), flagBool(args, 'json'));
+  },
+};
+
 export const policyLintCommand: ICommandHandler = {
   name: 'policy-lint',
   description:
     'Lint template/markup, stylesheet, and AOT-invisible TS surfaces against data-defined policyRules[] (e.g. flag raw markup when a primitive exists). Sees `.html` files AND inline `template:` strings — surfaces tsc/AOT cannot. Deterministic; no AI.',
   usage:
     'shrk [--cwd <dir>] policy-lint [--surface template|style|ts] [--changed-only] [--new-only] [--since <ref>] [--only <ids>] [--json]\n         (--changed-only SCANS just the changed files; --new-only scans the whole tree but shows only findings the change introduced, hiding pre-existing baseline debt)',
+  booleanFlags: new Set(['json', 'changed-only', 'new-only']),
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const wantJson = flagBool(args, 'json');
@@ -158,12 +303,27 @@ export const policyLintCommand: ICommandHandler = {
         `  ! Nothing evaluated — ${report.rules.length} rule(s) configured but none matched files in scope` +
           (changedOnly || since ? ' (changed-only).\n' : '.\n'),
       );
-      return 0;
+      for (const sk of report.skipped) {
+        process.stdout.write(`    – ${sk.ruleId}: ${sk.reason}${sk.failed ? '  (failOnEmpty → FAILED)' : ''}\n`);
+      }
+      // Scanning nothing is not a pass. `2` = not verified (the repo-wide
+      // contract); a `failOnEmpty` rule promotes it to a real failure.
+      return report.skipped.some((sk) => sk.failed) ? 1 : 2;
     }
     process.stdout.write(kv('rules evaluated', `${report.evaluated} of ${report.rules.length}`) + '\n');
     const errors = report.findings.filter((f) => f.severity === 'error').length;
     const warnings = report.findings.filter((f) => f.severity === 'warning').length;
     process.stdout.write(kv('findings', `${errors} error(s), ${warnings} warning(s)`) + '\n');
+    if (report.suppressed.length > 0) {
+      process.stdout.write(
+        kv('suppressed', `${report.suppressed.length} hit(s) dropped by an exemption — see \`policy-lint explain <id>\``) + '\n',
+      );
+    }
+    for (const sk of report.skipped) {
+      process.stdout.write(
+        `  ${sk.failed ? '✗' : '–'} ${sk.ruleId} ${sk.failed ? 'FAILED' : 'SKIPPED'} — ${sk.reason}\n`,
+      );
+    }
     if (newOnly) {
       process.stdout.write(
         kv('scope', `new-only (${hiddenBaseline} pre-existing finding(s) hidden — run without --new-only to see all)`) + '\n',
@@ -172,6 +332,12 @@ export const policyLintCommand: ICommandHandler = {
     if (report.diagnostics.length > 0) {
       process.stdout.write('\nMisconfigured rules:\n');
       for (const d of report.diagnostics) process.stdout.write(`  ! ${d}\n`);
+    }
+    if (report.skipped.some((sk) => sk.failed)) {
+      process.stdout.write(
+        '\nA rule with `failOnEmpty: true` matched nothing — that is a bug in the rule, not a pass.\n',
+      );
+      return 1;
     }
     if (report.findings.length === 0 && report.diagnostics.length === 0) {
       process.stdout.write(

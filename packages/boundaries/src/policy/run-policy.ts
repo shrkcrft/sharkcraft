@@ -56,7 +56,16 @@ export function runPolicyLint(
     selected = selected.filter((r) => changed.some((c) => matchesAny(c, globsFor(r))));
   }
   if (selected.length === 0) {
-    return { schema: 'sharkcraft.policy-lint/v1', rules: [], findings: [], diagnostics: [], evaluated: 0, verdict: 'pass' };
+    return {
+      schema: 'sharkcraft.policy-lint/v1',
+      rules: [],
+      findings: [],
+      diagnostics: [],
+      suppressed: [],
+      skipped: [],
+      evaluated: 0,
+      verdict: 'pass',
+    };
   }
 
   // Under --changed-only, restrict the SCANNED files to the changed set too (not
@@ -70,18 +79,30 @@ export function runPolicyLint(
 
   return evaluatePolicy(selected, (rule) => {
     const globs = globsFor(rule);
+    // `exemptFiles` never removes the file from the scan — it MARKS it, so the
+    // hits it would have produced are reported as suppressed rather than
+    // vanishing. A silently-dropped exemption is indistinguishable from a stale
+    // glob, which is the failure mode this whole plane exists to prevent.
+    const exempt = rule.exemptFiles && rule.exemptFiles.length > 0 ? rule.exemptFiles : undefined;
     const units: IPolicyUnit[] = [];
     for (const [path, content] of cache) {
       if (changedSet && !changedSet.has(path)) continue;
       if (!matchesAny(path, globs)) continue;
+      const exemptFile = exempt !== undefined && matchesAny(path, exempt);
       const ext = nodePath.extname(path).toLowerCase();
       if (rule.surface === 'template' && SOURCE_EXT.has(ext)) {
         for (const tpl of extractInlineTemplates(content)) {
-          units.push({ path, content: tpl.body, baseLine: tpl.startLine, inlineTemplate: true });
+          units.push({
+            path,
+            content: tpl.body,
+            baseLine: tpl.startLine,
+            inlineTemplate: true,
+            ...(exemptFile ? { exemptFile: true } : {}),
+          });
         }
       } else {
         // .html on the template surface, and all style/ts files: scan whole.
-        units.push({ path, content, baseLine: 1 });
+        units.push({ path, content, baseLine: 1, ...(exemptFile ? { exemptFile: true } : {}) });
       }
     }
     return units;

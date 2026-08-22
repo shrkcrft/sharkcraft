@@ -42,6 +42,10 @@ export function renderWiringExplain(report: IWiringExplain, wantJson: boolean): 
   process.stdout.write(header(`Wiring explain: ${report.ruleId} (${report.mode})`));
   if (report.description) process.stdout.write(`  ${report.description}\n`);
   if (report.groupBy) process.stdout.write(kv('groupBy', report.groupBy) + '\n');
+  if (report.registeredMode === 'intersection') {
+    process.stdout.write(kv('registeredMode', 'intersection (must be in EVERY sink)') + '\n');
+  }
+  process.stdout.write(kv('status', report.status) + '\n');
   process.stdout.write(
     kv('declared', `${report.declared.distinctCount} distinct across ${report.declared.filesScanned} file(s)`) +
       '\n',
@@ -82,6 +86,32 @@ export function renderWiringExplain(report: IWiringExplain, wantJson: boolean): 
     if (report.registeredNotDeclared.length > SITE_DISPLAY_CAP) {
       process.stdout.write(`  … (${report.registeredNotDeclared.length - SITE_DISPLAY_CAP} more)\n`);
     }
+  }
+
+  if (report.overlap.length > 0) {
+    process.stdout.write(`\nPresent on BOTH sides (disjoint, ${report.overlap.length}):\n`);
+    for (const s of report.overlap.slice(0, SITE_DISPLAY_CAP)) {
+      process.stdout.write(`  ✗ ${s.token}  (${s.file}:${s.line})\n`);
+    }
+    if (report.overlap.length > SITE_DISPLAY_CAP) {
+      process.stdout.write(`  … (${report.overlap.length - SITE_DISPLAY_CAP} more)\n`);
+    }
+  }
+  if (report.hops && report.hops.length > 0) {
+    process.stdout.write('\nChain hops:\n');
+    for (const h of report.hops) {
+      process.stdout.write(
+        `  hop ${h.index}: ${h.fromCount} → ${h.toCount}` +
+          `${h.missing > 0 ? `  ✗ ${h.missing} missing` : '  ✓'}\n`,
+      );
+    }
+  }
+  // A rule that checked NOTHING must never read like a clean pass.
+  if (report.skipReason) {
+    process.stdout.write(
+      `\n! SKIPPED — ${report.skipReason}. A rule that matches nothing is a bug in the rule,\n` +
+        '  not a pass. Fix the selector, or set `failOnEmpty: true` to make this a hard failure.\n',
+    );
   }
 
   for (const d of report.diagnostics) process.stdout.write(`  ! ${d}\n`);

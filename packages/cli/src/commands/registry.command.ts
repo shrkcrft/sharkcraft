@@ -8,6 +8,7 @@
  *       [--fail-if-taken]                       #   guard: non-zero when taken (free → 0)
  *       [--fail-if-missing]                     #   guard: non-zero when NOT registered
  *   shrk registry <name> where <id> [--json]    # declaration (+ consumer) sites
+ *   shrk registry <name> duplicates [--json]    # ids declared in more than one place
  *
  * `<name>` resolves a `registries[]` declaration in sharkcraft.config.ts — one
  * deterministic multi-root scan that answers "is this id taken / where is it"
@@ -21,6 +22,7 @@ import {
 } from '@shrkcrft/inspector';
 import {
   scanRegistry,
+  registryDuplicates,
   registryExists,
   registryWhere,
   type IRegistryInventory,
@@ -200,6 +202,43 @@ async function runRegistryInventory(args: ParsedArgs, name: string): Promise<num
     return code;
   }
 
+  if (action === 'duplicates') {
+    // Two roots claiming the same id compile fine; whichever registration wins
+    // at runtime is an accident of load order. Every site is printed so the
+    // duplicate can be resolved, not merely detected.
+    const dupes = registryDuplicates(inventory);
+    if (json) {
+      process.stdout.write(
+        asJson({
+          name: inventory.name,
+          scanned: inventory.entries.length,
+          duplicates: dupes,
+          diagnostics: [...inventory.diagnostics, ...loaded.planeDiagnostics],
+        }) + '\n',
+      );
+      return inventory.entries.length === 0 ? 2 : dupes.length > 0 ? 1 : 0;
+    }
+    if (inventory.entries.length === 0) {
+      process.stdout.write(
+        `Registry "${inventory.name}" matched 0 ids — nothing was checked. This is NOT a pass;\n` +
+          '  the source selector is probably stale (see `shrk gates coverage`).\n',
+      );
+      return 2;
+    }
+    if (dupes.length === 0) {
+      process.stdout.write(
+        `No duplicate ids in registry "${inventory.name}" (${inventory.entries.length} scanned). ✓\n`,
+      );
+      return 0;
+    }
+    process.stdout.write(`Duplicate ids in registry "${inventory.name}" (${dupes.length}):\n`);
+    for (const e of dupes) {
+      process.stdout.write(`  ✗ ${e.id}  (${e.sites.length} declarations)\n`);
+      for (const s of e.sites) process.stdout.write(`      ${s.file}:${s.line}\n`);
+    }
+    return 1;
+  }
+
   if (action === 'where') {
     if (!id) {
       process.stderr.write(`Usage: shrk registry ${name} where <id>\n`);
@@ -220,7 +259,9 @@ async function runRegistryInventory(args: ParsedArgs, name: string): Promise<num
     return 0;
   }
 
-  process.stderr.write(`Unknown action "${action}". Usage: shrk registry ${name} list | exists <id> | where <id>\n`);
+  process.stderr.write(
+    `Unknown action "${action}". Usage: shrk registry ${name} list | exists <id> | where <id> | duplicates\n`,
+  );
   return 2;
 }
 
@@ -228,7 +269,7 @@ export const registryCommand: ICommandHandler = {
   name: 'registry',
   description: 'Registry inspections: lifecycle symmetry + declared-registry inventory. Read-only.',
   usage:
-    'shrk registry lifecycle | <name> list | <name> exists <id> [--resolve] [--fail-if-taken|--fail-if-missing] | <name> where <id>',
+    'shrk registry lifecycle | <name> list | <name> exists <id> [--resolve] [--fail-if-taken|--fail-if-missing] | <name> where <id> | <name> duplicates',
   // Guard-mode + query flags take no value — declare them so `exists <id>
   // --fail-if-taken` (flag last) and `exists --resolve <id>` (flag first) both
   // keep the id as a positional instead of swallowing it.
@@ -247,7 +288,7 @@ export const registryCommand: ICommandHandler = {
     const loaded = await loadRegistries(cwd);
     const names = loaded.ok ? loaded.registries.map((r) => r.name) : [];
     process.stderr.write(
-      'Usage: shrk registry lifecycle | <name> list | <name> exists <id> | <name> where <id>\n' +
+      'Usage: shrk registry lifecycle | <name> list | <name> exists <id> | <name> where <id> | <name> duplicates\n' +
         (names.length > 0 ? `Declared registries: ${names.join(', ')}.\n` : 'No registries declared (sharkcraft.config.ts `registries[]`).\n'),
     );
     return 2;

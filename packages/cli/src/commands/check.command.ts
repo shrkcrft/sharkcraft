@@ -797,7 +797,36 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
     process.stdout.write('\nMisconfigured rules:\n');
     for (const d of report.diagnostics) process.stdout.write(`  ! ${d}\n`);
   }
+  // Rules that checked NOTHING, reported per-rule. `matchedNothing` gives the
+  // count; this names them, because "which rule went stale" is the actionable
+  // half. A `failOnEmpty` rule turns its own skip into a hard failure.
+  if (report.skipped.length > 0) {
+    process.stdout.write('\nRules that checked nothing:\n');
+    for (const sk of report.skipped) {
+      process.stdout.write(
+        `  ${sk.failed ? '✗' : '–'} ${sk.ruleId} ${sk.failed ? 'FAILED' : 'SKIPPED'} — ${sk.reason}\n`,
+      );
+    }
+    if (report.skipped.some((sk) => !sk.failed)) {
+      process.stdout.write(
+        '  Fix the selector, or set `failOnEmpty: true` once the rule is known to have\n' +
+          '  real subjects. Run `shrk gates coverage` to audit every plane at once.\n',
+      );
+    }
+  }
+  // A sink that extracted 0 ids while the source had some is a real failure, but
+  // almost always a stale SINK glob — say so instead of listing N "unwired"
+  // tokens with no explanation.
+  for (const r of report.rules) {
+    if (!r.emptySink) continue;
+    process.stdout.write(
+      `\n  ! ${r.ruleId}: the registered side extracted 0 ids while ${r.declaredCount} were declared —\n` +
+        `    every declared token "fails". Check the registered glob before chasing the tokens.\n`,
+    );
+  }
   if (report.violations.length === 0 && report.diagnostics.length === 0) {
+    // A failOnEmpty skip produces no violation object but IS a failure.
+    if (report.verdict === 'errors') return ExitCode.Failure;
     if (allEvaluated) {
       // Every configured rule ran — the earned full green.
       process.stdout.write('\nNo wiring violations — every declared token is registered. ✓\n');
@@ -822,7 +851,11 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
       `  declared ${r.declaredCount} / registered ${r.registeredCount} — ${r.violations.length} not wired:\n`,
     );
     for (const v of r.violations.slice(0, 50)) {
-      process.stdout.write(`    • ${v.token}  (${v.file}:${v.line})\n`);
+      const where = `(${v.file}:${v.line})`;
+      const hop = v.hop !== undefined ? ` [hop ${v.hop}]` : '';
+      process.stdout.write(
+        v.message ? `    • ${v.message}  ${where}${hop}\n` : `    • ${v.token}  ${where}${hop}\n`,
+      );
     }
     if (r.violations.length > 50) {
       process.stdout.write(`    … (${r.violations.length - 50} more)\n`);

@@ -88,6 +88,11 @@ shrk check boundaries            # boundary enforcement (with tsconfig alias sup
 shrk finish                      # composite "safe to finish?" — runs boundaries+wiring+policy+orphans changed-only → one verdict
 shrk check orphans               # after a delete: surviving importers of removed files/exports (alias-resolved)
 shrk wiring chain|unprovided|orphans  # registration/DI graph: declared→provided→consumed (the silent-at-runtime bugs imports can't see)
+shrk gates list|coverage|explain <id>  # the data-defined rule planes + what each rule MATCHED (stale-selector detector)
+shrk baseline check|diff|update  # committed-ledger drift, two-way (a LOST entry fails like a gained one)
+shrk generated check|update      # generated files: hand-edit drift (regen→temp→diff) + "do not edit" headers
+shrk policy-lint [explain <id>]  # forbidden content the compiler never sees (inline templates, .scss, JSON)
+shrk registry <name> duplicates  # ids declared in >1 place — load-order roulette the compiler can't see
 shrk graph why <a> <b>           # shortest-path explanation between two graph nodes
 shrk onboard --dry-run           # onboard an existing repo (advisory)
 shrk stats                       # per-language file counts, LOC, sizes, averages
@@ -95,6 +100,22 @@ shrk dashboard                   # local read-only dashboard (127.0.0.1:4567)
 shrk compress <file|->           # deterministically shrink a blob (JSON→table, log/diff/search→signal); CCR-reversible
 shrk expand <ccr-key>            # retrieve a CCR-cached original (the reverse of compress)
 ```
+
+**The data-defined gate planes (see `docs/gate-rules.md`).** Six planes in
+`sharkcraft.config.ts` cover what a green build cannot see: `wiringRules[]`
+(declared-here → registered-there), `policyRules[]` (forbidden content in
+non-compiled artifacts), `registries[]`, `registrationGraph[]`, `baselines[]`
+(a committed ledger that silently drifted), `generatedArtifacts[]` (a
+hand-edited generated file). All six share one extraction DSL
+(`docs/extraction-dsl.md`); `shrk gates coverage` reports what every rule
+actually matched and **flags every rule matching 0** — a rule that matches
+nothing is a bug in the rule, never a pass. Zero-match returns exit `2` (not
+verified); `failOnEmpty: true` on a rule makes it a hard `1`.
+
+**Shell-executing planes are local-config-only.** `baselines[].compute.run` and
+`generatedArtifacts[].regen` spawn a shell, so the pack-plane merge seam DROPS
+any pack-contributed element carrying one — mirroring the existing
+"pack-contributed verification commands are NOT auto-run" contract.
 
 **Token compression (deterministic, no model — see `docs/compression.md`).**
 `@shrkcrft/compress` cuts the tokens an agent pays for the same information:
@@ -184,6 +205,8 @@ what the LLM sees. See `docs/smart-context.md` and the
 - `docs/philosophy.md` — the non-negotiable design rules.
 - `docs/onboarding.md` + `docs/inference.md` — the onboarding engine.
 - `docs/security.md` — pack signing + apply guarantees.
+- `docs/gate-rules.md` — the trust layer over every data-defined rule plane.
+- `docs/extraction-dsl.md` — the shared id-extraction primitive.
 - `docs/release-checklist.md` — the preflight gate.
 
 For day-to-day work, **invoke the `sharkcraft-dev` skill** — it walks you

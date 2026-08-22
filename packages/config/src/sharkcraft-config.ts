@@ -92,6 +92,29 @@ export interface ISharkCraftConfig {
   policyRules?: readonly IPolicyRule[];
 
   /**
+   * Baseline / ledger drift rules — the "committed artifact silently drifted"
+   * plane. Each rule pairs a committed baseline file with a way to recompute
+   * its current value (a shell command, or a pure extractor harvest). Run via
+   * `shrk baseline check`; blessed via the explicit `shrk baseline update`.
+   *
+   * A `command` compute SPAWNS a shell, so it is honoured only from the repo's
+   * own config — the pack-plane merge seam drops a pack-contributed one.
+   */
+  baselines?: readonly IBaselineRule[];
+
+  /**
+   * Generated-artifact drift + provenance rules. `shrk generated check`
+   * regenerates into a temp dir and diffs both ways (catching a hand-edited
+   * generated file AND a regen that writes a subset), and asserts the
+   * "do not edit" header contract. A rule with no `regen` is header-only and
+   * never spawns anything.
+   *
+   * As with `baselines`, a pack-contributed rule may NOT carry a `regen`
+   * command.
+   */
+  generatedArtifacts?: readonly IGeneratedArtifactRule[];
+
+  /**
    * Reuse primitives — role-keyed canonical symbols surfaced by `shrk reuse
    * <intent>` (resolved through the code graph to import path + consumers).
    */
@@ -161,8 +184,17 @@ import type { IRegistryDeclaration } from '@shrkcrft/core';
 export type { IRegistrationIdiom } from '@shrkcrft/core';
 import type { IRegistrationIdiom } from '@shrkcrft/core';
 // Policy-lint + reuse contracts also live in core; re-export for consumers.
-export type { IPolicyRule, PolicySurface, IReusePrimitive } from '@shrkcrft/core';
+export type { IPolicyRule, PolicySurface, PolicyScanZone, IReusePrimitive } from '@shrkcrft/core';
 import type { IPolicyRule, IReusePrimitive } from '@shrkcrft/core';
+// Baseline-drift + generated-artifact contracts likewise live in core.
+export type {
+  IBaselineRule,
+  IBaselineCompute,
+  IGeneratedArtifactRule,
+  IProvenanceHeaderRule,
+  IRuleSelfTest,
+} from '@shrkcrft/core';
+import type { IBaselineRule, IGeneratedArtifactRule } from '@shrkcrft/core';
 
 /**
  * Per-recipe override, keyed by recipe id. Lets a project tune a PACK-contributed
