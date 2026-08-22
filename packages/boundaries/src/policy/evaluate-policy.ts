@@ -1,4 +1,4 @@
-import type { IPolicyRule, PolicyScanZone, PolicySurface } from '@shrkcrft/core';
+import { failsWhenEmpty, type IPolicyRule, type PolicyScanZone, type PolicySurface } from '@shrkcrft/core';
 import { lexCodeZones, zoneAt } from '../extract/code-zones.ts';
 import { safeCompile } from '../util/safe-regex.ts';
 
@@ -248,7 +248,7 @@ export function evaluatePolicy(rules: readonly IPolicyRule[], resolve: PolicyUni
     }
 
     if (units.length === 0) {
-      const failed = rule.failOnEmpty === true;
+      const failed = failsWhenEmpty(rule);
       skipped.push({
         ruleId: rule.id,
         reason: '0 content units matched the rule globs',

@@ -77,6 +77,10 @@ describe('runPolicyLint --changed-only restricts the SCANNED files (G1)', () => 
       // A `ts` rule in a project that has only stylesheets → scans nothing.
       const tsOnly: IPolicyRule = {
         id: 'no-todo',
+        // `warning` keeps the pre-alpha.29 default (failOnEmpty off), which is
+        // what this test is about: the loud-ZERO signal, not the promotion of
+        // that zero into a failure.
+        severity: 'warning',
         surface: 'ts',
         files: ['**/*.ts'],
         pattern: 'TODO',

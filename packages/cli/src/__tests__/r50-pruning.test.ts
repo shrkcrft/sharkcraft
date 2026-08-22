@@ -177,7 +177,9 @@ describe('surface lockdown holds', () => {
     // explain}; the cross-plane trust layer `gates` {list/coverage/explain} —
     // the stale-selector detector that keeps every other plane honest; plus
     // `policy-lint explain` and `registry duplicates`. Ceiling 442.
-    expect(COMMAND_CATALOG.length).toBeLessThan(442);
+    // alpha.29 adds ONE: `check wiring --fix`, the deterministic autofix for
+    // the mechanically-unambiguous declared-but-not-registered case. Ceiling 443.
+    expect(COMMAND_CATALOG.length).toBeLessThan(443);
     // Sanity: not absurdly small.
     expect(COMMAND_CATALOG.length).toBeGreaterThan(250);
   });

@@ -172,10 +172,12 @@ describe('shrk generated check', () => {
     }
   });
 
-  test('a glob matching 0 files is a loud skip (2), and failOnEmpty makes it a failure (1)', async () => {
+  test('a glob matching 0 files fails by default at error severity (alpha.29)', async () => {
+    // The default flipped in alpha.29: an `error`-severity rule that matches
+    // nothing is a bug in the rule, so it FAILS rather than skipping.
     const root = fixture(PLANE);
     try {
-      expect((await run(generatedCheckCommand, args(root, []))).code).toBe(2);
+      expect((await run(generatedCheckCommand, args(root, []))).code).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -184,6 +186,15 @@ describe('shrk generated check', () => {
       expect((await run(generatedCheckCommand, args(strict, []))).code).toBe(1);
     } finally {
       rmSync(strict, { recursive: true, force: true });
+    }
+  });
+
+  test('an explicit failOnEmpty:false keeps it a loud skip (2), never a green 0', async () => {
+    const lenient = fixture(PLANE.replace("id: 'g',", "id: 'g', failOnEmpty: false,"));
+    try {
+      expect((await run(generatedCheckCommand, args(lenient, []))).code).toBe(2);
+    } finally {
+      rmSync(lenient, { recursive: true, force: true });
     }
   });
 });
@@ -218,15 +229,28 @@ describe('shrk gates', () => {
     }
   });
 
-  test('coverage flags the rule that matched nothing and exits NOT-VERIFIED', async () => {
+  test('coverage flags the rule that matched nothing (error severity → exit 1)', async () => {
     const root = build(PLANE);
     try {
       const { code, out } = await run(gatesCoverageCommand, args(root, []));
-      expect(code).toBe(2);
+      // alpha.29: the stale rule is error-severity, so its zero match is a
+      // hard failure rather than an unverified result.
+      expect(code).toBe(1);
       const parsed = JSON.parse(out);
       expect(parsed.empty).toBe(1);
       expect(parsed.rules.find((r: { id: string }) => r.id === 'stale').status).toBe('empty');
       expect(parsed.rules.find((r: { id: string }) => r.id === 'live').status).toBe('ok');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a stale rule that opted out of failOnEmpty exits NOT-VERIFIED (2), not 0', async () => {
+    const root = build(PLANE.replace("id: 'stale',", "id: 'stale', failOnEmpty: false,"));
+    try {
+      const { code, out } = await run(gatesCoverageCommand, args(root, []));
+      expect(code).toBe(2);
+      expect(JSON.parse(out).empty).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

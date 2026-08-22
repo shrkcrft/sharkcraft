@@ -18,6 +18,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { IBaselineRule } from '@shrkcrft/core';
+import { failsWhenEmpty } from '@shrkcrft/core';
 import {
   baselineCount,
   baselineFails,
@@ -36,6 +37,7 @@ import {
 } from '../command-registry.ts';
 import { ExitCode } from '../exit-codes.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { buildGateEnvelope } from '../gates/gate-envelope.ts';
 
 const SCHEMA = 'sharkcraft.baseline/v1';
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -132,6 +134,8 @@ interface IBaselineOutcome {
   readonly skipReason?: string;
   /** The recompute produced 0 entries while the baseline has some — likely a broken compute. */
   readonly emptyCompute?: boolean;
+  /** No committed artifact exists yet — `committed` is absent, not zero. */
+  readonly missingBaseline?: boolean;
 }
 
 function evaluateRule(
@@ -172,12 +176,20 @@ function evaluateRule(
 
   const abs = nodePath.resolve(cwd, rule.baseline);
   if (!existsSync(abs)) {
+    // No artifact yet. `check` must still fail (nothing to compare against),
+    // but the CURRENT side is knowable and is exactly what the author needs to
+    // see before blessing — so compute it rather than reporting a false `0`.
+    const first = computeCurrent(cwd, rule, excludeDirs);
     return {
       rule,
       status: 'error',
       committedCount: 0,
-      currentCount: 0,
-      error: `committed baseline ${rule.baseline} does not exist — create it with \`shrk baseline update --id ${rule.id}\``,
+      ...(first.error ? {} : { current: first.text }),
+      currentCount: first.error ? 0 : baselineCount(rule, first.text),
+      missingBaseline: true,
+      error:
+        first.error ??
+        `committed baseline ${rule.baseline} does not exist — create it with \`shrk baseline update --id ${rule.id}\``,
     };
   }
   let committed: string;
@@ -209,7 +221,7 @@ function evaluateRule(
   if (currentCount === 0 && committedCount === 0) {
     return {
       rule,
-      status: rule.failOnEmpty ? 'failed' : 'skipped',
+      status: failsWhenEmpty(rule) ? 'failed' : 'skipped',
       committed,
       current: computed.text,
       committedCount,
@@ -251,6 +263,7 @@ function outcomeJson(o: IBaselineOutcome): Record<string, unknown> {
     ...(o.error ? { error: o.error } : {}),
     ...(o.skipReason ? { skipReason: o.skipReason } : {}),
     ...(o.emptyCompute ? { emptyCompute: true } : {}),
+    ...(o.missingBaseline ? { missingBaseline: true } : {}),
     hint: hintFor(o.rule),
   };
 }
@@ -278,12 +291,12 @@ async function prepare(
   if (!loaded.ok) {
     if (json) process.stdout.write(asJson({ schema: SCHEMA, error: loaded.message }) + '\n');
     else process.stderr.write(`Could not load config: ${loaded.message}\n  Run \`shrk doctor\` for details.\n`);
-    return { ok: false, code: ExitCode.NotVerified };
+    return { ok: false, code: ExitCode.UsageError };
   }
   const selected = selectRules(loaded.value.rules, flagString(args, 'id') ?? undefined);
   if (!selected.ok) {
     process.stderr.write(selected.message + '\n');
-    return { ok: false, code: ExitCode.NotVerified };
+    return { ok: false, code: ExitCode.UsageError };
   }
   let changedFiles: readonly string[] | undefined;
   if (opts.changedAware) {
@@ -385,10 +398,12 @@ export const baselineCheckCommand: ICommandHandler = {
     );
     const evaluated = outcomes.filter((o) => o.status !== 'skipped').length;
     // 0 only when a NON-EMPTY scope was actually compared; 2 when nothing was.
+    // A skipped baseline is "partially verified", never a green 0.
+    const skippedCount = outcomes.filter((o) => o.status === 'skipped').length;
     const exit =
       failed.length > 0
         ? ExitCode.Failure
-        : evaluated === 0
+        : evaluated === 0 || skippedCount > 0
           ? ExitCode.NotVerified
           : ExitCode.VerifiedPass;
 
@@ -401,6 +416,23 @@ export const baselineCheckCommand: ICommandHandler = {
           skipped: outcomes.filter((o) => o.status === 'skipped').length,
           verdict: failed.length > 0 ? 'errors' : evaluated === 0 ? 'not-verified' : 'pass',
           diagnostics: prep.planeDiagnostics,
+          gate: buildGateEnvelope(
+            'baseline check',
+            exit,
+            outcomes.map((o) => ({
+              id: o.rule.id,
+              type: 'baseline' as const,
+              status: o.status,
+              severity: o.rule.severity ?? 'error',
+              counts: { committed: o.committedCount, current: o.currentCount },
+              violations: [
+                ...(o.diff?.added ?? []).map((id) => ({ id, message: 'added', hint: hintFor(o.rule) })),
+                ...(o.diff?.removed ?? []).map((id) => ({ id, message: 'removed', hint: hintFor(o.rule) })),
+              ],
+              ...(o.skipReason ? { skipReason: o.skipReason } : {}),
+              ...(o.error ? { error: o.error } : {}),
+            })),
+          ),
         }) + '\n',
       );
       return exit;
@@ -419,6 +451,12 @@ export const baselineCheckCommand: ICommandHandler = {
       }
       if (o.status === 'error') {
         process.stdout.write(`  ! ${o.rule.id}  ${o.error}\n`);
+        if (o.missingBaseline && o.currentCount > 0) {
+          process.stdout.write(
+            `      the compute currently yields ${o.currentCount} entr${o.currentCount === 1 ? 'y' : 'ies'} — ` +
+              `run \`shrk baseline update --id ${o.rule.id}\` to bless them.\n`,
+          );
+        }
         continue;
       }
       const added = o.diff?.added.length ?? 0;
@@ -500,7 +538,7 @@ export const baselineUpdateCommand: ICommandHandler = {
         errors.push({ id: rule.id, error: computed.error });
         continue;
       }
-      if (computed.text.trim() === '' && rule.failOnEmpty) {
+      if (computed.text.trim() === '' && failsWhenEmpty(rule)) {
         errors.push({
           id: rule.id,
           error: 'refusing to write an EMPTY baseline for a `failOnEmpty` rule — fix the compute first',
@@ -547,7 +585,7 @@ export const baselineExplainCommand: ICommandHandler = {
     const id = flagString(args, 'id') ?? args.positional[0];
     if (!id) {
       process.stderr.write('Usage: shrk baseline explain --id <id>\n');
-      return ExitCode.NotVerified;
+      return ExitCode.UsageError;
     }
     const prep = await prepare(args, { changedAware: false });
     if (!prep.ok) return prep.code;
@@ -556,7 +594,7 @@ export const baselineExplainCommand: ICommandHandler = {
       process.stderr.write(
         `No baseline "${id}". Declared: ${prep.all.map((r) => r.id).join(', ') || '(none)'}\n`,
       );
-      return ExitCode.NotVerified;
+      return ExitCode.UsageError;
     }
     const outcome = evaluateRule(prep.cwd, rule, prep.excludeDirs, undefined);
     if (flagBool(args, 'json')) {
@@ -579,7 +617,14 @@ export const baselineExplainCommand: ICommandHandler = {
     process.stdout.write(kv('direction', rule.direction ?? 'two-way') + '\n');
     process.stdout.write(kv('canonical', outcome.diff?.canonical ?? rule.compute.canonical ?? 'auto') + '\n');
     if (rule.keyBy) process.stdout.write(kv('keyBy', rule.keyBy) + '\n');
-    process.stdout.write(kv('entries', `${outcome.committedCount} committed → ${outcome.currentCount} now`) + '\n');
+    process.stdout.write(
+      kv(
+        'entries',
+        outcome.missingBaseline
+          ? `committed (none yet) → ${outcome.currentCount} now`
+          : `${outcome.committedCount} committed → ${outcome.currentCount} now`,
+      ) + '\n',
+    );
     process.stdout.write(kv('status', outcome.status) + '\n');
     if (outcome.error) process.stdout.write(`  ! ${outcome.error}\n`);
     if (outcome.skipReason) process.stdout.write(`  – ${outcome.skipReason}\n`);
@@ -603,6 +648,6 @@ export const baselineCommand: ICommandHandler = {
       (sub ? `Unknown subcommand "${sub}". ` : '') +
         'Usage: shrk baseline list | check [--id X] | diff | update | explain --id <id>\n',
     );
-    return ExitCode.NotVerified;
+    return ExitCode.UsageError;
   },
 };

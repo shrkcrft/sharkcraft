@@ -13,6 +13,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { tryExplainGateRule } from './gates.command.ts';
 
 // ────────────────────────────────────────────────────────────────────────
 // shrk next — "what should I do right now in this repo?"
@@ -230,8 +231,18 @@ export const explainCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const topic = args.positional.join(' ').trim();
     if (!topic) {
-      process.stderr.write('Usage: shrk explain "<topic>"\n');
+      process.stderr.write(
+        'Usage: shrk explain "<topic>"   (a topic, or the id of any data-defined rule)\n',
+      );
       return 2;
+    }
+    // A single token that exactly names a declared rule on ANY plane is
+    // explained as that rule — the one entrypoint the trust layer promises.
+    // Anything else keeps the original topic search, so no existing call
+    // changes meaning.
+    if (args.positional.length === 1) {
+      const asRule = await tryExplainGateRule(args, topic);
+      if (asRule !== undefined) return asRule;
     }
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const maxEntries = flagNumber(args, 'max-entries') ?? 6;

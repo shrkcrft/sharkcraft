@@ -99,11 +99,19 @@ describe('policy exemptions', () => {
 
 describe('policy — the loud-skip contract', () => {
   test('a rule that scanned 0 units is SKIPPED, never a pass', () => {
-    const report = run(BASE, []);
+    // `warning` severity keeps the historical default, isolating the skip.
+    const report = run({ ...BASE, severity: 'warning' }, []);
     expect(report.rules[0]!.status).toBe('skipped');
     expect(report.evaluated).toBe(0);
     expect(report.skipped[0]!.failed).toBe(false);
     expect(report.verdict).toBe('pass');
+  });
+
+  test('an ERROR-severity rule fails on empty by default (alpha.29)', () => {
+    const report = run(BASE, []);
+    expect(report.rules[0]!.status).toBe('failed');
+    expect(report.skipped[0]!.failed).toBe(true);
+    expect(report.verdict).toBe('errors');
   });
 
   test('failOnEmpty makes that skip a real failure', () => {
@@ -111,5 +119,11 @@ describe('policy — the loud-skip contract', () => {
     expect(report.rules[0]!.status).toBe('failed');
     expect(report.skipped[0]!.failed).toBe(true);
     expect(report.verdict).toBe('errors');
+  });
+
+  test('an explicit failOnEmpty:false opts an error rule back out', () => {
+    const report = run({ ...BASE, failOnEmpty: false }, []);
+    expect(report.rules[0]!.status).toBe('skipped');
+    expect(report.verdict).toBe('pass');
   });
 });

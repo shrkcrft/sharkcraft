@@ -200,8 +200,12 @@ export interface IWiringRule {
   readonly message?: string;
   /**
    * Treat "this rule extracted nothing to check" as a FAILURE rather than a
-   * loud skip. A rule that matches nothing is a bug in the rule, never a pass;
-   * set this once a rule is known to have real subjects.
+   * loud skip. A rule that matches nothing is a bug in the rule, never a pass.
+   *
+   * DEFAULTS TO TRUE for `error`-severity rules (an error rule exists to block
+   * a build; one matching zero subjects is broken). `warning`-severity rules
+   * default to false, since a warning plane may legitimately cover an empty
+   * set. Set explicitly to override either default.
    */
   readonly failOnEmpty?: boolean;
   /** Author-declared expectations checked by `shrk gates coverage`. */

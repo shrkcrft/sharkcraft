@@ -12,12 +12,19 @@
  *   0  VerifiedPass  — checks ran over a NON-EMPTY scope and passed. Never
  *                      returned when zero units were evaluated.
  *   1  Failure       — checks ran and found violations.
- *   2  NotVerified   — indeterminate: empty evaluation scope, degraded
- *                      fallback, short-circuit, timeout, or "refused to run".
- *                      Distinct from both pass and fail so a chain can branch
- *                      on it (`|| handle-indeterminate`). This is also the
- *                      code the CLI already uses for usage errors — both mean
- *                      "did not produce a verified result".
+ *   2  NotVerified   — indeterminate: empty evaluation scope, all rules
+ *                      skipped, degraded fallback, short-circuit, timeout, or
+ *                      "refused to run". Distinct from both pass and fail so a
+ *                      chain can branch on it (`|| handle-indeterminate`).
+ *   3  UsageError    — the request itself was malformed: unloadable config, an
+ *                      unknown rule id, a bad flag value. Split out of `2` on
+ *                      the GATE verbs because the two demand different
+ *                      responses: `2` means "the gate ran but proved nothing"
+ *                      (investigate the rules), `3` means "the gate never
+ *                      started" (fix the invocation or the config). Non-gate
+ *                      verbs keep returning `2` for usage errors — widening the
+ *                      split across the whole CLI would churn a documented
+ *                      contract far beyond what it buys.
  *
  * The `gen --typecheck` pre-write gate already refuses-to-nonzero rather than
  * emit an unverified artifact; this generalizes that instinct across the gate
@@ -28,6 +35,7 @@ export enum ExitCode {
   VerifiedPass = 0,
   Failure = 1,
   NotVerified = 2,
+  UsageError = 3,
 }
 
 /**
@@ -113,12 +121,41 @@ export function isGateVerb(commandPath: string): boolean {
   return false;
 }
 
+/**
+ * True when the argv carries the global `--no-hints` (before the `--`
+ * sentinel). Suppresses advisory one-liners like the piped-exit note while
+ * leaving every real diagnostic — and the `--exit-trailer` machine channel —
+ * untouched. For a caller that has already internalised the warning and just
+ * wants clean stderr in captured logs.
+ */
+export function argvHasNoHints(argv: readonly string[]): boolean {
+  for (const t of argv) {
+    if (t === '--') break;
+    if (t === '--no-hints') return true;
+  }
+  return false;
+}
+
+/**
+ * Process-lifetime latch for the piped-exit hint. The note is advisory, so it
+ * pays rent once: a command that emits several gate verdicts in one process
+ * (or a `--watch` loop) should not repeat the same paragraph every cycle.
+ */
+let pipeHintEmitted = false;
+
+/** Reset the one-time hint latch. Test-only seam. */
+export function resetPipeHintLatch(): void {
+  pipeHintEmitted = false;
+}
+
 /** Injectable surface for {@link emitPipeExitSignal} (isTTY + writer + trailer). */
 export interface IPipeExitOptions {
   /** True when shrk's stdout is NOT a terminal (i.e. piped/redirected). */
   readonly piped: boolean;
   /** True when `--exit-trailer` was requested. */
   readonly trailer: boolean;
+  /** True when `--no-hints` was requested — suppress the advisory note only. */
+  readonly noHints?: boolean;
   /** stderr writer; defaults to `process.stderr.write`. Overridable for tests. */
   readonly write?: (s: string) => void;
 }
@@ -146,10 +183,15 @@ export function emitPipeExitSignal(
 ): void {
   if (!isGateVerb(commandPath)) return;
   const write = opts.write ?? ((s: string) => void process.stderr.write(s));
-  if (opts.piped && code !== 0) {
+  // Advisory, and therefore rationed: stderr only, only when a NON-zero verdict
+  // would actually be lost to the pipe, at most once per process, and never
+  // under `--no-hints`. The structured channel (`--exit-trailer`) is unaffected
+  // by all of these — it is opt-in and always emitted when asked.
+  if (opts.piped && code !== 0 && !opts.noHints && !pipeHintEmitted) {
+    pipeHintEmitted = true;
     write(
       `note: stdout is piped — $? reflects the downstream command, not shrk (exit ${code}); ` +
-        `use PIPESTATUS[0] or --exit-trailer to read shrk's verdict.\n`,
+        `use PIPESTATUS[0] or --exit-trailer to read shrk's verdict (--no-hints silences this).\n`,
     );
   }
   // The trailer is written LAST so it is the final stderr line a caller reads.

@@ -93,6 +93,8 @@ shrk baseline check|diff|update  # committed-ledger drift, two-way (a LOST entry
 shrk generated check|update      # generated files: hand-edit drift (regen→temp→diff) + "do not edit" headers
 shrk policy-lint [explain <id>]  # forbidden content the compiler never sees (inline templates, .scss, JSON)
 shrk registry <name> duplicates  # ids declared in >1 place — load-order roulette the compiler can't see
+shrk explain <ruleId>            # one entrypoint: resolves a rule id across EVERY plane
+shrk check wiring --fix [--write]  # deterministic autofix, unambiguous cases only (refuses the rest)
 shrk graph why <a> <b>           # shortest-path explanation between two graph nodes
 shrk onboard --dry-run           # onboard an existing repo (advisory)
 shrk stats                       # per-language file counts, LOC, sizes, averages
@@ -109,8 +111,15 @@ non-compiled artifacts), `registries[]`, `registrationGraph[]`, `baselines[]`
 hand-edited generated file). All six share one extraction DSL
 (`docs/extraction-dsl.md`); `shrk gates coverage` reports what every rule
 actually matched and **flags every rule matching 0** — a rule that matches
-nothing is a bug in the rule, never a pass. Zero-match returns exit `2` (not
-verified); `failOnEmpty: true` on a rule makes it a hard `1`.
+nothing is a bug in the rule, never a pass.
+
+**Exit codes (alpha.29).** `0` clean · `1` violations · `2` ran but proved
+nothing (empty scope, or ANY rule skipped) · `3` usage error (bad config /
+unknown rule id / bad flag). A skipped rule is never masked by a passing
+sibling. **`failOnEmpty` defaults to TRUE for `error`-severity rules** — an
+error rule matching zero subjects is a bug in the rule; `warning` rules default
+false. Every gate verb's `--json` also carries a shared `gate` envelope
+(`docs/gate-json.md`), so `jq .gate` parses identically across planes.
 
 **Shell-executing planes are local-config-only.** `baselines[].compute.run` and
 `generatedArtifacts[].regen` spawn a shell, so the pack-plane merge seam DROPS
@@ -207,6 +216,7 @@ what the LLM sees. See `docs/smart-context.md` and the
 - `docs/security.md` — pack signing + apply guarantees.
 - `docs/gate-rules.md` — the trust layer over every data-defined rule plane.
 - `docs/extraction-dsl.md` — the shared id-extraction primitive.
+- `docs/gate-json.md` — the one `--json` envelope across every gate verb.
 - `docs/release-checklist.md` — the preflight gate.
 
 For day-to-day work, **invoke the `sharkcraft-dev` skill** — it walks you

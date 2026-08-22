@@ -81,9 +81,13 @@ export interface IBaselineRule {
    */
   readonly watchFiles?: readonly string[];
   /**
-   * Treat "computed nothing" (empty output / no ids) as a FAILURE rather than a
-   * loud skip. A recompute that silently produces nothing would otherwise
-   * "match" an empty baseline forever.
+   * Treat "this rule computed nothing" as a FAILURE rather than a
+   * loud skip. A rule that matches nothing is a bug in the rule, never a pass.
+   *
+   * DEFAULTS TO TRUE for `error`-severity rules (an error rule exists to block
+   * a build; one matching zero subjects is broken). `warning`-severity rules
+   * default to false, since a warning plane may legitimately cover an empty
+   * set. Set explicitly to override either default.
    */
   readonly failOnEmpty?: boolean;
   /** Author-declared expectations checked by `shrk gates coverage`. */

@@ -55,9 +55,13 @@ export interface IGeneratedArtifactRule {
   /** The "do not edit" header contract, checked without ever running `regen`. */
   readonly provenanceHeader?: IProvenanceHeaderRule;
   /**
-   * Treat "no generated files matched" as a FAILURE rather than a loud skip.
-   * A glob that goes stale after a directory move otherwise reports green
-   * forever.
+   * Treat "this rule matched no files" as a FAILURE rather than a
+   * loud skip. A rule that matches nothing is a bug in the rule, never a pass.
+   *
+   * DEFAULTS TO TRUE for `error`-severity rules (an error rule exists to block
+   * a build; one matching zero subjects is broken). `warning`-severity rules
+   * default to false, since a warning plane may legitimately cover an empty
+   * set. Set explicitly to override either default.
    */
   readonly failOnEmpty?: boolean;
   /** Author-declared expectations checked by `shrk gates coverage`. */

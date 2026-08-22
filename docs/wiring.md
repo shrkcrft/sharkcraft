@@ -344,6 +344,50 @@ subset relation (`mode` must be `subset`).
   `expectNotIds` and [`shrk gates coverage`](./gate-rules.md) tests the rule like
   code instead of trusting it like config.
 
+## `--fix` — the mechanically-unambiguous case only
+
+A `declared-but-not-registered` violation has a deterministic repair when there
+is exactly one sink array: append the token to it. `--fix` does that, and
+nothing else.
+
+```bash
+shrk check wiring --fix            # dry run: prints the exact edit, writes nothing
+shrk check wiring --fix --write    # apply it
+shrk check wiring --fix --json     # the planned edits, machine-readable
+```
+
+```
+=== Wiring fix (dry run) ===
+  would add BETA_HANDLER → src/registry.ts:3
+      + BETA_HANDLER,
+
+  Left untouched (1) — not mechanically unambiguous:
+    • GAMMA_HANDLER  [ambiguous-sink] rule has 2 registered sinks — which one should the token join?
+
+Dry run — nothing written. Re-run with `--write` to apply.
+```
+
+**It refuses far more than it fixes, on purpose.** A wrong autofix in a gate is
+worse than no autofix — the tool would be writing the very thing it is supposed
+to verify. An edit is planned ONLY when all of these hold:
+
+| Requirement | Refusal code when it doesn't |
+|---|---|
+| exactly one registered sink (never a `chain` rule) | `ambiguous-sink` |
+| that sink is an `array-members` source | `sink-not-an-array` |
+| its glob resolves to exactly one file | `ambiguous-sink-file` |
+| the anchor array appears exactly once in it | `array-not-found` |
+
+Everything else is listed with its reason and left alone — a gate that silently
+half-fixes is worse than one that does nothing, because you cannot see what it
+skipped. `parity` (`registered-missing`) violations are never auto-fixed: the
+repair there is a deletion or a new declaration, and neither is mechanical.
+
+The planner matches the code already in the array — bare identifiers vs quoted
+strings, single vs multi-line, existing trailing-comma style — and preserves the
+whitespace before the closing bracket, so it never reformats code you did not
+ask it to touch.
+
 ## In the quality gate
 
 When `wiringRules[]` is present, the `wiring` gate runs as part of

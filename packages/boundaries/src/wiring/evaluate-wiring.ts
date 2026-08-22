@@ -1,4 +1,5 @@
 import {
+  failsWhenEmpty,
   validateWiringSource,
   type IWiringRule,
   type IWiringSource,
@@ -399,7 +400,7 @@ export function evaluateWiring(
           ? '0 ids extracted from the source side'
           : undefined;
     if (skipReason !== undefined) {
-      const failed = rule.failOnEmpty === true;
+      const failed = failsWhenEmpty(rule);
       skipped.push({ ruleId: rule.id, reason: skipReason, failed, severity });
       if (failed) {
         if (severity === 'error') misconfigError = true;

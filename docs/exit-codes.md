@@ -97,3 +97,38 @@ handler returns. The same module owns `emitPipeExitSignal(commandPath, code, …
 pre-write gate already refuses-to-nonzero rather than emit an unverified artifact
 — this generalizes that instinct across the whole gate surface, adding the third
 code so "unverified" is distinguishable from "broken."
+
+## `3` — usage error (gate verbs)
+
+`2` and `3` answer different questions and demand different responses:
+
+| Code | Means | What to do |
+|---|---|---|
+| `2` | the gate RAN but proved nothing — empty scope, or every rule skipped | investigate the **rules** (start with `shrk gates coverage`) |
+| `3` | the gate never STARTED — unloadable config, unknown rule id, bad flag value | fix the **invocation** or the config |
+
+`3` is scoped to the gate verbs (`check wiring`, `policy-lint`, `baseline *`,
+`generated *`, `gates *`, `registry *`). Non-gate verbs keep returning `2` for
+usage errors — widening the split across the whole CLI would churn a documented
+contract far beyond what it buys.
+
+## A skipped rule is never masked by a passing sibling
+
+The subtle one. A run with one passing rule and one whose selector went stale
+used to print the truth and then return the wrong number:
+
+```
+No wiring violations among the 1 rule(s) evaluated — 1 of 2 NOT verified. Not a full green.
+  $? = 0        ← an agent chaining `&& next` marched straight past
+```
+
+The exit code now matches the sentence:
+
+- **any** rule skipped, nothing failed → `2` (partially verified is not verified)
+- a skipped rule whose severity is `error` → `1`, because **`failOnEmpty`
+  defaults to true for error-severity rules**. An error rule exists to block a
+  build; one matching zero subjects is a bug in the rule, not a pass.
+- `warning`-severity rules default to `failOnEmpty: false`, since a warning
+  plane may legitimately cover an empty set. Set the field explicitly to
+  override either default.
+

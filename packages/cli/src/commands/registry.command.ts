@@ -39,6 +39,9 @@ import { ExitCode } from '../exit-codes.ts';
 import { asJson } from '../output/format-output.ts';
 import { resolveRegistryNoun } from './registry-resolve.ts';
 
+/** The inventory verbs, used to detect (and forgive) a verb-first invocation. */
+const INVENTORY_VERBS: ReadonlySet<string> = new Set(['list', 'exists', 'where', 'duplicates']);
+
 export const registryLifecycleCommand: ICommandHandler = {
   name: 'lifecycle',
   description: 'Scan the workspace for register/remove symmetry. Read-only.',
@@ -126,9 +129,23 @@ async function runRegistryInventory(args: ParsedArgs, name: string): Promise<num
   if (!decl) {
     const names = loaded.registries.map((r) => r.name);
     const avail = names.length > 0 ? `Declared registries: ${names.join(', ')}.` : 'No registries declared in sharkcraft.config.ts `registries[]`.';
-    if (json) process.stdout.write(asJson({ error: `unknown registry "${name}"`, available: names }) + '\n');
-    else process.stderr.write(`No registry named "${name}". ${avail}\n`);
-    return 2;
+    // Typing the verb first is the common stumble (siblings are verb-first).
+    // Name the correct grammar instead of only reporting the miss.
+    const verbFirst = INVENTORY_VERBS.has(name);
+    if (json) {
+      process.stdout.write(
+        asJson({ error: `unknown registry "${name}"`, available: names, ...(verbFirst ? { hint: `did you mean 'registry <name> ${name}'?` } : {}) }) + '\n',
+      );
+    } else {
+      process.stderr.write(`No registry named "${name}". ${avail}\n`);
+      if (verbFirst) {
+        const example = names[0] ?? '<name>';
+        process.stderr.write(
+          `"${name}" is a verb, not a registry — did you mean \`shrk registry ${example} ${name}\`?\n`,
+        );
+      }
+    }
+    return ExitCode.UsageError;
   }
 
   const inventory: IRegistryInventory = scanRegistry(cwd, decl);
@@ -155,13 +172,13 @@ async function runRegistryInventory(args: ParsedArgs, name: string): Promise<num
   if (action === 'exists') {
     if (!id) {
       process.stderr.write(`Usage: shrk registry ${name} exists <id> [--resolve] [--fail-if-taken|--fail-if-missing]\n`);
-      return 2;
+      return ExitCode.UsageError;
     }
     const failIfTaken = flagBool(args, 'fail-if-taken');
     const failIfMissing = flagBool(args, 'fail-if-missing');
     if (failIfTaken && failIfMissing) {
       process.stderr.write('Pass at most one of --fail-if-taken / --fail-if-missing.\n');
-      return 2;
+      return ExitCode.UsageError;
     }
     // `--resolve` maps a human noun to the canonical registered id before the
     // existence test — via the registry's declared `aliases` map AND generic
@@ -242,7 +259,7 @@ async function runRegistryInventory(args: ParsedArgs, name: string): Promise<num
   if (action === 'where') {
     if (!id) {
       process.stderr.write(`Usage: shrk registry ${name} where <id>\n`);
-      return 2;
+      return ExitCode.UsageError;
     }
     const entry = registryWhere(inventory, id);
     if (json) {
@@ -262,7 +279,7 @@ async function runRegistryInventory(args: ParsedArgs, name: string): Promise<num
   process.stderr.write(
     `Unknown action "${action}". Usage: shrk registry ${name} list | exists <id> | where <id> | duplicates\n`,
   );
-  return 2;
+  return ExitCode.UsageError;
 }
 
 export const registryCommand: ICommandHandler = {
@@ -281,7 +298,21 @@ export const registryCommand: ICommandHandler = {
       return registryLifecycleCommand.run(args);
     }
     if (sub !== undefined && sub.length > 0) {
-      // `<name> list | exists <id> | where <id>` — sub is the registry name.
+      // Grammar is `registry <name> <verb>`, but `baseline`/`generated` read
+      // verb-first, so `registry list <name>` is the instinctive form. Accept
+      // BOTH: when arg1 is a known verb and arg2 names a declared registry,
+      // swap them. The canonical order is unchanged; the stumble is removed.
+      const second = args.positional[1];
+      if (INVENTORY_VERBS.has(sub) && second !== undefined && second.length > 0) {
+        const loaded = await loadRegistries(resolveCwd(args));
+        const known = loaded.ok && findRegistry(loaded.registries, second) !== undefined;
+        if (known) {
+          // [verb, name, ...rest] → [name, verb, ...rest]
+          args.positional = [second, sub, ...args.positional.slice(2)];
+          return runRegistryInventory(args, second);
+        }
+      }
+      // `<name> list | exists <id> | where <id> | duplicates` — sub is the name.
       return runRegistryInventory(args, sub);
     }
     const cwd = resolveCwd(args);

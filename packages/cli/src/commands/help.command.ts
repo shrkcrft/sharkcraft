@@ -2,6 +2,45 @@ import type { CommandRegistry } from '../command-registry.ts';
 import { header } from '../output/format-output.ts';
 import { COMMAND_CATALOG, defaultShowInHelp, listExplainFamily } from './command-catalog.ts';
 
+/**
+ * Every multi-token command path the catalog documents. These are real,
+ * callable verbs that the command trie never sees, because their parent
+ * dispatches them from a positional argument rather than registering them.
+ */
+function catalogHelpPaths(): Set<string> {
+  const paths = new Set<string>();
+  for (const entry of COMMAND_CATALOG) {
+    // Strip the flag/argument tail a few catalog entries carry in `command`.
+    const clean = entry.command.split(/\s+--/)[0]!.trim();
+    if (clean.length > 0) paths.add(clean);
+  }
+  return paths;
+}
+
+/**
+ * Render help for a command path the trie could not resolve but the catalog
+ * documents, plus its sibling verbs under the same parent so the family is
+ * discoverable from any one member.
+ */
+function renderCatalogHelp(tokens: readonly string[]): string | undefined {
+  const want = tokens.join(' ');
+  const entry = COMMAND_CATALOG.find((e) => e.command.split(/\s+--/)[0]!.trim() === want);
+  if (!entry) return undefined;
+  let out = `${want} — ${entry.description}\n`;
+  const extra = EXTRA_HELP_LINES[want];
+  if (extra) out += extra.join('\n') + '\n';
+  const parent = tokens.slice(0, -1).join(' ');
+  if (parent.length > 0) {
+    const siblings = [...catalogHelpPaths()]
+      .filter((p) => p !== want && p.startsWith(parent + ' ') && !p.slice(parent.length + 1).includes(' '))
+      .sort();
+    if (siblings.length > 0) {
+      out += `\nSiblings: ${siblings.join(', ')}\n`;
+    }
+  }
+  return out;
+}
+
 /** First sentence of a catalog description, for the compact explain-family list. */
 function firstSentence(description: string): string {
   const dot = description.indexOf('. ');
@@ -160,8 +199,18 @@ export function makeHelpCommand(registry: CommandRegistry) {
           // that exits 0. Error out honestly instead, with a did-you-mean when
           // a real topic is a near-typo of the request.
           const attempt = tokens.join(' ');
+          // The trie matched nothing, but the CATALOG may still document this
+          // path — a documented verb whose parent isn't a registered command
+          // is still real and callable.
+          const viaCatalog = renderCatalogHelp(tokens);
+          if (viaCatalog !== undefined) {
+            process.stdout.write(viaCatalog);
+            return 0;
+          }
           process.stderr.write(`no such help topic: '${attempt}'\n`);
-          const suggestion = nearestHelpTopic(attempt, realHelpTopics(registry));
+          const suggestion =
+            nearestHelpTopic(attempt, realHelpTopics(registry)) ??
+            nearestHelpTopic(attempt, catalogHelpPaths());
           if (suggestion) process.stderr.write(`Did you mean: ${suggestion}?\n`);
           return 1;
         }
@@ -201,7 +250,19 @@ export function makeHelpCommand(registry: CommandRegistry) {
           }
           return 0;
         }
-        process.stderr.write(`Unknown command: ${tokens.join(' ')}\n`);
+        // The trie could not resolve the full path, but the CATALOG may still
+        // document it. Verbs like `check wiring` are dispatched from inside
+        // their parent's handler on a positional, so they are real, callable
+        // and documented — yet never trie nodes. Falling through to "Unknown
+        // command" made an entire documented surface look non-existent.
+        const catalogHelp = renderCatalogHelp(tokens);
+        if (catalogHelp !== undefined) {
+          process.stdout.write(catalogHelp);
+          return 0;
+        }
+        process.stderr.write(`no such help topic: '${tokens.join(' ')}'\n`);
+        const near = nearestHelpTopic(tokens.join(' '), catalogHelpPaths());
+        if (near) process.stderr.write(`Did you mean: shrk help ${near}?\n`);
         return 1;
       }
       if (!wantsFull) {

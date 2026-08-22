@@ -5,6 +5,132 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [0.1.0-alpha.29] — The exit code has to agree with the sentence
+
+Improvements from running the alpha.28 rule engines against a real codebase.
+The headline is one correctness bug: the gates told the truth in text and then
+returned the wrong number.
+
+### Fixed — a skipped rule was masked by its passing siblings (P1)
+
+```
+No wiring violations among the 1 rule(s) evaluated — 1 of 2 NOT verified. Not a full green.
+  $? = 0        ← an agent chaining `&& next` marched straight past
+```
+
+A rule whose selector went stale enforced NOTHING, said so on stdout, and still
+exited `0` as long as some other rule passed. That is exactly the silent-green
+these engines exist to prevent. Now:
+
+- **`failOnEmpty` defaults to `true` for `error`-severity rules.** An error rule
+  exists to block a build; one matching zero subjects is a bug in the rule, not a
+  pass. `warning`-severity rules default to `false` (a warning plane may
+  legitimately cover an empty set). Set the field explicitly to override either.
+- **Any rule skipped, nothing failed → exit `2`**, never `0`. Partially verified
+  is not verified.
+- Applied through one shared helper so wiring / policy / registry / baseline /
+  generated cannot drift apart.
+
+> **Behaviour change.** A repo whose `error`-severity rule matched nothing used
+> to see `0` (or `2`); it now sees `1`. That rule was not doing anything — fix
+> the selector, or set `failOnEmpty: false` if the empty set is legitimate.
+> `shrk gates coverage` lists every rule that matches nothing.
+
+### Fixed — `shrk help <multi-word verb>` (P1)
+
+`shrk help check wiring` answered `Unknown command: check wiring`. The cause was
+subtler than argument joining: verbs like `check wiring` are dispatched from
+inside their parent's handler on a positional, so they are real, callable and
+**catalogued** — but never nodes in the command trie, which is all help
+consulted. Help now falls back to the catalog in both failure paths, so every
+documented path resolves (and lists its sibling verbs). A genuinely unknown path
+still errors with a did-you-mean.
+
+### Fixed — `baseline explain` reported `0 now` before the first bless (P1)
+
+`explain` is the "what *would* this compute, without judging it" verb, and its
+whole job is to show what `update` will write **before** you bless — the one
+moment it reported `0`. It now always runs the compute for the `now` side and
+renders the absent artifact honestly:
+
+```
+entries            committed (none yet) → 89 now
+```
+
+`baseline check` also names what would be blessed when the artifact is missing.
+
+### One exit-code contract, with a fourth code (P2)
+
+`2` and `3` answer different questions: `2` means the gate RAN but proved
+nothing (investigate the rules); `3` means it never STARTED (fix the invocation
+or the config). Unloadable config, an unknown rule id, and a bad flag value are
+now `3` on every gate verb. Non-gate verbs keep `2` — widening the split across
+the whole CLI would churn a documented contract far beyond what it buys.
+`policy-lint` also stopped reporting a broken config as `1` ("violations found").
+
+### One JSON envelope across every plane (P2)
+
+Every gate verb already had `--json`, but each emitted its own schema, so a CI
+step had to parse five shapes. All of them now also carry a shared envelope
+under a `gate` key — `verb`, `exit`, and a normalized per-rule
+`{id, type, status, severity, counts, violations, skipReason}`:
+
+```bash
+shrk check wiring --json | jq .gate
+shrk baseline check --json | jq .gate   # same shape
+```
+
+**Additive**: the per-plane payloads are untouched, so nothing that parsed them
+before breaks. See `docs/gate-json.md`.
+
+### One `explain` entrypoint (P2)
+
+`shrk explain <ruleId>` now resolves a rule id across **all** planes and
+dispatches to the right explainer — no more knowing which plane owns an id
+before you can ask about it. A token that is not a declared rule id still gets
+the original topic search, so no existing invocation changes meaning. The
+per-plane forms (`gates explain`, `baseline explain --id`, …) remain.
+
+### Ergonomics (P2)
+
+- **`shrk registry` accepts both argument orders.** The grammar is
+  `registry <name> <verb>`, but the siblings read verb-first, so
+  `registry list <name>` was the instinctive (and wrong) form. When arg1 is a
+  known verb and arg2 names a declared registry, they are swapped. A verb-first
+  invocation with an unknown name now also names the correct grammar.
+- **`--no-hints`** silences the advisory piped-exit note, which is now also
+  gated to once per process. It was already stderr-only and emitted only when a
+  non-zero verdict would actually be lost to the pipe; the structured
+  `--exit-trailer` channel is unaffected by `--no-hints`.
+
+### New — `shrk check wiring --fix` (P3, heavily guarded)
+
+A `declared-but-not-registered` violation has a deterministic repair when there
+is exactly one sink array. `--fix` performs it — dry-run by default, `--write`
+to apply — and **refuses far more than it fixes**:
+
+| Requirement | Refusal when unmet |
+|---|---|
+| exactly one registered sink (never a `chain` rule) | `ambiguous-sink` |
+| the sink is an `array-members` source | `sink-not-an-array` |
+| its glob resolves to exactly one file | `ambiguous-sink-file` |
+| the anchor array appears exactly once | `array-not-found` |
+
+Everything else is listed with its reason and left untouched — a gate that
+silently half-fixes is worse than one that does nothing. The planner matches the
+existing code style (identifier vs quoted, single vs multi-line, trailing-comma
+convention) and preserves the whitespace before the closing bracket, so it never
+reformats code you did not ask it to touch. `parity` violations are never
+auto-fixed.
+
+### Notes
+
+- Three spec items turned out not to be bugs and are documented as such in
+  `prompts/round-shrk-improvements.md`: `--json` was already universal (the gap
+  was the *schema*, now fixed); the piped-exit note never printed on passing
+  runs; and `check wiring` already used `0/1/2`.
+- New doc: `docs/gate-json.md`.
+
 ## [0.1.0-alpha.28] — The plane the compiler can't see
 
 A green build is not a correct repo. Four defect classes are invisible to a

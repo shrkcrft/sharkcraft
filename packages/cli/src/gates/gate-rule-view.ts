@@ -1,11 +1,12 @@
-import type {
-  IBaselineRule,
-  IGeneratedArtifactRule,
-  IPolicyRule,
-  IRegistrationIdiom,
-  IRegistryDeclaration,
-  IRuleSelfTest,
-  IWiringRule,
+import {
+  failsWhenEmpty,
+  type IBaselineRule,
+  type IGeneratedArtifactRule,
+  type IPolicyRule,
+  type IRegistrationIdiom,
+  type IRegistryDeclaration,
+  type IRuleSelfTest,
+  type IWiringRule,
 } from '@shrkcrft/core';
 
 /** Which data-defined plane a rule belongs to. */
@@ -65,7 +66,7 @@ export function collectGateRules(planes: IGatePlanes): IGateRuleView[] {
       plane: 'wiring',
       ...(r.description ? { description: r.description } : {}),
       severity: r.severity ?? 'error',
-      failOnEmpty: r.failOnEmpty === true,
+      failOnEmpty: failsWhenEmpty(r),
       ...(r.selfTest ? { selfTest: r.selfTest } : {}),
       raw: r,
     });
@@ -76,7 +77,7 @@ export function collectGateRules(planes: IGatePlanes): IGateRuleView[] {
       plane: 'policy',
       ...(r.description ? { description: r.description } : {}),
       severity: r.severity ?? 'error',
-      failOnEmpty: r.failOnEmpty === true,
+      failOnEmpty: failsWhenEmpty(r),
       ...(r.selfTest ? { selfTest: r.selfTest } : {}),
       raw: r,
     });
@@ -109,7 +110,7 @@ export function collectGateRules(planes: IGatePlanes): IGateRuleView[] {
       plane: 'baseline',
       ...(r.description ? { description: r.description } : {}),
       severity: r.severity ?? 'error',
-      failOnEmpty: r.failOnEmpty === true,
+      failOnEmpty: failsWhenEmpty(r),
       ...(r.selfTest ? { selfTest: r.selfTest } : {}),
       raw: r,
     });
@@ -120,7 +121,7 @@ export function collectGateRules(planes: IGatePlanes): IGateRuleView[] {
       plane: 'generated',
       ...(r.description ? { description: r.description } : {}),
       severity: r.severity ?? 'error',
-      failOnEmpty: r.failOnEmpty === true,
+      failOnEmpty: failsWhenEmpty(r),
       ...(r.selfTest ? { selfTest: r.selfTest } : {}),
       raw: r,
     });

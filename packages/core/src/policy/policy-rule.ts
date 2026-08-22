@@ -74,10 +74,13 @@ export interface IPolicyRule {
    */
   readonly exemptLines?: string;
   /**
-   * Treat "this rule scanned nothing" as a FAILURE rather than a loud skip. A
-   * rule whose glob went stale matches nothing and would otherwise read as a
-   * green pass. Leave unset for a policy over a set that may legitimately be
-   * empty.
+   * Treat "this rule extracted nothing to check" as a FAILURE rather than a
+   * loud skip. A rule that matches nothing is a bug in the rule, never a pass.
+   *
+   * DEFAULTS TO TRUE for `error`-severity rules (an error rule exists to block
+   * a build; one matching zero subjects is broken). `warning`-severity rules
+   * default to false, since a warning plane may legitimately cover an empty
+   * set. Set explicitly to override either default.
    */
   readonly failOnEmpty?: boolean;
   /** Author-declared expectations checked by `shrk gates coverage`. */

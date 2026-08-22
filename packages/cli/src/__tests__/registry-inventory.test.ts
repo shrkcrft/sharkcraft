@@ -84,9 +84,11 @@ describe('registry inventory verb', () => {
     expect(payload.entry.sites[0].file).toBe('src/commands/a.command.ts');
   });
 
-  test('an unknown registry name errors (exit 2), does not silently pass', () => {
+  test('an unknown registry name is a USAGE error (exit 3), never a silent pass', () => {
+    // alpha.29 split `3` (the request was malformed — fix the invocation) out
+    // of `2` (the gate ran but proved nothing — investigate the rules).
     const r = shrk(['registry', 'does-not-exist', 'list'], dir);
-    expect(r.code).toBe(2);
+    expect(r.code).toBe(3);
   });
 
   test('lifecycle subverb still resolves', () => {

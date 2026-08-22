@@ -20,7 +20,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
-import type { IGeneratedArtifactRule } from '@shrkcrft/core';
+import { failsWhenEmpty, type IGeneratedArtifactRule } from '@shrkcrft/core';
 import {
   checkProvenanceHeaders,
   compareGeneratedTrees,
@@ -38,6 +38,7 @@ import {
 } from '../command-registry.ts';
 import { ExitCode } from '../exit-codes.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { buildGateEnvelope } from '../gates/gate-envelope.ts';
 
 const SCHEMA = 'sharkcraft.generated-drift/v1';
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -202,7 +203,7 @@ function evaluateRule(
   const severity = rule.severity ?? 'error';
 
   if (scan.generated.size === 0) {
-    const failed = rule.failOnEmpty === true;
+    const failed = failsWhenEmpty(rule);
     return {
       rule,
       status: failed ? 'failed' : 'skipped',
@@ -291,7 +292,7 @@ async function prepare(
   if (!loaded.ok) {
     if (json) process.stdout.write(asJson({ schema: SCHEMA, error: loaded.message }) + '\n');
     else process.stderr.write(`Could not load config: ${loaded.message}\n  Run \`shrk doctor\` for details.\n`);
-    return { ok: false, code: ExitCode.NotVerified };
+    return { ok: false, code: ExitCode.UsageError };
   }
   const id = flagString(args, 'id');
   let rules = loaded.value.rules;
@@ -303,7 +304,7 @@ async function prepare(
       process.stderr.write(
         `Unknown generated-artifact id(s): ${unknown.join(', ')}. Declared: ${[...known].join(', ') || '(none)'}\n`,
       );
-      return { ok: false, code: ExitCode.NotVerified };
+      return { ok: false, code: ExitCode.UsageError };
     }
     rules = rules.filter((r) => wanted.includes(r.id));
   }
@@ -394,10 +395,11 @@ export const generatedCheckCommand: ICommandHandler = {
       (o) => o.status === 'failed' || (o.status === 'error' && (o.rule.severity ?? 'error') === 'error'),
     );
     const evaluated = outcomes.filter((o) => o.status !== 'skipped').length;
+    const skippedCount = outcomes.length - evaluated;
     const exit =
       failed.length > 0
         ? ExitCode.Failure
-        : evaluated === 0
+        : evaluated === 0 || skippedCount > 0
           ? ExitCode.NotVerified
           : ExitCode.VerifiedPass;
 
@@ -411,6 +413,37 @@ export const generatedCheckCommand: ICommandHandler = {
           skipped: outcomes.filter((o) => o.status === 'skipped').length,
           verdict: failed.length > 0 ? 'errors' : evaluated === 0 ? 'not-verified' : 'pass',
           diagnostics: prep.planeDiagnostics,
+          gate: buildGateEnvelope(
+            'generated check',
+            exit,
+            outcomes.map((o) => ({
+              id: o.rule.id,
+              type: 'generated' as const,
+              status: o.status,
+              severity: o.rule.severity ?? 'error',
+              counts: {
+                files: o.committedCount,
+                differences: o.treeDiff?.differences.length ?? 0,
+                provenance: o.provenance.length,
+              },
+              violations: [
+                ...(o.treeDiff?.differences ?? []).map((d) => ({
+                  id: d.file,
+                  file: d.file,
+                  message: d.kind,
+                  hint: hintFor(o.rule),
+                })),
+                ...o.provenance.map((f) => ({
+                  id: f.file,
+                  file: f.file,
+                  message: f.message,
+                  hint: hintFor(o.rule),
+                })),
+              ],
+              ...(o.skipReason ? { skipReason: o.skipReason } : {}),
+              ...(o.error ? { error: o.error } : {}),
+            })),
+          ),
         }) + '\n',
       );
       return exit;
@@ -528,7 +561,7 @@ export const generatedExplainCommand: ICommandHandler = {
     const id = flagString(args, 'id') ?? args.positional[0];
     if (!id) {
       process.stderr.write('Usage: shrk generated explain --id <id>\n');
-      return ExitCode.NotVerified;
+      return ExitCode.UsageError;
     }
     const prep = await prepare(args);
     if (!prep.ok) return prep.code;
@@ -537,7 +570,7 @@ export const generatedExplainCommand: ICommandHandler = {
       process.stderr.write(
         `No generated-artifact rule "${id}". Declared: ${prep.all.map((r) => r.id).join(', ') || '(none)'}\n`,
       );
-      return ExitCode.NotVerified;
+      return ExitCode.UsageError;
     }
     // explain never spawns — the point is to show what the rule SEES.
     const scan = scanGeneratedFiles(prep.cwd, rule, prep.excludeDirs);

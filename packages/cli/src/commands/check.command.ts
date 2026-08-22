@@ -41,7 +41,15 @@ import {
   runWiring,
   scanImports,
   summarizeImports,
+  planWiringFix,
+  readMatchingFiles,
+  wiringGlobsOf,
+  type IWiringFixEdit,
+  type IWiringFixSkip,
+  type IWiringReport,
 } from '@shrkcrft/boundaries';
+import type { IWiringRule } from '@shrkcrft/core';
+import { buildGateEnvelope } from '../gates/gate-envelope.ts';
 
 interface IGroupResult {
   name: string;
@@ -620,6 +628,104 @@ const WIRING_CHECK_USAGE =
   '    --explain <id>   dry-run ONE rule and print the declared/registered sets it extracts\n' +
   '  Exit: 0 verified pass · 1 violations · 2 not-verified (0 rules evaluated in scope).';
 
+/**
+ * The honest exit code for a wiring run.
+ *
+ * The banner already said "Not a full green" when some rules were skipped, but
+ * the code an agent chains on returned `0` — a rule that enforced NOTHING was
+ * masked by its passing siblings. The verdict must match the sentence:
+ *
+ *   `1` violations (or a `failOnEmpty` skip, which the engine folds into the verdict)
+ *   `2` nothing evaluated, OR anything skipped — partially verified is not verified
+ *   `0` only when every configured rule actually ran and passed
+ */
+function wiringExitCode(report: IWiringReport, evaluated: number): number {
+  if (report.verdict === 'errors') return ExitCode.Failure;
+  if (evaluated === 0) return ExitCode.NotVerified;
+  if (report.skipped.length > 0) return ExitCode.NotVerified;
+  return ExitCode.VerifiedPass;
+}
+
+/**
+ * `check wiring --fix` — append a declared-but-unregistered token to its sink
+ * array, but ONLY where the edit is mechanically unambiguous.
+ *
+ * Dry-run by default: it prints the exact diff it would make and writes
+ * nothing. `--write` applies it. Anything the planner will not touch is listed
+ * with the reason, because a gate that silently half-fixes is worse than one
+ * that does nothing — the user must be able to see what was left.
+ */
+function runWiringFix(
+  cwd: string,
+  rules: readonly IWiringRule[],
+  report: IWiringReport,
+  write: boolean,
+  wantJson: boolean,
+): number {
+  const allEdits: IWiringFixEdit[] = [];
+  const allSkips: IWiringFixSkip[] = [];
+  // Read every file a sink could live in, once.
+  const globs = [...new Set(rules.flatMap((r) => wiringGlobsOf(r)))];
+  const cache = readMatchingFiles(cwd, globs, new Set());
+  const files = [...cache.entries()].map(([path, content]) => ({ path, content }));
+
+  for (const rule of rules) {
+    const violations = report.violations.filter((v) => v.ruleId === rule.id);
+    if (violations.length === 0) continue;
+    const plan = planWiringFix(rule, violations, files);
+    allEdits.push(...plan.edits);
+    allSkips.push(...plan.skipped);
+  }
+
+  // One write per file: the planner threads each file's content forward, so the
+  // LAST edit for a path carries every earlier insertion.
+  const finalByFile = new Map<string, string>();
+  for (const e of allEdits) finalByFile.set(e.file, e.nextContent);
+  let written = 0;
+  if (write) {
+    for (const [rel, content] of finalByFile) {
+      writeFileSync(nodePath.resolve(cwd, rel), content, 'utf8');
+      written += 1;
+    }
+  }
+
+  if (wantJson) {
+    process.stdout.write(
+      asJson({
+        schema: 'sharkcraft.wiring-fix/v1',
+        applied: write,
+        filesWritten: written,
+        edits: allEdits.map(({ nextContent: _drop, ...rest }) => rest),
+        skipped: allSkips,
+      }) + '\n',
+    );
+    return allEdits.length === 0 && allSkips.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass;
+  }
+
+  process.stdout.write(header(write ? 'Wiring fix (applied)' : 'Wiring fix (dry run)'));
+  if (allEdits.length === 0 && allSkips.length === 0) {
+    process.stdout.write('  Nothing to fix — no declared-but-unregistered tokens.\n');
+    return ExitCode.VerifiedPass;
+  }
+  for (const e of allEdits) {
+    process.stdout.write(`  ${write ? 'wrote  ' : 'would add'} ${e.token} → ${e.file}:${e.line}\n`);
+    process.stdout.write(`      + ${e.insert}\n`);
+  }
+  if (allSkips.length > 0) {
+    process.stdout.write(`\n  Left untouched (${allSkips.length}) — not mechanically unambiguous:\n`);
+    for (const sk of allSkips) {
+      process.stdout.write(`    • ${sk.token}  [${sk.reason}] ${sk.detail}\n`);
+    }
+  }
+  process.stdout.write(
+    write
+      ? `\n${written} file(s) written. Re-run \`shrk check wiring\` to confirm, and review the diff.\n`
+      : '\nDry run — nothing written. Re-run with `--write` to apply.\n',
+  );
+  // An unfixable violation still means the gate is red.
+  return allSkips.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass;
+}
+
 async function checkWiring(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   // `--help`/`-h` on the subverb documents its own scoping flags instead of
@@ -662,7 +768,7 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
     const explainId = flagString(args, 'explain');
     if (!explainId) {
       process.stderr.write('Usage: shrk check wiring --explain <ruleId> [--json]\n');
-      return 2;
+      return ExitCode.UsageError;
     }
     const rule = rules.find((r) => r.id === explainId);
     if (!rule) {
@@ -676,7 +782,7 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
       process.stderr.write(
         `No wiring rule "${explainId}". Configured rules: ${ids.length > 0 ? ids.join(', ') : '(none)'}\n`,
       );
-      return 2;
+      return ExitCode.UsageError;
     }
     return renderWiringExplain(explainWiring(cwd, rule), wantJson);
   }
@@ -742,6 +848,11 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
   const selectedRuleIds = report.rules.map((r) => r.ruleId);
   const scoped = changedOnly || since !== undefined;
 
+  // ── --fix: deterministic, heavily-guarded autofix ─────────────────────
+  if (flagBool(args, 'fix')) {
+    return runWiringFix(cwd, rules, report, flagBool(args, 'write'), wantJson);
+  }
+
   if (wantJson) {
     // Carry the honest counts so a machine consumer can tell "0 evaluated" from
     // a real green, and see how many rules the scope skipped + which fired.
@@ -756,16 +867,36 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
         notVerified,
         selectedRuleIds,
         // Distinguish verified-pass / failure / not-verified for a chained gate.
-        exitCode: evaluated === 0 ? ExitCode.NotVerified : report.verdict === 'errors' ? ExitCode.Failure : ExitCode.VerifiedPass,
+        exitCode: wiringExitCode(report, evaluated),
+        // One shape across every plane — see docs/gate-json.md.
+        gate: buildGateEnvelope(
+          'check wiring',
+          wiringExitCode(report, evaluated),
+          report.rules.map((r) => {
+            const skip = report.skipped.find((s) => s.ruleId === r.ruleId);
+            return {
+              id: r.ruleId,
+              type: 'wiring' as const,
+              status: r.status,
+              severity: r.severity,
+              counts: { declared: r.declaredCount, registered: r.registeredCount },
+              violations: r.violations.map((v) => ({
+                id: v.token,
+                file: v.file,
+                line: v.line,
+                ...(v.message ? { message: v.message } : {}),
+                ...(v.hint ? { hint: v.hint } : {}),
+              })),
+              ...(skip ? { skipReason: skip.reason } : {}),
+              ...(r.error ? { error: r.error } : {}),
+            };
+          }),
+        ),
       }) + '\n',
     );
     // `evaluated === 0` = nothing checked in scope → NOT verified (`2`), never a
     // silent `0` an agent's `&& next` would march past (a25 §1.1).
-    return evaluated === 0
-      ? ExitCode.NotVerified
-      : report.verdict === 'errors'
-        ? ExitCode.Failure
-        : ExitCode.VerifiedPass;
+    return wiringExitCode(report, evaluated);
   }
 
   process.stdout.write(header('Wiring check'));
@@ -838,10 +969,10 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
           `${notVerified} of ${configured} NOT verified${breakdown}. Not a full green.\n`,
       );
     }
-    return 0;
+    return wiringExitCode(report, evaluated);
   }
   if (report.violations.length === 0) {
-    return report.verdict === 'errors' ? 1 : 0;
+    return wiringExitCode(report, evaluated);
   }
   // Group by rule for a readable report.
   for (const r of report.rules) {

@@ -504,6 +504,15 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     taskRole: CommandTaskRole.Validate,
   }),
   entry({
+    command: 'check wiring --fix',
+    description:
+      'Deterministic autofix for `declared-but-not-registered`: append the missing id to its sink array. Dry-run by default; `--write` applies. Refuses anything ambiguous (N sinks, non-array sink, non-unique file/array) and lists what it left alone with the reason — it never guesses. [--write] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSource,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Apply,
+  }),
+  entry({
     command: 'policy-lint explain',
     description:
       'Dry-run ONE policyRule and print every hit with file:line — INCLUDING the hits an exemption (exemptFiles / exemptLines) or the lexical scan zone dropped, each labelled with which one applied. The author-loop view of what the gate sees. [--json]',

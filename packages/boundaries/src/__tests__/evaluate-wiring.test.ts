@@ -198,9 +198,18 @@ describe('evaluateWiring — config-authorable primitives', () => {
   });
 
   test('a rule whose globs match no files is NOT evaluated', () => {
-    const report = evaluateWiring([RULE], () => []);
+    // Since alpha.29 an `error`-severity rule that matches nothing FAILS
+    // (failOnEmpty defaults on), so this asserts the not-evaluated signal with
+    // the promotion explicitly off.
+    const report = evaluateWiring([{ ...RULE, failOnEmpty: false }], () => []);
     expect(report.evaluated).toBe(0);
     expect(report.verdict).toBe('pass');
+  });
+
+  test('the same rule at default severity FAILS on empty (alpha.29)', () => {
+    const report = evaluateWiring([RULE], () => []);
+    expect(report.evaluated).toBe(0);
+    expect(report.verdict).toBe('errors');
   });
 
   test('a source with neither pattern nor arrayProperty degrades to a diagnostic', () => {

@@ -11,6 +11,7 @@ export * from './wiring/explain-wiring.ts';
 export * from './wiring/registry-query.ts';
 export * from './wiring/registration-graph.ts';
 export * from './wiring/trace-literal.ts';
+export * from './wiring/plan-wiring-fix.ts';
 export * from './policy/extract-templates.ts';
 export * from './policy/evaluate-policy.ts';
 export * from './policy/run-policy.ts';

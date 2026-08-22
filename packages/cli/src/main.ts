@@ -8,7 +8,13 @@ import {
   parseArgs,
   type ICommandHandler,
 } from './command-registry.ts';
-import { argvHasExitTrailer, argvHasStrict, emitPipeExitSignal, promoteForStrict } from './exit-codes.ts';
+import {
+  argvHasExitTrailer,
+  argvHasNoHints,
+  argvHasStrict,
+  emitPipeExitSignal,
+  promoteForStrict,
+} from './exit-codes.ts';
 import { runCommandWithCompression } from './output/output-compression.ts';
 import { initCommand } from './commands/init.command.ts';
 import { inspectCommand } from './commands/inspect.command.ts';
@@ -843,6 +849,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       emitPipeExitSignal(command, exitCode, {
         piped: !process.stdout.isTTY,
         trailer: argvHasExitTrailer(argv),
+        noHints: argvHasNoHints(argv),
       });
     }
     return exitCode;

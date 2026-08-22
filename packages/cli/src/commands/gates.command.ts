@@ -39,6 +39,7 @@ import {
   type IGateRuleView,
 } from '../gates/gate-rule-view.ts';
 import { buildGateCoverage } from '../gates/rule-coverage.ts';
+import { buildGateEnvelope } from '../gates/gate-envelope.ts';
 import { baselineExplainCommand } from './baseline.command.ts';
 import { generatedExplainCommand } from './generated.command.ts';
 import { renderPolicyExplain, runPolicyExplain } from './policy-lint.command.ts';
@@ -63,7 +64,7 @@ async function prepare(
     const msg = loaded.error.message;
     if (json) process.stdout.write(asJson({ schema: SCHEMA, error: msg }) + '\n');
     else process.stderr.write(`Could not load config: ${msg}\n  Run \`shrk doctor\` for details.\n`);
-    return { ok: false, code: ExitCode.NotVerified };
+    return { ok: false, code: ExitCode.UsageError };
   }
   const rel = nodePath.relative(cwd, loaded.value.sharkcraftDir).split(nodePath.sep).join('/');
   return {
@@ -117,7 +118,7 @@ export const gatesListCommand: ICommandHandler = {
     const prep = await prepare(args);
     if (!prep.ok) return prep.code;
     const planes = parsePlanes(args);
-    if (!planes.ok) return ExitCode.NotVerified;
+    if (!planes.ok) return ExitCode.UsageError;
     const json = flagBool(args, 'json');
     const rules = planes.planes
       ? prep.value.rules.filter((r) => planes.planes!.has(r.plane))
@@ -174,7 +175,7 @@ export const gatesCoverageCommand: ICommandHandler = {
     const prep = await prepare(args);
     if (!prep.ok) return prep.code;
     const planes = parsePlanes(args);
-    if (!planes.ok) return ExitCode.NotVerified;
+    if (!planes.ok) return ExitCode.UsageError;
     const json = flagBool(args, 'json');
     const rules = planes.planes
       ? prep.value.rules.filter((r) => planes.planes!.has(r.plane))
@@ -198,7 +199,34 @@ export const gatesCoverageCommand: ICommandHandler = {
 
     if (json) {
       process.stdout.write(
-        asJson({ ...report, hardFailures: hardFailures.length, exitCode: exit }) + '\n',
+        asJson({
+          ...report,
+          hardFailures: hardFailures.length,
+          exitCode: exit,
+          gate: buildGateEnvelope(
+            'gates coverage',
+            exit,
+            report.rules.map((r) => ({
+              id: r.id,
+              type: r.plane,
+              status:
+                r.status === 'ok'
+                  ? ('passed' as const)
+                  : r.status === 'empty'
+                    ? r.failOnEmpty
+                      ? ('failed' as const)
+                      : ('skipped' as const)
+                    : r.status === 'error'
+                      ? ('error' as const)
+                      : ('failed' as const),
+              severity: r.failOnEmpty ? ('error' as const) : ('warning' as const),
+              counts: { files: r.filesMatched, units: r.unitsMatched },
+              violations: r.expectationFailures.map((f) => ({ id: r.id, message: f })),
+              ...(r.status === 'empty' ? { skipReason: `matched 0 ${r.unitLabel}` } : {}),
+              ...(r.error ? { error: r.error } : {}),
+            })),
+          ),
+        }) + '\n',
       );
       return exit;
     }
@@ -289,7 +317,7 @@ export const gatesExplainCommand: ICommandHandler = {
     const id = args.positional[0] ?? flagString(args, 'id');
     if (!id) {
       process.stderr.write('Usage: shrk gates explain <id> [--json]\n');
-      return ExitCode.NotVerified;
+      return ExitCode.UsageError;
     }
     const prep = await prepare(args);
     if (!prep.ok) return prep.code;
@@ -298,12 +326,12 @@ export const gatesExplainCommand: ICommandHandler = {
       process.stderr.write(
         `No gate rule "${id}". Run \`shrk gates list\` to see the ${prep.value.rules.length} declared rule(s).\n`,
       );
-      return ExitCode.NotVerified;
+      return ExitCode.UsageError;
     }
     // An id may legitimately exist on two planes (a wiring rule and a registry
     // can share a name); `--plane` disambiguates instead of guessing.
     const planes = parsePlanes(args);
-    if (!planes.ok) return ExitCode.NotVerified;
+    if (!planes.ok) return ExitCode.UsageError;
     const candidates = planes.planes
       ? matches.filter((r) => planes.planes!.has(r.plane))
       : matches;
@@ -312,12 +340,12 @@ export const gatesExplainCommand: ICommandHandler = {
         `"${id}" exists on ${candidates.length} planes (${candidates.map((c) => c.plane).join(', ')}). ` +
           'Disambiguate with --plane <p>.\n',
       );
-      return ExitCode.NotVerified;
+      return ExitCode.UsageError;
     }
     const view = candidates[0];
     if (!view) {
       process.stderr.write(`No gate rule "${id}" on the requested plane.\n`);
-      return ExitCode.NotVerified;
+      return ExitCode.UsageError;
     }
     const json = flagBool(args, 'json');
 
@@ -373,6 +401,28 @@ export const gatesExplainCommand: ICommandHandler = {
   },
 };
 
+/**
+ * Try to explain `id` as a data-defined rule on ANY plane.
+ *
+ * Returns the exit code when the id resolves to exactly one declared rule, or
+ * `undefined` when it is not a rule id at all — which lets `shrk explain` keep
+ * its original topic-search behaviour for everything else. This is the D2
+ * unification: a user holding a rule id no longer has to know which plane owns
+ * it, and no existing invocation changes meaning.
+ */
+export async function tryExplainGateRule(
+  args: ParsedArgs,
+  id: string,
+): Promise<number | undefined> {
+  const cwd = resolveCwd(args);
+  const loaded = await resolveProjectConfig(cwd);
+  if (!loaded.ok) return undefined;
+  const rules = collectGateRules(loaded.value.config);
+  if (!rules.some((r) => r.id === id)) return undefined;
+  const forwarded: ParsedArgs = { ...args, positional: [id] };
+  return gatesExplainCommand.run(forwarded);
+}
+
 export const gatesCommand: ICommandHandler = {
   name: 'gates',
   description:
@@ -386,6 +436,6 @@ export const gatesCommand: ICommandHandler = {
         'Usage: shrk gates list | coverage [--plane <p>] [--strict] | explain <id>\n' +
         '(`shrk gate`, singular, runs the quality-gate pipeline — a different verb.)\n',
     );
-    return ExitCode.NotVerified;
+    return ExitCode.UsageError;
   },
 };

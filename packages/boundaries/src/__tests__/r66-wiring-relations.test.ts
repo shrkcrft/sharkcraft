@@ -117,8 +117,11 @@ describe('wiring relations', () => {
 
 describe('wiring — the loud-skip contract', () => {
   test('a source that matches 0 files is SKIPPED, never a pass', () => {
+    // `warning` severity keeps the historical default (failOnEmpty off), so
+    // this isolates the SKIP itself from the fail-on-empty promotion.
     const rule: IWiringRule = {
       id: 'r',
+      severity: 'warning',
       declared: { files: ['nowhere/**/*.ts'], extract: 'export-names' },
       registered: { files: ['reg/**/*.ts'], extract: 'array-members', anchor: 'PLUGINS' },
     };
@@ -127,6 +130,32 @@ describe('wiring — the loud-skip contract', () => {
     expect(report.evaluated).toBe(0);
     expect(report.skipped[0]!.reason).toContain('0 files');
     expect(report.skipped[0]!.failed).toBe(false);
+  });
+
+  test('an ERROR-severity rule fails on empty by default (alpha.29)', () => {
+    // The default flipped: an error rule exists to block a build, so one that
+    // matches zero subjects is a bug in the rule, not a pass.
+    const rule: IWiringRule = {
+      id: 'r',
+      declared: { files: ['nowhere/**/*.ts'], extract: 'export-names' },
+      registered: { files: ['reg/**/*.ts'], extract: 'array-members', anchor: 'PLUGINS' },
+    };
+    const report = evaluateWiring([rule], resolver([REG]));
+    expect(report.rules[0]!.status).toBe('failed');
+    expect(report.skipped[0]!.failed).toBe(true);
+    expect(report.verdict).toBe('errors');
+  });
+
+  test('an explicit failOnEmpty:false opts back out', () => {
+    const rule: IWiringRule = {
+      id: 'r',
+      failOnEmpty: false,
+      declared: { files: ['nowhere/**/*.ts'], extract: 'export-names' },
+      registered: { files: ['reg/**/*.ts'], extract: 'array-members', anchor: 'PLUGINS' },
+    };
+    const report = evaluateWiring([rule], resolver([REG]));
+    expect(report.rules[0]!.status).toBe('skipped');
+    expect(report.verdict).toBe('pass');
   });
 
   test('a source that matches files but extracts 0 ids is also a skip', () => {

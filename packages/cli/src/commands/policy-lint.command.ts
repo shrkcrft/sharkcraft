@@ -14,6 +14,8 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { ExitCode } from '../exit-codes.ts';
+import { buildGateEnvelope } from '../gates/gate-envelope.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 const VALID_SURFACES: ReadonlySet<string> = new Set(['template', 'style', 'ts']);
@@ -135,13 +137,13 @@ export const policyLintExplainCommand: ICommandHandler = {
     const id = args.positional[0] ?? flagString(args, 'id');
     if (!id) {
       process.stderr.write('Usage: shrk policy-lint explain <ruleId> [--json]\n');
-      return 2;
+      return ExitCode.UsageError;
     }
     const cwd = resolveCwd(args);
     const loaded = await resolveProjectConfig(cwd);
     if (!loaded.ok) {
       process.stderr.write(`Could not load config: ${loaded.error.message}\n`);
-      return 2;
+      return ExitCode.UsageError;
     }
     const rules = loaded.value.config.policyRules ?? [];
     const rule = rules.find((r) => r.id === id);
@@ -149,7 +151,7 @@ export const policyLintExplainCommand: ICommandHandler = {
       process.stderr.write(
         `No policy rule "${id}". Configured: ${rules.map((r) => r.id).join(', ') || '(none)'}\n`,
       );
-      return 2;
+      return ExitCode.UsageError;
     }
     const rel = nodePath.relative(cwd, loaded.value.sharkcraftDir).split(nodePath.sep).join('/');
     const excludeDirs = rel && !rel.startsWith('..') ? [rel] : [];
@@ -182,7 +184,7 @@ export const policyLintCommand: ICommandHandler = {
       const bad = parts.filter((s) => !VALID_SURFACES.has(s));
       if (bad.length > 0) {
         process.stderr.write(`Unknown --surface "${bad.join(', ')}". Use template | style | ts.\n`);
-        return 2;
+        return ExitCode.UsageError;
       }
       surfaces = parts as PolicySurface[];
     }
@@ -195,11 +197,12 @@ export const policyLintCommand: ICommandHandler = {
         process.stdout.write(
           asJson({ schema: 'sharkcraft.policy-lint/v1', error: msg, rules: [], findings: [], diagnostics: [msg], evaluated: 0, verdict: 'errors' }) + '\n',
         );
-        return 1;
+        return ExitCode.UsageError;
       }
       process.stdout.write(header('Policy lint'));
       process.stdout.write(`  ✗ Could not load config: ${msg}\n  Run \`shrk doctor\` for details.\n`);
-      return 1;
+      // A broken config is a USAGE error (3), not "violations found" (1).
+      return ExitCode.UsageError;
     }
     const rules = loaded.value.config.policyRules ?? [];
     const planeDiagnostics = loaded.value.planeDiagnostics;
@@ -228,7 +231,7 @@ export const policyLintCommand: ICommandHandler = {
         process.stderr.write(
           `Unknown --only rule id(s): ${unknown.join(', ')}. Configured: ${[...known].join(', ') || '(none)'}\n`,
         );
-        return 2;
+        return ExitCode.UsageError;
       }
     }
 
@@ -290,8 +293,48 @@ export const policyLintCommand: ICommandHandler = {
     }
 
     if (wantJson) {
-      process.stdout.write(asJson({ ...report, ...(newOnly ? { newOnly: true, hiddenBaseline } : {}) }) + '\n');
-      return report.verdict === 'errors' ? 1 : 0;
+      const exit =
+        report.verdict === 'errors' || report.skipped.some((sk) => sk.failed)
+          ? ExitCode.Failure
+          : report.evaluated === 0 || report.skipped.length > 0
+            ? ExitCode.NotVerified
+            : ExitCode.VerifiedPass;
+      process.stdout.write(
+        asJson({
+          ...report,
+          ...(newOnly ? { newOnly: true, hiddenBaseline } : {}),
+          gate: buildGateEnvelope(
+            'policy-lint',
+            exit,
+            report.rules.map((r) => {
+              const skip = report.skipped.find((s) => s.ruleId === r.ruleId);
+              return {
+                id: r.ruleId,
+                type: 'policy' as const,
+                status: r.status,
+                severity: r.severity,
+                counts: {
+                  units: r.unitsScanned,
+                  findings: r.findingCount,
+                  suppressed: r.suppressedCount,
+                },
+                violations: report.findings
+                  .filter((f) => f.ruleId === r.ruleId)
+                  .map((f) => ({
+                    id: f.match,
+                    file: f.file,
+                    line: f.line,
+                    message: f.message,
+                    ...(f.suggest ? { hint: f.suggest } : {}),
+                  })),
+                ...(skip ? { skipReason: skip.reason } : {}),
+                ...(r.error ? { error: r.error } : {}),
+              };
+            }),
+          ),
+        }) + '\n',
+      );
+      return exit;
     }
 
     process.stdout.write(header('Policy lint'));
@@ -335,9 +378,17 @@ export const policyLintCommand: ICommandHandler = {
     }
     if (report.skipped.some((sk) => sk.failed)) {
       process.stdout.write(
-        '\nA rule with `failOnEmpty: true` matched nothing — that is a bug in the rule, not a pass.\n',
+        '\nA rule that matched nothing is a bug in the rule, not a pass. (`error`-severity\n' +
+          '  rules fail on empty by default — set `failOnEmpty: false` if the set may be empty.)\n',
       );
       return 1;
+    }
+    // A non-failing skip still means "partially verified" — never a green 0.
+    if (report.skipped.length > 0 && report.findings.length === 0) {
+      process.stdout.write(
+        `\n${report.skipped.length} rule(s) scanned nothing — partially verified, not a full green.\n`,
+      );
+      return 2;
     }
     if (report.findings.length === 0 && report.diagnostics.length === 0) {
       process.stdout.write(

@@ -149,4 +149,24 @@ export const RELEASE_SURFACE_DELTAS: readonly IReleaseSurfaceDelta[] = [
     ],
     removed: [],
   },
+  {
+    version: '0.1.0-alpha.29',
+    title: 'The exit code has to agree with the sentence',
+    added: [
+      '`shrk check wiring --fix` — deterministic autofix for the mechanically-unambiguous `declared-but-not-registered` case: append the missing id to its sink array. Dry-run by default, `--write` applies. Refuses ambiguity (N sinks, non-array sink, non-unique file/array, chain rules, parity violations) and lists what it left alone WITH the reason — it never guesses.',
+      '`shrk explain <ruleId>` resolves a rule id across ALL planes and dispatches to the right explainer; a non-rule token still gets the original topic search. The per-plane forms remain.',
+      'A shared `gate` envelope (`sharkcraft.gate/v1`) inside every gate verb\'s `--json`: `verb` / `exit` / normalized per-rule `{id,type,status,severity,counts,violations,skipReason}`. Additive — the per-plane payloads are unchanged. See docs/gate-json.md.',
+      'Global `--no-hints` silences the advisory piped-exit note (the structured `--exit-trailer` channel is unaffected).',
+      'Exit code `3` = usage error (unloadable config / unknown rule id / bad flag value) on the gate verbs, split out of `2` so "the gate proved nothing" and "the gate never started" are distinguishable.',
+    ],
+    changed: [
+      'A SKIPPED rule is no longer masked by a passing sibling. `failOnEmpty` now defaults to TRUE for `error`-severity rules (an error rule matching zero subjects is a bug in the rule, not a pass) and any skip with no failures exits `2`, never `0`. `warning`-severity rules still default to `false`. BEHAVIOUR CHANGE: an error-severity rule that matches nothing now exits `1` — fix the selector or set `failOnEmpty: false`.',
+      '`shrk help <multi-word verb>` resolves catalog-documented paths (`check wiring`, `wiring unprovided`, …) that are dispatched from a parent handler and therefore never appear in the command trie; it also lists sibling verbs. Previously answered "Unknown command".',
+      '`shrk baseline explain` always computes the CURRENT side, so a rule with no committed artifact yet reports `committed (none yet) → N now` instead of a false `0 now`. `baseline check` names what would be blessed.',
+      '`shrk registry` accepts both argument orders — `registry list <name>` now works alongside `registry <name> list`; a verb-first call with an unknown name names the correct grammar.',
+      '`shrk policy-lint` returns `3` (usage) rather than `1` (violations) when the config cannot be loaded, and `2` when it scanned nothing.',
+      'The piped-exit note is emitted at most once per process.',
+    ],
+    removed: [],
+  },
 ];
