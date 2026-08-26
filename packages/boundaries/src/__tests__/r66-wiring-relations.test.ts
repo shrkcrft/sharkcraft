@@ -7,12 +7,12 @@
  * and every relation must mean exactly what it says.
  */
 import { describe, expect, test } from 'bun:test';
-import type { IWiringRule, IWiringSource } from '@shrkcrft/core';
+import { resolveSourceGlobs, type IWiringRule, type IWiringSource } from '@shrkcrft/core';
 import { evaluateWiring, type IWiringFileEntry } from '../wiring/evaluate-wiring.ts';
 import { matchesAny } from '../scan/glob.ts';
 
 function resolver(files: readonly IWiringFileEntry[]) {
-  return (source: IWiringSource) => files.filter((f) => matchesAny(f.path, source.files));
+  return (source: IWiringSource) => files.filter((f) => matchesAny(f.path, resolveSourceGlobs(source)));
 }
 
 const SRC = { path: 'src/a.ts', content: 'export const aPlugin = 1;\nexport const bPlugin = 2;\n' };

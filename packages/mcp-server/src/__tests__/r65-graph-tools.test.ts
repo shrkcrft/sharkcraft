@@ -564,6 +564,10 @@ describe('round-6 read-only MCP tools', () => {
           edgesByKind: {},
         }),
       );
+      // A COMPLETE store: the graph verdict now comes from working-tree
+      // divergence, and a store missing `files.json` cannot be measured — it
+      // reports "not verified" rather than inventing a verdict from the age.
+      writeFileSync(join(root, '.sharkcraft', 'graph', 'files.json'), '{}');
       const ctx = { cwd: root, inspection: { projectRoot: root } };
       const tool = ALL_TOOLS.find((t) => t.name === 'get_code_intelligence_state')!;
       expect(tool).toBeDefined();
@@ -598,6 +602,7 @@ describe('round-6 read-only MCP tools', () => {
           edgesByKind: {},
         }),
       );
+      writeFileSync(join(root, '.sharkcraft', 'graph', 'files.json'), '{}');
       const ctx = { cwd: root, inspection: { projectRoot: root } };
       const tool = ALL_TOOLS.find((t) => t.name === 'get_code_intelligence_state')!;
       const result = await tool.handler(

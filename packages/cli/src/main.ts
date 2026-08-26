@@ -166,10 +166,12 @@ import {
   generatedUpdateCommand,
 } from './commands/generated.command.ts';
 import {
+  gatesCheckCommand,
   gatesCommand,
   gatesCoverageCommand,
   gatesExplainCommand,
   gatesListCommand,
+  gatesTryCommand,
 } from './commands/gates.command.ts';
 import { wiringCommand } from './commands/wiring.command.ts';
 import { reuseCommand } from './commands/reuse.command.ts';
@@ -298,6 +300,7 @@ import { briefCommand } from './commands/brief.command.ts';
 import { releaseCommand, installSmokeCommand } from './commands/release.command.ts';
 import { startHereCommand } from './commands/start-here.command.ts';
 import { docsCheckCommand, examplesCheckCommand } from './commands/docs.command.ts';
+import { docsReferencesCommand } from './commands/docs-references.command.ts';
 import { selfAuditCommand } from './commands/self.command.ts';
 import { diagnosticsListCommand } from './commands/diagnostics.command.ts';
 import { architectureMapCommand } from './commands/architecture.command.ts';
@@ -493,8 +496,10 @@ export function buildRegistry(): CommandRegistry {
   registry.registerSubcommand('generated', generatedExplainCommand);
   registry.register(gatesCommand);
   registry.registerSubcommand('gates', gatesListCommand);
+  registry.registerSubcommand('gates', gatesCheckCommand);
   registry.registerSubcommand('gates', gatesCoverageCommand);
   registry.registerSubcommand('gates', gatesExplainCommand);
+  registry.registerSubcommand('gates', gatesTryCommand);
   registry.register(wiringCommand);
   registry.register(reuseCommand);
   registry.register(migrateCommand);
@@ -606,6 +611,7 @@ export function buildRegistry(): CommandRegistry {
   registry.register(languagesCommand);
 
   registry.registerSubcommand('docs', docsCheckCommand);
+  registry.registerSubcommand('docs', docsReferencesCommand);
   registry.registerSubcommand('examples', examplesCheckCommand);
   registry.registerSubcommand('self', selfAuditCommand);
   registry.registerSubcommand('install', installSmokeCommand);

@@ -88,13 +88,14 @@ shrk check boundaries            # boundary enforcement (with tsconfig alias sup
 shrk finish                      # composite "safe to finish?" — runs boundaries+wiring+policy+orphans changed-only → one verdict
 shrk check orphans               # after a delete: surviving importers of removed files/exports (alias-resolved)
 shrk wiring chain|unprovided|orphans  # registration/DI graph: declared→provided→consumed (the silent-at-runtime bugs imports can't see)
-shrk gates list|coverage|explain <id>  # the data-defined rule planes + what each rule MATCHED (stale-selector detector)
+shrk gates check|coverage|list|explain|try  # run every rule plane (one exit code) · what each MATCHED (stale-selector detector) · dry-run a rule
 shrk baseline check|diff|update  # committed-ledger drift, two-way (a LOST entry fails like a gained one)
 shrk generated check|update      # generated files: hand-edit drift (regen→temp→diff) + "do not edit" headers
 shrk policy-lint [explain <id>]  # forbidden content the compiler never sees (inline templates, .scss, JSON)
+shrk docs references check       # ids cited in PROSE (READMEs, docs, agent skill files) that no longer resolve
 shrk registry <name> duplicates  # ids declared in >1 place — load-order roulette the compiler can't see
 shrk explain <ruleId>            # one entrypoint: resolves a rule id across EVERY plane
-shrk check wiring --fix [--write]  # deterministic autofix, unambiguous cases only (refuses the rest)
+shrk check wiring --fix [--write]  # deterministic autofix, unambiguous cases only; adds the import too when derivable, else refuses (needs-import)
 shrk graph why <a> <b>           # shortest-path explanation between two graph nodes
 shrk onboard --dry-run           # onboard an existing repo (advisory)
 shrk stats                       # per-language file counts, LOC, sizes, averages
@@ -103,76 +104,122 @@ shrk compress <file|->           # deterministically shrink a blob (JSON→table
 shrk expand <ccr-key>            # retrieve a CCR-cached original (the reverse of compress)
 ```
 
-**The data-defined gate planes (see `docs/gate-rules.md`).** Six planes in
-`sharkcraft.config.ts` cover what a green build cannot see: `wiringRules[]`
-(declared-here → registered-there), `policyRules[]` (forbidden content in
-non-compiled artifacts), `registries[]`, `registrationGraph[]`, `baselines[]`
-(a committed ledger that silently drifted), `generatedArtifacts[]` (a
-hand-edited generated file). All six share one extraction DSL
-(`docs/extraction-dsl.md`); `shrk gates coverage` reports what every rule
-actually matched and **flags every rule matching 0** — a rule that matches
-nothing is a bug in the rule, never a pass.
+## The gate planes (`docs/gate-rules.md`)
 
-**Exit codes (alpha.29).** `0` clean · `1` violations · `2` ran but proved
-nothing (empty scope, or ANY rule skipped) · `3` usage error (bad config /
-unknown rule id / bad flag). A skipped rule is never masked by a passing
-sibling. **`failOnEmpty` defaults to TRUE for `error`-severity rules** — an
-error rule matching zero subjects is a bug in the rule; `warning` rules default
-false. Every gate verb's `--json` also carries a shared `gate` envelope
-(`docs/gate-json.md`), so `jq .gate` parses identically across planes.
+Seven data-defined planes in `sharkcraft.config.ts` cover what a green build
+cannot see. `shrk gates check` runs them all in one pass (the CI / pre-commit
+primitive); `--changed-only` scopes by rule footprint.
 
-**Shell-executing planes are local-config-only.** `baselines[].compute.run` and
-`generatedArtifacts[].regen` spawn a shell, so the pack-plane merge seam DROPS
-any pack-contributed element carrying one — mirroring the existing
-"pack-contributed verification commands are NOT auto-run" contract.
+| Plane | Catches |
+|---|---|
+| `wiringRules[]` | declared here → never registered there |
+| `policyRules[]` | forbidden content in non-compiled artifacts |
+| `registries[]` | one id declared in two places (load-order roulette) |
+| `registrationGraph[]` | declared → provided → consumed, end to end |
+| `baselines[]` | a committed ledger that silently drifted (two-way: a LOST entry fails like a gained one) |
+| `generatedArtifacts[]` | a hand-edited generated file, and missing "do not edit" headers |
+| `docReferences[]` | an id cited in free-text prose that no longer resolves (`docs/doc-references.md`) |
 
-**Token compression (deterministic, no model — see `docs/compression.md`).**
-`@shrkcrft/compress` cuts the tokens an agent pays for the same information:
-MCP responses are minified valid JSON; `get_knowledge_graph format:"table"`
-and `compress_context` hoist/columnarise or line-reduce blobs; lossy passes
-cache the original (Compress-Cache-Retrieve) and emit a `<<ccr:KEY>>` marker
-recoverable via `retrieve_original` / `shrk expand`.
+The first six share one extraction DSL (`docs/extraction-dsl.md`). Key
+behaviours, each with a reason worth remembering:
 
-Opt-in **local-LLM** enrichment. The default (`AI_PROVIDER=auto`) is
-local-only — a reachable Ollama daemon or a local `.gguf` model for
-llama.cpp, *never hosted*. Hosted Claude/Gemini providers exist but are
-**explicit opt-in** (`AI_PROVIDER=claude|gemini` or `--provider`, need
-`ANTHROPIC_API_KEY`/`GEMINI_API_KEY`); they send repo context off-machine
-and are never in the `auto` chain:
+- **A rule matching nothing is a bug in the rule, never a pass.** `gates
+  coverage` reports what every rule actually matched and flags every rule
+  matching 0. `failOnEmpty` defaults **TRUE** for `error`-severity rules.
+- **Exit codes.** `0` clean · `1` violations · `2` ran but proved nothing
+  (empty scope, or ANY rule skipped) · `3` usage error. A skipped rule is never
+  masked by a passing sibling, and an ERRORED rule is never `evaluated` — a
+  rule that could not run is not a green whatever its severity. Every `--json`
+  carries a shared `gate` envelope (`docs/gate-json.md`).
+- **`import-edges`** makes the dependency graph a rule input (`emit:
+  edge|symbol|from`), so existing planes express adoption ledgers, orphan
+  detection, deprecation ratchets and targeted fences. Alias-aware, no persisted
+  index. Target by `to.module` + `to.match` when consumers import through a
+  barrel — `to.files` matches the DIRECTLY-resolved path, so a barrel
+  re-exported symbol resolves to the package entry, not the deep file.
+- **`$use` shared extractors.** A top-level `extractors` map defines a selector
+  once; any plane references it with `{ $use: "<id>" }` (local fields override).
+  A typo'd id fails the config load — never a source that silently matches
+  nothing.
+- **Mixed generated trees.** `generatedArtifacts[]` takes `sources[]` (N
+  writers) and `handMaintained[]` (literal filenames only, so the exemption
+  cannot silently widen), plus `handMaintainedMarker` for an in-file bless. A
+  file owned by neither is an `unclassified` finding.
+- **`--fix` never writes a non-compiling edit.** When a sink IMPORTS its array
+  members, appending the token alone would green the gate over a file that no
+  longer compiles. It adds the import when the specifier is a pure function of
+  the member name AND resolves to the declaring file; otherwise it refuses with
+  `needs-import`. `gates check --strict` promotes warnings to failures.
+- **Shell-executing planes are local-config-only.** `baselines[].compute.run`
+  and `generatedArtifacts[].regen` spawn a shell, so the pack-plane merge seam
+  DROPS any pack-contributed element carrying one — mirroring the
+  "pack-contributed verification commands are NOT auto-run" contract.
+
+## Invariants that bite (learned the hard way)
+
+Three rounds fixed the same shape: **two code paths answering one question,
+agreeing only by coincidence.** Before adding a second way to answer something,
+look for the existing authority.
+
+- **One id resolver.** `packages/inspector/src/reference-registry.ts` answers
+  "does this id exist?" for every kind — the prose linter, a knowledge entry's
+  structured `references[]`, and both self-config doctors read it. Each kind
+  reads the same source its `list` verb reads (`template` goes through
+  `templateRegistry`, because that is what `shrk templates list` prints).
+  `r73-one-reference-resolver.test.ts` holds `list ≡ resolve` across all 17
+  kinds.
+- **Never cast an inspection to a registry shape it may not have.**
+  `(inspection as { fooRegistry?: … }).fooRegistry` type-checks and then answers
+  "nothing exists" forever, including for correct ids. Five call sites did this;
+  a grep lock now fails the build if it returns. Use the registry accessors.
+- **Warm before you resolve.** `playbook`, `construct`, `policy`, `helper`,
+  `convention`, `contract-template`, `migration-profile`, `routing-hint`,
+  `registration-hint` and `scaffold-pattern` ids come from an async-filled
+  cache; the resolver is sync. Call `warmReferenceRegistries(inspection)` first.
+- **Freshness is divergence, never age.** An index built five days ago with a
+  clean tree is *current*; one built a minute ago with a changed file is not.
+  `detectGraphFreshness` is the one authority; `graph status`, `code-intel`,
+  `doctor` and the MCP tool all consume it. It lives in `@shrkcrft/graph`
+  (above `inspector`), so it is **injected** — `runDoctor(inspection, {
+  graphDivergence })`.
+- **Loud-skip anything DERIVED from a stale input.** A count from a stale index
+  misses real findings AND reports fixed ones, so it is reported `NOT VERIFIED`
+  rather than as a number. An unmeasured verdict is never a pass.
+- **A test that invents the shape it tests proves nothing.** Two fixtures
+  supplied a `playbookRegistry` production never supplies; that fake is why the
+  bug shipped. Fixtures load real registries.
+
+## Token compression (`docs/compression.md`)
+
+`@shrkcrft/compress` cuts the tokens an agent pays for the same information —
+deterministic, no model. MCP responses are minified valid JSON;
+`get_knowledge_graph format:"table"` and `compress_context` hoist/columnarise or
+line-reduce blobs. Lossy passes cache the original (Compress-Cache-Retrieve) and
+emit a `<<ccr:KEY>>` marker recoverable via `retrieve_original` / `shrk expand`.
+
+## Local-LLM enrichment (`docs/smart-context.md`)
+
+Opt-in, and **local-only by default**. `AI_PROVIDER=auto` walks
+`llamacpp → ollama` and never reaches a hosted model. Hosted Claude/Gemini
+providers exist but are explicit opt-in (`AI_PROVIDER=claude|gemini` or
+`--provider`, plus an API key) because they send repo context off-machine.
 
 ```bash
-shrk smart-context "<task>"                        # fast LLM brief (draft → polish, 2 calls)
-shrk smart-context "<task>" --plus                 # full pipeline (draft → critique → refine → polish)
-shrk smart-context "<task>" --budget 60            # cap enhancement wall-clock at 60s
-shrk smart-context "<task>" --no-enhance           # single-shot (skip pipeline)
-shrk smart-context "<task>" --plan --save          # structured plan, persisted
-shrk smart-context plan-ahead "t1" "t2" "t3"       # pre-plan a multi-task queue
-shrk smart-context list                            # list saved entries
-shrk smart-context show <slug>                     # read one back
+shrk smart-context "<task>"              # fast brief (draft → polish)
+shrk smart-context "<task>" --plus       # full pipeline (draft → critique → refine → polish)
+shrk smart-context "<task>" --budget 60  # cap enhancement wall-clock
+shrk smart-context "<task>" --plan --save
+shrk smart-context plan-ahead "t1" "t2"  # pre-plan a multi-task queue
 ```
 
-The engine is deterministic; the LLM only refines its output. Provider
-selection is local-first: `AI_PROVIDER=auto` (default) walks
-`llamacpp → ollama`. Set `OLLAMA_HOST=http://<host>:<port>` (or split as
-`OLLAMA_HOST=<host>` + `OLLAMA_PORT=<port>`) and `OLLAMA_MODEL=<id>` to
-point at a remote box, or `LLAMACPP_MODEL_PATH=/path/to/<model>.gguf` for
-in-process inference. When no LLM is reachable, every command still
-works against the deterministic seed.
+The engine stays deterministic; the LLM only refines its output, and every run
+is wall-clock-bounded — a model too slow for the budget degrades to the best
+output so far rather than hanging. With no LLM reachable every command still
+works against the deterministic seed. Point at a remote box with `OLLAMA_HOST` +
+`OLLAMA_MODEL`, or in-process with `LLAMACPP_MODEL_PATH`.
 
-In brief mode the **default is fast**: a 2-pass `draft → polish` so a
-result comes back quickly. `--plus` opts into the full
-`draft → critique → refine → polish` pipeline (denser, ~2× the calls).
-`--no-enhance` falls back to a single shot. Every enhancement run is
-wall-clock-bounded (override with `--budget <seconds>`); a model too slow
-for the budget degrades to the best output so far rather than hanging.
-The whole brief/plan run executes in an isolated child process so the
-native-runtime teardown abort (ggml/Metal, ONNX) can't pollute the
-console — that noise is redirected to a log file
-(`<tmpdir>/shrk-native-teardown.log`, override with
-`SHRK_NATIVE_TEARDOWN_LOG`) and the parent exits with the real code.
-`CLAUDE.md` (this file) is included in the seed; editing it changes
-what the LLM sees. See `docs/smart-context.md` and the
-`shrk-smart-context` skill for the agent workflow.
+**This file is part of the seed** — editing it changes what the local model
+sees. For the agent workflow, use the `shrk-smart-context` skill.
 
 ---
 

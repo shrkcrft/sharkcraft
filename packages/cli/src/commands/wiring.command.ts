@@ -47,13 +47,17 @@ export function renderWiringExplain(report: IWiringExplain, wantJson: boolean): 
   }
   process.stdout.write(kv('status', report.status) + '\n');
   process.stdout.write(
-    kv('declared', `${report.declared.distinctCount} distinct across ${report.declared.filesScanned} file(s)`) +
-      '\n',
+    kv(
+      'declared',
+      `${report.declared.distinctCount} distinct across ${report.declared.filesScanned} file(s)` +
+        (report.declared.viaExtractor ? `  (via $use:${report.declared.viaExtractor})` : ''),
+    ) + '\n',
   );
   process.stdout.write(
     kv(
       'registered',
-      `${report.registered.distinctCount} distinct across ${report.registered.filesScanned} file(s)`,
+      `${report.registered.distinctCount} distinct across ${report.registered.filesScanned} file(s)` +
+        (report.registered.viaExtractor ? `  (via $use:${report.registered.viaExtractor})` : ''),
     ) + '\n',
   );
 

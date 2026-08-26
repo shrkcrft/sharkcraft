@@ -18,7 +18,8 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { IBaselineRule } from '@shrkcrft/core';
-import { failsWhenEmpty } from '@shrkcrft/core';
+import {
+  resolveSourceGlobs, failsWhenEmpty } from '@shrkcrft/core';
 import {
   baselineCount,
   baselineFails,
@@ -121,8 +122,14 @@ function computeCurrent(cwd: string, rule: IBaselineRule, excludeDirs: readonly 
   return { text: String(child.stdout ?? '') };
 }
 
-/** One rule's outcome, shared by check / diff / update. */
-interface IBaselineOutcome {
+/**
+ * One rule's outcome, shared by check / diff / update — and by `shrk gates
+ * check`, which aggregates every plane. Exported so the aggregate runs the
+ * IDENTICAL evaluation as the per-plane verb: two implementations of "did this
+ * baseline drift?" would eventually disagree, and the one nobody runs would be
+ * the one that is wrong.
+ */
+export interface IBaselineOutcome {
   readonly rule: IBaselineRule;
   readonly status: 'passed' | 'failed' | 'skipped' | 'error';
   readonly diff?: IBaselineDiff;
@@ -138,7 +145,7 @@ interface IBaselineOutcome {
   readonly missingBaseline?: boolean;
 }
 
-function evaluateRule(
+export function evaluateBaselineRule(
   cwd: string,
   rule: IBaselineRule,
   excludeDirs: readonly string[],
@@ -152,7 +159,7 @@ function evaluateRule(
       rule.watchFiles && rule.watchFiles.length > 0
         ? rule.watchFiles
         : rule.compute.kind === 'extractor'
-          ? (rule.compute.source?.files ?? [])
+          ? (resolveSourceGlobs(rule.compute.source ?? { files: [] }))
           : undefined;
     if (globs === undefined) {
       return {
@@ -219,6 +226,19 @@ function evaluateRule(
   // the baseline has entries and the recompute has none, that is real drift
   // (everything vanished) and must be reported as such, not swallowed as a skip.
   if (currentCount === 0 && committedCount === 0) {
+    // A fence ASSERTS emptiness, so for it the empty case is the verified pass
+    // rather than "nothing was checked" — otherwise the rule could never be
+    // green and could not gate anything.
+    if (rule.expectEmpty === true) {
+      return {
+        rule,
+        status: 'passed',
+        committed,
+        current: computed.text,
+        committedCount,
+        currentCount,
+      };
+    }
     return {
       rule,
       status: failsWhenEmpty(rule) ? 'failed' : 'skipped',
@@ -391,7 +411,7 @@ export const baselineCheckCommand: ICommandHandler = {
     if (prep.rules.length === 0) return writeNoRules(json);
 
     const outcomes = prep.rules.map((r) =>
-      evaluateRule(prep.cwd, r, prep.excludeDirs, prep.changedFiles),
+      evaluateBaselineRule(prep.cwd, r, prep.excludeDirs, prep.changedFiles),
     );
     const failed = outcomes.filter(
       (o) => o.status === 'failed' || (o.status === 'error' && (o.rule.severity ?? 'error') === 'error'),
@@ -497,7 +517,7 @@ export const baselineDiffCommand: ICommandHandler = {
     const json = flagBool(args, 'json');
     if (prep.rules.length === 0) return writeNoRules(json);
 
-    const outcomes = prep.rules.map((r) => evaluateRule(prep.cwd, r, prep.excludeDirs, undefined));
+    const outcomes = prep.rules.map((r) => evaluateBaselineRule(prep.cwd, r, prep.excludeDirs, undefined));
     if (json) {
       process.stdout.write(
         asJson({ schema: SCHEMA, results: outcomes.map(outcomeJson), inspection: true }) + '\n',
@@ -596,7 +616,7 @@ export const baselineExplainCommand: ICommandHandler = {
       );
       return ExitCode.UsageError;
     }
-    const outcome = evaluateRule(prep.cwd, rule, prep.excludeDirs, undefined);
+    const outcome = evaluateBaselineRule(prep.cwd, rule, prep.excludeDirs, undefined);
     if (flagBool(args, 'json')) {
       process.stdout.write(
         asJson({
@@ -612,7 +632,13 @@ export const baselineExplainCommand: ICommandHandler = {
     if (rule.description) process.stdout.write(`  ${rule.description}\n`);
     process.stdout.write(kv('committed', rule.baseline) + '\n');
     process.stdout.write(
-      kv('compute', rule.compute.kind === 'command' ? `command · ${rule.compute.run}` : `extractor · ${rule.compute.source?.extract ?? 'sugar'}`) + '\n',
+      kv(
+        'compute',
+        rule.compute.kind === 'command'
+          ? `command · ${rule.compute.run}`
+          : `extractor · ${rule.compute.source?.extract ?? 'sugar'}` +
+            (rule.compute.source?.$use ? `  (via $use:${rule.compute.source.$use})` : ''),
+      ) + '\n',
     );
     process.stdout.write(kv('direction', rule.direction ?? 'two-way') + '\n');
     process.stdout.write(kv('canonical', outcome.diff?.canonical ?? rule.compute.canonical ?? 'auto') + '\n');

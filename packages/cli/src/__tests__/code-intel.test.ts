@@ -118,6 +118,10 @@ describe('shrk code-intel', () => {
   });
 
   test('--markdown emits a sectioned PR-friendly report', async () => {
+    // A COMPLETE store, so the divergence check can actually run. `meta.json`
+    // alone is a partial store, and the digest reports "not verified" for it
+    // rather than inventing a verdict from the timestamp.
+    writeJson(root, '.sharkcraft/graph/files.json', {});
     writeJson(root, '.sharkcraft/graph/meta.json', {
       schema: 'sharkcraft.graph/v1',
       lastIndexedAt: new Date().toISOString(),
@@ -134,13 +138,25 @@ describe('shrk code-intel', () => {
     expect(out).toContain('### ✓ `code-intelligence-graph`');
   });
 
-  test('--stale-days flips a fresh fixture to advisory when the threshold is tight', async () => {
+  test('--stale-days no longer governs the graph verdict, but still governs the bridge', async () => {
+    // The graph index answers to working-tree divergence, not to a clock. The
+    // age threshold survives for the stored artefacts that have no working-tree
+    // counterpart to diverge from, like the rule-graph bridge.
     writeJson(root, '.sharkcraft/graph/meta.json', {
       schema: 'sharkcraft.graph/v1',
       lastIndexedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
       filesIndexed: 1,
       nodesByKind: { file: 1 },
       edgesByKind: {},
+    });
+    writeJson(root, '.sharkcraft/graph/files.json', {});
+    writeJson(root, '.sharkcraft/bridge/meta.json', {
+      schema: 'sharkcraft.rule-graph/v1',
+      lastBuiltAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+      digest: 'cafe',
+      nodesByKind: { rule: 1 },
+      edgesByKind: {},
+      sourceCounts: { rule: 1 },
     });
     const cap = capture();
     const code = await codeIntelCommand.run(
@@ -152,6 +168,10 @@ describe('shrk code-intel', () => {
     const graph = json.checks.find(
       (c: { id: string }) => c.id === 'code-intelligence-graph',
     );
-    expect(graph.severity).toBe('warning');
+    expect(graph.severity).toBe('ok');
+    const bridge = json.checks.find(
+      (c: { id: string }) => c.id === 'code-intelligence-rule-graph',
+    );
+    expect(bridge.severity).toBe('warning');
   });
 });

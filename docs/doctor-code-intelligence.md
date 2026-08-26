@@ -16,7 +16,7 @@ the standard `shrk doctor` output.
 
 | Check id | Source file | Triggers | Default severity |
 |---|---|---|---|
-| `code-intelligence-graph` | `.sharkcraft/graph/meta.json` | missing / stale / corrupt / fresh | Info / Warning advisory / Warning / Ok |
+| `code-intelligence-graph` | `.sharkcraft/graph/meta.json` + working-tree divergence | missing / not-verified / stale / corrupt / current | Info / Info advisory / Warning advisory / Warning / Ok |
 | `code-intelligence-graph-cycles` | same | `largestCycleSize ≥ 3` OR `cycleCount ≥ 5` | Warning advisory |
 | `code-intelligence-graph-unresolved` | same | `unresolvedImportCount > 0` | Warning |
 | `code-intelligence-rule-graph` | `.sharkcraft/bridge/meta.json` | stale / corrupt / fresh | Warning advisory / Warning / Ok |
@@ -24,7 +24,7 @@ the standard `shrk doctor` output.
 | `code-intelligence-api-surface` | `.sharkcraft/api-surface/signatures.json` | stale | Warning advisory / Ok |
 | `code-intelligence-quality-gate` | `.sharkcraft/quality-gates/last.json` | overall = fail / warn / pass | Warning / Info advisory / Ok |
 | `code-intelligence-migrations` | `.sharkcraft/migrations/*.state.json` | any `overall = fail` | Warning |
-| `code-intelligence-architecture` | `.sharkcraft/architecture/{baseline,last}.json` | new violations since baseline | Warning |
+| `code-intelligence-architecture` | `.sharkcraft/architecture/{baseline,last}.json` | index behind / new violations since baseline | Info advisory / Warning |
 | `code-intelligence-impact` | `.sharkcraft/impact/last.json` | risk = high/critical | Warning |
 | `code-intelligence-impact-baseline` | `.sharkcraft/impact/{baseline,last}.json` | dependents / packages / risk worsened | Warning |
 | `code-intelligence-framework` | `.sharkcraft/framework/meta.json` | stale / zero-entity / corrupt / fresh | Warning advisory / Info advisory / Warning / Ok |
@@ -56,17 +56,39 @@ whole section in the headline.
 The graph check is the load-bearing freshness signal — every other
 code-intelligence check depends on the graph being current.
 
+**Freshness is divergence, never age.** An index built five days ago with
+nothing changed since is *current*; one built a minute ago with a file changed
+since is *not*. The verdict comes from the same `detectGraphFreshness` walk
+`shrk graph status` reports, so the two surfaces cannot contradict each other —
+which they did, reporting `stale` and `fresh (1m ago)` on the same index in the
+same second. Age is printed as `indexed 5d ago`, a display detail.
+
+`detectGraphFreshness` lives in `@shrkcrft/graph`, which sits **above**
+inspector, so the divergence is **injected**:
+
+```ts
+buildCodeIntelligenceChecks(root, { graphDivergence: detectGraphFreshness(root) })
+runDoctor(inspection, { graphDivergence: detectGraphFreshness(cwd) })
+```
+
 - `code-intelligence-graph`
   - `Info` when the file is missing — agent reads still work but
     `shrk impact`, `shrk graph callers`, and the context planner
     fall back to slower scans. Fix: `shrk graph index`.
-  - `Ok` when the file is recent (within `staleThresholdDays`,
-    default 7). Message reports file / node / edge counts plus the
-    inline cycle tag and unresolved-import count when non-zero.
-  - `Warning` + `advisory` when stale. Fix: `shrk graph index
-    --changed` (or `--full`).
+  - `Ok` (`current (indexed Nd ago)`) when nothing has changed since the index.
+    Message reports file / node / edge counts plus the inline cycle tag and
+    unresolved-import count when non-zero.
+  - `Warning` + `advisory` (`STALE — N file(s) changed since index`) when the
+    tree has moved on. Fix: `shrk graph index --changed` (or `--full`).
+  - `Info` + `advisory` (`freshness NOT VERIFIED`) when no divergence was
+    supplied, or the store is too incomplete to measure. Loud-skip, not a pass:
+    a verdict nobody measured is not a green. Fix: `shrk graph status`.
   - `Warning` (structural, not advisory) when the file exists but
     isn't valid JSON. Fix: `shrk graph index --full`.
+
+`staleThresholdDays` no longer governs this check. It still governs the stored
+artefacts that have no working-tree counterpart to diverge from — the rule-graph
+bridge, the api-surface cache, the framework scan.
 
 - `code-intelligence-graph-cycles`
   - Fires when `largestCycleSize ≥ 3` OR `cycleCount ≥ 5`. The
@@ -154,6 +176,14 @@ linger silently.
 `shrk arch check` auto-writes `last.json` after every run.
 `shrk arch baseline write` freezes the current set as `baseline.json`.
 
+- `Info` + `advisory` (`delta NOT VERIFIED`) whenever the graph index is behind
+  the working tree. The delta is **derived** from that index, so a count taken
+  from a stale one is neither a green nor a red — the same loud-skip contract
+  the six data-defined rule planes honour. This failed in both directions
+  before: a digest under-reported real architecture debt 5-of-6 while displaying
+  "fresh", and the same stale snapshot can just as easily report a violation
+  that has already been fixed. Fix: `shrk graph index --changed`, then
+  `shrk arch check`.
 - `Ok` on `last violations ⊆ baseline violations` (no new ids).
 - `Warning` on any new violation id, with the first three samples in
   the message + error / warning count delta. Fix: investigate the new

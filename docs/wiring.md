@@ -377,6 +377,7 @@ to verify. An edit is planned ONLY when all of these hold:
 | that sink is an `array-members` source | `sink-not-an-array` |
 | its glob resolves to exactly one file | `ambiguous-sink-file` |
 | the anchor array appears exactly once in it | `array-not-found` |
+| the token binds the same way the sink's existing members do | `needs-import` |
 
 Everything else is listed with its reason and left alone — a gate that silently
 half-fixes is worse than one that does nothing, because you cannot see what it
@@ -387,6 +388,68 @@ The planner matches the code already in the array — bare identifiers vs quoted
 strings, single vs multi-line, existing trailing-comma style — and preserves the
 whitespace before the closing bracket, so it never reformats code you did not
 ask it to touch.
+
+### Import-based sinks (`needs-import`)
+
+The common registry shape **imports** its members:
+
+```ts
+import { ALPHA_HANDLER } from './ALPHA_HANDLER';
+export const HANDLERS = [ALPHA_HANDLER];
+```
+
+Appending `NEW_HANDLER` to that array alone turns the wiring gate **green while
+the file no longer compiles** — the exact inverse of the point.
+
+The test is an **inconsistency** check, not a resolvability check: an import is
+needed exactly when the sink's existing members are import-bound but the new
+token would not be.
+
+1. **Token already bound** (imported, or declared inline in the sink) → append
+   only.
+2. **No existing member is import-bound** → append only. If the members are
+   themselves unbound (ambient globals, a `/// <reference>`), whatever makes
+   them resolve applies equally to the new one, and the append is consistent
+   with the file's own convention. An inline registry stays fixable.
+3. **Members ARE imported, and the specifier is derivable** → plan **both**
+   edits. Derivable means the specifier is a pure function of the member name —
+   every member `M` imported as `import { M } from '<prefix>M<suffix>'`, same
+   prefix and suffix for all of them — **and** the derived specifier resolves to
+   the file the gate found the token declared in. Both must hold; the second
+   check is what catches a template like `./{}/{}` (from
+   `import { Handler } from './Handler/Handler'`) that is uniform but would
+   render a path that does not exist.
+4. **Anything else** → `needs-import`, reported and untouched.
+
+The derived import is also refused when the declaring file does not **export**
+the token. A rule can find a token with any extractor — `regex-capture` over
+`const (\w+)` matches un-exported locals too — so being declared somewhere does
+not mean being importable from there.
+
+```
+  would add NEW_HANDLER → src/registry.ts:4
+      + import { NEW_HANDLER } from './NEW_HANDLER';   (line 3)
+      + , NEW_HANDLER   (line 4)
+```
+
+The dry run prints **both** halves, because the import is the half that decides
+whether the result compiles — a preview that hid it would be asking you to
+approve a change you had not seen. The new import is appended after the last
+existing one, so no existing line moves.
+
+A `needs-import` refusal names why the specifier could not be derived:
+
+```
+    • NEW_HANDLER  [needs-import] sink src/registry.ts imports its members, but their import
+      paths are not a function of the member name (a barrel, mixed paths, or an aliased
+      import) — the specifier for this token cannot be derived
+    • OTHER_HANDLER  [needs-import] sink src/registry.ts imports its members; the derived
+      specifier "./other/OTHER_HANDLER" does not resolve to src/OTHER_HANDLER.ts, where
+      "OTHER_HANDLER" is declared — refusing rather than writing a guess
+```
+
+A barrel, mixed paths, an aliased import, or a bare (package / tsconfig-alias)
+specifier all land here. **The planner never invents a path.**
 
 ## In the quality gate
 

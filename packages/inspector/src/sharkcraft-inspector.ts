@@ -24,7 +24,10 @@ import { BUILTIN_PRESETS, loadPresetsFromFile, PresetRegistry } from '@shrkcrft/
 import { BoundaryRegistry, loadBoundaryRulesFromFile } from '@shrkcrft/boundaries';
 import { DoctorSeverity, type IDoctorCheck, type IDoctorResult } from './doctor-result.ts';
 import { diagnoseActionHints } from './action-hint-diagnostics.ts';
-import { buildCodeIntelligenceChecks } from './code-intelligence-doctor.ts';
+import {
+  buildCodeIntelligenceChecks,
+  type IGraphDivergence,
+} from './code-intelligence-doctor.ts';
 import { loadSearchTuning } from './search-tuning-registry.ts';
 import { buildDelegateRecipeChecks } from './delegate-doctor.ts';
 import {
@@ -726,7 +729,22 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
   return inspection;
 }
 
-export function runDoctor(inspection: ISharkcraftInspection): IDoctorResult {
+/** Inputs `runDoctor` cannot compute from this layer. */
+export interface IRunDoctorOptions {
+  /**
+   * Working-tree divergence of the graph index, from `@shrkcrft/graph`'s
+   * `detectGraphFreshness`. Callers above the graph layer (cli, mcp-server)
+   * pass it so the code-intelligence checks report a divergence-checked
+   * verdict; without it those checks say "not verified" rather than guessing
+   * freshness from a timestamp.
+   */
+  graphDivergence?: IGraphDivergence;
+}
+
+export function runDoctor(
+  inspection: ISharkcraftInspection,
+  options: IRunDoctorOptions = {},
+): IDoctorResult {
   const checks: IDoctorCheck[] = [];
 
   if (!inspection.workspace.hasPackageJson) {
@@ -953,7 +971,9 @@ export function runDoctor(inspection: ISharkcraftInspection): IDoctorResult {
   // quality-gates, migrations). Each finding reads a stable on-disk
   // state file under `.sharkcraft/` and stays silent when the user has
   // not opted into the relevant feature.
-  for (const c of buildCodeIntelligenceChecks(inspection.projectRoot)) {
+  for (const c of buildCodeIntelligenceChecks(inspection.projectRoot, {
+    ...(options.graphDivergence ? { graphDivergence: options.graphDivergence } : {}),
+  })) {
     checks.push(c);
   }
 

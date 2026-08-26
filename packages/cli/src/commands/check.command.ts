@@ -618,7 +618,8 @@ async function checkBoundariesOnce(args: ParsedArgs): Promise<number> {
 // Subcommand: wiring — "declared but not wired" completeness checks
 // ────────────────────────────────────────────────────────────────────────
 const WIRING_CHECK_USAGE =
-  'shrk check wiring [--changed-only] [--since <ref>] [--base <ref>] [--only <ids>] [--explain <ruleId>] [--json] [--strict]\n' +
+  'shrk check wiring [--changed-only] [--since <ref>] [--base <ref>] [--only <ids>] [--explain <ruleId>]\n' +
+  '                  [--fix [--write]] [--json] [--strict]\n' +
   '  Cross-file "declared but not wired" completeness gate. Scope flags select rules by\n' +
   '  FOOTPRINT — a rule fires when the diff touches EITHER its declared or its registered\n' +
   '  side (so a registration edited in file B fires a rule declared in file A).\n' +
@@ -626,6 +627,10 @@ const WIRING_CHECK_USAGE =
   '    --since <ref>    scope the diff to changes since <ref> (--base is a synonym)\n' +
   '    --only <ids>     run only these rule ids (comma-separated)\n' +
   '    --explain <id>   dry-run ONE rule and print the declared/registered sets it extracts\n' +
+  '    --fix            plan the deterministic repair (append the token to its sink array);\n' +
+  '                     dry-run by default, prints every edit AND any import it must add.\n' +
+  '                     Refuses anything ambiguous — see `needs-import` in docs/wiring.md.\n' +
+  '    --write          apply the planned edits (only meaningful with --fix)\n' +
   '  Exit: 0 verified pass · 1 violations · 2 not-verified (0 rules evaluated in scope).';
 
 /**
@@ -709,7 +714,14 @@ function runWiringFix(
   }
   for (const e of allEdits) {
     process.stdout.write(`  ${write ? 'wrote  ' : 'would add'} ${e.token} → ${e.file}:${e.line}\n`);
-    process.stdout.write(`      + ${e.insert}\n`);
+    // Show BOTH halves of the edit. An array append whose import is invisible
+    // in the preview is exactly how the reviewer approves a change they have
+    // not actually seen — and the import is the half that decides whether the
+    // result compiles.
+    if (e.importInsert !== undefined) {
+      process.stdout.write(`      + ${e.importInsert}${e.importLine !== undefined ? `   (line ${e.importLine})` : ''}\n`);
+    }
+    process.stdout.write(`      + ${e.insert}${e.importInsert !== undefined ? `   (line ${e.line})` : ''}\n`);
   }
   if (allSkips.length > 0) {
     process.stdout.write(`\n  Left untouched (${allSkips.length}) — not mechanically unambiguous:\n`);
@@ -954,6 +966,10 @@ async function checkWiring(args: ParsedArgs): Promise<number> {
       `\n  ! ${r.ruleId}: the registered side extracted 0 ids while ${r.declaredCount} were declared —\n` +
         `    every declared token "fails". Check the registered glob before chasing the tokens.\n`,
     );
+    // When the engine knows WHY the sink came back empty, say it here — the
+    // generic advice above would otherwise send the reader to inspect a glob
+    // that is perfectly fine.
+    if (r.sinkHint) process.stdout.write(`    → ${r.sinkHint}\n`);
   }
   if (report.violations.length === 0 && report.diagnostics.length === 0) {
     // A failOnEmpty skip produces no violation object but IS a failure.

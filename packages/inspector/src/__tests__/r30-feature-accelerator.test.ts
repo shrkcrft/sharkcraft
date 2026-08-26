@@ -4,7 +4,7 @@
  * TypeScript decisions loader.
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import * as os from 'node:os';
 import {
@@ -19,6 +19,7 @@ import {
 } from '../symbol-index.ts';
 import { ingestFeedbackText } from '../feedback-ingestion.ts';
 import { QueryMatchKind } from '../query-resolver.ts';
+import { warmConstructCache } from '../construct-registry.ts';
 
 const TMP_ROOT = mkdtempSync(nodePath.join(os.tmpdir(), 'shrk-r30-'));
 
@@ -43,24 +44,32 @@ describe('fuzzy impact resolution', () => {
     expect(r.files).toContain('sample.ts');
   });
 
-  test('exact construct id maps to construct files', () => {
+  test('exact construct id maps to construct files', async () => {
     const filePath = nodePath.join(TMP_ROOT, 'plugin-billing.ts');
     writeFileSync(filePath, '// plugin\n', 'utf8');
     const constructs = [
       { id: 'demo.plugin.billing', type: 'plugin', title: 'Billing plugin', files: ['plugin-billing.ts'] },
     ];
+    // The REAL registry, warmed — not a `constructRegistry: { list }` stub.
+    // Production inspections carry no such property, so a stub here would keep
+    // a dead code path looking alive (see r72-reference-registry).
+    mkdirSync(nodePath.join(TMP_ROOT, 'sharkcraft'), { recursive: true });
+    writeFileSync(
+      nodePath.join(TMP_ROOT, 'sharkcraft', 'constructs.ts'),
+      `export default ${JSON.stringify(constructs)};\n`,
+      'utf8',
+    );
     const inspection = {
       projectRoot: TMP_ROOT,
+      sharkcraftDir: nodePath.join(TMP_ROOT, 'sharkcraft'),
+      config: null,
       knowledgeEntries: [],
       templates: [],
       pathService: { list: () => [] },
       index: new Map(),
       packs: { validPacks: [] },
-      // Both the resolver path (constructRegistry.list) and the
-      // fuzzy-impact lookup path (inspection.constructs) need to see it.
-      constructs,
-      constructRegistry: { list: () => constructs },
     } as never;
+    await warmConstructCache(inspection);
     const r = resolveFuzzyImpact(inspection, 'demo.plugin.billing');
     expect(r.source).toBe(FuzzyImpactSourceKind.Construct);
     expect(r.shouldRunImpact).toBe(true);

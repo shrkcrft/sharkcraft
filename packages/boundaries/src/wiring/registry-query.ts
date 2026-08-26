@@ -1,4 +1,4 @@
-import type { IRegistryDeclaration } from '@shrkcrft/core';
+import { resolveSourceGlobs, type IRegistryDeclaration } from '@shrkcrft/core';
 import { matchesAny } from '../scan/glob.ts';
 import { readMatchingFiles } from '../util/walk-files.ts';
 import { collectSourceSites, type IWiringFileEntry } from './evaluate-wiring.ts';
@@ -51,19 +51,22 @@ export function scanRegistry(
   options: IScanRegistryOptions = {},
 ): IRegistryInventory {
   const globs = [
-    ...new Set([...decl.source.files, ...(decl.consumer ? decl.consumer.files : [])]),
+    ...new Set([
+      ...resolveSourceGlobs(decl.source),
+      ...(decl.consumer ? resolveSourceGlobs(decl.consumer) : []),
+    ]),
   ];
   const cache = readMatchingFiles(projectRoot, globs, new Set(options.excludeDirs ?? []));
   const entries: IWiringFileEntry[] = [...cache.entries()].map(([path, content]) => ({ path, content }));
 
   const diagnostics: string[] = [];
-  const sourceFiles = entries.filter((f) => matchesAny(f.path, decl.source.files));
+  const sourceFiles = entries.filter((f) => matchesAny(f.path, resolveSourceGlobs(decl.source)));
   const declared = collectSourceSites(decl.source, sourceFiles);
   if (declared.error) diagnostics.push(`registry "${decl.name}" source: ${declared.error}`);
 
   const consumerByToken = new Map<string, IRegistrySite[]>();
   if (decl.consumer) {
-    const consumerFiles = entries.filter((f) => matchesAny(f.path, decl.consumer!.files));
+    const consumerFiles = entries.filter((f) => matchesAny(f.path, resolveSourceGlobs(decl.consumer!)));
     const consumed = collectSourceSites(decl.consumer, consumerFiles);
     if (consumed.error) diagnostics.push(`registry "${decl.name}" consumer: ${consumed.error}`);
     for (const s of consumed.sites) {

@@ -6,6 +6,7 @@ import {
 } from '@shrkcrft/core';
 import {
   extractTokens,
+  type IExtractContext,
   type IExtractFileEntry,
   type IExtractedSite,
 } from '../extract/extract-tokens.ts';
@@ -85,6 +86,13 @@ export interface IWiringRuleResult {
    * silently reported as N unrelated violations.
    */
   readonly emptySink?: boolean;
+  /**
+   * A diagnosis for a side that extracted nothing for a knowable reason — e.g.
+   * an `import-edges` sink targeting `to.files` against barrel imports. Carried
+   * so the empty-sink message can explain itself instead of sending the reader
+   * to check a glob that is fine.
+   */
+  readonly sinkHint?: string;
   /** Per-hop breakdown for a `chain` rule. */
   readonly hops?: readonly IWiringHopResult[];
 }
@@ -165,8 +173,9 @@ function hopPairs(rule: IWiringRule): { from: IWiringSource; to: readonly IWirin
 export function collectSourceSites(
   source: IWiringSource,
   files: readonly IWiringFileEntry[],
+  context: IExtractContext = {},
 ): { sites: readonly IWiringTokenSite[]; error?: string } {
-  const res = extractTokens(source, files);
+  const res = extractTokens(source, files, context);
   return res.error ? { sites: [], error: res.error } : { sites: res.sites };
 }
 
@@ -255,6 +264,7 @@ export function validateWiringRule(rule: IWiringRule): string | undefined {
 export function evaluateWiring(
   rules: readonly IWiringRule[],
   resolve: WiringFileResolver,
+  context: IExtractContext = {},
 ): IWiringReport {
   const ruleResults: IWiringRuleResult[] = [];
   const all: IWiringViolation[] = [];
@@ -302,10 +312,11 @@ export function evaluateWiring(
     let sinkFiles = 0;
     let sinkCount = 0;
     let emptySink = false;
+    let sinkHint: string | undefined;
 
     for (const [hopIndex, pair] of pairs.entries()) {
       const fromFiles = resolve(pair.from);
-      const fromSites = extractTokens(pair.from, fromFiles).sites;
+      const fromSites = extractTokens(pair.from, fromFiles, context).sites;
       const fromKeys = firstSites(fromSites, groupBy);
 
       // Each sink kept separate so `intersection` can require membership in ALL.
@@ -314,7 +325,9 @@ export function evaluateWiring(
       for (const sink of pair.to) {
         const files = resolve(sink);
         hopSinkFiles += files.length;
-        sinkKeySets.push(firstSites(extractTokens(sink, files).sites, groupBy));
+        const sinkRes = extractTokens(sink, files, context);
+        if (sinkRes.hint && sinkHint === undefined) sinkHint = sinkRes.hint;
+        sinkKeySets.push(firstSites(sinkRes.sites, groupBy));
       }
       const unionKeys = new Map<string, IWiringTokenSite>();
       for (const set of sinkKeySets) {
@@ -432,6 +445,7 @@ export function evaluateWiring(
       registeredFiles: sinkFiles,
       violations,
       ...(emptySink ? { emptySink: true } : {}),
+      ...(emptySink && sinkHint !== undefined ? { sinkHint } : {}),
       ...(pairs.length > 1 ? { hops } : {}),
     });
     all.push(...violations);

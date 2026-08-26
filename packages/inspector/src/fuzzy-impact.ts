@@ -33,6 +33,8 @@ import {
 } from './query-resolver.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { HELPERS } from './helper-registry.ts';
+import { listConstructs } from './construct-registry.ts';
+import { listPlaybooks } from './playbook-registry.ts';
 
 export const FUZZY_IMPACT_RESOLUTION_SCHEMA = 'sharkcraft.fuzzy-impact-resolution/v1';
 
@@ -97,20 +99,11 @@ interface IConstructLike {
 }
 
 function listConstructsFrom(inspection: ISharkcraftInspection): readonly IConstructLike[] {
-  // 1) Pre-warmed sync cache.
-  const direct = (inspection as { constructs?: readonly IConstructLike[] }).constructs;
-  if (direct && direct.length > 0) return direct;
-  // 2) Registry with list() — duck-typed.
-  const reg = (inspection as { constructRegistry?: { list?: () => readonly IConstructLike[] } })
-    .constructRegistry;
-  if (reg && typeof reg.list === 'function') {
-    try {
-      return reg.list();
-    } catch {
-      return [];
-    }
-  }
-  return [];
+  // One source. The two structural casts that used to precede this
+  // (`inspection.constructs`, then `inspection.constructRegistry.list()`) read
+  // properties nothing assigns, so this function returned [] in production
+  // while tests that faked those properties passed.
+  return listConstructs(inspection) as readonly IConstructLike[];
 }
 
 function constructFor(
@@ -212,11 +205,10 @@ function playbookFiles(
   inspection: ISharkcraftInspection,
   playbookId: string,
 ): readonly string[] {
-  const reg = (inspection as {
-    playbookRegistry?: { get?: (id: string) => unknown };
-  }).playbookRegistry;
-  if (!reg || typeof reg.get !== 'function') return [];
-  const playbook = reg.get(playbookId) as
+  // `listPlaybooks` is the same source `shrk playbooks list` reads. The
+  // previous `inspection.playbookRegistry?.get()` cast pointed at a property
+  // nothing ever assigned, so every playbook expanded to zero files.
+  const playbook = listPlaybooks(inspection).find((p) => p.id === playbookId) as
     | undefined
     | {
         steps?: readonly { template?: { targetPath?: string }; relatedFiles?: readonly string[] }[];

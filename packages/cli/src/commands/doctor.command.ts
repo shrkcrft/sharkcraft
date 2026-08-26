@@ -1,3 +1,4 @@
+import { detectGraphFreshness } from '@shrkcrft/graph';
 import {
   buildAcknowledgement,
   buildAiReadinessReport,
@@ -306,7 +307,10 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
       inspectOpts.loaderTimeoutMs = loaderTimeout;
     }
     const inspection = await inspectSharkcraft(inspectOpts);
-    const result = augmentWithSemanticIndexCheck(runDoctor(inspection), cwd);
+    const result = augmentWithSemanticIndexCheck(
+      runDoctor(inspection, { graphDivergence: detectGraphFreshness(cwd) }),
+      cwd,
+    );
     const report = buildAiReadinessReport(inspection);
     if (debug) {
       process.stderr.write(`[debug] inspection elapsed ${inspection.inspectionElapsedMs}ms cache=${inspection.cacheEnabled ? 'on' : 'off'} loaders=${inspection.loaderDiagnostics.length}\n`);
@@ -855,7 +859,7 @@ async function suppressionsListRun(args: ParsedArgs): Promise<number> {
 async function suppressionsCheckRun(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const inspection = await inspectSharkcraft({ cwd });
-  const result = runDoctor(inspection);
+  const result = runDoctor(inspection, { graphDivergence: detectGraphFreshness(cwd) });
   const cfg = loadDoctorSuppressions(cwd);
   const filtered = filterDoctorResult(result, { suppressions: cfg.doctorSuppressions });
   const unused = filtered.appliedSuppressions.filter((a) => a.matched === 0);

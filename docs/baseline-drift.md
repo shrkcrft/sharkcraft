@@ -70,6 +70,37 @@ valid JSON *and* one id per line, so `git diff` shows exactly what moved.
 `two-way` is the default on purpose. A one-directional ledger is exactly how a
 silent deletion ships; narrowing must be a visible, explicit choice.
 
+> **The two ratchets point opposite ways, and the names are easy to invert.**
+> `additions-only` = *gained entries fail* → nothing new may appear (a
+> **deprecation ratchet**: no NEW importer of a deprecated symbol, while
+> removing one is progress). `no-shrink` = *lost entries fail* → nothing may
+> disappear (an **adoption ratchet**: a feature, once adopted, stays adopted).
+> Read the "Fails on" column, not the name.
+
+### `expectEmpty` — when an EMPTY set is the assertion
+
+A [fence](extraction-dsl.md#the-targeted-fence-and-expectempty) — "these two
+subtrees must not be graph-connected" — is a ledger whose committed value is
+`[]`, and whose passing state is *computing nothing*. That collides with the
+[loud-skip contract](gate-rules.md#the-loud-skip-contract), which treats a zero
+result as a probably-stale selector:
+
+```ts
+{
+  id: 'fence-a-to-b',
+  baseline: 'baselines/fence.json',        // committed as []
+  compute: { kind: 'extractor', source: { /* an import-edges source */ } },
+  direction: 'additions-only',
+  expectEmpty: true,
+}
+```
+
+`expectEmpty: true` makes the empty case a **verified pass** for that rule and
+nothing else — in `baseline check` and in `gates coverage` alike, so a fence can
+be part of a green CI. A non-empty result is still drift, so the assertion keeps
+its teeth. Setting it alongside `failOnEmpty: true` is refused at config load:
+they assert opposite things about the same result.
+
 ### `canonical` — so a reformat is not drift
 
 Both sides are canonicalized before comparison, so key order or re-indentation

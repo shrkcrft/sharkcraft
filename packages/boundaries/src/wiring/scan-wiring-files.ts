@@ -1,6 +1,7 @@
-import type { IWiringRule } from '@shrkcrft/core';
+import { resolveSourceGlobs, type IWiringRule } from '@shrkcrft/core';
 import { matchesAny } from '../scan/glob.ts';
 import { readMatchingFiles } from '../util/walk-files.ts';
+import { loadTsconfigPaths } from '../scan/tsconfig-aliases.ts';
 import {
   evaluateWiring,
   wiringGlobsOf,
@@ -63,5 +64,11 @@ export function runWiring(
   const cache = readMatchingFiles(projectRoot, allGlobs, new Set(options.excludeDirs ?? []));
   const entries: IWiringFileEntry[] = [...cache.entries()].map(([path, content]) => ({ path, content }));
 
-  return evaluateWiring(selected, (source) => entries.filter((f) => matchesAny(f.path, source.files)));
+  // The tsconfig paths let an `import-edges` source resolve alias specifiers the
+  // way the compiler does — the same map `check boundaries` resolves with.
+  return evaluateWiring(
+    selected,
+    (source) => entries.filter((f) => matchesAny(f.path, resolveSourceGlobs(source))),
+    { tsconfigPaths: loadTsconfigPaths(projectRoot) },
+  );
 }

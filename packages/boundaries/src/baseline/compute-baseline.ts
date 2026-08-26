@@ -1,6 +1,7 @@
 import type { IWiringSource } from '@shrkcrft/core';
 import { matchesAny } from '../scan/glob.ts';
 import { readMatchingFiles } from '../util/walk-files.ts';
+import { loadTsconfigPaths } from '../scan/tsconfig-aliases.ts';
 import { extractTokens } from '../extract/extract-tokens.ts';
 
 /** The value an extractor-backed baseline computes, ready to diff or commit. */
@@ -33,7 +34,7 @@ export function computeBaselineFromExtractor(
   const files = [...cache.entries()]
     .filter(([path]) => matchesAny(path, source.files ?? []))
     .map(([path, content]) => ({ path, content }));
-  const res = extractTokens(source, files);
+  const res = extractTokens(source, files, { tsconfigPaths: loadTsconfigPaths(projectRoot) });
   if (res.error) {
     return { text: '[]', ids: [], filesScanned: files.length, error: res.error };
   }

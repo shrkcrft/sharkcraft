@@ -25,6 +25,8 @@ import {
   checkProvenanceHeaders,
   compareGeneratedTrees,
   scanGeneratedFiles,
+  type IGeneratedFileDiff,
+  type IGeneratedScan,
   type IGeneratedTreeDiff,
   type IProvenanceFinding,
 } from '@shrkcrft/boundaries';
@@ -154,16 +156,28 @@ interface IRegenResult {
   readonly error?: string;
 }
 
-/** Run `regen` into a fresh temp dir and read the result back. Always cleans up. */
-function runRegen(cwd: string, rule: IGeneratedArtifactRule, committed: ReadonlyMap<string, string>): IRegenResult {
+/**
+ * Run ONE regen command into a fresh temp dir and read the result back, keyed
+ * onto the committed paths it corresponds to. Always cleans up.
+ *
+ * `committed` is the slice this command OWNS, not the whole tree — that is what
+ * keeps a multi-writer tree honest: each command's output is aligned against
+ * (and later diffed against) only its own files, so writer A's output can never
+ * be reported as writer B's stale committed file.
+ */
+function runOneRegen(
+  cwd: string,
+  command: string,
+  committed: ReadonlyMap<string, string>,
+  timeoutMs: number,
+): IRegenResult {
   const tmp = mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'shrk-generated-'));
   try {
-    const command = rule.regen!.split('{TMP}').join(tmp);
-    const child = spawnSync(command, {
+    const child = spawnSync(command.split('{TMP}').join(tmp), {
       cwd,
       shell: true,
       encoding: 'utf8',
-      timeout: rule.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      timeout: timeoutMs,
       maxBuffer: 16 * 1024 * 1024,
     });
     if (child.error) return { error: `regen failed to start: ${child.error.message}` };
@@ -181,7 +195,40 @@ function runRegen(cwd: string, rule: IGeneratedArtifactRule, committed: Readonly
   }
 }
 
-interface IGeneratedOutcome {
+/** Every regen command a rule declares, paired with the committed slice it owns. */
+interface IRegenUnit {
+  readonly label: string;
+  readonly command: string;
+  readonly committed: ReadonlyMap<string, string>;
+  readonly timeoutMs: number;
+}
+
+/**
+ * The regen units for a rule: one per `sources[]` writer, or a single unit for
+ * the classic `regen` form. A rule declaring neither yields none (header-only).
+ */
+function regenUnitsOf(rule: IGeneratedArtifactRule, scan: IGeneratedScan): IRegenUnit[] {
+  const fallback = rule.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (scan.slices.length > 0) {
+    return scan.slices.map((slice) => ({
+      label: slice.label,
+      command: slice.regen,
+      committed: slice.files,
+      timeoutMs: slice.timeoutMs ?? fallback,
+    }));
+  }
+  if (rule.regen === undefined) return [];
+  // Single-writer: the checkable set, so a hand-maintained bless inside the
+  // glob is not compared against output no generator produces.
+  return [{ label: rule.id, command: rule.regen, committed: scan.checkable, timeoutMs: fallback }];
+}
+
+/**
+ * One rule's outcome. Exported so `shrk gates check` aggregates the SAME
+ * evaluation the per-plane verb runs, rather than a second implementation that
+ * could drift from it.
+ */
+export interface IGeneratedOutcome {
   readonly rule: IGeneratedArtifactRule;
   readonly status: 'passed' | 'failed' | 'skipped' | 'error';
   readonly committedCount: number;
@@ -191,9 +238,21 @@ interface IGeneratedOutcome {
   readonly skipReason?: string;
   /** True when the drift half was deliberately not run (`--headers-only` / no `regen`). */
   readonly driftChecked: boolean;
+  /** Files excluded from every check by `handMaintained`. */
+  readonly handMaintained: readonly string[];
+  /** Per-writer drift results, for a multi-writer rule. */
+  readonly writers: readonly IWriterOutcome[];
 }
 
-function evaluateRule(
+/** One writer's slice result inside a multi-writer rule. */
+interface IWriterOutcome {
+  readonly label: string;
+  readonly committedCount: number;
+  readonly differences: number;
+  readonly error?: string;
+}
+
+export function evaluateGeneratedRule(
   cwd: string,
   rule: IGeneratedArtifactRule,
   excludeDirs: readonly string[],
@@ -210,11 +269,18 @@ function evaluateRule(
       committedCount: 0,
       provenance: [],
       driftChecked: false,
+      handMaintained: [],
+      writers: [],
       skipReason: `0 files matched generatedGlob (${rule.generatedGlob.join(', ')})`,
     };
   }
 
-  const headers = checkProvenanceHeaders(rule, scan.generated, scan.outside);
+  // Headers + byte checks run over the CHECKABLE set — a hand-maintained bless
+  // is excluded from both, which is the whole point of declaring it.
+  const headers = checkProvenanceHeaders(rule, scan.checkable, scan.outside, {
+    unclassified: scan.unclassified,
+    staleHandMaintained: scan.staleHandMaintained,
+  });
   if (headers.error) {
     return {
       rule,
@@ -222,21 +288,42 @@ function evaluateRule(
       committedCount: scan.generated.size,
       provenance: [],
       driftChecked: false,
+      handMaintained: scan.handMaintained,
+      writers: [],
       error: headers.error,
     };
   }
 
-  let treeDiff: IGeneratedTreeDiff | undefined;
-  let error: string | undefined;
-  const wantDrift = !headersOnly && rule.regen !== undefined;
-  if (wantDrift) {
-    const regen = runRegen(cwd, rule, scan.generated);
-    if (regen.error) error = regen.error;
-    else treeDiff = compareGeneratedTrees(scan.generated, regen.files!, rule.compare ?? 'bytes');
+  const units = headersOnly ? [] : regenUnitsOf(rule, scan);
+  const differences: IGeneratedFileDiff[] = [];
+  const writers: IWriterOutcome[] = [];
+  const errors: string[] = [];
+  let committedCompared = 0;
+  let regeneratedCount = 0;
+  for (const unit of units) {
+    const regen = runOneRegen(cwd, unit.command, unit.committed, unit.timeoutMs);
+    if (regen.error) {
+      errors.push(units.length > 1 ? `${unit.label}: ${regen.error}` : regen.error);
+      writers.push({ label: unit.label, committedCount: unit.committed.size, differences: 0, error: regen.error });
+      continue;
+    }
+    const diff = compareGeneratedTrees(unit.committed, regen.files!, rule.compare ?? 'bytes');
+    differences.push(...diff.differences);
+    committedCompared += diff.committedCount;
+    regeneratedCount += diff.regeneratedCount;
+    writers.push({ label: unit.label, committedCount: unit.committed.size, differences: diff.differences.length });
   }
 
+  const ranAnyWriter = units.length > 0 && errors.length < units.length;
+  const treeDiff: IGeneratedTreeDiff | undefined = ranAnyWriter
+    ? { differences, committedCount: committedCompared, regeneratedCount }
+    : undefined;
+  const error = errors.length > 0 ? errors.join(' · ') : undefined;
+
   const hardFindings = headers.findings.filter((f) => f.severity === 'error');
-  const drifted = (treeDiff?.differences.length ?? 0) > 0;
+  const drifted = differences.length > 0;
+  // A writer that failed to RUN proved nothing, so the rule is in error even if
+  // its siblings were clean — a partial regen must never read as a full pass.
   const status: IGeneratedOutcome['status'] =
     error !== undefined
       ? 'error'
@@ -251,14 +338,16 @@ function evaluateRule(
     ...(treeDiff ? { treeDiff } : {}),
     provenance: headers.findings,
     ...(error ? { error } : {}),
-    driftChecked: wantDrift && error === undefined,
+    driftChecked: units.length > 0 && errors.length === 0,
+    handMaintained: scan.handMaintained,
+    writers: writers.length > 1 ? writers : [],
   };
 }
 
-function hintFor(rule: IGeneratedArtifactRule): string {
+export function generatedHintFor(rule: IGeneratedArtifactRule): string {
   return (
     rule.hint ??
-    (rule.regen
+    (rule.regen || rule.sources
       ? `regenerate with \`shrk generated update --id ${rule.id}\` and commit the result`
       : 'add the provenance header to the generated file, or move it out of the generated glob')
   );
@@ -272,11 +361,13 @@ function outcomeJson(o: IGeneratedOutcome): Record<string, unknown> {
     severity: o.rule.severity ?? 'error',
     committedCount: o.committedCount,
     driftChecked: o.driftChecked,
+    handMaintained: o.handMaintained,
+    ...(o.writers.length > 0 ? { writers: o.writers } : {}),
     ...(o.treeDiff ? { differences: o.treeDiff.differences, regeneratedCount: o.treeDiff.regeneratedCount } : {}),
     provenance: o.provenance,
     ...(o.error ? { error: o.error } : {}),
     ...(o.skipReason ? { skipReason: o.skipReason } : {}),
-    hint: hintFor(o.rule),
+    hint: generatedHintFor(o.rule),
   };
 }
 
@@ -351,6 +442,9 @@ export const generatedListCommand: ICommandHandler = {
             description: r.description ?? null,
             generatedGlob: r.generatedGlob,
             regen: r.regen ?? null,
+            sources: r.sources ?? null,
+            handMaintained: r.handMaintained ?? null,
+            handMaintainedMarker: r.handMaintainedMarker ?? null,
             compare: r.compare ?? 'bytes',
             provenanceHeader: r.provenanceHeader ?? null,
             failOnEmpty: r.failOnEmpty === true,
@@ -364,7 +458,21 @@ export const generatedListCommand: ICommandHandler = {
     for (const r of prep.all) {
       process.stdout.write(`  • ${r.id}\n`);
       process.stdout.write(`      glob   ${r.generatedGlob.join(', ')}\n`);
-      process.stdout.write(`      regen  ${r.regen ?? '(header-only — never spawns)'}\n`);
+      if (r.sources && r.sources.length > 0) {
+        process.stdout.write(`      regen  ${r.sources.length} writer(s):\n`);
+        r.sources.forEach((src, i) => {
+          process.stdout.write(`               [${src.id ?? i}] ${src.regen}\n`);
+          process.stdout.write(`                    owns ${src.glob.join(', ')}\n`);
+        });
+      } else {
+        process.stdout.write(`      regen  ${r.regen ?? '(header-only — never spawns)'}\n`);
+      }
+      if (r.handMaintained && r.handMaintained.length > 0) {
+        process.stdout.write(`      hand   ${r.handMaintained.join(', ')}  (exempt from header + byte checks)\n`);
+      }
+      if (r.handMaintainedMarker) {
+        process.stdout.write(`      marker /${r.handMaintainedMarker}/  (in-file bless)\n`);
+      }
       if (r.provenanceHeader) {
         process.stdout.write(
           `      header /${r.provenanceHeader.mustMatch}/${r.provenanceHeader.forbidOutside ? '  + mislabel check' : ''}\n`,
@@ -390,7 +498,7 @@ export const generatedCheckCommand: ICommandHandler = {
     const headersOnly = flagBool(args, 'headers-only');
     if (prep.rules.length === 0) return writeNoRules(json);
 
-    const outcomes = prep.rules.map((r) => evaluateRule(prep.cwd, r, prep.excludeDirs, headersOnly));
+    const outcomes = prep.rules.map((r) => evaluateGeneratedRule(prep.cwd, r, prep.excludeDirs, headersOnly));
     const failed = outcomes.filter(
       (o) => o.status === 'failed' || (o.status === 'error' && (o.rule.severity ?? 'error') === 'error'),
     );
@@ -431,13 +539,13 @@ export const generatedCheckCommand: ICommandHandler = {
                   id: d.file,
                   file: d.file,
                   message: d.kind,
-                  hint: hintFor(o.rule),
+                  hint: generatedHintFor(o.rule),
                 })),
                 ...o.provenance.map((f) => ({
                   id: f.file,
                   file: f.file,
                   message: f.message,
-                  hint: hintFor(o.rule),
+                  hint: generatedHintFor(o.rule),
                 })),
               ],
               ...(o.skipReason ? { skipReason: o.skipReason } : {}),
@@ -463,12 +571,21 @@ export const generatedCheckCommand: ICommandHandler = {
       }
       const diffs = o.treeDiff?.differences ?? [];
       if (o.status === 'passed') {
+        const exempt = o.handMaintained.length > 0 ? `, ${o.handMaintained.length} hand-maintained` : '';
         process.stdout.write(
-          `  ✓ ${o.rule.id}  (${o.committedCount} files` +
+          `  ✓ ${o.rule.id}  (${o.committedCount} files${exempt}` +
             `${o.driftChecked ? ', byte-identical to a fresh regen' : ', headers only'})\n`,
         );
+        for (const w of o.writers) {
+          process.stdout.write(`      · ${w.label}: ${w.committedCount} file(s) verified\n`);
+        }
       } else {
         process.stdout.write(`  ✗ ${o.rule.id}  ${diffs.length} file(s) differ from a fresh regen\n`);
+        for (const w of o.writers) {
+          process.stdout.write(
+            `      · ${w.label}: ${w.error ? `ERROR — ${w.error}` : `${w.differences} of ${w.committedCount} differ`}\n`,
+          );
+        }
         for (const d of diffs.slice(0, 25)) {
           const label =
             d.kind === 'content'
@@ -486,7 +603,7 @@ export const generatedCheckCommand: ICommandHandler = {
       if (o.provenance.length > 25) {
         process.stdout.write(`      … (${o.provenance.length - 25} more header finding(s))\n`);
       }
-      if (o.status === 'failed') process.stdout.write(`      → ${hintFor(o.rule)}\n`);
+      if (o.status === 'failed') process.stdout.write(`      → ${generatedHintFor(o.rule)}\n`);
     }
     for (const d of prep.planeDiagnostics) process.stdout.write(`  ! ${d}\n`);
     if (exit === ExitCode.NotVerified) {
@@ -512,27 +629,40 @@ export const generatedUpdateCommand: ICommandHandler = {
 
     const results: { id: string; ran: boolean; error?: string }[] = [];
     for (const rule of prep.rules) {
-      if (!rule.regen) {
+      // A multi-writer rule blesses by running EVERY writer — regenerating one
+      // slice and calling the artifact updated is how a mixed tree drifts.
+      const commands: { label: string; command: string; timeoutMs: number }[] =
+        rule.sources && rule.sources.length > 0
+          ? rule.sources.map((src, i) => ({
+              label: `${rule.id}/${src.id ?? i}`,
+              command: src.regen,
+              timeoutMs: src.timeoutMs ?? rule.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+            }))
+          : rule.regen
+            ? [{ label: rule.id, command: rule.regen, timeoutMs: rule.timeoutMs ?? DEFAULT_TIMEOUT_MS }]
+            : [];
+      if (commands.length === 0) {
         results.push({ id: rule.id, ran: false, error: 'header-only rule — nothing to regenerate' });
         continue;
       }
-      // `{TMP}` is the CHECK contract; `update` writes in place, so it is
-      // substituted with the project root and the regen writes its real output.
-      const command = rule.regen.split('{TMP}').join(prep.cwd);
-      const child = spawnSync(command, {
-        cwd: prep.cwd,
-        shell: true,
-        encoding: 'utf8',
-        timeout: rule.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        maxBuffer: 16 * 1024 * 1024,
-        stdio: json ? 'pipe' : 'inherit',
-      });
-      if (child.error) {
-        results.push({ id: rule.id, ran: false, error: child.error.message });
-      } else if (child.status !== 0) {
-        results.push({ id: rule.id, ran: true, error: `exited ${child.status ?? 'null'}` });
-      } else {
-        results.push({ id: rule.id, ran: true });
+      for (const { label, command, timeoutMs } of commands) {
+        // `{TMP}` is the CHECK contract; `update` writes in place, so it is
+        // substituted with the project root and the regen writes its real output.
+        const child = spawnSync(command.split('{TMP}').join(prep.cwd), {
+          cwd: prep.cwd,
+          shell: true,
+          encoding: 'utf8',
+          timeout: timeoutMs,
+          maxBuffer: 16 * 1024 * 1024,
+          stdio: json ? 'pipe' : 'inherit',
+        });
+        if (child.error) {
+          results.push({ id: label, ran: false, error: child.error.message });
+        } else if (child.status !== 0) {
+          results.push({ id: label, ran: true, error: `exited ${child.status ?? 'null'}` });
+        } else {
+          results.push({ id: label, ran: true });
+        }
       }
     }
     const failed = results.filter((r) => r.error !== undefined);
@@ -574,13 +704,24 @@ export const generatedExplainCommand: ICommandHandler = {
     }
     // explain never spawns — the point is to show what the rule SEES.
     const scan = scanGeneratedFiles(prep.cwd, rule, prep.excludeDirs);
-    const outcome = evaluateRule(prep.cwd, rule, prep.excludeDirs, true);
+    const outcome = evaluateGeneratedRule(prep.cwd, rule, prep.excludeDirs, true);
     if (flagBool(args, 'json')) {
       process.stdout.write(
         asJson({
           schema: 'sharkcraft.generated-explain/v1',
           ...outcomeJson(outcome),
           files: [...scan.generated.keys()],
+          checkable: [...scan.checkable.keys()],
+          handMaintained: scan.handMaintained,
+          markedHandMaintained: scan.markedHandMaintained,
+          staleHandMaintained: scan.staleHandMaintained,
+          unclassified: scan.unclassified,
+          slices: scan.slices.map((sl) => ({
+            label: sl.label,
+            regen: sl.regen,
+            glob: sl.glob,
+            files: [...sl.files.keys()],
+          })),
           outsideScanned: scan.outside.size,
           outsideGlobs: scan.outsideGlobs,
           regen: rule.regen ?? null,
@@ -592,7 +733,36 @@ export const generatedExplainCommand: ICommandHandler = {
     if (rule.description) process.stdout.write(`  ${rule.description}\n`);
     process.stdout.write(kv('glob', rule.generatedGlob.join(', ')) + '\n');
     process.stdout.write(kv('files matched', String(scan.generated.size)) + '\n');
-    process.stdout.write(kv('regen', rule.regen ?? '(header-only)') + '\n');
+    if (scan.slices.length > 0) {
+      process.stdout.write(kv('writers', String(scan.slices.length)) + '\n');
+      for (const sl of scan.slices) {
+        process.stdout.write(`      [${sl.label}] ${sl.files.size} file(s) — ${sl.regen}\n`);
+        process.stdout.write(`            owns ${sl.glob.join(', ')}\n`);
+      }
+    } else {
+      process.stdout.write(kv('regen', rule.regen ?? '(header-only)') + '\n');
+    }
+    if (scan.handMaintained.length > 0) {
+      process.stdout.write(
+        kv('hand-maintained', `${scan.handMaintained.length} file(s) — exempt from header + byte checks`) + '\n',
+      );
+      const marked = new Set(scan.markedHandMaintained);
+      // Say WHICH mechanism blessed each file: a config entry and an in-file
+      // marker are reviewed in different places, so "why is this exempt?" has
+      // two different answers and the reader needs to know which one applies.
+      for (const f of scan.handMaintained.slice(0, 20)) {
+        process.stdout.write(`      ${f}${marked.has(f) ? '  (in-file marker)' : '  (handMaintained[])'}\n`);
+      }
+    }
+    if (scan.unclassified.length > 0) {
+      process.stdout.write(
+        kv('unclassified', `${scan.unclassified.length} file(s) — owned by no writer, not blessed`) + '\n',
+      );
+      for (const f of scan.unclassified.slice(0, 20)) process.stdout.write(`      ${f}\n`);
+    }
+    for (const pattern of scan.staleHandMaintained) {
+      process.stdout.write(`  ! handMaintained "${pattern}" matches no file — stale bless\n`);
+    }
     process.stdout.write(kv('compare', rule.compare ?? 'bytes') + '\n');
     if (rule.provenanceHeader) {
       process.stdout.write(kv('header', `/${rule.provenanceHeader.mustMatch}/`) + '\n');

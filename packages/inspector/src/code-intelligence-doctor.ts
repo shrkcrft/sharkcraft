@@ -175,6 +175,56 @@ export interface ICodeIntelligenceDoctorOptions {
    * to flip a fresh fixture into "stale" without changing mtime.
    */
   staleThresholdDays?: number;
+  /**
+   * How far the graph index has diverged from the working tree.
+   *
+   * THE freshness verdict. Age is a display detail: an index built five days
+   * ago with nothing changed since is current, and one built a minute ago with
+   * a file changed since is not. Judging by age alone produced the exact
+   * contradiction this input exists to end — `graph status` reporting `stale`
+   * while this digest reported `fresh (1m ago)` on the same index in the same
+   * second, and every arch/cycle count derived from it inheriting the staleness
+   * unmarked.
+   *
+   * Injected because `detectGraphFreshness` lives in `@shrkcrft/graph`, which
+   * sits ABOVE inspector in the layer order. Callers that can see the graph
+   * (cli, mcp-server) pass it; when it is absent the checks report
+   * "not verified" rather than guessing from a timestamp.
+   */
+  graphDivergence?: IGraphDivergence;
+}
+
+/**
+ * The working-tree divergence of a stored index.
+ *
+ * Structurally identical to `@shrkcrft/graph`'s `IGraphFreshness` so a caller
+ * can pass that value straight through — declared here because this layer
+ * cannot import that package.
+ */
+export interface IGraphDivergence {
+  /** False when no index has been built at all. */
+  readonly hasIndex: boolean;
+  /** Indexed files whose content changed since. */
+  readonly modified: readonly string[];
+  /** Files on disk the index has never seen. */
+  readonly added: readonly string[];
+  /** Indexed files that no longer exist. */
+  readonly deleted: readonly string[];
+}
+
+/** Files the index is behind by, or `undefined` when divergence was not measured. */
+function behindCount(d: IGraphDivergence | undefined): number | undefined {
+  if (!d || !d.hasIndex) return undefined;
+  return d.modified.length + d.added.length + d.deleted.length;
+}
+
+/** A human summary of what diverged, for the stale message. */
+function divergenceSummary(d: IGraphDivergence): string {
+  const parts: string[] = [];
+  if (d.modified.length > 0) parts.push(`${d.modified.length} modified`);
+  if (d.added.length > 0) parts.push(`${d.added.length} new`);
+  if (d.deleted.length > 0) parts.push(`${d.deleted.length} deleted`);
+  return parts.join(', ');
 }
 
 /**
@@ -191,12 +241,12 @@ export function buildCodeIntelligenceChecks(
   const staleDays = options.staleThresholdDays ?? STALE_THRESHOLD_DAYS;
   const checks: IDoctorCheck[] = [];
 
-  checks.push(...graphChecks(projectRoot, nowMs, staleDays));
+  checks.push(...graphChecks(projectRoot, nowMs, options.graphDivergence));
   checks.push(...ruleGraphChecks(projectRoot, nowMs, staleDays));
   checks.push(...apiSurfaceChecks(projectRoot, nowMs, staleDays));
   checks.push(...qualityGateChecks(projectRoot, nowMs, staleDays));
   checks.push(...migrationChecks(projectRoot));
-  checks.push(...architectureChecks(projectRoot, nowMs, staleDays));
+  checks.push(...architectureChecks(projectRoot, nowMs, staleDays, options.graphDivergence));
   checks.push(...impactRunChecks(projectRoot, nowMs, staleDays));
   checks.push(...frameworkChecks(projectRoot, nowMs, staleDays));
   checks.push(...structuralRegistryChecks(projectRoot));
@@ -231,7 +281,7 @@ const EXPECTED_SCHEMAS: ReadonlyArray<{ rel: string; expected: string; package: 
 function graphChecks(
   projectRoot: string,
   nowMs: number,
-  staleDays: number,
+  divergence: IGraphDivergence | undefined,
 ): IDoctorCheck[] {
   const metaPath = nodePath.join(projectRoot, '.sharkcraft', 'graph', 'meta.json');
   if (!existsSync(metaPath)) {
@@ -265,8 +315,11 @@ function graphChecks(
   }
 
   const days = ageDays(manifest.lastIndexedAt, nowMs);
-  const stale = days !== undefined && days > staleDays;
-  const ageStr = days !== undefined ? ` (${fmtAge(days)})` : '';
+  // Divergence is the verdict; age is a display detail. `behind === undefined`
+  // means nobody measured it — which is NOT a pass, so the check says so
+  // instead of falling back to the timestamp that caused the contradiction.
+  const behind = behindCount(divergence);
+  const ageStr = days !== undefined ? ` (indexed ${fmtAge(days)})` : '';
   const counts = `${manifest.filesIndexed ?? 0} files, ${sumValues(
     manifest.nodesByKind,
   )} nodes, ${sumValues(manifest.edgesByKind)} edges`;
@@ -279,14 +332,31 @@ function graphChecks(
       : '';
 
   const out: IDoctorCheck[] = [];
-  if (stale) {
+  if (behind === undefined) {
+    // Nothing measured the divergence, so "current" would be a guess. The
+    // loud-skip contract the six rule planes honour says an unverified result
+    // is neither a pass nor a failure — it is "nothing was verified".
+    out.push({
+      id: 'code-intelligence-graph',
+      title: 'Code-intelligence graph index',
+      severity: DoctorSeverity.Info,
+      advisory: true,
+      category: CATEGORY,
+      message: `Graph index freshness NOT VERIFIED${ageStr} — ${counts}${cycleTag}.`,
+      fix: 'Run `shrk graph status` for the divergence-checked verdict.',
+      whyThisMatters:
+        'Age is not freshness: an index built days ago with nothing changed since is current, and one built a minute ago with a file changed since is not. Reporting the timestamp as a verdict is how a stale index gets read as authoritative.',
+    });
+  } else if (behind > 0) {
     out.push({
       id: 'code-intelligence-graph',
       title: 'Code-intelligence graph index',
       severity: DoctorSeverity.Warning,
       advisory: true,
       category: CATEGORY,
-      message: `Graph index is stale${ageStr} — ${counts}${cycleTag}.`,
+      message:
+        `Graph index STALE — ${behind} file(s) changed since index ` +
+        `(${divergenceSummary(divergence as IGraphDivergence)})${ageStr}; ${counts}${cycleTag}.`,
       fix: 'Re-index with `shrk graph index --changed` (or `--full`).',
       whyThisMatters:
         'Stale code graph makes `shrk impact`, `shrk graph callers`, and context packs return outdated answers.',
@@ -297,7 +367,7 @@ function graphChecks(
       title: 'Code-intelligence graph index',
       severity: DoctorSeverity.Ok,
       category: CATEGORY,
-      message: `Graph index fresh${ageStr} — ${counts}${cycleTag}.`,
+      message: `Graph index current${ageStr} — ${counts}${cycleTag}.`,
     });
   }
   // Cycles ≥ a heuristic threshold of 5 (or any 3+-file cycle) become
@@ -604,6 +674,7 @@ function architectureChecks(
   projectRoot: string,
   nowMs: number,
   staleDays: number,
+  divergence: IGraphDivergence | undefined,
 ): IDoctorCheck[] {
   const archDir = nodePath.join(projectRoot, '.sharkcraft', 'architecture');
   const baselinePath = nodePath.join(archDir, 'baseline.json');
@@ -685,6 +756,32 @@ function architectureChecks(
   const warnDelta =
     (last.countsBySeverity?.['warning'] ?? 0) -
     (baseline.countsBySeverity?.['warning'] ?? 0);
+
+  // A delta computed from an index the working tree has moved past is neither
+  // a green nor a red — it is "nothing was verified". This is the loud-skip
+  // contract the six data-defined rule planes already honour, extended to the
+  // graph-derived findings. It failed in both directions before: a digest
+  // under-reported real architecture debt 5-of-6 while displaying "fresh", and
+  // the same stale snapshot can just as easily report a violation that has
+  // already been fixed.
+  const behind = behindCount(divergence);
+  if (behind !== undefined && behind > 0) {
+    return [
+      {
+        id: 'code-intelligence-architecture',
+        title: 'Architecture baseline',
+        severity: DoctorSeverity.Info,
+        advisory: true,
+        category: CATEGORY,
+        message:
+          `Architecture delta NOT VERIFIED — the graph index is ${behind} file(s) behind ` +
+          `(${divergenceSummary(divergence as IGraphDivergence)}), so any count derived from it is out of date.`,
+        fix: 'Re-index with `shrk graph index --changed`, then `shrk arch check`.',
+        whyThisMatters:
+          'A count from a stale index misses violations in files it never saw AND reports ones already fixed. Presenting it as a number invites acting on both.',
+      },
+    ];
+  }
 
   if (newCount === 0 && errDelta <= 0 && warnDelta <= 0) {
     return [

@@ -1,6 +1,7 @@
 import {
   failsWhenEmpty,
   type IBaselineRule,
+  type IDocReferenceRule,
   type IGeneratedArtifactRule,
   type IPolicyRule,
   type IRegistrationIdiom,
@@ -10,7 +11,14 @@ import {
 } from '@shrkcrft/core';
 
 /** Which data-defined plane a rule belongs to. */
-export type GatePlane = 'wiring' | 'policy' | 'registry' | 'registration' | 'baseline' | 'generated';
+export type GatePlane =
+  | 'wiring'
+  | 'policy'
+  | 'registry'
+  | 'registration'
+  | 'baseline'
+  | 'generated'
+  | 'doc-reference';
 
 /** Every plane, in the order `shrk gates list` prints them. */
 export const GATE_PLANES: readonly GatePlane[] = [
@@ -20,6 +28,7 @@ export const GATE_PLANES: readonly GatePlane[] = [
   'registration',
   'baseline',
   'generated',
+  'doc-reference',
 ];
 
 /**
@@ -36,6 +45,11 @@ export interface IGateRuleView {
   readonly severity: 'error' | 'warning';
   /** True when a zero-match is a hard failure rather than a loud skip. */
   readonly failOnEmpty: boolean;
+  /**
+   * True when an EMPTY result is the rule's passing state (a fence). The
+   * loud-skip contract is inverted for these, and only for these.
+   */
+  readonly expectEmpty?: boolean;
   readonly selfTest?: IRuleSelfTest;
   /** The underlying rule, for the plane-specific explainer. */
   readonly raw:
@@ -44,7 +58,8 @@ export interface IGateRuleView {
     | IRegistryDeclaration
     | IRegistrationIdiom
     | IBaselineRule
-    | IGeneratedArtifactRule;
+    | IGeneratedArtifactRule
+    | IDocReferenceRule;
 }
 
 /** The config planes this view is built from. */
@@ -55,6 +70,7 @@ export interface IGatePlanes {
   readonly registrationGraph?: readonly IRegistrationIdiom[];
   readonly baselines?: readonly IBaselineRule[];
   readonly generatedArtifacts?: readonly IGeneratedArtifactRule[];
+  readonly docReferences?: readonly IDocReferenceRule[];
 }
 
 /** Flatten every declared rule across every plane into one iterable list. */
@@ -108,6 +124,18 @@ export function collectGateRules(planes: IGatePlanes): IGateRuleView[] {
     out.push({
       id: r.id,
       plane: 'baseline',
+      ...(r.description ? { description: r.description } : {}),
+      severity: r.severity ?? 'error',
+      failOnEmpty: failsWhenEmpty(r),
+      ...(r.expectEmpty === true ? { expectEmpty: true } : {}),
+      ...(r.selfTest ? { selfTest: r.selfTest } : {}),
+      raw: r,
+    });
+  }
+  for (const r of planes.docReferences ?? []) {
+    out.push({
+      id: r.id,
+      plane: 'doc-reference',
       ...(r.description ? { description: r.description } : {}),
       severity: r.severity ?? 'error',
       failOnEmpty: failsWhenEmpty(r),

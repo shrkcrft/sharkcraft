@@ -5,6 +5,383 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [0.1.0-alpha.30] — The engine taps the import graph, and reads its own prose
+
+Eight rounds of improvements driven by running alpha.29 against real consumer
+repos. The headline is four correctness bugs of one family — a gate that went
+green by breaking the build, two that confidently flagged *correct* usage, and
+two surfaces that gave contradictory freshness verdicts on the same index — plus
+the first extractor that reads the dependency graph instead of file contents,
+and a seventh plane that lints ids cited in free-text prose.
+
+### Fixed — `--fix` wrote an edit it knew would not compile (P1)
+
+```ts
+import { ALPHA_HANDLER } from './ALPHA_HANDLER';
+export const HANDLERS = [ALPHA_HANDLER, NEW_HANDLER];   // ← appended
+```
+```
+shrk check wiring   → $? = 0        ← green
+tsc                 → TS2304: Cannot find name 'NEW_HANDLER'
+```
+
+The overwhelmingly common registry shape **imports** its members. `--fix
+--write` appended the token to the array and stopped there, so the wiring gate
+passed over a file that no longer compiled — the exact inverse of the point, and
+a violation of `--fix`'s own "a wrong autofix is worse than no autofix" contract.
+
+The test is an **inconsistency** check, not a resolvability check: an import is
+needed exactly when the sink's existing members are import-bound but the new
+token would not be.
+
+- **Derivable → both edits.** The specifier must be a pure function of the member
+  name (every `M` imported as `import { M } from '<prefix>M<suffix>'`, same
+  prefix and suffix) **and** the derived specifier must resolve to the file the
+  gate found the token declared in. Both must hold — the second check catches a
+  template like `./{}/{}` (from `import { Handler } from './Handler/Handler'`)
+  that is uniform but renders a path that does not exist.
+- **Anything else → `needs-import`**, reported and untouched. A barrel, an
+  aliased import, mixed paths, a default/namespace convention, or a declaring
+  file that does not export the token.
+- **The dry run prints both halves** — the import is the half that decides
+  whether the result compiles, so a preview that hid it would be asking you to
+  approve a change you had not seen.
+
+This repo was itself exposed: `all-tools.ts` is an import-based sink whose
+specifiers are kebab-case, so `--fix --write` there would have broken the MCP
+server's build. It now refuses.
+
+### New — `import-edges`: the dependency graph as a rule input (P1)
+
+Every extractor read file *contents*, so alias-resolved dependency **direction**
+was inexpressible and repos hand-rolled scripts for it. This emits the edges as
+an id set, so every existing plane gets them for free:
+
+```jsonc
+{ "files": ["apps/**/*.ts"], "extract": "import-edges",
+  "to": { "module": "@x/generated", "match": "^Nge.*View$" }, "emit": "edge" }
+```
+
+| `emit` | Rule shape it enables |
+|---|---|
+| `edge` | **adoption ledger** (`baseline`, `two-way`) — a LOST edge is a silent de-adoption; **targeted fence** |
+| `symbol` | **orphan detection** — dead generated code a byte-drift gate cannot see (a file can be byte-perfect *and* imported by nobody) |
+| `from` | **deprecation ratchet** (`baseline`, `additions-only`) — any NEW importer fails |
+
+It counts every dependency form — `import … from`, `export … from`,
+side-effect `import '…'`, dynamic `import('…')` and `require('…')` — because a
+fence that missed `await import('../secret')` would have a hole exactly where a
+motivated person would put one. There is **no persisted index behind it**, so
+there is no staleness question to get wrong.
+
+**Targeting, and the one place intuition trips.** `to.files` matches an import's
+*directly-resolved* path, so a symbol re-exported through a barrel resolves to
+the package entry, not the deep file — `to: { files: ['**/generated/**'] }`
+finds 0 edges for `import { X } from '@x/ui'`. That zero is technically correct,
+which is why it is confusing, so the engine diagnoses it in `gates coverage`,
+`gates try` and `check wiring`'s empty-sink message:
+
+```
+→ 0 edges via `to.files` — that matches an import's DIRECTLY-resolved path, so a symbol
+  re-exported through a barrel/package resolves to the package entry, not the deep file.
+  Target by `to.module` + `to.match` instead.
+```
+
+The hint fires only when `to.files` is the sole target selector and the `from`
+scan matched files — a wrong diagnosis is worse than none.
+
+### New — shared `extractors` (`$use`) (P1)
+
+Three planes routinely describe the same id set. Written out three times they
+drift, and all three still report a confident pass:
+
+```jsonc
+{ "extractors": { "handlers": { "files": ["src/handlers/*.ts"], "extract": "export-names", "match": "_HANDLER$" } },
+  "wiringRules": [{ "declared": { "$use": "handlers" }, … }],
+  "registries":  [{ "source":   { "$use": "handlers" } }],
+  "baselines":   [{ "compute": { "kind": "extractor", "source": { "$use": "handlers" } } }] }
+```
+
+One definition, N consumers, no copy that can fall out of date. Fields set
+alongside `$use` override it for that consumer. Resolution happens at config
+load, and a typo'd id **fails the load** with the dotted path — never a source
+that silently matches nothing. `gates coverage` reports each shared extractor
+once, with every rule that consumes it.
+
+### New — `generatedArtifacts` for MIXED trees (P1)
+
+A real `generated/` dir holds several writers' output plus files that are
+legitimately hand-maintained. A single-writer rule reported the other writers'
+files as `only-committed` and the hand-written ones as `missing-header` — all
+false, making the capability unusable on exactly the trees that need it.
+
+- **`sources[]`** — N writers, each verifying its own sub-glob, so one writer's
+  output is never reported as another's stale file. `generated update` runs them
+  all.
+- **`handMaintained[]`** — excluded from the header and byte checks. The last
+  path segment must be a literal filename: a wildcard basename would silently
+  absorb every new file, turning a reviewed per-file bless into a blanket
+  opt-out. A pattern matching no file is a stale bless (warning).
+- **`handMaintainedMarker`** — an in-file bless, so a large hand-written set
+  needs no config list and the exemption is reviewed in the diff that adds it.
+  Refused at load if it overlaps `provenanceHeader.mustMatch`, which would let
+  every generated file exempt itself from the check the marker exists to refine.
+- **`unclassified`** — a file under the tree owned by neither is a loud finding.
+  The marker is a third classification, not an escape from being classified.
+
+### New — `filenames`: the companion-file invariant (P2)
+
+An id per FILE, captured from the path (`stem` / `basename` / `regex` via
+`pathPattern`). Paired with `mode: 'parity'` it asserts a const↔file
+correspondence in **both** directions — a const with no file, and a file with no
+const.
+
+### New — `shrk gates check` and `--strict` (P2)
+
+`gates check` runs **every** data-defined plane's violation check in one pass —
+one exit code, one JSON envelope. Three verbs, three questions: `gates check` =
+are there violations, `gates coverage` = are the rules still connected,
+`shrk quality` = the whole pre-PR story.
+
+- `--changed-only` / `--since <ref>` scope by rule **footprint** (either side of
+  a rule, plus an `import-edges` rule's target globs).
+- `--no-spawn` skips the shell-executing halves. A rule whose drift check was
+  skipped reports **`skipped`, never `passed`** — a header contract holding
+  proves nothing about a hand edit, so the run exits `2`.
+- Scope-skips and accident-skips are kept apart: you asked for the narrowing, so
+  it does not fail the run; a stale selector does.
+- `--strict` promotes `warning`-severity findings to failures, for a zero-warning
+  CI. It reuses the established local meaning of `--strict` and composes with the
+  global one.
+
+### New — `gates try`: the rule-authoring REPL (P2)
+
+`explain` only works once a rule is IN the config, so tightening a selector
+round-tripped through the file every time. `gates try --rule-file <f>` runs the
+extraction against the live tree and prints the resolved sets, writing nothing.
+Works on every plane, validated with the loader's own schema, may `$use` the
+project's shared extractors, and **never spawns** — a `--rule-file` is arbitrary
+JSON, and honouring a `regen` from it would turn a read-only preview into shell
+execution. `--full` / `--limit N` dump the whole candidate set.
+
+### New — `expectEmpty` for fences (P2)
+
+A fence ("these two subtrees must not be graph-connected") is a ledger whose
+passing state is computing *nothing* — which collided with the loud-skip
+contract and made a clean fence exit `2` forever, unusable in CI. `expectEmpty:
+true` makes the empty case a verified pass for that rule and nothing else, in
+`baseline check` and `gates coverage` alike. A non-empty result is still drift.
+Setting it with `failOnEmpty` is refused: they assert opposites.
+
+### The `command`-baseline coverage probe (P2)
+
+`gates coverage` cannot run a `command` compute, so such a baseline was
+invisible to the trust layer — a stale `watchFiles` glob looked identical to a
+healthy one. Its `watchFiles` now doubles as a cheap probe: coverage globs them
+(never spawning) and reports `N watchFiles input(s) (compute unverified —
+command never run)` versus a loud zero.
+
+### Release hardening
+
+- **Extraction-cache invalidation** is pinned by the full matrix — id added, id
+  removed, file added, file deleted, and `--no-cache` parity — asserted at the
+  *verdict* level across the registry, wiring, baseline and shared-extractor
+  paths. A stale cache is a false green across every plane at once.
+- **A committed consumer corpus** (`examples/gate-matrix-consumer`) exercises
+  every awkward shape at once — derivable *and* barrel *and* aliased sinks, a
+  mixed generated tree, extractor *and* command baselines, a `$use` extractor
+  feeding eight rules across four planes, a multi-hop `chain`, `parity`, an `import-edges` adoption
+  ledger, and a fence — with the full verb matrix asserted on exit codes and key
+  messages. Every defect these rounds found was invisible to unit tests and only
+  surfaced from a live consumer; this converts that into CI.
+- **`bun run gates:self`** runs shrk's own rule planes over shrk in CI, so the
+  doc examples stay honest and the engine is exercised on a real config every
+  commit.
+
+### Notes
+
+- Unknown flags on `shrk gates` are now refused (exit `3`) rather than parsed as
+  a confident opt-in — a mistyped `--changed-only` would otherwise run the
+  *unscoped* command and return `0`.
+- `additions-only` = *gained entries fail* (a deprecation ratchet); `no-shrink` =
+  *lost entries fail* (an adoption ratchet). The names invert easily; the docs
+  now lead with the "Fails on" column.
+
+### New — `docReferences`: the prose your compiler never reads (P1)
+
+```md
+| A component | `shrk gen nge.angular-component` |
+| A sandbox   | `shrk gen nge.angular-renderer`  |   ← renamed six months ago
+```
+
+Markdown has no build and no type-check. shrk validated the **structured**
+`references[]` on a knowledge entry and nothing else, so the same ids written as
+free text drifted with zero signal until someone ran the command and it failed.
+A seventh plane fixes that:
+
+```bash
+shrk docs references check | explain --id <id> | list
+```
+
+It joins `shrk gates` like every other plane. The design is mostly about *not*
+crying wolf, because a linter that flags correct prose gets switched off:
+`requireContext` (default `backtick` — a genuine instruction is nearly always
+written as code), `exempt[]` + a per-line `<!-- ref-allow: why -->` marker, and
+a length-scaled `did you mean` that stays silent when nothing is close. It reads
+dot-directories a glob explicitly names, so `.claude/skills/**` works while
+`docs/**` still never wanders into `.venv`.
+
+shrk dogfoods it: `doc-engine-ids` validates 15 references across 204 of its own
+docs.
+
+### Fixed — a registry that could not list, so it rejected every valid id (P1)
+
+A doc citing a **real** playbook was reported unresolved. Not a missing
+wire-up — an unchecked structural cast, copy-pasted to five call sites:
+
+```ts
+const reg = (inspection as { playbookRegistry?: { list?: ... } }).playbookRegistry;
+if (reg && typeof reg.list === 'function') { ... }
+return [];   // ← the only reachable branch, forever
+```
+
+`ISharkcraftInspection` has no `playbookRegistry`, no `constructRegistry`, no
+`constructs` and no `policyChecks`. Nothing ever assigned them. The cast
+type-checks perfectly and then answers "nothing exists" for every id, including
+correct ones. Beyond the reported doc-reference symptom it also broke structured
+`references: [{ playbook }]`, fuzzy trace/impact matching for playbooks,
+policies and constructs, and playbook→related-file expansion.
+
+No test caught it because the tests *invented* the property they were testing
+(`playbookRegistry: { list: () => [...] }`), so a fake made a dead code path
+look alive.
+
+- **One source per kind.** Resolution reads `listPlaybooks` / `listConstructs` /
+  `listPolicyIds` — the same sources the `list` verbs read. Every duplicate
+  resolver delegates to it.
+- **A real policy-id registry.** Policy ids previously existed only as a side
+  effect of `evaluatePolicy` *running* every check against the tree. The
+  declarations are now loaded and never run.
+- **The empty-registry guard** generalises the class: if *every* kind a rule
+  lists is empty, the rule REFUSES — "nothing could resolve, so every reference
+  would be reported wrong" — instead of emitting a page of confident false
+  findings. Emptiness is repo-dependent, so it is a run-time diagnostic rather
+  than a config error.
+- **The lock:** for every id a registry lists, the resolver resolves it —
+  playbook, construct, policy, template, pipeline. Plus a grep lock that fails
+  the build if the phantom cast reappears in either form.
+
+### Fixed — "not blocking" printed above exit `0` (P2)
+
+A rule with `status: 'error'` and `severity: 'warning'` counted as *evaluated*
+in both `docs references check` and `gates check`, so a rule that could not run
+at all printed a non-blocking banner and exited `0`. An errored rule proved
+nothing: it is now excluded from `evaluated`, and the surface exits `2`. Same
+family as alpha.29's "a skipped rule was masked by its passing siblings".
+
+### Notes — round 6/7
+
+- `exemptMarker` may carry its reason (`<!-- ref-allow: planned, not built yet
+  -->`). A byte-exact marker forced the justification onto a neighbouring line
+  where the gate could not see it, so re-wrapping a paragraph silently dropped
+  the exemption. Still line-scoped, so the blast radius stays reviewable.
+- `playbook`, `construct` and `policy` ids come from a cache an async load
+  fills, while the resolver is synchronous. Every CLI entry point warms them
+  first; an embedder calling `checkDocReferences` directly must too — and
+  forgetting is not silent, it trips the empty-registry guard.
+
+### Fixed — three resolvers answering "does this id exist" (P1)
+
+The docs said *"there is one definition of does-this-id-exist, not two."* There
+were three: the prose linter's registry, and the v1 and v2 self-config doctors,
+each built from its own sources. They agreed only by coincidence — and did not
+always. Run against shrk itself, the doctor reported **17 unknown ids, every one
+of them correctly registered**:
+
+```
+warning [search-tuning-target-missing]  boosts unknown id "sharkcraft.mcp-read-only"
+   → a declared policy (sharkcraft/policies.ts:45)
+warning [search-tuning-target-missing]  boosts unknown id "sharkcraft.cli-command"
+   → a declared scaffold pattern; the doctor had no scaffold-pattern set at all
+```
+
+The mechanism was a hand-written union — `lookups.knowledge.has(id) ||
+lookups.rules.has(id) || …` — a list that silently went stale as kinds were
+added. It omitted policies, decisions, scaffold patterns and paths.
+
+- **One resolver.** `reference-registry` answers for every kind, and both
+  doctors' lookup sets are now projections of it. A test asserts they build
+  their sets no other way.
+- **Each kind reads the source its `list` verb reads.** `template` goes through
+  `templateRegistry` because that is what `shrk templates list` prints — not the
+  array it happens to be built from today.
+- **The union is derived, not written.** `referenceIdExistsInAnyKind` sweeps the
+  kind list, so adding a kind widens every unnamed cross-reference check at
+  once.
+- **A policy is listed under both its names** — the declared
+  `sharkcraft.mcp-read-only` that authors cite, and the `local:`-namespaced one
+  the policy report prints. Listing one rejects every reference written in the
+  other.
+
+`shrk self-config doctor` now reports **no cross-reference issues** on shrk.
+No user-visible change: `resolvesAs` accepts exactly the same kinds.
+
+### The regression lock — `list ≡ resolve`, for every kind
+
+The bug hid because nothing asserted the two agreed. A parametrized test now
+walks **all 17 id kinds** against the real repo: every id a kind lists resolves,
+under that kind and through the any-kind union; a phantom resolves under
+neither; and a kind that lists nothing fails loudly rather than passing blind.
+Dropping a single kind from the list fails two tests immediately.
+
+### Fixed — two surfaces, two answers to "is the index current?" (P2)
+
+`shrk graph status` judged freshness by **divergence** against the working tree.
+`shrk code-intel` judged it by **wall-clock age**. On the same index, in the same
+second:
+
+```
+shrk graph index                  # index is genuinely current
+# modify ONE tracked, indexed file
+shrk graph status  → state: stale              ← divergence detected
+shrk code-intel    → Graph index fresh (1m ago) ← contradicts it
+```
+
+The digest is the surface an inner-loop user or an agent skill is pointed at, so
+the weaker signal was the one most people saw — and every arch/cycle count
+derived from that index inherited the staleness unmarked. Observed live: a digest
+reporting `fresh (5d ago)` over an index missing 313 files, under-reporting
+architecture debt **5-of-6**. The failure is bidirectional — the same stale
+snapshot can just as easily report a violation already fixed.
+
+- **Divergence is the verdict; age is a display detail.** `code-intel`, `doctor`
+  and the `get_code_intelligence_state` MCP tool consume the same
+  `detectGraphFreshness` walk `graph status` reports. An index built five days
+  ago with nothing changed since is *current*; one built a minute ago with a file
+  changed since is *not*.
+- **The verdict names what diverged**: `STALE — 186 file(s) changed since index
+  (85 modified, 101 new)` instead of `is stale (54d ago)`.
+- **Loud-skip for derived findings.** An architecture delta computed from an
+  index the tree has moved past is reported `NOT VERIFIED`, not as a count —
+  the contract the six data-defined rule planes already honour, extended to the
+  graph-derived surfaces.
+- **An unmeasured verdict is not a pass.** `detectGraphFreshness` lives in
+  `@shrkcrft/graph`, above inspector, so divergence is injected. Callers that
+  cannot see the graph get `freshness NOT VERIFIED` rather than a guess from a
+  timestamp.
+- `staleThresholdDays` still governs the stored artefacts that have no
+  working-tree counterpart to diverge from (the rule-graph bridge, the
+  api-surface cache, the framework scan).
+
+Also fixed: `detectGraphFreshness` threw on a store whose `meta.json` exists but
+whose remaining parts are missing — an interrupted index took down every
+read-only surface that merely wanted to know whether the index was current. It
+now reports "could not measure", which reads as not-verified.
+
+`shrk graph status` labels its snapshot size `files indexed`, because it
+deliberately does not move when a new file appears on disk — that shows up on the
+`drift` line.
+
 ## [0.1.0-alpha.29] — The exit code has to agree with the sentence
 
 Improvements from running the alpha.28 rule engines against a real codebase.

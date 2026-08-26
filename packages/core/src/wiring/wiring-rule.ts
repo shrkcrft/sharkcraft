@@ -38,6 +38,10 @@
  *   - `decorator-args`        — argument `argIndex` of every `@anchor(…)`.
  *   - `string-union-members`  — the string literals of `type <anchor> = 'a' | 'b'`.
  *   - `json-path`             — leaves selected by `jsonPath` in a JSON document.
+ *   - `filenames`             — an id per FILE matching the globs, captured from
+ *                               the path (the companion-file invariant).
+ *   - `import-edges`          — resolved dependency edges from the scanned files
+ *                               to the modules/symbols `to` selects.
  */
 export type ExtractorKind =
   | 'regex-capture'
@@ -48,7 +52,54 @@ export type ExtractorKind =
   | 'call-args'
   | 'decorator-args'
   | 'string-union-members'
-  | 'json-path';
+  | 'json-path'
+  | 'filenames'
+  | 'import-edges';
+
+/**
+ * What a `filenames` extractor turns each matched PATH into.
+ *
+ * `stem` (default) is the basename without its extension — the shape that pairs
+ * a `FOO_DESCRIPTOR.ts` file with a `FOO_DESCRIPTOR` const. `basename` keeps the
+ * extension; `regex` takes capture group 1 of `pathPattern` applied to the whole
+ * project-relative path, for a key derived from the directory too.
+ */
+export type FilenameCapture = 'stem' | 'basename' | 'regex';
+
+/**
+ * What an `import-edges` extractor emits as each id.
+ *
+ * `edge` (default) — `<importing file> → <symbol>`, the shape a ledger or a
+ * fence pins. `symbol` — the imported name alone, so a wiring rule can check
+ * "every generated symbol has at least one importer". `from` — the importing
+ * file alone, so a `no-shrink` baseline ratchets "no NEW importer of this".
+ */
+export type ImportEdgeEmit = 'edge' | 'symbol' | 'from';
+
+/** Which imports an `import-edges` extractor counts. */
+export interface IImportEdgeTarget {
+  /**
+   * Package or module the import must name. Matches the specifier exactly or as
+   * a subpath: `@x/generated` selects `@x/generated` and `@x/generated/views`,
+   * never `@x/generated-legacy`.
+   */
+  readonly module?: string;
+  /** Regex over the literal import specifier, for anything `module` cannot say. */
+  readonly modulePattern?: string;
+  /** Extra flags for {@link modulePattern}. */
+  readonly modulePatternFlags?: string;
+  /**
+   * Globs over the RESOLVED target path — how an intra-repo target is named
+   * when the specifier is relative or goes through a tsconfig alias. Common
+   * extensions and `/index.*` are probed, so `src/generated/**` matches an
+   * extensionless specifier.
+   */
+  readonly files?: readonly string[];
+  /** Regex over the imported SYMBOL name. Omit to count every symbol. */
+  readonly match?: string;
+  /** Extra flags for {@link match}. */
+  readonly matchFlags?: string;
+}
 
 /**
  * Which half of a key/value construct becomes the id. Applies to
@@ -71,8 +122,32 @@ export type ExtractorCapture = 'name' | 'value';
  * fine; setting two DIFFERENT modes is a configuration error.
  */
 export interface IWiringSource {
-  /** Project-relative globs selecting the files to scan (`**`/`*`/`?` supported). */
-  readonly files: readonly string[];
+  /**
+   * Reference a NAMED extractor from the config's top-level `extractors` map
+   * instead of re-typing its selector here.
+   *
+   * The same id-set is routinely described by three planes at once — a wiring
+   * rule's `declared`, a registry's `source`, and a baseline's
+   * `compute.source` — and hand-copying the glob+pattern into all three means a
+   * dir move updated in two of them leaves the planes silently disagreeing
+   * about what set they are even talking about. That is the exact class of bug
+   * this engine exists to kill, so it must not be reintroduced by copy-paste in
+   * the config itself.
+   *
+   * Any field set ALONGSIDE `$use` overrides the named extractor's value for
+   * this consumer (e.g. the same files with a narrower `match`), so a shared
+   * definition never forces an exact-match reuse. Resolution happens at config
+   * load: every engine downstream sees a fully-resolved source, with `$use`
+   * retained purely as provenance for `gates explain`.
+   */
+  readonly $use?: string;
+  /**
+   * Project-relative globs selecting the files to scan (`**`/`*`/`?` supported).
+   *
+   * Required UNLESS {@link $use} names an extractor that supplies them —
+   * resolution guarantees this is set before any engine reads it.
+   */
+  readonly files?: readonly string[];
   /**
    * Extractor kind. Omit to use the sugar (`pattern` / `arrayProperty`) to
    * select it implicitly. Setting it alongside a sugar field for a DIFFERENT
@@ -121,6 +196,29 @@ export interface IWiringSource {
   readonly pattern?: string;
   /** Extra regex flags to combine with the always-on `g`. */
   readonly flags?: string;
+  /**
+   * What each matched path becomes, for `extract: 'filenames'` (default
+   * `stem`). Reuses `pattern` as the source regex when set to `regex`.
+   */
+  readonly capturePath?: FilenameCapture;
+  /**
+   * Regex applied to the project-relative PATH for `capturePath: 'regex'`;
+   * capture group 1 is the id.
+   *
+   * Deliberately not `pattern`: that field is sugar meaning `extract:
+   * 'regex-capture'`, and letting it also mean something else here would make
+   * "which extractor does this source use?" ambiguous at a glance.
+   */
+  readonly pathPattern?: string;
+  /** Extra flags for {@link pathPattern}. */
+  readonly pathPatternFlags?: string;
+  /**
+   * Which imports to count, for `extract: 'import-edges'`. The scanned `files`
+   * are the CONSUMER side; this is the target side.
+   */
+  readonly to?: IImportEdgeTarget;
+  /** What each `import-edges` id represents (default `edge`). */
+  readonly emit?: ImportEdgeEmit;
   /**
    * Sugar for `extract: 'array-members'` with this `anchor`. Captures the
    * identifier and quoted-string elements of every `<arrayProperty> = [ … ]`

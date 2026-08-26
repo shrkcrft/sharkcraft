@@ -95,6 +95,7 @@ export * from './demo-package.ts';
 export * from './release-readiness.ts';
 export * from './pack-release-check.ts';
 export * from './playbook-registry.ts';
+export * from './policy-registry.ts';
 export * from './playbook-script.ts';
 export * from './search-index.ts';
 export * from './search-tuning-registry.ts';
@@ -240,3 +241,6 @@ export * from './grounding/build-grounding.ts';
 export * from './grounding/nx-projects.ts';
 // DX/feedback3 — `shrk why <file>` report builder.
 export * from './why-file.ts';
+export * from './nearest-id.ts';
+export * from './reference-registry.ts';
+export * from './doc-references.ts';

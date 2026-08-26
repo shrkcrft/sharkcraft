@@ -21,6 +21,7 @@ import type {
 } from '@shrkcrft/knowledge';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { HELPERS } from './helper-registry.ts';
+import { referenceIdExists } from './reference-registry.ts';
 import { resolveSymbolInFile, SymbolResolution } from './symbol-index.ts';
 
 export const KNOWLEDGE_STALE_SCHEMA = 'sharkcraft.knowledge-stale/v1';
@@ -179,45 +180,31 @@ function dirExists(projectRoot: string, rel: string): boolean {
   }
 }
 
-function commandExistsInInspection(
-  inspection: ISharkcraftInspection,
-  id: string,
-): boolean {
-  // Both `shrk` commands and pack-contributed commands live on the
-  // inspection. We do a permissive lookup against the recommendation
-  // catalog if available.
-  const commands = (inspection as { commandCatalog?: { id: string }[] }).commandCatalog;
-  if (Array.isArray(commands)) {
-    if (commands.some((c) => c.id === id)) return true;
-  }
-  // Fallback — accept anything that looks like a valid `shrk` command.
-  return id.startsWith('shrk ') || id.startsWith('bun ');
+/*
+ * Existence checks delegate to the SHARED reference registry.
+ *
+ * They used to be private copies here, each reading a differently-shaped
+ * structural cast off the inspection (`playbookRegistry`, `constructRegistry`,
+ * `policyChecks`) — properties nothing ever attached, so those kinds answered
+ * "does not exist" for every id including correct ones. An unchecked cast to a
+ * hoped-for shape compiles perfectly and fails silently forever; the registry
+ * imports the real accessors so the compiler can see a rename.
+ */
+
+function commandExistsInInspection(inspection: ISharkcraftInspection, id: string): boolean {
+  return referenceIdExists(inspection, 'command', id);
 }
 
 function templateExists(inspection: ISharkcraftInspection, id: string): boolean {
-  return inspection.templates.some((t) => t.id === id);
+  return referenceIdExists(inspection, 'template', id);
 }
 
 function playbookExists(inspection: ISharkcraftInspection, id: string): boolean {
-  const inspectionAny = inspection as ISharkcraftInspection & {
-    playbookRegistry?: { list?: () => readonly { id: string }[] };
-  };
-  const reg = inspectionAny.playbookRegistry;
-  if (reg && typeof reg.list === 'function') {
-    return (reg.list() ?? []).some((p) => p.id === id);
-  }
-  return false;
+  return referenceIdExists(inspection, 'playbook', id);
 }
 
 function constructExists(inspection: ISharkcraftInspection, id: string): boolean {
-  const inspectionAny = inspection as ISharkcraftInspection & {
-    constructRegistry?: { list?: () => readonly { id: string }[] };
-  };
-  const reg = inspectionAny.constructRegistry;
-  if (reg && typeof reg.list === 'function') {
-    return (reg.list() ?? []).some((c) => c.id === id);
-  }
-  return false;
+  return referenceIdExists(inspection, 'construct', id);
 }
 
 function helperExists(id: string): boolean {
@@ -225,26 +212,15 @@ function helperExists(id: string): boolean {
 }
 
 function policyExists(inspection: ISharkcraftInspection, id: string): boolean {
-  const inspectionAny = inspection as ISharkcraftInspection & {
-    policyChecks?: readonly { id: string }[];
-  };
-  const checks = inspectionAny.policyChecks;
-  if (Array.isArray(checks)) return checks.some((c) => c.id === id);
-  return false;
+  return referenceIdExists(inspection, 'policy', id);
 }
 
 function boundaryRuleExists(inspection: ISharkcraftInspection, id: string): boolean {
-  const reg = (inspection as { boundaryRegistry?: { list?: () => readonly { id: string }[] } }).boundaryRegistry;
-  if (reg && typeof reg.list === 'function') return reg.list().some((b) => b.id === id);
-  return false;
+  return referenceIdExists(inspection, 'boundary-rule', id);
 }
 
 function pathConventionExists(inspection: ISharkcraftInspection, id: string): boolean {
-  const svc = (inspection as { pathService?: { list?: () => readonly { id: string }[] } }).pathService;
-  if (svc && typeof svc.list === 'function') {
-    return svc.list().some((p) => p.id === id);
-  }
-  return false;
+  return referenceIdExists(inspection, 'path-convention', id);
 }
 
 function packageExists(inspection: ISharkcraftInspection, id: string): boolean {

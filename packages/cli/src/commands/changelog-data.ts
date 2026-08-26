@@ -150,6 +150,32 @@ export const RELEASE_SURFACE_DELTAS: readonly IReleaseSurfaceDelta[] = [
     removed: [],
   },
   {
+    version: '0.1.0-alpha.30',
+    title: 'The engine taps the import graph, and reads its own prose',
+    added: [
+      '`shrk docs references check|explain|list` — the seventh rule plane (`docReferences[]`): ids cited in free-text PROSE (READMEs, docs, agent skill files) that no longer resolve. Markdown has no build, so these drift with zero signal. `requireContext` (default `backtick`), `exempt[]`, a per-line `<!-- ref-allow: why -->` marker, and a length-scaled `did you mean` keep it low-noise. Reads dot-directories a glob explicitly names, so `.claude/skills/**` works.',
+      '`shrk gates check` — every rule plane in ONE pass with one exit code (the CI / pre-commit primitive); `--changed-only` scopes by rule footprint, `--strict` promotes warning-severity findings to failures.',
+      '`shrk gates try --rule-file <f> [--full]` — dry-run a candidate rule against the tree without adding it to config. Dumps every captured token, so an over-matching `tokenPattern` is visible in one run instead of arriving as noise in CI.',
+      '`import-edges` extractor — the resolved dependency graph as a rule input (`emit: edge|symbol|from`, targetable by `to.module` / `to.modulePattern` / `to.files` / `to.match`). Existing planes now express adoption ledgers, orphan detection, deprecation ratchets and targeted fences. Alias-aware; no persisted index, so no staleness.',
+      '`filenames` extractor + `mode: parity` — companion-file invariants (every `X.ts` has an `X.test.ts`).',
+      'Shared extractors: a top-level `extractors` map plus `{ $use: "<id>" }` on any plane (local fields override). The planes describing one id set can no longer drift apart, and a typo\'d id fails the config load rather than silently matching nothing.',
+      '`generatedArtifacts[]` for MIXED trees: `sources[]` (N writers, each verifying its own sub-glob), `handMaintained[]` (literal filenames only, so the exemption cannot silently widen) and `handMaintainedMarker` for an in-file bless. A file under the tree owned by neither is an `unclassified` finding.',
+      '`expectEmpty: true` on `baselines[]` — a fence that fails the moment the edge set becomes non-empty.',
+      '`shrk check wiring --fix` now adds the missing IMPORT alongside the array member when the specifier is a pure function of the member name AND resolves to the declaring file; otherwise it refuses with `needs-import`.',
+    ],
+    changed: [
+      'FIXED (P1): `--fix --write` could green the wiring gate over a file that no longer compiles. The common registry shape IMPORTS its array members, and appending the token alone left `TS2304: Cannot find name`. It now writes both edits or refuses.',
+      'FIXED (P1): reference resolution ran in THREE modules — the prose linter and both self-config doctors — each from its own sources, agreeing only by coincidence. The self-config doctor reported 17 of shrk\'s own correctly-registered ids as unknown (its hand-written "known ids" union omitted policies, decisions, scaffold patterns and paths). One resolver now answers for every kind, and each kind reads the source its `list` verb reads.',
+      'FIXED (P2): `shrk graph status` judged index freshness by working-tree DIVERGENCE while `shrk code-intel` judged it by wall-clock age — contradictory verdicts on the same index in the same second, with every arch/cycle count derived from it inheriting the staleness unmarked. Divergence is now the single verdict; age is a display detail (`current (indexed 5d ago)` / `STALE — N file(s) changed since index`).',
+      'A finding DERIVED from a stale graph index is reported `NOT VERIFIED` rather than as a count — the loud-skip contract the rule planes already honour, extended to the graph-derived surfaces. An unmeasured verdict is never a pass.',
+      'An ERRORED rule is no longer counted as `evaluated` by `gates check` / `docs references check`, so a warning-severity rule that could not run exits `2` instead of printing "not blocking" above exit `0`.',
+      'A doc-reference rule whose registries are ALL empty refuses loudly instead of reporting every id as unresolved — a gate that confidently flags correct usage is worse than no gate.',
+      '`detectGraphFreshness` no longer throws on a store whose `meta.json` exists but whose remaining parts do not (an interrupted index); it reports "could not measure", which reads as not-verified.',
+      '`shrk graph status` labels its snapshot size `files indexed` — it deliberately does not move when a new file appears on disk; that shows up on the `drift` line.',
+    ],
+    removed: [],
+  },
+  {
     version: '0.1.0-alpha.29',
     title: 'The exit code has to agree with the sentence',
     added: [

@@ -21,8 +21,9 @@ The tier of any given command is computed at runtime from:
 1. The static bootstrap set (`init`, `doctor`, `recommend`, `surface`,
    `help`, `version`, `commands`, `start-here`, `--about`). Bootstrap
    commands are core regardless of any other rule.
-2. The spine pipelines (`engine.feature-dev`, `engine.safe-generation`
-   when it exists) — every command they reference is core.
+2. The spine pipelines — every command they reference is core. Today that
+   is `engine.feature-dev`, joined by
+   `engine.safe-generation` when it exists. <!-- ref-allow: not registered yet -->
 3. Pack-contributed CLI commands → default to `experimental`. Pack
    manifests can declare commands; the consumer opts in.
 4. Catalog entries with explicit `tier: CommandTier.Experimental` →

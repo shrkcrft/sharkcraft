@@ -68,7 +68,9 @@ const ALLOWLIST_RETIRED_VERB_NOTES: readonly string[] = [
  * the catalog just keys them under the canonical plural.
  */
 const ALLOWLIST_REGISTERED_ALIASES: readonly string[] = [
-  'pipeline', // alias for `pipelines` (README.md documents it as such)
+  // Empty: `pipeline` (singular) is still a live alias, but no doc spells it
+  // that way any more, so tolerating it here would be a dead entry — which the
+  // sibling test below exists to catch.
 ];
 
 /**
@@ -92,6 +94,9 @@ function collectScannedFiles(): readonly string[] {
     if (typeof rel === 'string' && rel.endsWith('.md')) out.add(`docs/${rel}`);
   }
   out.add('README.md');
+  // CLAUDE.md is the brief every agent session loads, so a retired command
+  // named here misleads more directly than one in a doc nobody opens.
+  out.add('CLAUDE.md');
   for (const base of ['.claude', '.agents']) {
     const dir = resolve(REPO_ROOT, base);
     if (!existsSync(dir)) continue;

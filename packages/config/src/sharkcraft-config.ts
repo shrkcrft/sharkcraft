@@ -56,6 +56,22 @@ export interface ISharkCraftConfig {
   agentTestFiles?: readonly string[];
 
   /**
+   * Named, reusable extraction selectors — the DRY guarantee for the one thing
+   * that must never disagree: WHICH SET are we talking about.
+   *
+   * A wiring rule's `declared`, a registry's `source`, and a baseline's
+   * `compute.source` routinely describe the same id space. Spelled out three
+   * times they drift — a directory move updated in two of three leaves the
+   * planes silently checking different sets while all three still report a
+   * confident pass. Define the selector once here and reference it with
+   * `{ $use: "<id>" }` from any plane; fields set alongside `$use` override the
+   * shared definition for that consumer only.
+   *
+   * Inline selectors keep working unchanged — `$use` is purely opt-in.
+   */
+  extractors?: Readonly<Record<string, IWiringSource>>;
+
+  /**
    * Wiring/completeness rules — the "declared but not wired" plane. Each rule is
    * a data-defined cross-file set-membership check (a declared token set must be
    * a subset of a registered token set). Run via `shrk check wiring` and the
@@ -113,6 +129,15 @@ export interface ISharkCraftConfig {
    * command.
    */
   generatedArtifacts?: readonly IGeneratedArtifactRule[];
+
+  /**
+   * Prose-reference rules — the "a doc cites an id that no longer exists"
+   * plane. shrk validates the structured `references[]` on knowledge entries;
+   * the same ids written as free text in a README, an architecture doc or an
+   * agent skill file are unchecked, and markdown has no build behind it. Run
+   * via `shrk docs references check`; joins `shrk gates` like every plane.
+   */
+  docReferences?: readonly IDocReferenceRule[];
 
   /**
    * Reuse primitives — role-keyed canonical symbols surfaced by `shrk reuse
@@ -176,7 +201,7 @@ import type { IDelegateRecipe } from '@shrkcrft/core';
 // Wiring rules live in core so config (validation) + boundaries (engine) share
 // one contract; re-export for `import { IWiringRule } from '@shrkcrft/config'`.
 export type { IWiringRule, IWiringSource } from '@shrkcrft/core';
-import type { IWiringRule } from '@shrkcrft/core';
+import type { IWiringRule, IWiringSource } from '@shrkcrft/core';
 // Registry declarations live in core too; re-export for config consumers.
 export type { IRegistryDeclaration } from '@shrkcrft/core';
 import type { IRegistryDeclaration } from '@shrkcrft/core';
@@ -194,7 +219,8 @@ export type {
   IProvenanceHeaderRule,
   IRuleSelfTest,
 } from '@shrkcrft/core';
-import type { IBaselineRule, IGeneratedArtifactRule } from '@shrkcrft/core';
+import type { IBaselineRule, IGeneratedArtifactRule, IDocReferenceRule } from '@shrkcrft/core';
+export type { IDocReferenceRule, DocReferenceContext } from '@shrkcrft/core';
 
 /**
  * Per-recipe override, keyed by recipe id. Lets a project tune a PACK-contributed

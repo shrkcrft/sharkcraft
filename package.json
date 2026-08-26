@@ -1,8 +1,8 @@
 {
   "name": "sharkcraft",
-  "version": "0.1.0-alpha.29",
+  "version": "0.1.0-alpha.30",
   "private": true,
-  "description": "SharkCraft — universal AI-ready developer intelligence system (Bun-native).",
+  "description": "SharkCraft \u2014 universal AI-ready developer intelligence system (Bun-native).",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -34,6 +34,7 @@
     "publish:dry-run": "bun run scripts/publish-dry-run.ts",
     "publish:packages": "bun run scripts/publish-packages.ts",
     "release:check": "bun run scripts/check-publish-readiness.ts",
+    "gates:self": "bun run scripts/gates-self.ts",
     "release:dry-run": "bun run scripts/release-dry-run.ts",
     "release:smoke-test": "bun run scripts/install-smoke-test.ts",
     "release:preflight": "bun run scripts/release-preflight.ts",

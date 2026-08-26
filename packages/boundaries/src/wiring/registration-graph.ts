@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import type { IRegistrationIdiom, IWiringSource } from '@shrkcrft/core';
+import { resolveSourceGlobs, type IRegistrationIdiom, type IWiringSource } from '@shrkcrft/core';
 import { matchesAny } from '../scan/glob.ts';
 import { readMatchingFiles, walkMatching } from '../util/walk-files.ts';
 import { collectSourceSites, type IWiringFileEntry } from './evaluate-wiring.ts';
@@ -57,7 +57,11 @@ function sortSites(sites: readonly IRegistrationSite[]): IRegistrationSite[] {
 function registrationGlobs(idioms: readonly IRegistrationIdiom[]): string[] {
   return [
     ...new Set(
-      idioms.flatMap((i) => [...i.declared.files, ...i.provided.files, ...i.consumed.files]),
+      idioms.flatMap((i) => [
+        ...resolveSourceGlobs(i.declared),
+        ...resolveSourceGlobs(i.provided),
+        ...resolveSourceGlobs(i.consumed),
+      ]),
     ),
   ];
 }
@@ -85,7 +89,7 @@ export function buildRegistrationGraph(
     content,
   }));
   const filesFor = (source: IWiringSource): IWiringFileEntry[] =>
-    entries.filter((f) => matchesAny(f.path, source.files));
+    entries.filter((f) => matchesAny(f.path, resolveSourceGlobs(source)));
 
   const declared = new Map<string, IRegistrationSite[]>();
   const provided = new Map<string, IRegistrationSite[]>();
@@ -174,7 +178,7 @@ export function providedTokensFromEntries(
 ): Set<string> {
   const tokens = new Set<string>();
   for (const idiom of idioms) {
-    const files = entries.filter((f) => matchesAny(f.path, idiom.provided.files));
+    const files = entries.filter((f) => matchesAny(f.path, resolveSourceGlobs(idiom.provided)));
     for (const s of collectSourceSites(idiom.provided, files).sites) tokens.add(s.token);
   }
   return tokens;

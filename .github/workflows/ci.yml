@@ -50,6 +50,13 @@ jobs:
         # timeout and flake. 30s gives headroom while still catching real hangs.
         run: bun test --timeout 30000
 
+      # Dogfood: run shrk's OWN data-defined rule planes over shrk. The doc
+      # examples stay honest, and the engine is exercised on a real non-trivial
+      # config every commit — which is where every prior round's defects
+      # actually surfaced.
+      - name: Gate planes (dogfood on shrk's own config)
+        run: bun run gates:self
+
       - name: Build dist
         run: bun run build:dist
 

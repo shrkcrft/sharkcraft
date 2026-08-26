@@ -1,801 +1,238 @@
 # SharkCraft
 
-> **For TypeScript monorepos with architecture boundaries that need
-> to outlive any single PR — shrk turns those boundaries into
-> mechanical gates and inlines them into Claude / Cursor / Aider
-> automatically.**
+**Durable project context for AI coding agents — and mechanical gates that hold
+the same line in CI.**
 
-shrk is narrow on purpose. Two specific things it does that
-`CLAUDE.md` / `.cursor/rules` / `.claude/skills/<name>/SKILL.md`
-can't:
+SharkCraft (`shrk`) turns your architecture rules into typed, versioned source.
+From that one definition it briefs every agent your team uses *and* fails the
+build when the boundary is crossed — so what Claude is told and what CI enforces
+can never drift apart.
 
-1. **Mechanical boundary enforcement.** Rules in a skill are
-   *suggestions*. `shrk check boundaries` and `shrk apply
-   --validate` *fail the build* when the architecture is violated —
-   whether a human wrote the code or an agent did. The boundary
-   rules and the prompt rules come from the same source of truth, so
-   what Claude is told matches what CI enforces.
-2. **One source of truth, multiple agent formats.** You write rules
-   in typed TypeScript once; shrk emits `.claude/skills/`,
-   `CLAUDE.md`, `AGENTS.md`, `.cursor/rules/`, and
-   `.github/copilot-instructions.md`. If your team uses more than
-   one agent (or switches), the rules don't drift between formats.
-
-If you don't need both of those, **native Claude Skills + a
-hand-written `CLAUDE.md` is the better answer.** See [Is shrk
-right for you?](#is-shrk-right-for-you) below.
-
-### Is shrk right for you?
-
-shrk pays off when most of these are true:
-
-- ✅ TypeScript codebase (Node, Bun, browser, RN).
-- ✅ Monorepo OR a repo with explicit layer / boundary rules to
-  enforce (e.g. "core can't import cli", "domain can't import
-  infra").
-- ✅ A team of 2+ engineers sharing conventions — not a solo project.
-- ✅ Active AI-assisted development on non-trivial features (PRs that
-  touch multiple files, not one-shot snippets).
-- ✅ Someone willing to author + maintain typed rules in
-  `sharkcraft/`.
-
-shrk is **probably overhead** when:
-
-- ❌ Solo dev, small project — write `.claude/skills/<name>/SKILL.md`
-  by hand in 20 minutes.
-- ❌ ≤10 conventions worth encoding — markdown is fine.
-- ❌ The team uses Claude only and you don't care about Cursor /
-  Aider — `CLAUDE.md` covers it.
-- ❌ Non-TypeScript primary stack — polyglot presets exist but are
-  shallow.
-
-The honest summary: shrk is a tool for teams that take architecture
-seriously enough to write down boundary rules, then want those same
-rules to be (a) what the agent sees in its prompt and (b) what CI
-enforces on every PR. Different from "Claude Skills with extra
-steps."
-
-### The 60-second loop, end-to-end
+**No AI inside the engine.** Every output is a deterministic function of your
+workspace and your rules. The agent uses the engine; the engine never calls a
+model.
 
 ```bash
-# Adoption cost ≈ 0 — pick the one that matches your repo today:
-
-# (a) Fresh repo / no existing rule files:
-shrk init --infer --write --with-claude-skill
-#     Scans your tsconfig + package.json + folder layout and writes
-#     populated sharkcraft/paths.ts, rules.ts, pipelines.ts. Also emits
-#     .claude/skills/<name>/SKILL.md so Claude Code auto-loads the rules.
-
-# (b) Existing CLAUDE.md / AGENTS.md / .cursor/rules:
-shrk import claude-md ./CLAUDE.md --populate --write
-#     Parses your existing rule file and routes entries by type into
-#     populated sharkcraft/rules.ts + paths.ts + knowledge.ts.
-#     (Also: --format agents-md / cursor-rules.)
-
-# (c) Want a framework-correct preset baseline instead?
-shrk init --with-claude-skill --preset react-19-modern --write
-#     (also: nest-11-modern, nx-monorepo, angular-21-modern, ...)
-
-# All three modes produce the same shape of populated sharkcraft/
-# plus a `.inferred-report.md` or `.imported-report.md` with the
-# confidence triage (what was adopted high / marked for review / dropped).
-
-# From now on, every Claude Code session in this repo loads the skill
-# automatically — zero MCP round-trip, zero CLAUDE.md drift.
-
-# Per task: focused brief, generate via templates, apply through the
-# safe write path that validates against the same boundary rules.
-shrk brief                                           # 1-page brief Claude reads first
-shrk gen typescript.service profile --dry-run --save-plan plan.json
-shrk apply plan.json --verify-signature --validate  # fails on boundary violation
+bun add -d @shrkcrft/cli        # or: npm i -D @shrkcrft/cli
+shrk init                       # detects your stack, writes typed rules
+shrk doctor                     # verify
 ```
 
-### What shrk does that CLAUDE.md / native Skills don't
+---
 
-| | Native Claude Skills + CLAUDE.md | shrk |
+## Why it exists
+
+A markdown rules file is a suggestion. It has no build step, no type checker,
+and no test — so it rots silently, and the first sign of trouble is an agent
+confidently writing code that violates a convention the file still describes.
+
+SharkCraft closes that loop:
+
+| | Markdown rules file | SharkCraft |
 |---|---|---|
-| Loads rules into Claude's prompt | ✅ (you write the markdown) | ✅ (auto-generated from typed source) |
-| Multi-agent (Claude + Cursor + Aider + Copilot) | ❌ (write each format by hand) | ✅ (one source → all formats) |
-| Mechanical boundary enforcement | ❌ (rules are suggestions) | ✅ (`check boundaries`, gates `apply`) |
-| Validates the rules don't go stale | ❌ (markdown rots silently) | ✅ (`knowledge stale-check`, `drift`) |
-| Per-task filtering of relevant rules | ❌ (load everything) | ✅ (`task "<task>"` returns just what matters) |
-| Plan / review / apply gate for AI writes | ❌ (agent writes directly) | ✅ (signed plans + validation) |
+| Loads rules into the agent's prompt | you write it by hand | generated from typed source |
+| Multi-agent (Claude · Cursor · Copilot · Aider) | one file per format, by hand | one source → every format |
+| Boundary enforcement | advisory | `shrk check boundaries` fails the build |
+| Detects its own staleness | markdown rots silently | every rule reports what it matched |
+| Per-task context | load everything | `shrk task "<task>"` returns only what matters |
+| Guard rail for agent writes | agent writes directly | signed plans, reviewed and validated |
 
-If the right column doesn't look like a problem you have, **stop
-here and just use Claude Skills.** This README is honest about that.
-
-> Status: **0.1.0-alpha.24**. APIs may shift. Bun ≥ 1.1 is the primary runtime.
-> Release notes: [`docs/releases/0.1.0-alpha.2.md`](docs/releases/0.1.0-alpha.2.md) ·
-> known limitations: [`docs/public-alpha-limitations.md`](docs/public-alpha-limitations.md) ·
-> external quickstart: [`docs/external-repo-quickstart.md`](docs/external-repo-quickstart.md).
-
-### Does it actually help an AI agent today?
-
-**Honest answer: only when configured for the repo.** In an internal
-benchmark on a NestJS / Angular / NX repo with the *default* generic
-preset and no path customization, shrk was **net-negative**: +31%
-wall-clock, +18% tokens, identical task-completion quality. The
-agent fell back to reading sibling files anyway because the default
-knowledge / path / template entries didn't match the Nx layout.
-
-The full report — methodology, raw numbers, fix path — is in
-[`bench/BENCHMARK-REPORT.md`](bench/BENCHMARK-REPORT.md) on the
-`bench-baseline` branch.
-
-**What makes shrk pay off** (the work the benchmark didn't do):
-
-1. Pick a framework-correct preset (`shrk init --preset nx-monorepo` /
-   `angular-21-modern` / `nest-11-modern` / `react-19-modern` —
-   matching the real layout of your repo).
-2. Populate `sharkcraft/paths.ts` with paths that exist (the alpha.5+
-   advisory annotator flags non-existent paths automatically).
-3. Define rules that ARE NOT already in the agent's training data —
-   project-specific conventions, not "use TypeScript strict mode."
-4. Run `shrk doctor` and read the shape-aware verdict before trusting
-   it for agent workflows.
-
-The benchmark hasn't been re-run on the alpha.5+ family of framework-
-correct presets. If you do, we'd love the numbers.
-
-## Try it in 30 seconds
-
-```bash
-# Bun:
-bunx @shrkcrft/cli@alpha init                       # scaffold sharkcraft/ (preset = generic)
-bunx @shrkcrft/cli@alpha init --preset bun-service  # or pick a tailored preset
-bunx @shrkcrft/cli@alpha doctor                     # ready-for-AI verdict + 0..100 score
-bunx @shrkcrft/cli@alpha task "generate a service"  # AI-ready task packet
-bunx @shrkcrft/cli@alpha mcp serve                  # start the MCP server (stdio)
-
-# npm/yarn/pnpm:
-npx @shrkcrft/cli@alpha init
-npx @shrkcrft/cli@alpha doctor
-npx @shrkcrft/cli@alpha task "generate a service"
-
-# Once installed (any package manager), the binary on PATH is just `shrk`:
-shrk init
-shrk doctor
-shrk task "generate a service"
-```
-
-### Try it in 60 seconds — adoption floor
-
-For any TypeScript repo, even with no `sharkcraft/` folder yet:
-
-```bash
-shrk inspect                                          # Detected block: pm, frameworks, configs, recommended preset
-shrk init --zero-config                               # preview the auto-picked preset (dry-run)
-shrk init --zero-config --write                       # persist the preset
-shrk ci scaffold github-actions --quickstart --write  # one-flag CI (doctor + changed-only boundaries + conditional gates)
-shrk eslint scaffold                                  # bridge to existing ESLint
-shrk checks aggregate                                 # universal rollup of SharkCraft + ESLint + Biome + custom checks
-```
-
-Detailed: [`docs/zero-config-init.md`](docs/zero-config-init.md),
-[`docs/presets.md`](docs/presets.md),
-[`docs/github-action.md`](docs/github-action.md),
-[`docs/eslint-bridge.md`](docs/eslint-bridge.md),
-[`docs/biome-bridge.md`](docs/biome-bridge.md),
-[`docs/check-result-protocol.md`](docs/check-result-protocol.md).
-
-## Architecture intelligence
-
-SharkCraft also detects when a repository drifts from its own architecture:
-
-- `shrk check boundaries` — forbidden-import scan
-  ([`docs/boundaries.md`](docs/boundaries.md)).
-- `shrk drift` — combined drift report
-  ([`docs/drift.md`](docs/drift.md)).
-- `shrk coverage` — relationship/coverage quality
-  ([`docs/coverage.md`](docs/coverage.md)).
-- `shrk graph` — knowledge graph (nodes + edges).
-- `shrk review --since HEAD~1` — AI-ready PR review packet
-  ([`docs/review-packets.md`](docs/review-packets.md)).
-- `shrk test context|agent` — regression tests for retrieval + task packets
-  ([`docs/context-tests.md`](docs/context-tests.md),
-  [`docs/agent-contract-tests.md`](docs/agent-contract-tests.md)).
-- `shrk plan review <plan.json>` + `shrk apply --validate`
-  ([`docs/plan-review.md`](docs/plan-review.md)).
-- `shrk dev start "<task>"` — full AI-safe development workflow
-  (task → session → plan → review → apply → validate → report)
-  ([`docs/dev-workflow.md`](docs/dev-workflow.md)).
-- `shrk quality` — single-command quality gate (doctor / boundaries /
-  coverage / tests / packs) ([`docs/quality-gates.md`](docs/quality-gates.md)).
-- `shrk ci scaffold github-actions` — generate a starter SharkCraft CI
-  workflow ([`docs/ci-scaffold.md`](docs/ci-scaffold.md)).
-- `shrk packs new <name>` — scaffold a new SharkCraft pack package
-  ([`docs/pack-authoring.md`](docs/pack-authoring.md)).
-- `shrk onboard adopt` — safely classify and adopt inferred items
-  ([`docs/onboarding-adoption.md`](docs/onboarding-adoption.md)).
-- `shrk commands` — full CLI catalog with safety labels
-  ([`docs/command-catalog.md`](docs/command-catalog.md)).
-- `shrk safety audit` — deterministic safety model audit
-  ([`docs/safety-model.md`](docs/safety-model.md)).
-- `shrk commands doctor` — catalog completeness check
-  ([`docs/command-catalog.md`](docs/command-catalog.md)).
-- `shrk dev report <id> --html` and `shrk dev open <id> --serve --live`
-  — local, self-contained HTML session view + SSE auto-refresh
-  ([`docs/session-html-report.md`](docs/session-html-report.md)).
-- `shrk onboard adopt status / regenerate / merge-preview / check / report`
-  — adoption state model + freshness + safe regenerate + three-way preview
-  ([`docs/onboarding-adoption.md`](docs/onboarding-adoption.md)).
-- `shrk scaffolds list / get / doctor` — pack-contributed scaffold patterns
-  ([`docs/scaffold-patterns.md`](docs/scaffold-patterns.md)).
-- `shrk infer templates --ast` — TypeScript-AST template body inference v2
-  ([`docs/inference.md`](docs/inference.md)).
-- `shrk report adoption|session|quality|safety|review|coverage|drift|graph`
-  — runtime report group, text / markdown / html / json
-  ([`docs/reports.md`](docs/reports.md)).
-- The dashboard is shipped as a standalone Vite app (`@shrkcrft/dashboard`);
-  the read-only data path is the `get_dashboard_summary` MCP tool
-  ([`docs/dashboard.md`](docs/dashboard.md),
-  [`docs/dashboard-api.md`](docs/dashboard-api.md)).
-
-## Daily workflow
-
-Day-to-day, prefer the **dev workflow** — it guides the whole loop with
-deterministic state transitions and a `session.json` audit trail:
-
-1. `shrk dev start "<task>"` — create session, save task packet + context.
-2. `shrk dev plan <id> --template <id> --name <name> --var k=v` — save a
-   signed dry-run plan and auto-run plan review.
-3. `shrk apply plans/<plan>.json --verify-signature` — the human-approval
-   write step.
-4. `shrk dev validate <id>` — run `sharkcraft.config` verifications + boundary check.
-5. `shrk dev report <id>` — write the audit-trail `final-report.md`.
-
-`shrk dev next <id>` always tells you the next safe command.
-
-Lower-level commands the dev workflow composes:
-
-- `shrk recommend "<task>"` — what should I do in this repo right now?
-- `shrk task "<task>"` — bundle of context + commands + forbidden actions (machine / agent surface).
-- `shrk pipelines script <id> --task "<task>"` — render runnable bash.
-- `shrk gen <template> <name> --dry-run --save-plan p.json` — plan only.
-- `shrk apply p.json` — single write path.
-
-Other useful daily commands:
-
-- `shrk search <query>` — unified search across knowledge / rules / paths /
-  templates / pipelines / packs / presets / boundaries / docs / sessions /
-  bundles / constructs / playbooks. ([docs/search.md](docs/search.md))
-- `shrk impact <fileOrSpecifier>` — direct + transitive dependents, risk +
-  suggested tests. `--format html|markdown|json --output <file>` writes
-  a self-contained report. ([docs/impact.md](docs/impact.md))
-- `shrk brief "<task>"` — one-shot Markdown agent brief; supports
-  `--mode compact|full|review|implementation|handoff`.
-  ([docs/brief.md](docs/brief.md))
-- `shrk dev start "<task>" --brief` — start a session and drop `brief.md`
-  inside it.
-- `shrk constructs list / get / trace / api / events / tokens / facets / search / infer`
-  — generic construct/facet inspection and auto-discovery.
-  ([docs/constructs.md](docs/constructs.md))
-- `shrk playbooks recommend "<task>"` / `shrk playbooks script <id>` /
-  `shrk playbooks validate <id>` — match a task, render an annotated script,
-  or validate references. ([docs/playbooks.md](docs/playbooks.md))
-- `shrk bundle status / replay <id> / replay --all` — bundle progress and
-  single-bundle or cross-bundle tamper / drift detection.
-  ([docs/bundles.md](docs/bundles.md))
-- `shrk policy test <id> --fixture <dir>` — policy-author harness.
-  ([docs/policy-checks.md](docs/policy-checks.md))
-- `shrk quality` / `shrk quality baseline diff|prune|history` — quality
-  gate + baseline tooling; the `history` subcommand reports baseline runs and
-  `diff` accepts the `latest` / `previous` aliases.
-  ([docs/quality-baselines.md](docs/quality-baselines.md))
-- `shrk report site --manifest` — JSON inventory of the static report site.
-  ([docs/static-reports.md](docs/static-reports.md))
-- `shrk explain <topic>` — compact local explanation, no AI required.
-- `shrk check` — sweep doctor + knowledge + templates + pipelines + packs
-  + action-hints; gate in CI with `--strict`.
-- `shrk presets recommend` — rank presets against the detected project profile.
-
-Until alpha-1 lands on npm, run from this repo with `bun run shrk ...`.
-
-## CLI + MCP, two halves of the same surface
-
-- **CLI (`shrk`)** — for humans. Token-budgeted context, dry-run generation,
-  apply, doctor, exports, imports, pipelines, packs, plan/pack signing.
-- **MCP server** — for agents. ~150 read-only tools and resources via
-  `@modelcontextprotocol/sdk`. **The MCP server never writes files.**
-  Generation goes through `shrk apply` on the CLI.
-
-## What this gives an AI agent
-
-Instead of dumping prose docs into the context window, an agent that reads
-through SharkCraft sees:
-
-- **`get_relevant_context`** — only the rules / paths / facts that match the
-  current task, filtered by `appliesWhen` / `scope` / `tags` / `priority`,
-  budgeted by token count.
-- **`get_action_hints`** — for each high-priority rule, the exact CLI
-  commands, MCP tools, forbidden actions, verification commands, and write
-  policy the agent should follow.
-- **`list_pipelines` / `get_pipeline_context`** — declarative workflows the
-  agent walks step by step (gather context → generate plan → apply via CLI).
-- **`create_generation_plan`** — dry-run code generation. The MCP server
-  **never** writes files; the human applies the plan via `shrk apply`.
-- **`get_ai_readiness_report`** — 0–100 weighted score so the agent
-  (and CI) can see whether the repo is "agent-ready" yet.
-
-## 5-minute quickstart
-
-```bash
-# 1. Install + verify
-bun install
-bun run typecheck
-bun test                                                # ~1700 tests
-
-# 2. Walk the dogfood example end-to-end
-bun run shrk --cwd examples/dogfood-target doctor
-bun run shrk --cwd examples/dogfood-target context --task "generate a user profile service"
-bun run shrk --cwd examples/dogfood-target pipelines list
-bun run shrk --cwd examples/dogfood-target export agents-md  # dry-run preview
-
-# 3. Try the safe-write flow (CLI is the only write path)
-bun run shrk --cwd examples/dogfood-target gen typescript.service demo \
-  --var className=DemoService --dry-run --save-plan /tmp/p.json
-bun run shrk --cwd examples/dogfood-target apply /tmp/p.json
-```
+---
 
 ## Quick demo
 
-The canonical demo flows live under [`examples/dogfood-target/`](examples/dogfood-target/) —
-read the README there and run the example scripts to reproduce the
-onboarding / PR-review / governance walkthroughs. The `shrk demo` namespace
-was retired in favour of in-repo example scripts; demo content belongs in
-code, not the CLI.
-
-## Runnable PR-review workflows
-
-For multi-stage CI scaffolds:
+The whole loop, on a real repo:
 
 ```bash
-shrk ci scaffold gitlab    --with-quality --with-policy --with-impact --with-report-site
-shrk ci scaffold bitbucket --with-quality --with-policy --with-impact --with-report-site
+# 1 · Adopt — pick the entry point that matches your repo today
+shrk init                              # fresh repo: infers rules from your layout
+shrk import claude-md --write          # existing CLAUDE.md / AGENTS.md / .cursor/rules
+shrk init --preset nx-monorepo         # framework-correct baseline (72 presets)
+
+# 2 · Brief the agent — deterministic, scoped to the task
+shrk task "add a pagination plugin with a page-changed event"
+
+# 3 · Generate through the safe write path
+shrk gen <template-id> Pagination --dry-run --save-plan ./plan.json
+shrk plan review ./plan.json
+shrk apply ./plan.json --verify-signature --validate
+
+# 4 · Prove it before you finish
+shrk finish                            # boundaries + wiring + policy + orphans → one verdict
 ```
 
-## Adoption parity
+`shrk init` also emits `.claude/skills/<name>/SKILL.md`, so every Claude Code
+session in the repo loads your rules automatically — no MCP round-trip, no
+`CLAUDE.md` to keep in sync.
 
-Both adoption surfaces now expose a line-level diff against the live
-config — no patches written, no source files touched:
+Full walkthroughs live in [`examples/dogfood-target/`](examples/dogfood-target/).
+
+---
+
+## What it does
+
+### Rules that brief the agent and gate the build
+
+One typed definition in `sharkcraft/`, consumed by both halves.
 
 ```bash
-shrk onboard adopt diff --format markdown
-shrk constructs adopt diff --format markdown
+shrk context --task "<task>"    # the rules relevant to this task, nothing else
+shrk check boundaries           # forbidden imports, tsconfig-alias aware
+shrk export claude-md --write   # also: cursor-rules, copilot-instructions, agents-md
 ```
 
-Pack release readiness is one command instead of two:
+See [`docs/rules-system.md`](docs/rules-system.md),
+[`docs/boundaries.md`](docs/boundaries.md),
+[`docs/agent-format-export.md`](docs/agent-format-export.md).
+
+### Gates for the failures a green build can't see
+
+Seven data-defined rule planes, declared in `sharkcraft.config.ts` and sharing
+one extraction DSL. They catch the bugs that type-check cleanly: a handler
+declared but never registered, a committed ledger that silently drifted, a
+hand-edited generated file, an id cited in prose that no longer resolves.
 
 ```bash
-shrk packs doctor --release --require-signatures        # release-check folded in
+shrk gates check                # every plane, one exit code
+shrk gates coverage             # what each rule actually matched — a rule matching
+                                # nothing is a bug in the rule, never a pass
+shrk gates try --rule-file r.json   # dry-run a rule before committing it
 ```
 
-## Release readiness
+See [`docs/gate-rules.md`](docs/gate-rules.md),
+[`docs/extraction-dsl.md`](docs/extraction-dsl.md).
+
+### A code graph the agent can query instead of grepping
+
+Callers, impact, and cycles as `path:line` truth — barrel re-exports resolved,
+freshness reported honestly.
 
 ```bash
-shrk release readiness --strict
+shrk graph index
+shrk graph callers <symbol>     # who actually references this
+shrk graph impact <file>        # what breaks if I change it
+shrk check orphans --since main # after a delete: surviving importers
 ```
 
-`shrk release readiness` aggregates doctor + coverage + packs +
-release-check + docs + README + `package.json` metadata into a single
-verdict. `--strict` escalates warnings to blockers.
+See [`docs/code-intelligence.md`](docs/code-intelligence.md),
+[`docs/impact-analysis.md`](docs/impact-analysis.md).
 
-Optional SVG rendering is available for impact graphs
-(`shrk report site --render-impact-graphs`), plugin-api symbol diff for
-packs (`shrk packs compat --consumer-root <path>`), bundle-vs-bundle
-diff (`shrk bundle diff a b`), CI permissions audit
-(`shrk ci permissions <file>`), and adoption checkpoints
-(`shrk onboard adopt diff --record-checkpoint`). The secondary Jenkins /
-Azure CI scaffolds were retired — keep GitHub Actions first-class. See
-`docs/release-readiness.md` for the full readiness gate.
+### Fewer tokens for the same information
 
-## Public alpha
-
-The public alpha ships a human entry point, a smoke harness, an agent
-handoff packet, and a repository map. The standalone `map` / `handoff` /
-`demo package` commands have since been folded into more canonical
-entrypoints.
+Deterministic compression — no model in the loop, and every lossy pass is
+reversible.
 
 ```bash
-# Human entry point — 30-second tour + 5 primary flows + safety pledge.
-shrk start-here
-shrk commands
-
-# Repository map — folded into `architecture map`.
-shrk architecture map
-
-# Continue-from-here packet for an agent — `brief` is canonical now.
-shrk brief "<task>" --session <id>             # or --bundle <id>
-
-# Smoke-test the canonical scenarios locally.
-shrk release smoke --scenario all --report --html
-
-# Release readiness — auto-discover the newest preflight, emit HTML.
-shrk release readiness --strict --preflight auto --html --report
-
-# Verify docs / examples on their own.
-shrk docs check
-shrk examples check
-
-# Self-dogfood audit (only meaningful inside the SharkCraft repo).
-shrk self audit
-
-# Install smoke (verify the installed CLI surface).
-shrk install smoke
-
-# CI permissions fix preview (suggest the least-privilege diff).
-shrk ci permissions <workflow> --fix-preview --format patch
-
-# Pack compat — dist-aware mode (scan dist/*.js patterns too).
-shrk packs compat <path> --consumer-root <consumer> --dist-aware
-
-# Bundle diff — now detects renamed plans automatically.
-shrk bundle diff <a> <b>
+shrk compress ./big-output.json   # JSON→table, logs/diffs/search→signal
+shrk expand <ccr-key>             # recover the original
 ```
 
-Public-alpha docs: [`docs/public-alpha.md`](docs/public-alpha.md),
-[`docs/start-here.md`](docs/start-here.md),
-[`docs/brief.md`](docs/brief.md),
-[`docs/release-smoke.md`](docs/release-smoke.md).
+See [`docs/compression.md`](docs/compression.md).
+
+### Optional local-LLM briefs
+
+`shrk smart-context` refines the deterministic brief with a **local** model
+(Ollama or llama.cpp). Hosted providers are explicit opt-in and never in the
+default chain. With no model reachable, every command still works against the
+deterministic seed.
+
+See [`docs/smart-context.md`](docs/smart-context.md).
+
+---
 
 ## Onboard an existing repo
 
-Point SharkCraft at a repo and get an advisory onboarding plan in seconds:
+`shrk onboard` reads a repository that has never seen SharkCraft and proposes a
+configuration — advisory by default, writing nothing until you ask.
 
 ```bash
-# Dry-run (default): print the plan, write nothing.
-bun run shrk --cwd examples/unconfigured-bun-service onboard
-
-# Materialize advisory drafts under sharkcraft/onboarding/
-bun run shrk --cwd examples/unconfigured-bun-service onboard --write-drafts
-
-# Same, but also draft *runnable* template bodies (services/utils/tests/components).
-bun run shrk --cwd examples/unconfigured-bun-service onboard --write-drafts --scaffold-templates
-
-# Same, but also parse AGENTS.md / CLAUDE.md / .cursor/rules into an imported-agent-rules draft.
-bun run shrk --cwd examples/unconfigured-bun-service onboard --write-drafts --import-agents
-
-# Compare the inferred plan against the live SharkCraft config (no writes).
-bun run shrk --cwd examples/unconfigured-bun-service onboard --diff
-
-# Monorepo (workspaces / Nx / apps+packages+libs layout).
-bun run shrk --cwd examples/unconfigured-monorepo onboard --dry-run
+shrk onboard --dry-run                  # print the plan
+shrk onboard --write-drafts             # drafts under sharkcraft/onboarding/ only
+shrk onboard --import-agents            # fold in CLAUDE.md / AGENTS.md / .cursor/rules
+shrk onboard adopt diff --format markdown   # line-level diff vs the live config
 ```
 
-The plan covers detected profiles, recommended presets, inferred rules /
-path conventions / templates / boundary rules / pipelines, verification
-commands lifted from `package.json`, and a readiness before/after estimate.
-For monorepos, it also includes a per-package summary, per-package
-verification hints, and boundary candidates derived from the layout.
+Every run emits a confidence triage — what was adopted, what needs review, what
+was dropped. `--write-drafts` writes only under `sharkcraft/onboarding/`; it
+never touches `rules.ts`, `paths.ts`, or `templates.ts`.
 
-Drafts are **advisory** — SharkCraft never overwrites `rules.ts`, `paths.ts`,
-or `templates.ts`. See [docs/onboarding.md](./docs/onboarding.md).
+See [`docs/onboarding.md`](docs/onboarding.md),
+[`docs/onboarding-adoption.md`](docs/onboarding-adoption.md).
 
-### Render a PR review comment from a packet
-
-```bash
-bun run shrk review --since origin/main --json > review-packet.json
-bun run shrk review render-comment review-packet.json --output review-comment.md
-```
-
-`render-comment` reads a review packet JSON and emits a Markdown PR comment
-(summary, changed files, risks, boundary issues, suggested checks, reviewer
-instructions). Wire it to `gh pr comment --body-file …` in your workflow. See
-[docs/review-github-action.md](./docs/review-github-action.md).
-
-## CLI quickstart
-
-```bash
-shrk --cwd ./my-repo init                                # generate scaffolding
-shrk --cwd ./my-repo doctor                              # health + readiness
-shrk --cwd ./my-repo doctor --strict --min-score 80      # CI gate
-shrk --cwd ./my-repo context --task "..." --max-tokens 3000
-shrk --cwd ./my-repo rules relevant --task "..."
-shrk --cwd ./my-repo templates list
-shrk --cwd ./my-repo gen typescript.service user-profile --dry-run
-shrk --cwd ./my-repo gen typescript.service user-profile --write
-```
-
-`shrk doctor` ends with a clear verdict: **"Ready for AI-agent use. ✓"** or a
-list of fixes. Pair with `--strict` (warnings fail) and `--min-score N`
-(readiness gate) in CI.
-
-## MCP quickstart
-
-```bash
-# Stdio (default — for Claude Code & similar)
-bun run mcp                                              # uses $PWD
-SHARKCRAFT_PROJECT_ROOT=/path/to/repo bun run mcp        # explicit target
-bun run shrk -- --cwd /path/to/repo mcp serve --watch    # hot reload
-
-# HTTP / Streamable HTTP (for shared / remote use)
-bun run shrk -- --cwd /path/to/repo mcp serve --http --port 4000
-curl http://localhost:4000/healthz
-```
-
-The server speaks both stdio and Streamable HTTP via
-`@modelcontextprotocol/sdk`. It exposes ~150 tools (context, rules, paths,
-templates, pipelines, packs, action hints, AI-readiness, plan creation) and
-resources for knowledge / templates / docs. **It never writes files.**
-
-See [`docs/mcp.md`](docs/mcp.md) for the full tool table,
-[`docs/mcp-dashboard-summary.md`](docs/mcp-dashboard-summary.md) for the
-one-call workspace summary shape, and
-[`docs/claude-code.md`](docs/claude-code.md) for a copy-paste MCP config.
-
-## Pipeline quickstart
-
-```bash
-shrk pipelines list                                  # available workflows
-shrk pipelines get engine.feature-dev                # one workflow
-shrk pipelines script engine.feature-dev \
-  --task "generate a user profile service"          # copy-pasteable bash
-shrk pipelines next engine.feature-dev --task "..." # what's next?
-shrk pipeline list                                   # alias for pipelines
-```
-
-Pipelines are **declarative** — SharkCraft does not execute them. They tell
-the agent or the human what to do, in which order, with which tools. Apply
-or write steps include a manual-confirm prompt.
-
-## Pack quickstart
-
-A **pack** is an npm package that ships SharkCraft knowledge / rules /
-templates / pipelines. To make a package a pack, add a `sharkcraft` field to
-its `package.json` and ship a manifest:
-
-```json
-{
-  "name": "@yourscope/your-pack",
-  "main": "./src/sharkcraft.plugin.ts",
-  "sharkcraft": { "manifest": "./src/sharkcraft.plugin.ts" }
-}
-```
-
-```ts
-// src/sharkcraft.plugin.ts
-import { definePackManifest } from '@shrkcrft/plugin-api';
-export default definePackManifest({
-  schema: 'sharkcraft.pack/v1',
-  info: { name: '@yourscope/your-pack', version: '0.1.0' },
-  contributions: {
-    knowledgeFiles: ['./assets/knowledge.ts'],
-    templateFiles: ['./assets/templates.ts'],
-    pipelineFiles: ['./assets/pipelines.ts'],
-  },
-});
-```
-
-Consumer repos install the pack normally; SharkCraft discovers it
-automatically. Local entries always win on duplicate ids.
-
-```bash
-shrk --cwd ./your-repo packs list      # discovered packs (files + resolved)
-shrk --cwd ./your-repo packs get @yourscope/your-pack
-shrk --cwd ./your-repo packs doctor    # quality checks (templates, pipelines, hints, dups)
-shrk --cwd ./your-repo packs doctor --require-signatures
-shrk --cwd ./your-repo packs verify    # HMAC signature verification
-```
-
-Sign your pack with HMAC-SHA256 (optional, recommended for private packs):
-
-```bash
-export SHARKCRAFT_PACK_SECRET="$(openssl rand -hex 32)"
-shrk packs sign ./your-pack \
-  --key-id mykey-v1 \
-  --verify-after-sign \
-  --output ./your-pack/src/sharkcraft.plugin.signed.json
-```
-
-Then point `package.json` `sharkcraft.manifest` at the signed JSON — pack
-discovery reads it as data (no dynamic import) and surfaces tamper detection.
-
-## Signed-plan / safe-apply flow
-
-```bash
-export SHARKCRAFT_PLAN_SECRET="<a long random string>"
-
-# 1. Agent or CLI creates a signed dry-run plan.
-shrk gen typescript.service profile \
-  --var className=ProfileService \
-  --dry-run --sign --save-plan ./.sharkcraft/plans/profile.json
-
-# 2. A human reviews ./.sharkcraft/plans/profile.json.
-
-# 3. CLI applies the plan; signature is verified.
-shrk apply ./.sharkcraft/plans/profile.json --verify-signature
-```
-
-- The MCP server never writes — it only returns plans.
-- Plan signing is HMAC-SHA256 over canonical JSON (excluding the
-  `signature` field). Any tampering — even a single byte — is detected.
-- Without `SHARKCRAFT_PLAN_SECRET` the CLI refuses to verify signatures.
-
-## Import existing agent rule files
-
-Already have AGENTS.md, CLAUDE.md, or `.cursor/rules` lying around? Convert them
-into structured knowledge drafts:
-
-```bash
-shrk import agents-md ./AGENTS.md                    # preview only
-shrk import claude-md --prefix team --tag legacy --write
-shrk import cursor-rules .cursor/rules --scope angular --scope typescript --write
-```
-
-Drafts land in `sharkcraft/imports/<format>-import.draft.ts`. Review them and
-merge the entries you want into your live `sharkcraft/` config.
-
-## Export to other agent rule formats
-
-Generate compatibility files for tools that read flat markdown:
-
-```bash
-shrk export claude-md                # → CLAUDE.md (dry-run preview)
-shrk export claude-md --write        # save it
-shrk export cursor-rules --write     # .cursor/rules/sharkcraft.mdc
-shrk export copilot-instructions --write
-shrk export agents-md --write
-```
-
-The exports include the agent briefing, the high-priority rules, the action
-hints, and a "what to do first" pointer to the MCP tools.
-
-```bash
-shrk doctor                                         # baseline health
-shrk pipelines list
-shrk pipelines get engine.feature-dev
-shrk pipelines script engine.feature-dev \
-  --task "add a pagination plugin with a page-changed event" \
-  > /tmp/plugin-script.sh
-
-# The script tells the agent:
-#  1. shrk context --task "..." --max-tokens 3500    # only the relevant rules
-#  2. shrk rules get plugin.design-sequence          # canonical ordering
-#  3. Define contracts in the API layer first
-#  4. Implement framework-agnostic logic in the cross layer
-#  5. Add minimal bindings in each UI binding
-#  6. shrk gen <template-id> ... --dry-run --save-plan ...
-#  7. Human reviews
-#  8. shrk apply <plan> --verify-signature
-#  9. shrk doctor --strict
-```
-
-Every step is declarative. Nothing in the agent's instructions tells it to
-"go read 50 markdown files." It calls a few MCP tools, gets a small, typed
-slice of the project's intelligence, and proceeds.
-
-## CI gate
-
-Use `doctor --strict --min-score` as a non-zero-exit gate to ensure the repo
-stays agent-ready:
-
-```yaml
-# .github/workflows/sharkcraft-ai-ready.yml
-name: SharkCraft AI-readiness
-on: [push, pull_request]
-jobs:
-  doctor:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v1
-      - run: bun install
-      - run: bunx shrk doctor --strict --min-score 75
-```
-
-## The problem
-
-LLM coding agents drift the moment they leave the well-trodden parts of a
-codebase. Today the only way to keep them aligned is to feed them every
-convention up front — long markdown briefs, retrieved at random, blown into
-the context window. Most of that is noise; the parts the agent actually
-needs are buried.
-
-## The solution
-
-Encode your project's intelligence as **typed entries** instead of prose:
-
-- **Rules** — coding/architecture/testing/security constraints.
-- **Path conventions** — where things live (`src/services`, `src/utils`, …).
-- **Templates** — typed code generators with variables and target paths.
-- **Architecture & decisions** — high-priority facts agents must respect.
-- **Pipelines** — declarative workflows that tell the agent the order.
-- **Action hints** — per-rule commands / MCP tools / forbidden actions.
-- **Packs** — distributable bundles of all of the above.
-
-Then expose them as:
-
-- The **`shrk` CLI** for humans (token-budgeted context, dry-run generation,
-  doctor checks, plan signing).
-- The **MCP server** for AI agents (~150 tools, `@modelcontextprotocol/sdk`).
-
-Every retrieval is filtered and budgeted. Agents never need to read
-everything.
-
-## Why structured knowledge beats doc dumping
-
-| | Doc dumping | SharkCraft |
-|---|---|---|
-| What the agent sees | Whole docs | Only the slice for the current task |
-| Token cost | High, mostly noise | Bounded, deterministic |
-| Traceability | "Was it in the brief?" | Each section lists its entry ids |
-| Drift | Easy | Each rule has an id, source, and priority |
-| Generation safety | Up to the agent | Plan-first, dry-run by default, paths refused outside root |
-| Workflow guidance | Ad-hoc | Declarative pipelines with action hints |
-| CI gate | None | `doctor --strict --min-score` |
-
-## Requirements
-
-- [Bun](https://bun.sh) `>= 1.1`
+---
 
 ## Safety model
 
-- **Generation is plan-first.** `shrk gen` defaults to dry-run; `--write`
-  requires a clean plan with no conflicts.
-- **Target paths must resolve inside the project root.** Absolute paths and
-  `../` traversal are refused by a single chokepoint
-  (`safeResolveTargetPath`).
-- **Knowledge files are local, trusted project config** — same model as
-  `vite.config.ts` or `eslint.config.js`. SharkCraft never loads remote
-  knowledge. See [`docs/security.md`](docs/security.md) and
-  [`docs/knowledge-loading.md`](docs/knowledge-loading.md).
-- **MCP tool inputs are zod-validated** at the boundary. Malformed input
-  returns a clean error, never a crash.
-- **Plan signing** with HMAC-SHA256 + `SHARKCRAFT_PLAN_SECRET` lets you
-  verify that the plan being applied is the plan the agent created.
-- **`shrk doctor`** validates the whole setup (project, sharkcraft folder,
-  config schema, duplicate ids, missing fields, action-hint quality,
-  AI-readiness score).
+The guarantees are structural, not conventions:
 
-## Packages
+- **The CLI is the only write path.** Every MCP tool is read-only, including
+  onboarding, generation, and apply — they return the next command for a human
+  to run.
+- **Writes go through plan → review → apply.** `shrk apply` verifies the plan's
+  HMAC signature and refuses on divergence unless explicitly overridden.
+- **Packs cannot execute on your behalf.** Pack-contributed verification
+  commands are never auto-run, and any pack-contributed rule carrying a shell
+  command is dropped at the merge seam.
+- **Deletion is guarded.** `shrk check orphans` reports surviving importers of
+  a removed file or export before the break reaches CI.
 
-| Package | Responsibility |
+```bash
+shrk safety audit --deep      # audit the safety model itself
+shrk commands                 # every command, with its READ / WRITE label
+```
+
+See [`docs/safety-model.md`](docs/safety-model.md),
+[`docs/security.md`](docs/security.md).
+
+---
+
+## CLI and MCP
+
+Two halves of one surface. The CLI writes; MCP only reads.
+
+```bash
+shrk <command>                # the write path and the full surface
+bun run mcp                   # MCP server over stdio, for Claude Code
+shrk dashboard                # local read-only dashboard on 127.0.0.1:4567
+```
+
+Point Claude Code at the MCP server for retrieval, and let it call the CLI for
+anything that writes. See [`docs/mcp.md`](docs/mcp.md),
+[`docs/claude-code.md`](docs/claude-code.md).
+
+---
+
+## Requirements
+
+- **Bun ≥ 1.1** is the primary runtime; the published CLI also runs on
+  Node ≥ 18.
+- **TypeScript** projects are the primary target. Polyglot boundary support
+  exists for Go, Java, Python, C#, Rust and others — see
+  [`docs/languages.md`](docs/languages.md).
+
+`0.1.0-alpha` — the CLI surface and config schema are still moving between
+releases. Pin an exact version. See [`CHANGELOG.md`](CHANGELOG.md).
+
+---
+
+## Documentation
+
+| Start here | |
 |---|---|
-| `@shrkcrft/core` | Result, errors, logger, FS, path utils (incl. `safeResolveTargetPath`) |
-| `@shrkcrft/shared` | Shared internals reused across packages |
-| `@shrkcrft/config` | sharkcraft.config.ts loader + zod schema |
-| `@shrkcrft/workspace` | Project / framework / package-manager detection |
-| `@shrkcrft/knowledge` | Structured entries + index + search + validation |
-| `@shrkcrft/rules` / `paths` | Domain services over knowledge |
-| `@shrkcrft/templates` | Templates + variable validation + rendering |
-| `@shrkcrft/boundaries` | Boundary rules: detect forbidden imports across folder/package/layer boundaries |
-| `@shrkcrft/presets` | Reusable project setups (knowledge/rules/paths/templates/pipelines/docs) applied via the CLI |
-| `@shrkcrft/context` | Token-budgeted AI context builder |
-| `@shrkcrft/ai` | AI provider abstraction: Claude HTTP + Claude CLI adapters |
-| `@shrkcrft/generator` | Plan-first generation, conflict detection, plan signing |
-| `@shrkcrft/importer` | Parse AGENTS.md / CLAUDE.md / `.cursor/rules` into structured knowledge entries |
-| `@shrkcrft/inspector` | Project overview, doctor, AI-readiness scorer |
-| `@shrkcrft/pipelines` | Pipeline definitions + script renderer |
-| `@shrkcrft/packs` | Pack manifest model + discovery |
-| `@shrkcrft/plugin-api` | Extension points |
-| `@shrkcrft/mcp-server` | MCP server over `@modelcontextprotocol/sdk` |
-| `@shrkcrft/cli` | `shrk` CLI — sole write path |
-| `@shrkcrft/dashboard-api` | Versioned dashboard wire types (types-only) |
-| `@shrkcrft/dashboard` | React + Vite read-only dashboard UI |
+| [`docs/overview.md`](docs/overview.md) | what SharkCraft is, and what it deliberately is not |
+| [`docs/quick-start.md`](docs/quick-start.md) | first fifteen minutes |
+| [`docs/philosophy.md`](docs/philosophy.md) | the non-negotiable design rules |
+| [`docs/cli.md`](docs/cli.md) | the full command surface |
 
-## Docs
+| Deeper | |
+|---|---|
+| [`docs/gate-rules.md`](docs/gate-rules.md) | the seven rule planes |
+| [`docs/architecture.md`](docs/architecture.md) | package layout and layer order |
+| [`docs/packs.md`](docs/packs.md) | distributing rules as signed packages |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | when something misbehaves |
 
-- [`docs/overview.md`](docs/overview.md) — what SharkCraft is.
-- [`docs/philosophy.md`](docs/philosophy.md) — why structured knowledge.
-- [`docs/architecture.md`](docs/architecture.md) — packages and dependencies.
-- [`docs/cli.md`](docs/cli.md) — every CLI command.
-- [`docs/mcp.md`](docs/mcp.md) — every MCP tool.
-- [`docs/dashboard.md`](docs/dashboard.md) — local read-only dashboard UI.
-- [`docs/dashboard-api.md`](docs/dashboard-api.md) — dashboard API contract.
-- [`docs/claude-code.md`](docs/claude-code.md) — Claude Code MCP config.
-- [`docs/packs.md`](docs/packs.md) — pack manifest format.
-- [`docs/pipelines.md`](docs/pipelines.md) — pipeline definitions.
-- [`docs/action-hints.md`](docs/action-hints.md) — action hint model.
-- [`docs/ai-readiness.md`](docs/ai-readiness.md) — readiness scoring.
-- [`docs/agent-format-export.md`](docs/agent-format-export.md) — claude-md, cursor-rules, copilot, agents-md.
-- [`docs/release-checklist.md`](docs/release-checklist.md) — v0.1-alpha release flow.
-- [`docs/security.md`](docs/security.md) — safety model.
-- [`docs/knowledge-loading.md`](docs/knowledge-loading.md) — trust model.
-- [`docs/release.md`](docs/release.md) — alpha publish plan.
-- [`docs/testing.md`](docs/testing.md) — bun test layout.
-- [`docs/ai-agent-guide.md`](docs/ai-agent-guide.md) — agent-facing usage.
-- [`docs/roadmap.md`](docs/roadmap.md) — what's next.
+---
 
 ## License
 
-MIT
+MIT. See [`LICENSE`](LICENSE).

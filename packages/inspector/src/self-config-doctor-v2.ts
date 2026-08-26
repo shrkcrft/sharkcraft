@@ -17,14 +17,15 @@
  */
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { listConventions } from './convention-registry.ts';
-import { loadAllContractTemplates } from './contract-template-registry.ts';
-import { listMigrationProfilesFromPacks } from './migration-profile-registry.ts';
-import { listPackHelpers } from './pack-helper-registry.ts';
-import { HELPERS } from './helper-registry.ts';
 import { listTaskRoutingHints } from './task-routing-hint-registry.ts';
 import { listRegistrationHints } from './registration-hint-registry.ts';
 import { listDecisions } from './decision-records.ts';
+import {
+  referenceIdExistsInAnyKind,
+  referenceIdsFor,
+  warmReferenceRegistries,
+  type ReferenceKind,
+} from './reference-registry.ts';
 import { listPlaybooks } from './playbook-registry.ts';
 import { buildPackContributionsInventory } from './pack-contributions-inventory.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
@@ -133,104 +134,47 @@ interface IIdLookupsV2 {
   routingHints: Set<string>;
   registrationHints: Set<string>;
   decisions: Set<string>;
+  scaffoldPatterns: Set<string>;
   commands: Set<string>;
-  mcpTools: Set<string>;
 }
 
 async function buildLookupsV2(
   inspection: ISharkcraftInspection,
 ): Promise<IIdLookupsV2> {
-  const knowledge = new Set<string>(inspection.knowledgeEntries.map((k) => k.id));
-  const rules = new Set<string>(
-    (inspection.ruleService?.list?.() ?? []).map((r: { id: string }) => r.id),
-  );
-  const paths = new Set<string>(
-    (inspection.pathService?.list?.() ?? []).map((p: { id: string }) => p.id),
-  );
-  const templates = new Set<string>(
-    inspection.templateRegistry?.list?.().map((t: { id: string }) => t.id) ?? [],
-  );
-  const pipelines = new Set<string>(
-    inspection.pipelineRegistry?.list?.().map((p: { id: string }) => p.id) ?? [],
-  );
-
-  const conventions = new Set<string>(
-    (await listConventions(inspection)).map((e) => e.convention.id),
-  );
-  const contractTemplatesPair = await loadAllContractTemplates(inspection);
-  const contractTemplates = new Set<string>(
-    contractTemplatesPair.entries.map((e) => e.template.id),
-  );
-  const migrationProfiles = new Set<string>(
-    (await listMigrationProfilesFromPacks(inspection)).map((p) => p.id),
-  );
-  const helpers = new Set<string>([
-    ...HELPERS.map((h) => h.id as string),
-    ...(await listPackHelpers(inspection)).map((e) => e.helper.id),
-  ]);
-  const routingHints = new Set<string>(
-    (await listTaskRoutingHints(inspection)).map((e) => e.hint.id),
-  );
-  const registrationHints = new Set<string>(
-    (await listRegistrationHints(inspection)).map((e) => e.hint.id),
-  );
-
-  let playbooks: Set<string>;
-  try {
-    const pb = await listPlaybooks(inspection);
-    playbooks = new Set<string>(pb.map((p) => p.id));
-  } catch {
-    playbooks = new Set<string>();
-  }
-
-  // Policies surface through the pack contributions inventory; the policy
-  // engine itself runs side-effects we want to avoid here.
-  const policies = new Set<string>();
-  try {
-    const inv = buildPackContributionsInventory(inspection);
-    for (const entry of inv.entriesByKind['policy'] ?? []) policies.add(entry.id);
-  } catch {
-    // ignore
-  }
-
-  const decisions = new Set<string>();
-  try {
-    for (const d of listDecisions(inspection)) decisions.add(d.id);
-  } catch {
-    // ignore
-  }
-
-  // Commands & MCP tools — taken from the catalog / repository commands
-  // surface. Best-effort; if registries are absent the sets stay empty and
-  // the corresponding checks degrade to info-level.
-  const commands = new Set<string>();
-  const mcpTools = new Set<string>();
-  try {
-    const repoCmds = (
-      inspection as unknown as { repositoryCommands?: readonly { id: string }[] }
-    ).repositoryCommands;
-    for (const c of repoCmds ?? []) commands.add(c.id);
-  } catch {
-    // ignore
-  }
+  // Every set is a projection of the SHARED reference registry — the same
+  // module the prose linter and the structured-`references[]` validator use.
+  //
+  // These sets used to be built here from their own sources, and the doc claim
+  // "there is one definition of does-this-id-exist, not two" was true only by
+  // coincidence. It was not always true: `policies` came from the pack
+  // contributions inventory alone, so every LOCALLY declared policy read as
+  // unknown; `scaffoldPatterns` had no set at all; `commands` read a
+  // `repositoryCommands` property nothing assigns. Seven of shrk's own
+  // correctly-registered ids were reported missing.
+  await warmReferenceRegistries(inspection);
+  const ids = (kind: ReferenceKind): Set<string> =>
+    new Set<string>(referenceIdsFor(inspection, kind));
 
   return {
-    knowledge,
-    rules,
-    paths,
-    templates,
-    pipelines,
-    policies,
-    playbooks,
-    conventions,
-    contractTemplates,
-    migrationProfiles,
-    helpers,
-    routingHints,
-    registrationHints,
-    decisions,
-    commands,
-    mcpTools,
+    knowledge: ids('knowledge'),
+    rules: ids('rule'),
+    paths: ids('path-convention'),
+    templates: ids('template'),
+    pipelines: ids('pipeline'),
+    policies: ids('policy'),
+    playbooks: ids('playbook'),
+    conventions: ids('convention'),
+    contractTemplates: ids('contract-template'),
+    migrationProfiles: ids('migration-profile'),
+    helpers: ids('helper'),
+    routingHints: ids('routing-hint'),
+    registrationHints: ids('registration-hint'),
+    decisions: ids('decision'),
+    scaffoldPatterns: ids('scaffold-pattern'),
+    // The catalog lives in the CLI package, above this layer. `command`
+    // resolves by SHAPE in the shared registry rather than by a list this
+    // layer cannot see.
+    commands: new Set<string>(),
   };
 }
 
@@ -324,17 +268,11 @@ async function checkSearchTuning(
     for (const idMap of boostMaps) {
       if (!idMap) continue;
       for (const targetId of Object.keys(idMap)) {
-        const found =
-          lookups.knowledge.has(targetId) ||
-          lookups.rules.has(targetId) ||
-          lookups.templates.has(targetId) ||
-          lookups.pipelines.has(targetId) ||
-          lookups.contractTemplates.has(targetId) ||
-          lookups.conventions.has(targetId) ||
-          lookups.playbooks.has(targetId) ||
-          lookups.helpers.has(targetId) ||
-          lookups.commands.has(targetId);
-        if (found) continue;
+        // Not a hand-maintained chain of `lookups.x.has(...)`: that list
+        // silently omitted policies, decisions and scaffold patterns, so ids
+        // that WERE registered got reported as unknown. Adding a kind to the
+        // registry now widens this automatically.
+        if (referenceIdExistsInAnyKind(inspection, targetId)) continue;
         pushFinding(findings, {
           severity: SelfConfigSeverityV2.Warning,
           code: 'search-tuning-target-missing',

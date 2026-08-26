@@ -33,6 +33,8 @@ export const EXTRACTOR_KINDS: readonly ExtractorKind[] = [
   'decorator-args',
   'string-union-members',
   'json-path',
+  'filenames',
+  'import-edges',
 ];
 
 /** The extractor a source resolves to, after applying the legacy sugar. */
@@ -43,6 +45,19 @@ export function resolveExtractorKind(source: IWiringSource): ExtractorKind | und
     return 'array-members';
   }
   return undefined;
+}
+
+/**
+ * The globs a source scans.
+ *
+ * `files` is optional on the AUTHORING shape (a `$use` source inherits it), but
+ * every engine runs on a RESOLVED source where it is always present. This
+ * accessor is the one place that states that: engines read globs through it and
+ * an unresolved source degrades to "scans nothing" — which every plane then
+ * reports as a loud zero-match, never as a silent pass.
+ */
+export function resolveSourceGlobs(source: IWiringSource): readonly string[] {
+  return source.files ?? [];
 }
 
 /** The construct name a source anchors on, after applying the legacy sugar. */
@@ -95,7 +110,7 @@ export function validateWiringSource(source: IWiringSource): string | undefined 
     return `sets \`arrayProperty\` with \`extract: "${source.extract}"\` — \`arrayProperty\` is sugar for "array-members" only`;
   }
   if (!source.files || source.files.length === 0) {
-    return 'sets no `files` globs — a source that selects no files can only ever match nothing';
+    return 'sets no `files` globs — a source that selects no files can only ever match nothing (set `files`, or `$use` a named extractor that supplies them)';
   }
 
   const kind = resolveExtractorKind(source)!;
@@ -104,6 +119,40 @@ export function validateWiringSource(source: IWiringSource): string | undefined 
   }
   if (kind === 'json-path' && !source.jsonPath) {
     return 'extract "json-path" requires a `jsonPath` selector';
+  }
+  if (kind === 'filenames') {
+    if (source.capturePath === 'regex') {
+      if (!source.pathPattern) {
+        return 'extract "filenames" with `capturePath: "regex"` requires a `pathPattern` whose group 1 captures the id';
+      }
+      const err = compileError(source.pathPattern, source.pathPatternFlags);
+      if (err) return `pathPattern ${err}`;
+      if (captureGroups(source.pathPattern) < 1) {
+        return `pathPattern /${source.pathPattern}/ has no capture group — group 1 must capture the id`;
+      }
+    } else if (source.pathPattern !== undefined) {
+      return '`pathPattern` only applies with `capturePath: "regex"`';
+    }
+  }
+  if (kind === 'import-edges') {
+    // A rule that selects EVERY import in the scanned tree is almost never what
+    // the author meant, and it would quietly pin an enormous set. Requiring a
+    // selector makes the intent explicit.
+    const t = source.to;
+    const hasTarget =
+      t !== undefined &&
+      (t.module !== undefined || t.modulePattern !== undefined || (t.files?.length ?? 0) > 0 || t.match !== undefined);
+    if (!hasTarget) {
+      return 'extract "import-edges" requires a `to` selector (`module`, `modulePattern`, `files`, or `match`) — otherwise it would pin every import in the scanned tree';
+    }
+    for (const [field, pattern, flags] of [
+      ['to.modulePattern', t.modulePattern, t.modulePatternFlags],
+      ['to.match', t.match, t.matchFlags],
+    ] as const) {
+      if (pattern === undefined) continue;
+      const err = compileError(pattern, flags);
+      if (err) return `${field} ${err}`;
+    }
   }
   if (kind === 'regex-capture') {
     const err = compileError(source.pattern!, source.flags);

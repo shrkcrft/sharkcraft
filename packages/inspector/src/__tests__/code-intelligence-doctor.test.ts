@@ -13,6 +13,9 @@ function writeJson(root: string, rel: string, body: unknown): void {
   writeFileSync(abs, JSON.stringify(body, null, 2), 'utf8');
 }
 
+/** An index the working tree has not moved past. */
+const CLEAN = { hasIndex: true, modified: [], added: [], deleted: [] } as const;
+
 describe('buildCodeIntelligenceChecks', () => {
   let root: string;
 
@@ -46,7 +49,14 @@ describe('buildCodeIntelligenceChecks', () => {
       workspacePackages: [],
     });
 
-    const checks = buildCodeIntelligenceChecks(root, { nowMs: now });
+    // No divergence supplied: nobody measured whether the tree moved, so
+    // "current" would be a guess. Loud-skip, not a pass.
+    const unmeasured = buildCodeIntelligenceChecks(root, { nowMs: now });
+    const unknown = unmeasured.find((c) => c.id === 'code-intelligence-graph')!;
+    expect(unknown.severity).toBe(DoctorSeverity.Info);
+    expect(unknown.message).toMatch(/NOT VERIFIED/);
+
+    const checks = buildCodeIntelligenceChecks(root, { nowMs: now, graphDivergence: CLEAN });
     const graph = checks.find((c) => c.id === 'code-intelligence-graph');
     expect(graph).toBeDefined();
     expect(graph!.severity).toBe(DoctorSeverity.Ok);
@@ -69,11 +79,23 @@ describe('buildCodeIntelligenceChecks', () => {
       workspacePackages: [],
     });
 
-    const checks = buildCodeIntelligenceChecks(root, { nowMs: now });
+    // A TEN-DAY-OLD index with nothing changed since is CURRENT. Age is a
+    // display detail; judging by it is what made this digest contradict
+    // `graph status` on the same index in the same second.
+    const old = buildCodeIntelligenceChecks(root, { nowMs: now, graphDivergence: CLEAN });
+    const fresh = old.find((c) => c.id === 'code-intelligence-graph')!;
+    expect(fresh.severity).toBe(DoctorSeverity.Ok);
+    expect(fresh.message).toMatch(/current \(indexed 10d ago\)/);
+
+    // ...and a one-file drift makes it stale however new the index is.
+    const checks = buildCodeIntelligenceChecks(root, {
+      nowMs: now,
+      graphDivergence: { hasIndex: true, modified: ['src/a.ts'], added: [], deleted: [] },
+    });
     const graph = checks.find((c) => c.id === 'code-intelligence-graph')!;
     expect(graph.severity).toBe(DoctorSeverity.Warning);
     expect(graph.advisory).toBe(true);
-    expect(graph.message).toMatch(/stale.*10d ago/);
+    expect(graph.message).toMatch(/STALE — 1 file\(s\) changed since index \(1 modified\)/);
     expect(graph.fix).toContain('shrk graph index');
     expect(graph.whyThisMatters).toBeDefined();
   });
@@ -868,7 +890,7 @@ describe('buildCodeIntelligenceChecks', () => {
     expect(checks.find((c) => c.id === 'code-intelligence-schema-mismatch')).toBeUndefined();
   });
 
-  test('stale threshold override flips a fresh fixture to advisory', () => {
+  test('the age threshold no longer governs the GRAPH verdict — divergence does', () => {
     const now = Date.parse('2026-05-22T12:00:00Z');
     writeJson(root, '.sharkcraft/graph/meta.json', {
       schema: 'sharkcraft.graph/v1',
@@ -880,9 +902,27 @@ describe('buildCodeIntelligenceChecks', () => {
     const checks = buildCodeIntelligenceChecks(root, {
       nowMs: now,
       staleThresholdDays: 1,
+      graphDivergence: CLEAN,
     });
     const graph = checks.find((c) => c.id === 'code-intelligence-graph')!;
-    expect(graph.severity).toBe(DoctorSeverity.Warning);
-    expect(graph.advisory).toBe(true);
+    expect(graph.severity).toBe(DoctorSeverity.Ok);
+
+    // The threshold still governs the age-based checks that have no working-tree
+    // counterpart to diverge from (the rule-graph bridge, api-surface, …).
+    writeJson(root, '.sharkcraft/bridge/meta.json', {
+      schema: 'sharkcraft.rule-graph/v1',
+      lastBuiltAt: new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString(),
+      digest: 'cafe',
+      nodesByKind: { rule: 1 },
+      edgesByKind: {},
+      sourceCounts: { rule: 1 },
+    });
+    const bridged = buildCodeIntelligenceChecks(root, {
+      nowMs: now,
+      staleThresholdDays: 1,
+      graphDivergence: CLEAN,
+    });
+    const bridge = bridged.find((c) => c.id === 'code-intelligence-rule-graph')!;
+    expect(bridge.severity).toBe(DoctorSeverity.Warning);
   });
 });

@@ -24,6 +24,13 @@ export interface IWiringSideExplain {
   readonly filesScanned: number;
   /** Misconfiguration (bad regex / no capture group / bad source), if any. */
   readonly error?: string;
+  /**
+   * Named extractor this side resolved from, when it used one. Surfaced so an
+   * author reading an explain can tell a SHARED selector from a local copy of
+   * it — the two look identical in the extracted ids, and only one of them is
+   * guaranteed to stay in step with the other planes.
+   */
+  readonly viaExtractor?: string;
 }
 
 /**
@@ -79,6 +86,22 @@ function sortSites(sites: readonly IWiringTokenSite[]): IWiringTokenSite[] {
  * committing a rule. The diff/verdict reuse {@link evaluateWiring} so they match
  * the gate exactly (incl. `groupBy` membership). Never throws.
  */
+/**
+ * The extractor a rule's registered side resolved from — only when EVERY sink
+ * shares it. A union of sinks where one is shared and another is inline has no
+ * single answer, and naming just one would be a claim the config does not make.
+ */
+function registeredExtractorRef(rule: IWiringRule): string | undefined {
+  const sinks = Array.isArray(rule.registered)
+    ? (rule.registered as readonly IWiringSource[])
+    : rule.registered
+      ? [rule.registered as IWiringSource]
+      : [];
+  if (sinks.length === 0) return undefined;
+  const first = sinks[0]!.$use;
+  return first !== undefined && sinks.every((s) => s.$use === first) ? first : undefined;
+}
+
 export function explainWiring(
   projectRoot: string,
   rule: IWiringRule,
@@ -140,12 +163,14 @@ export function explainWiring(
       distinctCount: ruleResult?.declaredCount ?? 0,
       filesScanned: declaredFiles.length,
       ...(declaredRes.error ? { error: declaredRes.error } : {}),
+      ...(rule.declared?.$use ? { viaExtractor: rule.declared.$use } : {}),
     },
     registered: {
       sites: sortSites(registeredSites),
       distinctCount: ruleResult?.registeredCount ?? 0,
       filesScanned: registeredFiles.size,
       ...(registeredError ? { error: registeredError } : {}),
+      ...(registeredExtractorRef(rule) ? { viaExtractor: registeredExtractorRef(rule) } : {}),
     },
     declaredNotRegistered: byDirection('declared-missing'),
     registeredNotDeclared: byDirection('registered-missing'),

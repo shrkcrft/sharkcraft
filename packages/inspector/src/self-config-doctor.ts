@@ -13,13 +13,13 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { buildPackContributionsInventory } from './pack-contributions-inventory.ts';
-import { listConventions } from './convention-registry.ts';
-import { loadAllContractTemplates } from './contract-template-registry.ts';
-import { listMigrationProfilesFromPacks } from './migration-profile-registry.ts';
-import { listPackHelpers } from './pack-helper-registry.ts';
 import { listTaskRoutingHints } from './task-routing-hint-registry.ts';
-import { listRegistrationHints } from './registration-hint-registry.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import {
+  referenceIdsFor,
+  warmReferenceRegistries,
+  type ReferenceKind,
+} from './reference-registry.ts';
 
 export const SELF_CONFIG_DOCTOR_SCHEMA = 'sharkcraft.self-config-doctor/v1';
 
@@ -72,84 +72,37 @@ export interface ISelfConfigGraph {
 interface IIdLookup {
   knowledge: Set<string>;
   rules: Set<string>;
-  paths: Set<string>;
-  pathConventions: Set<string>;
   templates: Set<string>;
   pipelines: Set<string>;
-  policies: Set<string>;
-  playbooks: Set<string>;
-  constructs: Set<string>;
-  scaffoldPatterns: Set<string>;
   conventions: Set<string>;
   contractTemplates: Set<string>;
   migrationProfiles: Set<string>;
   helpers: Set<string>;
-  routingHints: Set<string>;
   registrationHints: Set<string>;
-  commands: Set<string>;
-  mcpTools: Set<string>;
-  files: Set<string>;
 }
 
-async function buildLookups(
-  inspection: ISharkcraftInspection,
-): Promise<IIdLookup> {
-  const knowledge = new Set<string>(inspection.knowledgeEntries.map((k) => k.id));
-  const rules = new Set<string>(
-    (inspection.ruleService?.list?.() ?? []).map((r: { id: string }) => r.id),
-  );
-  const paths = new Set<string>(
-    (inspection.pathService?.list?.() ?? []).map((p: { id: string }) => p.id),
-  );
-  const templates = new Set<string>(
-    inspection.templateRegistry?.list?.().map((t: { id: string }) => t.id) ?? [],
-  );
-  const pipelines = new Set<string>(
-    inspection.pipelineRegistry?.list?.().map((p: { id: string }) => p.id) ?? [],
-  );
-
-  // Convention/profile/contract registries return entries asynchronously.
-  const conventions = new Set<string>(
-    (await listConventions(inspection)).map((e) => e.convention.id),
-  );
-  const contractTemplatesPair = await loadAllContractTemplates(inspection);
-  const contractTemplates = new Set<string>(
-    contractTemplatesPair.entries.map((e) => e.template.id),
-  );
-  const migrationProfiles = new Set<string>(
-    (await listMigrationProfilesFromPacks(inspection)).map((p) => p.id),
-  );
-
-  const helpers = new Set<string>(
-    (await listPackHelpers(inspection)).map((e) => e.helper.id),
-  );
-  const routingHints = new Set<string>(
-    (await listTaskRoutingHints(inspection)).map((e) => e.hint.id),
-  );
-  const registrationHints = new Set<string>(
-    (await listRegistrationHints(inspection)).map((e) => e.hint.id),
-  );
-
+/**
+ * Every set is a projection of the SHARED reference registry.
+ *
+ * This used to build its own sets from its own sources, and carried eleven more
+ * fields that nothing read — nine of them hardcoded `new Set()`, so any check
+ * that had started using one would have reported every correct id as unknown.
+ * The v2 doctor made exactly that mistake with `policies` and `commands`.
+ */
+async function buildLookups(inspection: ISharkcraftInspection): Promise<IIdLookup> {
+  await warmReferenceRegistries(inspection);
+  const ids = (kind: ReferenceKind): Set<string> =>
+    new Set<string>(referenceIdsFor(inspection, kind));
   return {
-    knowledge,
-    rules,
-    paths,
-    pathConventions: new Set<string>(), // alias of paths for cross-ref readability
-    templates,
-    pipelines,
-    policies: new Set<string>(),
-    playbooks: new Set<string>(),
-    constructs: new Set<string>(),
-    scaffoldPatterns: new Set<string>(),
-    conventions,
-    contractTemplates,
-    migrationProfiles,
-    helpers,
-    routingHints,
-    registrationHints,
-    commands: new Set<string>(),
-    mcpTools: new Set<string>(),
-    files: new Set<string>(),
+    knowledge: ids('knowledge'),
+    rules: ids('rule'),
+    templates: ids('template'),
+    pipelines: ids('pipeline'),
+    conventions: ids('convention'),
+    contractTemplates: ids('contract-template'),
+    migrationProfiles: ids('migration-profile'),
+    helpers: ids('helper'),
+    registrationHints: ids('registration-hint'),
   };
 }
 

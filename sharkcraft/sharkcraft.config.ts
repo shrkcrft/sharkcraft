@@ -56,6 +56,18 @@ export default {
   // the engine is generic, these rules are this repo's own.
   // ---------------------------------------------------------------------------
 
+  // Named selectors referenced by `{ $use }` from any plane. The ALL_TOOLS
+  // array is the SAME set for the wiring rule's registered side and for the
+  // baseline's compute — spelled out twice they could drift, and the two planes
+  // would then silently disagree about what the MCP surface even is.
+  extractors: {
+    allToolsArray: {
+      files: ['packages/mcp-server/src/tools/all-tools.ts'],
+      extract: 'array-members',
+      anchor: 'ALL_TOOLS',
+    },
+  },
+
   // Completeness: an MCP tool that is exported but never added to ALL_TOOLS
   // compiles green and is simply absent from the wire.
   wiringRules: [
@@ -72,11 +84,7 @@ export default {
         exclude:
           '^(simulateWorkflowTool|listReleaseTrainsTool|getReleaseTrainTool|queryRepositoryIntelligenceTool|previewComplianceEvidencePacketTool|previewIngestAdoptionPlanTool)$',
       },
-      registered: {
-        files: ['packages/mcp-server/src/tools/all-tools.ts'],
-        extract: 'array-members',
-        anchor: 'ALL_TOOLS',
-      },
+      registered: { $use: 'allToolsArray' },
       message: '{id} is exported as an MCP tool but never added to ALL_TOOLS',
       hint: 'Import it in packages/mcp-server/src/tools/all-tools.ts and add it to the ALL_TOOLS array.',
       failOnEmpty: true,
@@ -127,6 +135,29 @@ export default {
     },
   ],
 
+  // Prose-reference rot: an `engine.*` id cited in a doc, a README or an agent
+  // skill file must still resolve. Markdown has no build, so these drift with
+  // ZERO signal until someone runs the command and it fails.
+  docReferences: [
+    {
+      id: 'doc-engine-ids',
+      description: 'Every engine.* id cited in prose must still resolve in some registry.',
+      files: ['docs/**/*.md', '.claude/skills/**/*.md', 'README.md'],
+      // Left-anchored: a bare `\\b` would also match the tail of
+      // `@scope/generator-engine.generate` and report a module path.
+      tokenPattern: '(?<![\\w./-])engine[.-][a-z0-9-]+\\b',
+      // Every registry an `engine.*` id legitimately lives in. Listing only
+      // `template` here would flag `engine.feature-dev` (a pipeline) and every
+      // `engine.<dir>` path convention — the plane is only as precise as the
+      // kinds it is told to try.
+      resolvesAs: ['template', 'pipeline', 'path-convention', 'playbook', 'construct'],
+      requireContext: 'backtick',
+      exemptMarker: 'ref-allow',
+      severity: 'error',
+      hint: 'Run `shrk templates list` / `shrk pipelines list` / `shrk paths list` and cite a registered id.',
+    },
+  ],
+
   // Committed ledger: the MCP tool surface. Two-way, so a tool silently REMOVED
   // from the wire fails exactly like one silently added.
   baselines: [
@@ -134,14 +165,7 @@ export default {
       id: 'mcp-tool-surface',
       description: 'The exact set of tools registered in ALL_TOOLS — the public MCP surface.',
       baseline: 'baselines/mcp-tools.json',
-      compute: {
-        kind: 'extractor',
-        source: {
-          files: ['packages/mcp-server/src/tools/all-tools.ts'],
-          extract: 'array-members',
-          anchor: 'ALL_TOOLS',
-        },
-      },
+      compute: { kind: 'extractor', source: { $use: 'allToolsArray' } },
       direction: 'two-way',
       failOnEmpty: true,
       hint: 'If the change is intentional, bless it with `shrk baseline update --id mcp-tool-surface`.',

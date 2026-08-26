@@ -1,3 +1,4 @@
+import { detectGraphFreshness } from '@shrkcrft/graph';
 import {
   buildCodeIntelligenceChecks,
   DoctorSeverity,
@@ -37,7 +38,10 @@ export const getCodeIntelligenceStateTool: IToolDefinition = {
   },
   handler(input, ctx) {
     const args = input as IInput;
-    let checks = buildCodeIntelligenceChecks(ctx.inspection.projectRoot);
+    // Same divergence check `graph status` uses — one freshness authority.
+    let checks = buildCodeIntelligenceChecks(ctx.inspection.projectRoot, {
+      graphDivergence: detectGraphFreshness(ctx.inspection.projectRoot),
+    });
     if (args.checkId) {
       checks = checks.filter((c) => c.id === args.checkId);
     }

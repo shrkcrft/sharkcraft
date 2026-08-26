@@ -20,7 +20,8 @@ export type GateRuleType =
   | 'registry'
   | 'registration'
   | 'baseline'
-  | 'generated';
+  | 'generated'
+  | 'doc-reference';
 
 /**
  * Per-rule outcome, uniform across planes. `skipped` is deliberately a

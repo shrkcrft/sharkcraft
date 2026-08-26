@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { IWiringRule } from '@shrkcrft/core';
+import { resolveSourceGlobs, type IWiringRule, type IWiringSource } from '@shrkcrft/core';
 import { evaluateWiring, type IWiringFileEntry } from '../wiring/evaluate-wiring.ts';
 import { runWiring } from '../wiring/scan-wiring-files.ts';
 
@@ -17,8 +17,10 @@ const RULE: IWiringRule = {
 };
 
 describe('evaluateWiring (pure)', () => {
-  const resolver = (entries: IWiringFileEntry[]) => (source: { files: readonly string[] }) =>
-    entries.filter((e) => source.files.some((g) => e.path.startsWith(g.replace(/\/\*\*.*$/, '/'))));
+  const resolver = (entries: IWiringFileEntry[]) => (source: IWiringSource) =>
+    entries.filter((e) =>
+      resolveSourceGlobs(source).some((g) => e.path.startsWith(g.replace(/\/\*\*.*$/, '/'))),
+    );
 
   test('flags declared tokens absent from the registered set', () => {
     const files: IWiringFileEntry[] = [
@@ -89,8 +91,10 @@ describe('evaluateWiring (pure)', () => {
 });
 
 describe('evaluateWiring — config-authorable primitives', () => {
-  const resolver = (entries: IWiringFileEntry[]) => (source: { files: readonly string[] }) =>
-    entries.filter((e) => source.files.some((g) => e.path.startsWith(g.replace(/\/\*\*.*$/, '/'))));
+  const resolver = (entries: IWiringFileEntry[]) => (source: IWiringSource) =>
+    entries.filter((e) =>
+      resolveSourceGlobs(source).some((g) => e.path.startsWith(g.replace(/\/\*\*.*$/, '/'))),
+    );
 
   test('subset violations carry direction "declared-missing"', () => {
     const files: IWiringFileEntry[] = [

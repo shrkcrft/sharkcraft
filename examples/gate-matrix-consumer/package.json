@@ -1,0 +1,6 @@
+{
+  "name": "gate-matrix-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Synthetic consumer exercising every awkward real gate shape at once. Driven by packages/cli/src/__tests__/r71-gate-matrix.test.ts."
+}

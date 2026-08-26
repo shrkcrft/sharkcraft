@@ -33,6 +33,31 @@ export interface IProvenanceHeaderRule {
   readonly pointsToRegenCommand?: boolean;
 }
 
+/**
+ * One WRITER inside a mixed generated tree.
+ *
+ * A real `generated/` directory is rarely one command's output: several
+ * generators write into it, each owning a slice. A single-writer rule over such
+ * a tree regenerates ONE command's output and then reports every OTHER writer's
+ * files as `only-committed` — all false, all noise, and the capability becomes
+ * unusable on exactly the trees that most need it. Declaring the writers
+ * separately lets each verify its own slice, and the artifact is their union.
+ */
+export interface IGeneratedSource {
+  /**
+   * Command regenerating THIS writer's slice into a temp directory. `{TMP}` is
+   * substituted with an absolute path to a fresh empty directory, exactly as
+   * for the single-writer {@link IGeneratedArtifactRule.regen}.
+   */
+  readonly regen: string;
+  /** Project-relative globs selecting the committed files this writer owns. */
+  readonly glob: readonly string[];
+  /** Optional label used in output; defaults to the writer's index. */
+  readonly id?: string;
+  /** Wall-clock cap for this writer's `regen` (falls back to the rule's). */
+  readonly timeoutMs?: number;
+}
+
 export interface IGeneratedArtifactRule {
   /** Stable id, used with `--id` and reported in every finding. */
   readonly id: string;
@@ -50,6 +75,54 @@ export interface IGeneratedArtifactRule {
    * without `regen` is a header-only rule (still fully useful, never spawns).
    */
   readonly regen?: string;
+  /**
+   * MULTI-WRITER form: N generators each owning a sub-glob of
+   * {@link generatedGlob}. Each writer regenerates and diffs only its own
+   * slice, so one writer's output is never reported as another's stale file.
+   * Mutually exclusive with the single-writer {@link regen}.
+   *
+   * Like `regen`, these SPAWN — the pack-plane merge seam drops a
+   * pack-contributed rule that declares any.
+   */
+  readonly sources?: readonly IGeneratedSource[];
+  /**
+   * Files inside {@link generatedGlob} that are legitimately HAND-MAINTAINED
+   * (typically pending a generator that does not exist yet). They are excluded
+   * from the header contract and from every byte comparison.
+   *
+   * The exemption is deliberately narrow: each pattern's LAST segment must be a
+   * literal filename (`src/**\/generated/LegacyThing.kt` is fine,
+   * `src/**\/generated/*.kt` is not). A wildcard basename would silently absorb
+   * every new file dropped into the directory, turning a per-file bless into a
+   * blanket opt-out — the drift check would then pass forever without checking
+   * anything. A pattern matching NO file is reported as a stale bless.
+   *
+   * A file under `generatedGlob` that matches neither a writer's glob nor this
+   * list is reported as `unclassified`: the tree must be fully accounted for,
+   * loudly, rather than quietly assumed generated.
+   */
+  readonly handMaintained?: readonly string[];
+  /**
+   * A marker a file may carry IN ITS OWN HEAD to declare itself hand-maintained,
+   * as an alternative to a config path list.
+   *
+   * A real mixed tree can hold dozens of hand-written files, and enumerating
+   * them in config means a list that drifts on every add or rename — with the
+   * churn landing in a different file from the change that caused it. An
+   * in-file marker puts the exemption where a reviewer already looks: in the
+   * diff that introduces the file.
+   *
+   * Scanned within {@link IProvenanceHeaderRule.withinLines} of the head (10 by
+   * default), and matched as a regex. It stays strictly PER-FILE — a file must
+   * literally carry the marker — so this is still not a wildcard opt-out, and
+   * an unmarked, unheadered, unlisted file is still `unclassified`.
+   *
+   * Must not overlap `provenanceHeader.mustMatch`, or a generated file's own
+   * header could exempt it from the very check that header exists to trigger.
+   */
+  readonly handMaintainedMarker?: string;
+  /** Extra regex flags for {@link handMaintainedMarker}. */
+  readonly handMaintainedMarkerFlags?: string;
   /** `bytes` (default) or `normalized-whitespace` (trailing WS + line endings). */
   readonly compare?: 'bytes' | 'normalized-whitespace';
   /** The "do not edit" header contract, checked without ever running `regen`. */

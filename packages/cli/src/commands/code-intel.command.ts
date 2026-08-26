@@ -10,6 +10,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { detectGraphFreshness } from '@shrkcrft/graph';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 /**
@@ -41,7 +42,13 @@ export const codeIntelCommand: ICommandHandler = {
     const checkId = flagString(args, 'check');
     const staleDaysRaw = flagString(args, 'stale-days');
     const staleDays = staleDaysRaw ? Number.parseInt(staleDaysRaw, 10) : undefined;
-    const options: { staleThresholdDays?: number } = {};
+    // Divergence against the working tree — the SAME check `shrk graph status`
+    // reports, so the two surfaces cannot contradict each other. Injected
+    // because `@shrkcrft/graph` sits above inspector in the layer order.
+    const options: {
+      staleThresholdDays?: number;
+      graphDivergence?: ReturnType<typeof detectGraphFreshness>;
+    } = { graphDivergence: detectGraphFreshness(cwd) };
     if (typeof staleDays === 'number' && Number.isFinite(staleDays) && staleDays > 0) {
       options.staleThresholdDays = staleDays;
     }

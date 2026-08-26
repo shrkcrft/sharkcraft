@@ -90,6 +90,21 @@ export interface IBaselineRule {
    * set. Set explicitly to override either default.
    */
   readonly failOnEmpty?: boolean;
+  /**
+   * Declare that an EMPTY result is the expected, passing state.
+   *
+   * The loud-skip contract exists because an empty compute almost always means
+   * a stale selector, and calling that a pass is the silent green this plane
+   * prevents. A FENCE inverts that: "no edge from A to B" is asserted precisely
+   * by the set being empty, so the rule could otherwise never be green and
+   * would be useless in CI.
+   *
+   * Opt-in, and narrow: it turns the empty case into a verified pass and
+   * nothing else. A non-empty result is still drift per {@link direction}, so
+   * the assertion keeps its teeth. Mutually exclusive with `failOnEmpty: true`,
+   * which asserts the opposite.
+   */
+  readonly expectEmpty?: boolean;
   /** Author-declared expectations checked by `shrk gates coverage`. */
   readonly selfTest?: IRuleSelfTest;
   /** `error` (default) fails the check; `warning` reports without failing. */

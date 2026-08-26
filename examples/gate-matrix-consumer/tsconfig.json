@@ -1,0 +1,1 @@
+{ "compilerOptions": { "baseUrl": ".", "paths": { "@x/generated": ["src/generated/index.ts"], "@x/ui": ["libs/ui/index.ts"] } } }

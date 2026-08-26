@@ -74,21 +74,31 @@ Replacing them would break every existing consumer, so the envelope rides
 | `skipReason` | Present exactly when `status` is `skipped` — the sentence explaining what matched nothing. |
 | `error` | Present when the rule is misconfigured (`status: "error"`). |
 
-## A CI step that works for any plane
+## A CI step for every plane at once
+
+`shrk gates check` emits the envelope for **every** plane in one run, so the
+loop below is usually unnecessary — one command, one envelope, one exit code:
+
+```bash
+shrk gates check --json | jq -e '
+  .gate as $g
+  | if $g.failed > 0 then
+      ($g.rules[] | select(.status=="failed" or .status=="error")
+       | "FAIL \(.type)/\(.id): \(.violations | length) violation(s)"), false
+    elif $g.skipped > 0 then
+      ($g.rules[] | select(.status=="skipped")
+       | "STALE \(.type)/\(.id): \(.skipReason)"), false
+    else true end'
+```
+
+The per-plane verbs still emit the identical shape, so the same `jq` works
+against any one of them:
 
 ```bash
 for verb in "check wiring" "policy-lint" "baseline check" "generated check"; do
-  shrk $verb --json | jq -e '
-    .gate as $g
-    | if $g.failed > 0 then
-        ($g.rules[] | select(.status=="failed" or .status=="error")
-         | "FAIL \(.type)/\(.id): \(.violations | length) violation(s)"), false
-      elif $g.skipped > 0 then
-        ($g.rules[] | select(.status=="skipped")
-         | "STALE \(.type)/\(.id): \(.skipReason)"), false
-      else true end'
+  shrk $verb --json | jq -e '.gate | .failed == 0 and .skipped == 0'
 done
 ```
 
-See also [`shrk gates coverage`](gate-rules.md), which answers the same question
-across every plane in one command.
+See also [`shrk gates coverage`](gate-rules.md), which answers the complementary
+question — are the rules still *connected* — across every plane in one command.

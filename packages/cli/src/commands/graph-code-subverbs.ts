@@ -656,7 +656,11 @@ export async function runGraphStatus(args: ParsedArgs): Promise<number> {
   }
   process.stdout.write(header('Graph status'));
   process.stdout.write(kv('schema', payload.schema) + '\n');
-  process.stdout.write(kv('files', String(payload.fileCount)) + '\n');
+  // "files indexed", not "files": this is the size of the STORED snapshot, and
+  // it deliberately does not move when a new file appears on disk — that shows
+  // up on the `drift` line below. Reading it as a live count is how an added
+  // file looks invisible to the index.
+  process.stdout.write(kv('files indexed', String(payload.fileCount)) + '\n');
   process.stdout.write(kv('nodes', String(payload.nodeCount)) + '\n');
   process.stdout.write(kv('edges', String(payload.edgeCount)) + '\n');
   process.stdout.write(kv('packages', String(payload.workspacePackages.length)) + '\n');

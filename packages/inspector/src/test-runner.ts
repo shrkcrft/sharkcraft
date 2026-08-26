@@ -1,6 +1,9 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { buildContext } from '@shrkcrft/context';
+import { listConstructs } from './construct-registry.ts';
+import { listPolicyIds } from './policy-registry.ts';
+import { listPlaybooks } from './playbook-registry.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { buildTaskPacket } from './task-packet.ts';
 import { rankKnowledgeEntries } from './task-ranker.ts';
@@ -539,35 +542,23 @@ function loadHelperRegistryQuietly(): Set<string> {
 }
 
 function listPlaybookIdsQuietly(inspection: ISharkcraftInspection): Set<string> {
-  const reg = (inspection as { playbookRegistry?: { list?: () => readonly { id: string }[] } })
-    .playbookRegistry;
-  if (!reg || typeof reg.list !== 'function') return new Set();
   try {
-    return new Set(reg.list().map((p) => p.id));
+    return new Set(listPlaybooks(inspection).map((p) => p.id));
   } catch {
     return new Set();
   }
 }
 
 function listPolicyIdsQuietly(inspection: ISharkcraftInspection): Set<string> {
-  const checks =
-    (inspection as { policyChecks?: readonly { id: string }[] }).policyChecks ?? [];
-  return new Set(checks.map((c) => c.id));
+  return new Set(listPolicyIds(inspection));
 }
 
 function listConstructIdsQuietly(inspection: ISharkcraftInspection): Set<string> {
-  const direct = (inspection as { constructs?: readonly { id: string }[] }).constructs;
-  if (direct && direct.length > 0) return new Set(direct.map((c) => c.id));
-  const reg = (inspection as { constructRegistry?: { list?: () => readonly { id: string }[] } })
-    .constructRegistry;
-  if (reg && typeof reg.list === 'function') {
-    try {
-      return new Set(reg.list().map((c) => c.id));
-    } catch {
-      return new Set();
-    }
+  try {
+    return new Set(listConstructs(inspection).map((c) => c.id));
+  } catch {
+    return new Set();
   }
-  return new Set();
 }
 
 function listCommandIdsQuietly(inspection: ISharkcraftInspection): Set<string> {

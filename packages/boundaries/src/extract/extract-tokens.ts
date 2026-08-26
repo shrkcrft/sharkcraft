@@ -6,6 +6,8 @@ import {
   type IWiringSource,
 } from '@shrkcrft/core';
 import { safeCompile } from '../util/safe-regex.ts';
+import { extractImportEdges } from './import-edges.ts';
+import type { ITsconfigPathsMap } from '../scan/tsconfig-aliases.ts';
 import {
   elementToken,
   elementValue,
@@ -28,11 +30,29 @@ export interface IExtractedSite {
   readonly line: number;
 }
 
+/**
+ * Optional project context an extractor may need.
+ *
+ * Kept OUT of the source spec because it is not part of the rule — it is what
+ * the caller knows about the workspace. Only `import-edges` reads it today, and
+ * every other kind stays a pure function of (source, file contents).
+ */
+export interface IExtractContext {
+  /** tsconfig `paths` map, so alias specifiers resolve as the compiler would. */
+  readonly tsconfigPaths?: ITsconfigPathsMap;
+}
+
 /** Outcome of running one source: the sites, or a configuration error. */
 export interface IExtractResult {
   readonly sites: readonly IExtractedSite[];
   /** Set when the SOURCE is misconfigured (never thrown — rules degrade). */
   readonly error?: string;
+  /**
+   * A diagnosis for a zero-match that is CORRECT but almost certainly not what
+   * the author meant. Distinct from `error`: nothing is wrong with the source,
+   * it just cannot mean what it looks like it means.
+   */
+  readonly hint?: string;
 }
 
 /**
@@ -47,6 +67,7 @@ export interface IExtractResult {
 export function extractTokens(
   source: IWiringSource,
   files: readonly IExtractFileEntry[],
+  context: IExtractContext = {},
 ): IExtractResult {
   const error = validateWiringSource(source);
   if (error) return { sites: [], error };
@@ -84,6 +105,18 @@ export function extractTokens(
     case 'json-path':
       sites = byJsonPath(source.jsonPath!, files);
       break;
+    case 'filenames':
+      sites = byFilenames(source, files);
+      break;
+    case 'import-edges': {
+      const edges = extractImportEdges(source, files, {
+        ...(context.tsconfigPaths ? { tsconfigPaths: context.tsconfigPaths } : {}),
+      });
+      if (edges.error) return { sites: [], error: edges.error };
+      if (edges.hint) return { sites: edges.sites, hint: edges.hint };
+      sites = edges.sites;
+      break;
+    }
     default:
       return { sites: [], error: `unknown extract kind "${String(kind)}"` };
   }
@@ -107,6 +140,46 @@ export function extractTokens(
     }
   }
   return { sites };
+}
+
+
+/**
+ * One id per FILE, derived from its path.
+ *
+ * Every other extractor reads a file's CONTENTS, so "a declared thing must have
+ * its sibling FILE" — a `FOO_DESCRIPTOR` const paired with `FOO_DESCRIPTOR.ts` —
+ * had no expression at all. Paired with a `parity` wiring rule this asserts the
+ * correspondence in BOTH directions: a const with no file, and a file with no
+ * const.
+ *
+ * The site line is 1: the id comes from the path, not from any line in it, and
+ * claiming a more specific location would be inventing one.
+ */
+function byFilenames(
+  source: IWiringSource,
+  files: readonly IExtractFileEntry[],
+): IExtractedSite[] {
+  const capture = source.capturePath ?? 'stem';
+  let re: RegExp | undefined;
+  if (capture === 'regex') {
+    const compiled = safeCompile(source.pathPattern!, source.pathPatternFlags);
+    if (!compiled.re) return [];
+    re = compiled.re;
+  }
+  const sites: IExtractedSite[] = [];
+  for (const file of files) {
+    if (capture === 'regex') {
+      re!.lastIndex = 0;
+      const m = re!.exec(file.path);
+      if (m?.[1]) sites.push({ token: m[1], file: file.path, line: 1 });
+      continue;
+    }
+    const basename = file.path.slice(file.path.lastIndexOf('/') + 1);
+    const dot = basename.indexOf('.');
+    const token = capture === 'basename' || dot <= 0 ? basename : basename.slice(0, dot);
+    sites.push({ token, file: file.path, line: 1 });
+  }
+  return sites;
 }
 
 /** Capture-group-1 of a pattern, per file. */

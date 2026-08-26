@@ -295,7 +295,18 @@ export function detectGraphFreshness(projectRoot: string): IGraphFreshness {
   if (!store.exists()) {
     return { hasIndex: false, modified: [], added: [], deleted: [] };
   }
-  const snap = store.loadSnapshot();
+  // `exists()` only proves `meta.json` is there. A store whose remaining parts
+  // are missing or malformed — an interrupted index, a half-deleted directory —
+  // cannot yield a divergence measurement, and throwing would take down every
+  // read-only surface that merely wanted to know whether the index is current.
+  // "Could not measure" is `hasIndex: false`, which callers already treat as
+  // "not verified" rather than as a pass.
+  let snap: ReturnType<GraphStore['loadSnapshot']>;
+  try {
+    snap = store.loadSnapshot();
+  } catch {
+    return { hasIndex: false, modified: [], added: [], deleted: [] };
+  }
   const seen = new Set<string>();
   const modified: string[] = [];
   const added: string[] = [];

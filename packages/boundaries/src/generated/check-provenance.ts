@@ -8,7 +8,11 @@ export type ProvenanceFindingKind =
   /** A file OUTSIDE the glob carries the header — a hand-written file mislabeled. */
   | 'mislabeled'
   /** Advisory: the header does not name how to regenerate the file. */
-  | 'no-regen-pointer';
+  | 'no-regen-pointer'
+  /** In the tree, owned by no writer and not blessed as hand-maintained. */
+  | 'unclassified'
+  /** A `handMaintained` bless whose file no longer exists. */
+  | 'stale-hand-maintained';
 
 export interface IProvenanceFinding {
   readonly ruleId: string;
@@ -39,6 +43,21 @@ export function deriveOutsideGlobs(generatedGlob: readonly string[]): string[] {
 }
 
 /**
+ * Tree-classification results a mixed-tree rule produces alongside its files.
+ *
+ * Passed in rather than recomputed so the classification a caller already did
+ * (see `scanGeneratedFiles`) is the same one reported — two implementations of
+ * "which files does this rule own?" is precisely the drift this plane exists
+ * to catch.
+ */
+export interface IClassificationFindings {
+  /** Files under the tree owned by no writer and not blessed. */
+  readonly unclassified?: readonly string[];
+  /** `handMaintained` patterns currently matching no file. */
+  readonly staleHandMaintained?: readonly string[];
+}
+
+/**
  * Check the "this file is generated" header contract.
  *
  * Pure: the caller supplies the file contents, so this runs with no regen
@@ -52,15 +71,37 @@ export function checkProvenanceHeaders(
   rule: IGeneratedArtifactRule,
   generated: ReadonlyMap<string, string>,
   outside: ReadonlyMap<string, string>,
+  classification: IClassificationFindings = {},
 ): { findings: readonly IProvenanceFinding[]; error?: string } {
-  const header = rule.provenanceHeader;
-  if (!header) return { findings: [] };
-  const { re, error } = safeCompile(header.mustMatch, header.flags);
-  if (error || !re) return { findings: [], error: `provenanceHeader ${error}` };
-
   const severity: 'error' | 'warning' = rule.severity ?? 'error';
+  // Classification findings do not depend on the header contract — a mixed tree
+  // must be fully accounted for whether or not the rule asserts headers, so
+  // these are produced before the early return below.
+  const classFindings: IProvenanceFinding[] = [
+    ...(classification.unclassified ?? []).map((file) => ({
+      ruleId: rule.id,
+      file,
+      kind: 'unclassified' as const,
+      severity,
+      message:
+        'in the generated tree but owned by no `sources[]` glob and not listed in `handMaintained` — classify it',
+    })),
+    ...(classification.staleHandMaintained ?? []).map((pattern) => ({
+      ruleId: rule.id,
+      file: pattern,
+      kind: 'stale-hand-maintained' as const,
+      severity: 'warning' as const,
+      message: '`handMaintained` entry matches no file — the blessed file was renamed or deleted',
+    })),
+  ];
+
+  const header = rule.provenanceHeader;
+  if (!header) return { findings: classFindings };
+  const { re, error } = safeCompile(header.mustMatch, header.flags);
+  if (error || !re) return { findings: classFindings, error: `provenanceHeader ${error}` };
+
   const within = header.withinLines ?? 10;
-  const findings: IProvenanceFinding[] = [];
+  const findings: IProvenanceFinding[] = [...classFindings];
   const test = (content: string): boolean => {
     re.lastIndex = 0;
     return re.test(headOf(content, within));

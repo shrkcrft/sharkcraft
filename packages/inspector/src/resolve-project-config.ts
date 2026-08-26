@@ -25,8 +25,10 @@ import * as nodePath from 'node:path';
 import {
   importModuleViaLoader,
   ok,
+  resolvePlaneExtractors,
   type AppError,
   type IBaselineRule,
+  type IDocReferenceRule,
   type IGeneratedArtifactRule,
   type IPolicyRule,
   type IRegistrationIdiom,
@@ -37,6 +39,7 @@ import {
 } from '@shrkcrft/core';
 import {
   BaselineRuleSchema,
+  DocReferenceRuleSchema,
   GeneratedArtifactRuleSchema,
   loadProjectConfig,
   PolicyRuleSchema,
@@ -173,7 +176,8 @@ function gatherPackContribs(
     | 'policyRuleFiles'
     | 'reusePrimitiveFiles'
     | 'baselineFiles'
-    | 'generatedArtifactFiles',
+    | 'generatedArtifactFiles'
+    | 'docReferenceFiles',
 ): IPackContribFile[] {
   const out: IPackContribFile[] = [];
   for (const pack of validPacks) {
@@ -278,6 +282,16 @@ export async function resolveProjectConfig(
         ? `pack ${packName}: generatedArtifact "${item.id}" declares a \`regen\` command — pack-contributed commands are never auto-run — skipped`
         : undefined,
   );
+  // No shell, no writes — a pack may contribute a prose-reference rule freely,
+  // unlike the two shell-executing planes above.
+  const docReferences = await mergePlane<IDocReferenceRule>(
+    base.config.docReferences ?? [],
+    gatherPackContribs(validPacks, 'docReferenceFiles'),
+    DocReferenceRuleSchema as IPlaneSchema,
+    (r) => r.id,
+    'docReference',
+    diagnostics,
+  );
   const reusePrimitives = await mergePlane<IReusePrimitive>(
     base.config.reusePrimitives ?? [],
     gatherPackContribs(validPacks, 'reusePrimitiveFiles'),
@@ -287,16 +301,40 @@ export async function resolveProjectConfig(
     diagnostics,
   );
 
+  // Pack-contributed elements have NOT been through the loader's `$use`
+  // resolution (that ran on the local config only), so resolve the merged
+  // planes here. A pack rule referencing an extractor this repo does not
+  // declare is DROPPED with a diagnostic — never kept half-resolved, which
+  // would read as "a source with no files" and match nothing, i.e. a silent
+  // pass. Local rules are already resolved, so every error found here belongs
+  // to a pack element by construction.
+  const resolvedPlanes = resolvePlaneExtractors(
+    { wiringRules, registries, registrationGraph, baselines },
+    base.config.extractors,
+  );
+  const dropped = new Set<string>();
+  for (const e of resolvedPlanes.errors) {
+    dropped.add(e.path.slice(0, e.path.indexOf(']') + 1));
+    diagnostics.push(`${e.path}: ${e.message} — rule skipped`);
+  }
+  const keep = <T>(items: readonly T[], plane: string, keyOf: (i: T) => string): readonly T[] =>
+    dropped.size === 0 ? items : items.filter((i) => !dropped.has(`${plane}[${keyOf(i)}]`));
+
   return ok({
     ...base,
     config: {
       ...base.config,
-      wiringRules,
-      registries,
-      registrationGraph,
+      wiringRules: keep(resolvedPlanes.wiringRules ?? wiringRules, 'wiringRules', (r) => r.id),
+      registries: keep(resolvedPlanes.registries ?? registries, 'registries', (r) => r.name),
+      registrationGraph: keep(
+        resolvedPlanes.registrationGraph ?? registrationGraph,
+        'registrationGraph',
+        (r) => r.name,
+      ),
       policyRules,
-      baselines,
+      baselines: keep(resolvedPlanes.baselines ?? baselines, 'baselines', (r) => r.id),
       generatedArtifacts,
+      docReferences,
       reusePrimitives,
     },
     planeDiagnostics: diagnostics,

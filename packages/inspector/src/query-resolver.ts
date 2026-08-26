@@ -13,6 +13,9 @@ import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { HELPERS } from './helper-registry.ts';
+import { listConstructs } from './construct-registry.ts';
+import { listPlaybooks } from './playbook-registry.ts';
+import { listPolicyIds } from './policy-registry.ts';
 
 export const QUERY_RESOLUTION_SCHEMA = 'sharkcraft.query-resolution/v1';
 
@@ -135,9 +138,9 @@ function rankList<T extends { id: string; name?: string; title?: string }>(
 }
 
 function rankConstructs(inspection: ISharkcraftInspection, query: string): IQueryMatch[] {
-  const reg = (inspection as { constructRegistry?: unknown }).constructRegistry;
-  const list = getList<{ id: string; name?: string; label?: string }>(reg, 'list');
-  return rankList(list as readonly { id: string; name?: string; title?: string }[], query, QueryMatchKind.Construct);
+  // The registry accessor, not a structural cast at a property nothing sets —
+  // the latter compiles and then silently ranks nothing forever.
+  return rankList(listConstructs(inspection), query, QueryMatchKind.Construct);
 }
 
 function rankKnowledge(inspection: ISharkcraftInspection, query: string): IQueryMatch[] {
@@ -161,14 +164,15 @@ function rankHelpers(query: string): IQueryMatch[] {
 }
 
 function rankPlaybooks(inspection: ISharkcraftInspection, query: string): IQueryMatch[] {
-  const reg = (inspection as { playbookRegistry?: unknown }).playbookRegistry;
-  const list = getList<{ id: string; title?: string; name?: string }>(reg, 'list');
-  return rankList(list as readonly { id: string; name?: string; title?: string }[], query, QueryMatchKind.Playbook);
+  return rankList(listPlaybooks(inspection), query, QueryMatchKind.Playbook);
 }
 
 function rankPolicies(inspection: ISharkcraftInspection, query: string): IQueryMatch[] {
-  const checks = (inspection as { policyChecks?: readonly { id: string; title?: string }[] }).policyChecks ?? [];
-  return rankList(checks, query, QueryMatchKind.Policy);
+  return rankList(
+    listPolicyIds(inspection).map((id) => ({ id })),
+    query,
+    QueryMatchKind.Policy,
+  );
 }
 
 function rankCommands(inspection: ISharkcraftInspection, query: string): IQueryMatch[] {
