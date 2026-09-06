@@ -55,6 +55,25 @@ shrk graph callers <symbol> --mode reference   # any reference (includes calls)
 
 MCP: `get_graph_callers`
 
+## "Who imports this MODULE?" (before you move or delete it)
+
+```bash
+shrk graph importers <file|module-specifier>              # all edges, tagged
+shrk graph importers <target> --mode reexport             # who surfaces it publicly
+shrk graph importers <target> --mode type-only            # the build-only edges
+shrk graph importers @scope/pkg                           # a package specifier resolves too
+```
+
+`graph callers` is **symbol**-scoped and counts call sites, so it is blind to
+exactly the two edges a relocation cares about: a **type-only** import (no call
+site exists) and a **re-export** (the module stays publicly reachable under
+another path, including through a bare `export * from`). A hand-rolled grep is
+blind to more: path aliases, `.js`-suffixed ESM specifiers, and re-export chains.
+
+`--mode reexport` is the decisive question — *is this module safe to delete, or
+does something surface it?* The target resolves through the **indexer's** own
+resolution, so a package specifier and its repo-relative path land on one node.
+
 ## "Is code A actually wired to code B?"
 
 ```bash
@@ -187,6 +206,7 @@ MCP: `get_framework_entities` (with optional `routes: true`).
 | `shrk graph search <name>` | find files / symbols / packages by name |
 | `shrk graph context <id>` | one-stop file/symbol view (+ bridge + framework auto-enriched) |
 | `shrk graph callers <symbol>` | who calls / references a symbol |
+| `shrk graph importers <module>` | every module importing it — alias / type-only / re-export aware |
 | `shrk graph path <from> <to>` | is code A wired to code B? shortest import/call/implements path |
 | `shrk graph impact <id>` | reverse dependent closure |
 | `shrk graph impact <id> --full` | full v3 analysis (symbols + bridge + tests + risk) |
@@ -261,6 +281,7 @@ I want to …                          → use
 … understand one file in depth       → shrk graph context
 … find a symbol / file / package     → shrk graph search
 … see who calls / uses a symbol      → shrk graph callers
+… move or delete a whole module      → shrk graph importers <module>
 … estimate change blast radius       → shrk graph impact --full
 … check what rules apply to a file   → shrk rule-graph for <file>
 … find structural anti-patterns      → shrk search-structural

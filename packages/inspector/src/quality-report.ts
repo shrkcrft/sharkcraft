@@ -169,7 +169,11 @@ export async function buildQualityReport(
     gates.push({
       id: 'drift',
       label: 'Drift report',
-      passed: true,
+      // A gate that threw proved NOTHING. `passed: true` here would fold an
+      // unmeasured verdict into the green count and the score — the exact
+      // silent-green the loud-skip contract exists to prevent. `executed:
+      // false` marks it unmeasured; the score below excludes it either way.
+      passed: false,
       blocking: false,
       runsShell: false,
       executed: false,
@@ -197,7 +201,11 @@ export async function buildQualityReport(
     gates.push({
       id: 'context-tests',
       label: 'Context tests',
-      passed: true,
+      // A gate that threw proved NOTHING. `passed: true` here would fold an
+      // unmeasured verdict into the green count and the score — the exact
+      // silent-green the loud-skip contract exists to prevent. `executed:
+      // false` marks it unmeasured; the score below excludes it either way.
+      passed: false,
       blocking: false,
       runsShell: false,
       executed: false,
@@ -224,7 +232,11 @@ export async function buildQualityReport(
     gates.push({
       id: 'agent-tests',
       label: 'Agent contract tests',
-      passed: true,
+      // A gate that threw proved NOTHING. `passed: true` here would fold an
+      // unmeasured verdict into the green count and the score — the exact
+      // silent-green the loud-skip contract exists to prevent. `executed:
+      // false` marks it unmeasured; the score below excludes it either way.
+      passed: false,
       blocking: false,
       runsShell: false,
       executed: false,
@@ -257,7 +269,11 @@ export async function buildQualityReport(
     gates.push({
       id: 'packs',
       label: 'Packs doctor',
-      passed: true,
+      // A gate that threw proved NOTHING. `passed: true` here would fold an
+      // unmeasured verdict into the green count and the score — the exact
+      // silent-green the loud-skip contract exists to prevent. `executed:
+      // false` marks it unmeasured; the score below excludes it either way.
+      passed: false,
       blocking: false,
       runsShell: false,
       executed: false,

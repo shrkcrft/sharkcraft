@@ -91,6 +91,7 @@
   "getGraphHubsTool",
   "getGraphImpactAnalysisTool",
   "getGraphImpactTool",
+  "getGraphImportersTool",
   "getGraphNodeTool",
   "getGraphPathTool",
   "getGraphSearchTool",

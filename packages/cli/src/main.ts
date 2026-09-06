@@ -171,6 +171,7 @@ import {
   gatesCoverageCommand,
   gatesExplainCommand,
   gatesListCommand,
+  gatesScaffoldSelfTestCommand,
   gatesTryCommand,
 } from './commands/gates.command.ts';
 import { wiringCommand } from './commands/wiring.command.ts';
@@ -500,6 +501,7 @@ export function buildRegistry(): CommandRegistry {
   registry.registerSubcommand('gates', gatesCoverageCommand);
   registry.registerSubcommand('gates', gatesExplainCommand);
   registry.registerSubcommand('gates', gatesTryCommand);
+  registry.registerSubcommand('gates', gatesScaffoldSelfTestCommand);
   registry.register(wiringCommand);
   registry.register(reuseCommand);
   registry.register(migrateCommand);

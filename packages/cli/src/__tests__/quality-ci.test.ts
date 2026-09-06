@@ -51,32 +51,66 @@ function makeFixture(): string {
   return root;
 }
 
+interface IQualityRunJson {
+  readonly failFast?: boolean;
+  readonly verdict: string;
+  readonly passed: number;
+  readonly failed: number;
+  readonly failedWarnings: number;
+  readonly skipped: number;
+  readonly errored: number;
+  readonly exitCode: number;
+  readonly items: { id: string; status: string; severity: string }[];
+}
+
 describe('shrk quality', () => {
-  test('json output has overall/score/blockers/warnings + gates list', () => {
+  test('json output is the run: a verdict, the counts, and every gate', () => {
     const root = makeFixture();
     const r = shrk(['--cwd', root, 'quality', '--json'], root);
     // Quality is allowed to exit non-zero — the structural assertions are what we care about.
-    const out = JSON.parse(r.stdout) as {
-      overall: string;
-      score: number;
-      blockers: number;
-      warnings: number;
-      gates: { id: string; passed: boolean; blocking: boolean }[];
-    };
-    expect(['pass', 'warn', 'fail'].includes(out.overall)).toBe(true);
-    expect(typeof out.score).toBe('number');
-    expect(out.gates.some((g) => g.id === 'doctor')).toBe(true);
-    expect(out.gates.some((g) => g.id === 'boundaries')).toBe(true);
-    expect(out.gates.some((g) => g.id === 'coverage')).toBe(true);
+    const out = JSON.parse(r.stdout) as IQualityRunJson;
+    expect(['pass', 'fail', 'not-verified'].includes(out.verdict)).toBe(true);
+    for (const id of ['doctor', 'boundaries', 'coverage']) {
+      expect(out.items.some((g) => g.id === id)).toBe(true);
+    }
+    // The counts must partition the items — a summary that can contradict its
+    // own rows is how people learn to stop reading the summary.
+    expect(out.passed + out.failed + out.failedWarnings + out.skipped + out.errored).toBe(
+      out.items.length,
+    );
   });
 
-  test('--strict promotes warnings to blockers', () => {
+  test('the run is exhaustive by default — no gate stops the rest', () => {
+    const root = makeFixture();
+    const r = shrk(['--cwd', root, 'quality', '--json'], root);
+    const out = JSON.parse(r.stdout) as IQualityRunJson;
+    // Nothing was skipped for lack of a chance to run: the whole point is that
+    // N independent failures cost ONE local pass, not N CI round-trips.
+    expect(out.items.every((i) => i.status !== 'skipped')).toBe(true);
+  });
+
+  test('--strict promotes advisory failures into blocking ones', () => {
     const root = makeFixture();
     const r = shrk(['--cwd', root, 'quality', '--strict', '--json'], root);
-    const out = JSON.parse(r.stdout) as { gates: { blocking: boolean; passed: boolean }[] };
-    // After --strict, every gate is blocking.
-    for (const g of out.gates) {
-      if (!g.passed) expect(g.blocking).toBe(true);
+    const out = JSON.parse(r.stdout) as IQualityRunJson;
+    expect(out.failedWarnings).toBe(0);
+    for (const item of out.items) {
+      if (item.status === 'failed') expect(item.severity).toBe('error');
+    }
+  });
+
+  test('--fail-fast stops after the first blocking failure and says so', () => {
+    const root = makeFixture();
+    const strict = JSON.parse(
+      shrk(['--cwd', root, 'quality', '--strict', '--json'], root).stdout,
+    ) as IQualityRunJson;
+    const fast = JSON.parse(
+      shrk(['--cwd', root, 'quality', '--strict', '--fail-fast', '--json'], root).stdout,
+    ) as IQualityRunJson;
+    if (strict.failed > 0) {
+      // The opposite of the default, and reported rather than left to look clean.
+      expect(fast.failFast ?? true).toBeTruthy();
+      expect(fast.failed).toBeLessThanOrEqual(strict.failed);
     }
   });
 });

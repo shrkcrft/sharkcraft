@@ -1,3 +1,4 @@
+import { SCAN_ZONES } from '../scan/scan-zone.ts';
 import type { ExtractorKind, IWiringSource } from './wiring-rule.ts';
 
 /**
@@ -11,6 +12,16 @@ import type { ExtractorKind, IWiringSource } from './wiring-rule.ts';
  * Two implementations would drift, and a rule that loads but cannot run is
  * exactly the silent-green this plane exists to prevent.
  */
+
+/**
+ * Kinds a lexical `scan` zone cannot apply to.
+ *
+ * `json-path` parses a DOCUMENT — blanking its string literals would leave
+ * nothing to parse. `filenames` derives its id from the PATH and never reads
+ * content. Rejecting `scan` here rather than ignoring it is the point: a
+ * silently-dropped zone is a rule that reads stricter than it is.
+ */
+const UNZONED: ReadonlySet<string> = new Set(['json-path', 'filenames']);
 
 /** Kinds that require an `anchor` naming the construct to locate. */
 const ANCHORED: ReadonlySet<string> = new Set([
@@ -171,6 +182,14 @@ export function validateWiringSource(source: IWiringSource): string | undefined 
   }
   if (source.argIndex !== undefined && (!Number.isInteger(source.argIndex) || source.argIndex < 0)) {
     return '`argIndex` must be a non-negative integer';
+  }
+  if (source.scan !== undefined) {
+    if (!SCAN_ZONES.includes(source.scan)) {
+      return `unknown \`scan\` zone "${String(source.scan)}" — expected one of ${SCAN_ZONES.join(', ')}`;
+    }
+    if (UNZONED.has(kind)) {
+      return `\`scan\` does not apply to extract "${kind}" — it reads ${kind === 'json-path' ? 'a parsed document' : 'the file PATH'}, not file text`;
+    }
   }
   return undefined;
 }

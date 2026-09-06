@@ -101,6 +101,11 @@ export default {
   registries: [
     {
       name: 'mcp-tools',
+      selfTest: {
+        expectMatchesAtLeast: 231,
+        expectIds: ['align_cache', 'check_boundaries', 'check_external_plan'],
+        expectNotIds: [],
+      },
       description: 'Wire-visible MCP tool names (the `name:` of each tool definition).',
       source: {
         files: ['packages/mcp-server/src/tools/*.tool.ts'],

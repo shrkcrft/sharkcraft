@@ -115,6 +115,7 @@ const EXTRA_HELP_LINES: Readonly<Record<string, readonly string[]>> = Object.fre
     '  graph context    — inspect one file or symbol with bridge enrichment',
     '  graph impact     — reverse dependent closure for a file or symbol',
     '  graph callers    — files that call/reference a symbol',
+    '  graph importers  — every module that imports a module (alias/type-only/re-export aware)',
     '  graph cycles     — list import cycles',
     '  graph unresolved — list unresolved imports grouped by file',
     '  graph deps       — inbound/outbound package dependencies',

@@ -8,6 +8,7 @@ export * from './wiring/resolve-plane-extractors.ts';
 export * from './wiring/rule-empty-policy.ts';
 export * from './wiring/registry-declaration.ts';
 export * from './wiring/registration-idiom.ts';
+export * from './scan/scan-zone.ts';
 export * from './policy/policy-rule.ts';
 export * from './baseline/baseline-rule.ts';
 export * from './generated/generated-artifact-rule.ts';

@@ -50,6 +50,7 @@ which is the largest thing that stays honest across `.ts`, `.kt`, `.swift`,
 | `jsonPath` | `.key`, `[n]`, `[*]`; a leading `$.` is accepted. A selected object contributes its **keys**; a selected array, its scalar elements. |
 | `match` | Allow-filter: keep only ids this regex matches. |
 | `exclude` | Deny-filter, applied after `match`: drop ids this regex matches. |
+| `scan` | Which lexical zone of the file to read (default `all`). See below. |
 
 ### `match` + `exclude`: declaring an exception as data
 
@@ -138,6 +139,50 @@ non-empty set:
 
   ✓ [wiring] handlers-registered (via $use:handlers)  —  2 ids across 1 file(s)
 ```
+
+## `scan` — matching code, not prose
+
+Every extractor here reads file **bytes**, so nothing distinguishes a construct
+from a doc comment that merely *describes* it. Both directions of that blindness
+are real defects, and both were observed in a live repo:
+
+- a rule keyed on a code construct fires on a **comment** → the rule reads red
+  on a file that does not contain the thing;
+- a count extractor counts a word inside a comment → the measured number is
+  **wrong**, and a real regression hides under the padded count.
+
+`scan` fixes it with a lexical layer — the same vocabulary the
+[policy plane](policy-lint.md) uses, because both engines answer the identical
+question:
+
+| `scan` | Reads |
+|---|---|
+| `all` (default) | every byte — the pre-existing behaviour, so nothing changes until a rule opts in |
+| `code` | executable code: comments **and** string literals are blanked first |
+| `strings` | string / template literals only |
+| `comments` | comments only |
+| `code-and-templates` | code plus the CONTENTS of backtick templates, for a construct that legitimately lives in an embedded DSL (an inline `template:`, a SQL/GraphQL tagged literal) |
+
+```ts
+{ files: ['src/**/*.scss'], extract: 'regex-capture', pattern: '(transition:[^;]+)', scan: 'code' }
+// the commented-out `.old { transition: 999ms }` no longer inflates the count
+```
+
+Three properties are load-bearing:
+
+- **It blanks, it does not delete.** Excluded spans become equal-length
+  whitespace, so every `file:line` an extractor reports is still the real one.
+- **It reaches every extractor kind**, not just `regex-capture` — `array-members`
+  ignores a commented-out registry, `export-names` ignores a commented-out
+  export — because the zoning happens once, before dispatch.
+- **An inapplicable zone is an error.** `json-path` parses a document and
+  `filenames` reads the path; setting `scan` there fails the config load rather
+  than being silently dropped, because a dropped zone is a rule that reads
+  stricter than it is.
+
+`gates explain` prints the zone and the number of characters it blanked — a zone
+is the one setting that legitimately makes a rule match LESS while still reading
+green, so a suspicious drop stays visible.
 
 ## `filenames` — the companion-file invariant
 

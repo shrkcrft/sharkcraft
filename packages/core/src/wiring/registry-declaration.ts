@@ -1,4 +1,4 @@
-import type { IWiringSource } from './wiring-rule.ts';
+import type { IRuleSelfTest, IWiringSource } from './wiring-rule.ts';
 
 /**
  * A declared "registry inventory" — a string-keyed set of contributions a
@@ -40,4 +40,14 @@ export interface IRegistryDeclaration {
    * the canonical ids.
    */
   readonly aliases?: Readonly<Record<string, string>>;
+  /**
+   * Author-declared expectations checked by `shrk gates coverage`.
+   *
+   * The trust layer asks EVERY data-defined rule to carry one, so a stale glob
+   * after a directory move fails loud instead of passing over an empty set. A
+   * plane that could not express it was a hole in exactly that contract: its
+   * rules were invisible to the stale-selector detector no matter how carefully
+   * they were written.
+   */
+  readonly selfTest?: IRuleSelfTest;
 }

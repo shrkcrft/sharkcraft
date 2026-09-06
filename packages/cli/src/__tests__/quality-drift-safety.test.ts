@@ -39,24 +39,42 @@ function makeFixture(): string {
   return root;
 }
 
+interface IQualityJson {
+  readonly items: {
+    id: string;
+    status: string;
+    severity: string;
+    repro: string;
+    data?: Record<string, unknown>;
+  }[];
+}
+
 describe('shrk quality drift gate', () => {
-  test('json output includes a drift gate + drift summary', () => {
+  test('json output includes a drift gate carrying its own counts', () => {
     const root = makeFixture();
     const r = shrk(['--cwd', root, 'quality', '--json'], root);
-    const out = JSON.parse(r.stdout) as {
-      gates: { id: string; passed: boolean; blocking: boolean }[];
-      drift?: { counts: { error: number; warning: number; info: number } };
-    };
-    expect(out.gates.some((g) => g.id === 'drift')).toBe(true);
-    expect(out.drift).toBeDefined();
+    const out = JSON.parse(r.stdout) as IQualityJson;
+    const drift = out.items.find((g) => g.id === 'drift');
+    expect(drift).toBeDefined();
+    // The gate's payload rides on the gate, not on a one-off top-level key —
+    // otherwise every new gate has to negotiate its own field with consumers.
+    expect(drift!.data).toBeDefined();
+    expect(typeof drift!.data!['errors']).toBe('number');
   });
 
   test('--require-drift-clean makes the drift gate blocking', () => {
     const root = makeFixture();
     const r = shrk(['--cwd', root, 'quality', '--require-drift-clean', '--json'], root);
-    const out = JSON.parse(r.stdout) as { gates: { id: string; blocking: boolean }[] };
-    const drift = out.gates.find((g) => g.id === 'drift')!;
-    expect(drift.blocking).toBe(true);
+    const out = JSON.parse(r.stdout) as IQualityJson;
+    expect(out.items.find((g) => g.id === 'drift')!.severity).toBe('error');
+  });
+
+  test('every gate names the command that reproduces it alone', () => {
+    const root = makeFixture();
+    const r = shrk(['--cwd', root, 'quality', '--json'], root);
+    const out = JSON.parse(r.stdout) as IQualityJson;
+    expect(out.items.length).toBeGreaterThan(1);
+    for (const item of out.items) expect(item.repro.startsWith('shrk ')).toBe(true);
   });
 });
 

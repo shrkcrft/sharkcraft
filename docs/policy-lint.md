@@ -88,6 +88,11 @@ evaluated nothing (see below), `0` otherwise.
 | `code` | executable code only | killing the dominant false positive — a hit inside a "we used to do this" comment |
 | `strings` | string / template literals only | exactly what a language-scoped linter cannot see (an inline template, an embedded query) |
 | `comments` | comments only | forbidden content in the prose itself (a leaked token, a stale directive) |
+| `code-and-templates` | code **plus** backtick-template bodies | a construct that legitimately lives in an embedded DSL — an inline `template:`, a SQL/GraphQL tagged literal — where bare `code` would blank the very thing you are matching |
+
+The same `scan` vocabulary applies to the [extraction DSL](extraction-dsl.md),
+so a rule author who learns it here does not meet a differently-named field one
+plane over.
 
 Zoning is lexical and C/JS-family (`'`/`"`/`` ` `` strings, `//` and block
 comments), designed for the `ts` and `style` surfaces. It is **not** applied to

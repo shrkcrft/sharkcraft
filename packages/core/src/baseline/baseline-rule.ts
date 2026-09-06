@@ -53,8 +53,38 @@ export interface IBaselineRule {
   readonly id: string;
   /** What this baseline pins / why it matters. */
   readonly description?: string;
-  /** Project-relative path of the COMMITTED artifact. */
-  readonly baseline: string;
+  /**
+   * Project-relative path of the COMMITTED artifact.
+   *
+   * Required for a `ledger` baseline (the default) and FORBIDDEN for a
+   * `ceiling` one, whose committed value is the {@link ceiling} number in the
+   * config itself. Two places to look up "what is this pinned to" is exactly
+   * the divergence this plane exists to prevent.
+   */
+  readonly baseline?: string;
+  /**
+   * What this rule pins.
+   *
+   *   - `ledger` (default): a committed artifact, compared entry-by-entry.
+   *   - `ceiling`: a measured NUMBER compared against a declared limit — the
+   *     ratchet shape ("no more than N raw literals", "bundle under N kB",
+   *     "lint warnings ≤ N") people otherwise hand-roll as a shell gate.
+   *
+   * A bespoke ratchet script misses the entire trust layer this plane already
+   * provides: loud-skip, the shared `--json` envelope, `selfTest`, and the
+   * `gates coverage` stale-selector detector. Folding the shape in is what
+   * makes reaching for the engine cheaper than writing the script.
+   */
+  readonly mode?: 'ledger' | 'ceiling';
+  /**
+   * The limit, for `mode: 'ceiling'`.
+   *
+   * Lives in the config rather than in a committed file so raising it is a
+   * reviewable one-line diff in `sharkcraft.config.ts` — the same explicit
+   * bless `baseline update` performs for a ledger, with no second place to
+   * look for the pinned value.
+   */
+  readonly ceiling?: number;
   /** How to (re)derive the current value. */
   readonly compute: IBaselineCompute;
   /**
@@ -64,8 +94,18 @@ export interface IBaselineRule {
    *     one-directional ledgers are exactly how a silent deletion ships.
    *   - `additions-only`: only gained entries fail.
    *   - `no-shrink`: only lost entries fail (a ratchet).
+   *
+   * For `mode: 'ceiling'` the vocabulary is the numeric pair instead:
+   *
+   *   - `at-most` (default): fail when the measured value EXCEEDS the ceiling.
+   *   - `at-least`: fail when it falls BELOW it — a floor (coverage, a
+   *     migration ratchet that must keep climbing).
+   *
+   * Mixing the two vocabularies is a config error, not a silently-ignored
+   * field: a ledger rule reading `at-most` would otherwise fall back to
+   * `two-way` and check something the author never asked for.
    */
-  readonly direction?: 'two-way' | 'additions-only' | 'no-shrink';
+  readonly direction?: 'two-way' | 'additions-only' | 'no-shrink' | 'at-most' | 'at-least';
   /**
    * Compare as a keyed SET instead of a text blob: a JSON path selecting each
    * entry's key (e.g. `symbols[*].name`). The diff is then reported per key,

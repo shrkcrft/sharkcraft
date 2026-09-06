@@ -18,7 +18,7 @@ import {
   NodeKind,
   updateChanged,
 } from '@shrkcrft/graph';
-import type { INode } from '@shrkcrft/graph';
+import type { IImporterEdge, INode } from '@shrkcrft/graph';
 import { analyzeGraphImpact } from '@shrkcrft/impact-engine';
 import { BridgeStore, RuleGraphQueryApi } from '@shrkcrft/rule-graph';
 import { FrameworkQueryApi, FrameworkStore } from '@shrkcrft/framework-scanners';
@@ -1176,6 +1176,154 @@ export async function runGraphHubs(args: ParsedArgs): Promise<number> {
     }
   }
   return 0;
+}
+
+// ─── shrk graph importers ─────────────────────────────────────────────
+
+/**
+ * Every module with an import edge INTO the target — the query a module
+ * relocation or deletion actually needs.
+ *
+ * `graph callers <Symbol>` is symbol-scoped and counts call sites, so it misses
+ * the two edges that decide whether a module can move: a type-only import (no
+ * call site exists) and a re-export (the module stays publicly surfaced under
+ * another path). `graph context <file>` lists importers but frames them as
+ * "what surrounds the file you are about to edit". Neither answers "enumerate
+ * everything that would break", which is why the task otherwise falls back to a
+ * hand-rolled grep that misses aliased specifiers, `.js`-suffixed ESM
+ * specifiers, and re-export chains — the exact edges the graph already
+ * resolves.
+ */
+export async function runGraphImporters(args: ParsedArgs): Promise<number> {
+  const cwd = resolveCwd(args);
+  const wantJson = flagBool(args, 'json');
+  const target = args.positional[1];
+  if (!target) {
+    process.stderr.write(
+      'Usage: shrk graph importers <file|module-specifier> [--mode import|reexport|type-only|all] [--limit N|0] [--no-refresh]\n',
+    );
+    return 2;
+  }
+  const modeRaw = flagString(args, 'mode') ?? 'all';
+  if (!IMPORTER_MODES.includes(modeRaw as ImporterMode)) {
+    process.stderr.write(
+      `Unknown --mode "${modeRaw}" for 'shrk graph importers'. Valid: ${IMPORTER_MODES.join(', ')}.\n`,
+    );
+    return 2;
+  }
+  const mode = modeRaw as ImporterMode;
+  const limit = resolveListLimit(args, 200);
+  maybeRefresh(args, cwd);
+  const api = loadOrFail(cwd, wantJson);
+  if (!api) return 1;
+
+  const file = resolveModuleTarget(api, target);
+  if (!file) {
+    const behind = indexBehindHint(cwd);
+    const payload = { ok: false, error: 'not-found', target, ...(behind ? { hint: behind } : {}) };
+    if (wantJson) {
+      process.stdout.write(asJson(payload) + '\n');
+      return 1;
+    }
+    process.stderr.write(
+      `No module matched "${target}". Pass a repo-relative file path or a package specifier.${behind ? ' ' + behind : ''}\n`,
+    );
+    return 1;
+  }
+
+  const all = api.importerEdgesOf(file.id);
+  const selected = all.filter((e) => matchesImporterMode(e, mode));
+  // Targeted staleness over the target + the reported importers, same as
+  // `callers`: drop importers whose file is gone, flag those that changed.
+  const fresh = resultStaleness(api, cwd, [file.path, ...selected.map((e) => e.node.path)]);
+  const live = selected.filter((e) => !e.node.path || !fresh.deletedSet.has(e.node.path));
+
+  const counts = {
+    import: all.filter((e) => e.kind === 'import' && !e.typeOnly).length,
+    reexport: all.filter((e) => e.kind === 'reexport').length,
+    typeOnly: all.filter((e) => e.typeOnly).length,
+  };
+  const payload = {
+    schema: 'sharkcraft.graph-importers/v1',
+    module: nodeSummary(file),
+    mode,
+    total: live.length,
+    counts,
+    importers: live.slice(0, limit).map((e) => ({
+      ...nodeSummary(e.node),
+      edge: e.typeOnly ? 'type-only' : e.kind,
+    })),
+    ...(counts.reexport > 0
+      ? {
+          note:
+            `${counts.reexport} importer(s) RE-EXPORT this module — deleting or moving it changes a public surface. ` +
+            'Run with --mode reexport to isolate the bridge chain.',
+        }
+      : {}),
+    ...(fresh.field ?? {}),
+  };
+  if (wantJson) {
+    process.stdout.write(asJson(maybeColumnarize(payload, args)) + '\n');
+    return 0;
+  }
+  process.stdout.write(header(`Graph importers: ${file.path ?? file.id} (${mode})`));
+  process.stdout.write(kv('total', String(live.length)) + '\n');
+  process.stdout.write(
+    kv('by edge', `${counts.import} value · ${counts.typeOnly} type-only · ${counts.reexport} re-export`) + '\n',
+  );
+  if (payload.note) process.stdout.write(`  ⓘ ${payload.note}\n`);
+  for (const i of payload.importers.slice(0, Math.min(50, limit))) {
+    process.stdout.write(`  ${i.path ?? i.id}  [${i.edge}]\n`);
+  }
+  if (live.length > Math.min(50, limit)) {
+    process.stdout.write(`  … (${live.length - Math.min(50, limit)} more — pass --limit 0 for all)\n`);
+  }
+  if (fresh.field) {
+    process.stdout.write(
+      `\n  ⚠ ${fresh.modified.length} result file(s) changed, ${fresh.deleted.length} deleted since indexing — run \`shrk graph index --changed\`.\n`,
+    );
+  }
+  return 0;
+}
+
+/** The edge kinds `graph importers --mode` can isolate. */
+type ImporterMode = 'import' | 'reexport' | 'type-only' | 'all';
+
+const IMPORTER_MODES: readonly ImporterMode[] = ['import', 'reexport', 'type-only', 'all'];
+
+/**
+ * `--mode import` means a VALUE import specifically. A type-only edge is
+ * reported under `type-only` and nowhere else, so the three narrow modes
+ * partition the set and an author cannot double-count by summing them.
+ */
+function matchesImporterMode(edge: IImporterEdge, mode: ImporterMode): boolean {
+  if (mode === 'all') return true;
+  if (mode === 'type-only') return edge.typeOnly;
+  if (mode === 'reexport') return edge.kind === 'reexport';
+  return edge.kind === 'import' && !edge.typeOnly;
+}
+
+/**
+ * Resolve an importers target to a FILE node, from either a repo-relative path
+ * or a package specifier — both name the same node, and an author asking "who
+ * imports @scope/pkg" should not have to know its entry path first.
+ */
+function resolveModuleTarget(api: GraphQueryApi, target: string): INode | undefined {
+  const direct = api.findFile(target);
+  if (direct) return direct;
+  if (target.startsWith('file:')) return api.neighbours(target)?.node;
+  // A package or aliased specifier: whichever file the INDEXER resolved it to.
+  // Deriving the entry point here instead would be a second resolver that
+  // disagrees with the graph on exactly the aliased edges this query exists to
+  // surface.
+  const bySpecifier = api.fileForSpecifier(target);
+  if (bySpecifier) return bySpecifier;
+  // A path missing its extension, or a directory meaning its index.
+  for (const ext of ['.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.js']) {
+    const f = api.findFile(target + ext);
+    if (f) return f;
+  }
+  return undefined;
 }
 
 // ─── shrk graph callers ───────────────────────────────────────────────

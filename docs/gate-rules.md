@@ -186,6 +186,11 @@ change break a rule's selector*. Both scope to the diff, so they run on the
 inner loop rather than only in CI — which is the point: a stale glob is caught
 the moment you cause it, not the next morning.
 
+For the wider net before a push — these planes **plus** doctor, boundaries,
+coverage, drift, the context/agent tests and the pack doctor — run
+[`shrk quality`](quality-gates.md), which is exhaustive by default and prints
+the isolated repro command for every failure.
+
 `gates coverage` memoizes its tree reads for the duration of one call (N rules
 sharing a glob cost one walk — worth ~25% on a wide scan). The memo never
 outlives that call: a scan that answered "nothing drifted" from a stale read
@@ -251,6 +256,50 @@ one breaks:
 
 A negative fixture is what keeps an `exclude` honest: if the exclusion stops
 working, `expectNotIds` catches it.
+
+Every plane accepts `selfTest` — including `registries[]` and
+`registrationGraph[]`, which are inventories rather than gates. An inventory
+whose selector went stale is arguably worse than a failing gate: it reports an
+empty registry as *fact*, and nothing looks wrong.
+
+### `gates scaffold-selftest` — the fixture, written for you
+
+The contract above is the step that gets skipped — not from disagreement, but
+because authoring the fixture inline (which ids to pin, what floor to set) is a
+blank page at the exact moment you just want the rule to work. And a rule with
+no selfTest is invisible to the stale-glob detector, so the friction converts
+directly into missing coverage.
+
+```bash
+shrk gates scaffold-selftest <ruleId> [--margin N] [--write]
+```
+
+It runs the rule against the live tree and emits a ready-to-commit block:
+
+```
+  selfTest: {
+    expectMatchesAtLeast: 5,
+    expectIds: ['ALPHA_HANDLER', 'BETA_HANDLER', 'DELTA_HANDLER'],
+    expectNotIds: [],
+  },
+```
+
+- **The floor sits below the current count** (`--margin`, default 20%). Pinning
+  the exact number turns every legitimate addition into a failure, and a rule
+  that cries wolf on normal work gets its expectations deleted rather than
+  fixed. The assertion is "the selector still bites", not "the set never
+  changes".
+- **Anchors avoid names that were always going to churn** — `tmp*`, `*_test`,
+  hash-like and counter-suffixed ids rank last. Selection is deterministic, so
+  the same tree always scaffolds the same fixture.
+- **It refuses to scaffold from a rule matching nothing.** A selfTest built on
+  an empty set pins the broken state as correct — the very bug the fixture
+  exists to catch.
+- **It refuses to overwrite an existing selfTest**, and `--write` refuses when
+  the id appears twice or comes from a pack rather than the local config. A
+  write into the wrong rule silently re-points an assertion at a different set.
+
+This is the one `gates` subverb that can write, and only under `--write`.
 
 ## `gates explain` — the universal introspection
 

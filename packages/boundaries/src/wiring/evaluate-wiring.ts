@@ -174,9 +174,13 @@ export function collectSourceSites(
   source: IWiringSource,
   files: readonly IWiringFileEntry[],
   context: IExtractContext = {},
-): { sites: readonly IWiringTokenSite[]; error?: string } {
+): { sites: readonly IWiringTokenSite[]; error?: string; blankedChars?: number } {
   const res = extractTokens(source, files, context);
-  return res.error ? { sites: [], error: res.error } : { sites: res.sites };
+  if (res.error) return { sites: [], error: res.error };
+  return {
+    sites: res.sites,
+    ...(res.blankedChars !== undefined ? { blankedChars: res.blankedChars } : {}),
+  };
 }
 
 /** Group key for a token site under `groupBy` (dir = dirname; package = first two segments). */

@@ -1,3 +1,5 @@
+import type { ScanZone } from '../scan/scan-zone.ts';
+
 /**
  * Wiring rules — the "completeness plane".
  *
@@ -219,6 +221,26 @@ export interface IWiringSource {
   readonly to?: IImportEdgeTarget;
   /** What each `import-edges` id represents (default `edge`). */
   readonly emit?: ImportEdgeEmit;
+  /**
+   * Which lexical zone of each scanned file the extractor may read (default
+   * `all` — every byte, the pre-existing behaviour).
+   *
+   * Every content-reading extractor here is a text scanner, so by default it
+   * cannot tell a construct from a doc comment that DESCRIBES the construct, or
+   * a real id from the same word inside an unrelated string. Both directions
+   * bite: a rule reads red on a file that does not contain the thing (a comment
+   * matched), and a count-ceiling baseline reads green because prose padded the
+   * count. `scan: 'code'` blanks comments and string literals before extraction,
+   * so a pattern can finally say "only where this is real code".
+   *
+   * Implemented by BLANKING the excluded spans with equal-length whitespace, so
+   * every `file:line` an extractor reports is still the true location — and so
+   * every extractor kind, not just `regex-capture`, is zoned by the same code
+   * path. Not applicable to `json-path` (blanking strings would destroy the
+   * document) or `filenames` (there is no content to zone); setting it there is
+   * a configuration error rather than a silent no-op.
+   */
+  readonly scan?: ScanZone;
   /**
    * Sugar for `extract: 'array-members'` with this `anchor`. Captures the
    * identifier and quoted-string elements of every `<arrayProperty> = [ … ]`

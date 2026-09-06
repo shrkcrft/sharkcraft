@@ -23,10 +23,13 @@ import {
 import {
   baselineCount,
   baselineFails,
+  ceilingValue,
   computeBaselineFromExtractor,
   diffBaseline,
+  evaluateCeiling,
   matchesAny,
   type IBaselineDiff,
+  type ICeilingVerdict,
 } from '@shrkcrft/boundaries';
 import { resolveChangedFiles, resolveProjectConfig } from '@shrkcrft/inspector';
 import {
@@ -143,6 +146,8 @@ export interface IBaselineOutcome {
   readonly emptyCompute?: boolean;
   /** No committed artifact exists yet — `committed` is absent, not zero. */
   readonly missingBaseline?: boolean;
+  /** Set for a `mode: 'ceiling'` rule: the measured number against its limit. */
+  readonly ceiling?: ICeilingVerdict;
 }
 
 export function evaluateBaselineRule(
@@ -181,7 +186,40 @@ export function evaluateBaselineRule(
     }
   }
 
-  const abs = nodePath.resolve(cwd, rule.baseline);
+  // A ceiling rule pins a NUMBER declared in the config, so it has no committed
+  // artifact to read and no entry diff to compute — the comparison is the whole
+  // check. Branching here (rather than in a parallel engine) keeps `baseline
+  // check`, `gates check` and `quality` running the identical evaluation.
+  if (rule.mode === 'ceiling') {
+    const computed = computeCurrent(cwd, rule, excludeDirs);
+    if (computed.error) {
+      return { rule, status: 'error', committedCount: 0, currentCount: 0, error: computed.error };
+    }
+    const value = ceilingValue(rule, computed.text);
+    // A compute that produced nothing measured nothing. Reporting `0 ≤ 200` as
+    // a pass is how a broken extractor greens a ratchet forever.
+    if (value === 0 && computed.text.trim() === '') {
+      return {
+        rule,
+        status: failsWhenEmpty(rule) ? 'failed' : 'skipped',
+        current: computed.text,
+        committedCount: rule.ceiling ?? 0,
+        currentCount: 0,
+        skipReason: 'the compute produced nothing — a ceiling over an empty measurement proves nothing',
+      };
+    }
+    const verdict = evaluateCeiling(rule, value);
+    return {
+      rule,
+      status: verdict.failed ? 'failed' : 'passed',
+      current: computed.text,
+      committedCount: verdict.ceiling,
+      currentCount: verdict.value,
+      ceiling: verdict,
+    };
+  }
+
+  const abs = nodePath.resolve(cwd, rule.baseline!);
   if (!existsSync(abs)) {
     // No artifact yet. `check` must still fail (nothing to compare against),
     // but the CURRENT side is knowable and is exactly what the author needs to
@@ -265,6 +303,16 @@ export function evaluateBaselineRule(
   };
 }
 
+/**
+ * What this rule pins, for display. A ledger names its committed file; a
+ * ceiling names the number in the config, because that IS its committed value.
+ */
+function pinLabel(rule: IBaselineRule): string {
+  return rule.mode === 'ceiling'
+    ? `ceiling ${rule.ceiling ?? 0} (sharkcraft.config.ts)`
+    : (rule.baseline ?? '(no artifact)');
+}
+
 function hintFor(rule: IBaselineRule): string {
   return rule.hint ?? `review the diff, then bless it with \`shrk baseline update --id ${rule.id}\``;
 }
@@ -273,9 +321,11 @@ function outcomeJson(o: IBaselineOutcome): Record<string, unknown> {
   return {
     id: o.rule.id,
     ...(o.rule.description ? { description: o.rule.description } : {}),
-    baseline: o.rule.baseline,
+    ...(o.rule.baseline ? { baseline: o.rule.baseline } : {}),
+    mode: o.rule.mode ?? 'ledger',
     severity: o.rule.severity ?? 'error',
-    direction: o.rule.direction ?? 'two-way',
+    direction: o.rule.direction ?? (o.rule.mode === 'ceiling' ? 'at-most' : 'two-way'),
+    ...(o.ceiling ? { ceiling: o.ceiling } : {}),
     status: o.status,
     committedCount: o.committedCount,
     currentCount: o.currentCount,
@@ -462,7 +512,11 @@ export const baselineCheckCommand: ICommandHandler = {
     process.stdout.write(kv('evaluated', `${evaluated} of ${prep.rules.length}`) + '\n');
     for (const o of outcomes) {
       if (o.status === 'passed') {
-        process.stdout.write(`  ✓ ${o.rule.id}  (${o.currentCount} entries, no drift)\n`);
+        process.stdout.write(
+          o.ceiling
+            ? `  ✓ ${o.rule.id}  (${o.ceiling.value} ${o.ceiling.direction} ${o.ceiling.ceiling} — ${o.ceiling.slack} to spare)\n`
+            : `  ✓ ${o.rule.id}  (${o.currentCount} entries, no drift)\n`,
+        );
         continue;
       }
       if (o.status === 'skipped') {
@@ -477,6 +531,15 @@ export const baselineCheckCommand: ICommandHandler = {
               `run \`shrk baseline update --id ${o.rule.id}\` to bless them.\n`,
           );
         }
+        continue;
+      }
+      if (o.ceiling) {
+        const over = -o.ceiling.slack;
+        process.stdout.write(
+          `  ✗ ${o.rule.id}  OVER CEILING — ${o.ceiling.value} is ${over} ` +
+            `${o.ceiling.direction === 'at-most' ? 'above' : 'below'} the limit of ${o.ceiling.ceiling}\n` +
+            `      lower the measurement, or raise the ceiling deliberately: \`shrk baseline update --id ${o.rule.id}\`\n`,
+        );
         continue;
       }
       const added = o.diff?.added.length ?? 0;
@@ -499,7 +562,11 @@ export const baselineCheckCommand: ICommandHandler = {
         '\nNothing was compared — this is NOT a pass. Every selected baseline was skipped.\n',
       );
     } else if (exit === ExitCode.VerifiedPass) {
-      process.stdout.write('\nEvery baseline matches its committed artifact. ✓\n');
+      process.stdout.write(
+        outcomes.some((o) => o.ceiling)
+          ? '\nEvery baseline is within its pinned value. ✓\n'
+          : '\nEvery baseline matches its committed artifact. ✓\n',
+      );
     }
     return exit;
   },
@@ -529,7 +596,13 @@ export const baselineDiffCommand: ICommandHandler = {
       const added = o.diff?.added.length ?? 0;
       const removed = o.diff?.removed.length ?? 0;
       process.stdout.write(
-        `\n${o.rule.id}  (${o.rule.baseline})  ${o.status === 'error' ? `! ${o.error}` : `+${added} / -${removed}`}\n`,
+        `\n${o.rule.id}  (${pinLabel(o.rule)})  ` +
+          (o.status === 'error'
+            ? `! ${o.error}`
+            : o.ceiling
+              ? `${o.ceiling.value} vs ${o.ceiling.direction} ${o.ceiling.ceiling} (slack ${o.ceiling.slack})`
+              : `+${added} / -${removed}`) +
+          '\n',
       );
       writeDiff(o, 100);
     }
@@ -552,10 +625,26 @@ export const baselineUpdateCommand: ICommandHandler = {
 
     const written: { id: string; path: string; bytes: number; changed: boolean }[] = [];
     const errors: { id: string; error: string }[] = [];
+    // A ceiling's pinned value lives in `sharkcraft.config.ts`, so blessing it
+    // is a config edit, not a file write. `update` prints the exact one-line
+    // change instead of touching the config — the same explicit, reviewable
+    // bless, without this command growing the ability to rewrite the rules it
+    // is enforcing.
+    const reblessed: { id: string; from: number; to: number; edit: string }[] = [];
     for (const rule of prep.rules) {
       const computed = computeCurrent(prep.cwd, rule, prep.excludeDirs);
       if (computed.error) {
         errors.push({ id: rule.id, error: computed.error });
+        continue;
+      }
+      if (rule.mode === 'ceiling') {
+        const value = ceilingValue(rule, computed.text);
+        reblessed.push({
+          id: rule.id,
+          from: rule.ceiling ?? 0,
+          to: value,
+          edit: `ceiling: ${value},   // was ${rule.ceiling ?? 0}`,
+        });
         continue;
       }
       if (computed.text.trim() === '' && failsWhenEmpty(rule)) {
@@ -565,19 +654,19 @@ export const baselineUpdateCommand: ICommandHandler = {
         });
         continue;
       }
-      const abs = nodePath.resolve(prep.cwd, rule.baseline);
+      const abs = nodePath.resolve(prep.cwd, rule.baseline!);
       const previous = existsSync(abs) ? readFileSync(abs, 'utf8') : undefined;
       const changed = previous !== computed.text;
       if (!dryRun && changed) {
         mkdirSync(nodePath.dirname(abs), { recursive: true });
         writeFileSync(abs, computed.text, 'utf8');
       }
-      written.push({ id: rule.id, path: rule.baseline, bytes: computed.text.length, changed });
+      written.push({ id: rule.id, path: rule.baseline!, bytes: computed.text.length, changed });
     }
 
     if (json) {
       process.stdout.write(
-        asJson({ schema: SCHEMA, dryRun, written, errors }) + '\n',
+        asJson({ schema: SCHEMA, dryRun, written, reblessed, errors }) + '\n',
       );
       return errors.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass;
     }
@@ -587,7 +676,17 @@ export const baselineUpdateCommand: ICommandHandler = {
         `  ${w.changed ? (dryRun ? 'would write' : 'wrote') : 'unchanged '} ${w.path}  (${w.bytes} bytes)\n`,
       );
     }
+    for (const r of reblessed) {
+      const verb = r.from === r.to ? 'unchanged ' : 'edit config';
+      process.stdout.write(`  ${verb} ${r.id}  (ceiling ${r.from} → ${r.to})\n`);
+      if (r.from !== r.to) process.stdout.write(`             ${r.edit}\n`);
+    }
     for (const e of errors) process.stdout.write(`  ! ${e.id}: ${e.error}\n`);
+    if (reblessed.some((r) => r.from !== r.to)) {
+      process.stdout.write(
+        '\nA ceiling lives in sharkcraft.config.ts — apply the line above by hand so raising it stays a reviewed diff.\n',
+      );
+    }
     if (written.some((w) => w.changed) && !dryRun) {
       process.stdout.write('\nReview the diff before committing — this is the bless step.\n');
     }
@@ -630,7 +729,7 @@ export const baselineExplainCommand: ICommandHandler = {
     }
     process.stdout.write(header(`Baseline: ${rule.id}`));
     if (rule.description) process.stdout.write(`  ${rule.description}\n`);
-    process.stdout.write(kv('committed', rule.baseline) + '\n');
+    process.stdout.write(kv('committed', pinLabel(rule)) + '\n');
     process.stdout.write(
       kv(
         'compute',
@@ -640,15 +739,20 @@ export const baselineExplainCommand: ICommandHandler = {
             (rule.compute.source?.$use ? `  (via $use:${rule.compute.source.$use})` : ''),
       ) + '\n',
     );
-    process.stdout.write(kv('direction', rule.direction ?? 'two-way') + '\n');
+    process.stdout.write(
+      kv('direction', rule.direction ?? (rule.mode === 'ceiling' ? 'at-most' : 'two-way')) + '\n',
+    );
     process.stdout.write(kv('canonical', outcome.diff?.canonical ?? rule.compute.canonical ?? 'auto') + '\n');
     if (rule.keyBy) process.stdout.write(kv('keyBy', rule.keyBy) + '\n');
     process.stdout.write(
       kv(
-        'entries',
-        outcome.missingBaseline
-          ? `committed (none yet) → ${outcome.currentCount} now`
-          : `${outcome.committedCount} committed → ${outcome.currentCount} now`,
+        outcome.ceiling ? 'measured' : 'entries',
+        outcome.ceiling
+          ? `${outcome.ceiling.value} ${outcome.ceiling.direction} ${outcome.ceiling.ceiling}` +
+            `  (${outcome.ceiling.slack >= 0 ? `${outcome.ceiling.slack} to spare` : `${-outcome.ceiling.slack} over`})`
+          : outcome.missingBaseline
+            ? `committed (none yet) → ${outcome.currentCount} now`
+            : `${outcome.committedCount} committed → ${outcome.currentCount} now`,
       ) + '\n',
     );
     process.stdout.write(kv('status', outcome.status) + '\n');

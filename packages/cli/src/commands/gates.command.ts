@@ -14,7 +14,7 @@
  * Distinct from `shrk gate` (singular), which RUNS the quality-gate pipeline.
  * This verb inspects the data-defined RULES themselves.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type {
   IPolicyRule,
@@ -61,6 +61,7 @@ import {
   type IGateRuleView,
 } from '../gates/gate-rule-view.ts';
 import { buildGateCoverage } from '../gates/rule-coverage.ts';
+import { insertSelfTest, scaffoldSelfTest } from '../gates/scaffold-selftest.ts';
 import { buildGateEnvelope } from '../gates/gate-envelope.ts';
 import { ruleTouchedBy } from '../gates/gate-rule-globs.ts';
 import { runGatePlanes } from '../gates/run-gate-planes.ts';
@@ -72,16 +73,18 @@ import { renderWiringExplain } from './wiring.command.ts';
 
 const SCHEMA = 'sharkcraft.gates/v1';
 
-interface IPrepared {
+export interface IPrepared {
   readonly cwd: string;
   readonly rules: readonly IGateRuleView[];
   readonly excludeDirs: string[];
   readonly planeDiagnostics: readonly string[];
   /** The config's named `extractors`, for the shared-extractor coverage view. */
   readonly extractors: Readonly<Record<string, IWiringSource>>;
+  /** Absolute path of the loaded config file, or null when none exists. */
+  readonly configFile: string | null;
 }
 
-async function prepare(
+export async function prepare(
   args: ParsedArgs,
 ): Promise<{ ok: true; value: IPrepared } | { ok: false; code: number }> {
   const cwd = resolveCwd(args);
@@ -106,6 +109,7 @@ async function prepare(
       excludeDirs: rel && !rel.startsWith('..') ? [rel] : [],
       planeDiagnostics: loaded.value.planeDiagnostics,
       extractors: loaded.value.config.extractors ?? {},
+      configFile: loaded.value.configFile,
     },
   };
 }
@@ -150,7 +154,7 @@ function writeNoRules(json: boolean): number {
  * silently degrade to an empty diff, which would narrow every rule out of
  * scope and produce a green run that checked nothing.
  */
-function resolveScope(
+export function resolveScope(
   args: ParsedArgs,
   cwd: string,
 ): { files?: readonly string[]; error?: string } {
@@ -178,7 +182,7 @@ function resolveScope(
  * must never print the same headline as a full one — "0 violations across 2 of
  * 9 rules" and "0 violations across 9 of 9" are different facts.
  */
-function narrowToScope(
+export function narrowToScope(
   rules: readonly IGateRuleView[],
   files: readonly string[] | undefined,
 ): { selected: readonly IGateRuleView[]; skippedByScope: number } {
@@ -190,6 +194,8 @@ function narrowToScope(
 /** Flags every `gates` verb accepts; anything else is a typo, not an opt-in. */
 const GATES_FLAGS: ReadonlySet<string> = new Set([
   'json',
+  'margin',
+  'write',
   'strict',
   'plane',
   'only',
@@ -1136,11 +1142,127 @@ export async function tryExplainGateRule(
   return gatesExplainCommand.run(forwarded);
 }
 
+export const gatesScaffoldSelfTestCommand: ICommandHandler = {
+  name: 'scaffold-selftest',
+  description:
+    "Generate a rule's `selfTest` from what it matches TODAY — the fixture the trust layer asks for, turned from a blank page into three lines to review. `--write` inserts it into sharkcraft.config.ts in place.",
+  usage: 'shrk gates scaffold-selftest <ruleId> [--margin N] [--write] [--json]',
+  booleanFlags: new Set(['json', 'write']),
+  async run(args: ParsedArgs): Promise<number> {
+    const ruleId = args.positional[0];
+    if (!ruleId) {
+      process.stderr.write('Usage: shrk gates scaffold-selftest <ruleId> [--margin N] [--write] [--json]\n');
+      return ExitCode.UsageError;
+    }
+    const prep = await prepare(args);
+    if (!prep.ok) return prep.code;
+    const json = flagBool(args, 'json');
+    const write = flagBool(args, 'write');
+    const marginRaw = flagString(args, 'margin');
+    const margin = marginRaw === undefined ? 20 : Number.parseInt(marginRaw, 10);
+    if (!Number.isFinite(margin) || margin < 0 || margin >= 100) {
+      process.stderr.write(`--margin must be a percentage in [0, 100), got "${marginRaw}".\n`);
+      return ExitCode.UsageError;
+    }
+
+    const view = prep.value.rules.find((r) => r.id === ruleId);
+    if (!view) {
+      process.stderr.write(
+        `No gate rule with id "${ruleId}". Run \`shrk gates list\` to see every declared rule.\n`,
+      );
+      return ExitCode.UsageError;
+    }
+    if (view.selfTest) {
+      process.stderr.write(
+        `Rule "${ruleId}" already declares a selfTest — refusing to overwrite an author's fixture. ` +
+          'Delete it first if you mean to re-scaffold.\n',
+      );
+      return ExitCode.UsageError;
+    }
+
+    const report = buildGateCoverage(
+      prep.value.cwd,
+      [view],
+      prep.value.excludeDirs,
+      prep.value.extractors,
+      true,
+      await inspectionIfNeeded(prep.value.cwd, [view]),
+    );
+    const cov = report.rules[0]!;
+    // Scaffolding from a rule that matches nothing would produce a selfTest
+    // asserting the broken state — pinning the very bug the fixture exists to
+    // catch. Fix the selector first.
+    if (cov.status === 'error' || cov.unitsMatched === 0) {
+      const why = cov.error ?? 'the rule currently matches nothing';
+      if (json) {
+        process.stdout.write(asJson({ schema: SCHEMA, ruleId, error: why }) + '\n');
+      } else {
+        process.stderr.write(
+          `Cannot scaffold from "${ruleId}": ${why}.\n` +
+            `  A selfTest built on an empty match set would pin the broken state as correct.\n` +
+            `  Fix the selector first — \`shrk gates explain ${ruleId}\` shows what it resolved.\n`,
+        );
+      }
+      return ExitCode.NotVerified;
+    }
+
+    const scaffold = scaffoldSelfTest(cov, margin);
+
+    let written: string | undefined;
+    let writeError: string | undefined;
+    if (write) {
+      const configFile = prep.value.configFile;
+      if (!configFile || !existsSync(configFile)) {
+        writeError = 'no local sharkcraft.config.ts to write to';
+      } else {
+        const res = insertSelfTest(readFileSync(configFile, 'utf8'), ruleId, scaffold.snippet);
+        if (!res.ok) writeError = res.error;
+        else {
+          writeFileSync(configFile, res.text!, 'utf8');
+          written = configFile;
+        }
+      }
+    }
+
+    if (json) {
+      process.stdout.write(
+        asJson({
+          schema: SCHEMA,
+          ...scaffold,
+          ...(written ? { written } : {}),
+          ...(writeError ? { writeError } : {}),
+        }) + '\n',
+      );
+      return writeError ? ExitCode.Failure : ExitCode.VerifiedPass;
+    }
+
+    process.stdout.write(header(`Scaffolded selfTest — [${scaffold.plane}] ${ruleId}`));
+    process.stdout.write(
+      kv('matches now', `${scaffold.currentCount} ${cov.unitLabel}`) + '\n',
+    );
+    process.stdout.write(
+      kv('floor', `${scaffold.expectMatchesAtLeast}  (${scaffold.marginPercent}% margin below the current count)`) + '\n',
+    );
+    process.stdout.write('\n');
+    for (const line of scaffold.snippet.split('\n')) process.stdout.write(`  ${line}\n`);
+    if (written) {
+      process.stdout.write(`\n  wrote ${nodePath.relative(prep.value.cwd, written)} — review the diff before committing.\n`);
+    } else if (writeError) {
+      process.stdout.write(`\n  ! --write refused: ${writeError}\n`);
+      process.stdout.write('  Paste the block above into the rule by hand.\n');
+    } else {
+      process.stdout.write('\n  Paste this into the rule, or re-run with --write to insert it.\n');
+    }
+    return writeError ? ExitCode.Failure : ExitCode.VerifiedPass;
+  },
+};
+
 export const gatesCommand: ICommandHandler = {
   name: 'gates',
   description:
-    'Rule-authoring trust layer: run every plane\'s violation check in one pass (`check`), list every data-defined rule, show what each one MATCHED (`coverage` — the stale-selector detector), explain any one of them, and dry-run a candidate rule before adding it (`try`). Never writes config. Not `shrk gate`, singular, which runs the quality-gate pipeline.',
-  usage: 'shrk gates check | coverage | list | explain <id> | try --rule-file <f>',
+    'Rule-authoring trust layer: run every plane\'s violation check in one pass (`check`), list every data-defined rule, show what each one MATCHED (`coverage` — the stale-selector detector), explain any one of them, dry-run a candidate rule before adding it (`try`), and scaffold its selfTest (`scaffold-selftest`). Only `scaffold-selftest --write` ever touches config. Not `shrk gate`, singular, which runs the quality-gate pipeline.',
+  usage:
+    'shrk gates check | coverage | list | explain <id> | try --rule-file <f> | scaffold-selftest <id>',
   booleanFlags: new Set(['json', 'strict', 'changed-only', 'no-spawn']),
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
@@ -1155,6 +1277,8 @@ export const gatesCommand: ICommandHandler = {
         '  explain   <id>                  the concrete inputs one rule resolved\n' +
         "  try       --rule-file <f> | --wiring 'declared=<g>:<p> registered=<g>:<p>'\n" +
         '            dry-run a candidate rule WITHOUT touching config\n' +
+        '  scaffold-selftest <id> [--margin N] [--write]\n' +
+        "            generate the rule's selfTest from what it matches today\n" +
         '(`shrk gate`, singular, runs the quality-gate pipeline — a different verb.)\n',
     );
     return ExitCode.UsageError;

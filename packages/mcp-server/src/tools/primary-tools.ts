@@ -62,6 +62,7 @@ export const PRIMARY_MCP_TOOLS: ReadonlySet<string> = new Set([
   // existing code: who calls X, where is X used (path:line), what breaks if I
   // change X, is X wired. Verifiable file:line truth from the indexed graph.
   'get_graph_callers',
+  'get_graph_importers',
   'code_find_usages',
   'get_graph_impact',
   'get_graph_path',

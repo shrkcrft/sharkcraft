@@ -104,9 +104,12 @@ export function collectGateRules(planes: IGatePlanes): IGateRuleView[] {
       plane: 'registry',
       ...(r.description ? { description: r.description } : {}),
       // A registry is an inventory, not a gate — it never fails a build on its
-      // own, so it carries no severity of its own.
+      // own, so it carries no severity of its own. A `selfTest` still applies:
+      // an inventory whose selector went stale reports an empty registry as
+      // fact, which is worse than a failing gate because nothing looks wrong.
       severity: 'warning',
       failOnEmpty: false,
+      ...(r.selfTest ? { selfTest: r.selfTest } : {}),
       raw: r,
     });
   }
@@ -117,6 +120,7 @@ export function collectGateRules(planes: IGatePlanes): IGateRuleView[] {
       ...(r.description ? { description: r.description } : {}),
       severity: 'warning',
       failOnEmpty: false,
+      ...(r.selfTest ? { selfTest: r.selfTest } : {}),
       raw: r,
     });
   }
@@ -155,4 +159,18 @@ export function collectGateRules(planes: IGatePlanes): IGateRuleView[] {
     });
   }
   return out;
+}
+
+/**
+ * The "` · scan: code (N chars blanked)`" suffix for an explain line.
+ *
+ * A zone is the one setting that legitimately makes a rule match LESS while
+ * still reading green, so every surface that reports what a rule extracted also
+ * reports what the zone removed to get there. Empty string when the rule scans
+ * raw text, so an unzoned rule's output is byte-identical to before.
+ */
+export function scanNote(zone?: string, blankedChars?: number): string {
+  if (!zone || zone === 'all') return '';
+  const n = blankedChars ?? 0;
+  return `  · scan: ${zone} (${n} char${n === 1 ? '' : 's'} blanked)`;
 }

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   EXTRACTOR_KINDS,
+  SCAN_ZONES,
   validateWiringSource,
   type IWiringSource,
 } from '@shrkcrft/core';
@@ -106,6 +107,13 @@ const RuleSelfTestSchema = z
   .strict();
 
 /**
+ * The lexical `scan` zone, spelled from the shared `SCAN_ZONES` list rather
+ * than re-typed per plane. Two hand-written enums are how the policy plane and
+ * the extraction DSL would end up accepting different zone names.
+ */
+const ScanZoneSchema = z.enum(SCAN_ZONES as unknown as [string, ...string[]]);
+
+/**
  * One side (declared / registered) of a wiring rule — the extraction DSL.
  *
  * The structural rules (exactly one extraction mode, per-kind required fields,
@@ -147,6 +155,7 @@ const WiringSourceSchema = z
     excludeFlags: z.string().optional(),
     pattern: z.string().optional(),
     flags: z.string().optional(),
+    scan: ScanZoneSchema.optional(),
     arrayProperty: z.string().optional(),
   })
   .strict()
@@ -305,6 +314,7 @@ export const RegistryDeclarationSchema = z
     consumer: WiringSourceSchema.optional(),
     // Human-noun → canonical-id synonym map for `exists <id> --resolve`.
     aliases: z.record(z.string(), z.string()).optional(),
+    selfTest: RuleSelfTestSchema.optional(),
   })
   .strict();
 
@@ -320,6 +330,7 @@ export const RegistrationIdiomSchema = z
     declared: WiringSourceSchema,
     provided: WiringSourceSchema,
     consumed: WiringSourceSchema,
+    selfTest: RuleSelfTestSchema.optional(),
   })
   .strict();
 
@@ -332,7 +343,7 @@ export const PolicyRuleSchema = z
     files: z.array(z.string()).optional(),
     pattern: z.string(),
     flags: z.string().optional(),
-    scan: z.enum(['all', 'code', 'strings', 'comments']).optional(),
+    scan: ScanZoneSchema.optional(),
     exemptFiles: z.array(z.string()).optional(),
     exemptLines: z.string().optional(),
     failOnEmpty: z.boolean().optional(),
@@ -364,7 +375,9 @@ export const BaselineRuleSchema = z
   .object({
     id: z.string(),
     description: z.string().optional(),
-    baseline: z.string(),
+    baseline: z.string().optional(),
+    mode: z.enum(['ledger', 'ceiling']).optional(),
+    ceiling: z.number().optional(),
     compute: z
       .object({
         kind: z.enum(['command', 'extractor']),
@@ -409,7 +422,9 @@ export const BaselineRuleSchema = z
           });
         }
       }),
-    direction: z.enum(['two-way', 'additions-only', 'no-shrink']).optional(),
+    direction: z
+      .enum(['two-way', 'additions-only', 'no-shrink', 'at-most', 'at-least'])
+      .optional(),
     keyBy: z.string().optional(),
     watchFiles: z.array(z.string()).optional(),
     failOnEmpty: z.boolean().optional(),
@@ -420,6 +435,65 @@ export const BaselineRuleSchema = z
   })
   .strict()
   .superRefine((rule, ctx) => {
+    // The two modes take DISJOINT vocabularies. Accepting a ledger `direction`
+    // on a ceiling rule (or vice versa) would silently fall back to that mode's
+    // default and check something the author never asked for — the shape of
+    // every silent-green this plane exists to prevent.
+    const isCeiling = rule.mode === 'ceiling';
+    const NUMERIC = ['at-most', 'at-least'];
+    if (isCeiling) {
+      if (rule.ceiling === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['ceiling'],
+          message: 'a `ceiling` baseline must declare its `ceiling` limit',
+        });
+      }
+      if (rule.baseline !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['baseline'],
+          message:
+            'a `ceiling` baseline has no committed artifact — its pinned value IS `ceiling`, so a second place to look would be a second authority',
+        });
+      }
+      if (rule.direction !== undefined && !NUMERIC.includes(rule.direction)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['direction'],
+          message: `\`direction: "${rule.direction}"\` is a LEDGER direction — a ceiling takes "at-most" or "at-least"`,
+        });
+      }
+      if (rule.keyBy !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['keyBy'],
+          message: '`keyBy` compares entries by key — a ceiling compares one number',
+        });
+      }
+    } else {
+      if (rule.baseline === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['baseline'],
+          message: 'a ledger baseline must name its committed `baseline` artifact',
+        });
+      }
+      if (rule.ceiling !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['ceiling'],
+          message: '`ceiling` requires `mode: "ceiling"`',
+        });
+      }
+      if (rule.direction !== undefined && NUMERIC.includes(rule.direction)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['direction'],
+          message: `\`direction: "${rule.direction}"\` is a CEILING direction — a ledger takes "two-way", "additions-only" or "no-shrink"`,
+        });
+      }
+    }
     if (rule.expectEmpty === true && rule.failOnEmpty === true) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

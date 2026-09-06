@@ -1,15 +1,53 @@
 # Quality gates
 
-`shrk quality` is the one-command local gate before opening a PR. It
-orchestrates the existing SharkCraft checks and aggregates them into a
-single pass / warn / fail verdict.
+`shrk quality` is **the "before you push" command**: it runs every configured
+gate — the inspector bundle *and* all seven [data-defined rule
+planes](gate-rules.md) — to completion, and reports **every** failure with the
+command that reproduces it in isolation.
 
 ```bash
-shrk quality                    # text output
-shrk quality --strict           # warnings become blockers
-shrk quality --ci               # JSON output for CI
-shrk quality --json
+shrk quality                    # exhaustive: every gate, every failure
+shrk quality --changed-only     # scope the planes to the working diff
+shrk quality --fail-fast        # stop at the first blocking failure (CI-like)
+shrk quality --strict           # advisory failures become blockers
+shrk quality --json             # the machine-readable run
 ```
+
+## Why exhaustive is the default
+
+A CI job that chains gates as separate steps stops at the **first** failing
+step. When a tree has accumulated debt across several independent gates — the
+classic case being a first-ever CI run on a long-lived branch — each failure
+hides the next: fix gate A → push → wait → gate B appears → fix → push → wait →
+gate C appears. Three already-present failures, discovered as three sequential
+round-trips.
+
+One local `quality` run surfaces all three. That only pays off if each failure
+is immediately actionable, so every failing row carries its own repro line:
+
+```
+  FAIL   Coverage report
+         ↳ hint-coverage at 47%
+         $ shrk coverage
+  FAIL   [baseline] transition-ceiling
+         ↳ transition-ceiling — 3 is 1 above the limit of 2
+         $ shrk gates explain transition-ceiling
+```
+
+`--fail-fast` opts into the opposite behaviour, and says so in the output rather
+than letting the un-run gates look clean.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | every gate ran and passed |
+| `1` | a blocking gate failed |
+| `2` | nothing failed, but not everything was **measured** — a gate errored, or a rule's selector matched nothing. An unmeasured verdict is never a pass. |
+
+A skip you **asked for** (`--changed-only` scope, `--fail-fast`) never forces
+`2`; a skip nobody asked for always does. The global `--strict` promotes `2`
+into `1` for a hard CI gate.
 
 ## Gates
 
@@ -23,6 +61,10 @@ shrk quality --json
 | context-tests  | `loadContextTests` + `runContextTest` | only with `--strict` or config |
 | agent-tests    | `loadAgentContractTests`              | only with `--strict` or config |
 | packs          | `buildPackDoctorReport`               | only with `--strict` or config |
+| every declared rule | the seven planes via `gates check` | per the rule's own `severity` |
+
+The rule planes run through the **same** evaluator `shrk gates check` uses, so
+the aggregate wired into pre-push can never disagree with the per-plane verb.
 
 ## Configuration
 
@@ -102,23 +144,56 @@ hint so the human can run the full thing locally.
     path: quality.json
 ```
 
-A non-zero exit means at least one **blocking** gate failed. Warnings
-return zero unless `--strict` is set.
-
 ## Output shape
 
-`quality --json` returns:
+`quality --json` (and `--ci`) returns the run, not a per-gate score:
 
 ```jsonc
 {
-  "overall": "pass | warn | fail",
-  "blockers": 0,
-  "warnings": 1,
-  "score": 88,
-  "gates": [
-    { "id": "doctor",     "label": "Project doctor",   "passed": true,  "blocking": true,  "notes": [] },
-    { "id": "boundaries", "label": "Boundary check",   "passed": false, "blocking": false, "notes": [...] }
+  "schema": "sharkcraft.quality-run/v1",
+  "passed": 12,
+  "failed": 0,             // BLOCKING failures
+  "failedWarnings": 2,     // advisory failures — `--strict` promotes these
+  "skipped": 0,
+  "errored": 0,            // gates that could not run: never counted as green
+  "evaluated": 14,
+  "verdict": "pass | fail | not-verified",
+  "scopedFiles": 24,       // present only under --changed-only
+  "failFast": false,
+  "exitCode": 0,
+  "items": [
+    {
+      "id": "coverage",
+      "label": "Coverage report",
+      "status": "passed | failed | skipped | error",
+      "severity": "error | warning",
+      "notes": ["hint-coverage at 47%"],
+      "repro": "shrk coverage",
+      "data": { "gaps": 1, "overall": 82 }
+    },
+    {
+      "id": "baseline:transition-ceiling",
+      "label": "[baseline] transition-ceiling",
+      "status": "failed",
+      "severity": "error",
+      "notes": ["..."],
+      "repro": "shrk gates explain transition-ceiling"
+    }
   ],
-  "nextRecommendations": ["Run `shrk check boundaries` to inspect cross-layer imports."]
+  "diagnostics": []
 }
 ```
+
+`failed` and `failedWarnings` are reported separately on purpose: a summary
+reading "0 failed" above a list containing FAIL rows is the kind of
+self-contradiction that teaches people to stop trusting the summary.
+
+A `skipped` item carries `skippedDeliberately: true` when the skip was
+**requested** (scope narrowing, `--fail-fast`). Only an *accidental* skip pushes
+the verdict to `not-verified`.
+
+Each gate's structured payload — drift counts, boundary totals, a rule's
+declared/registered sizes — rides on the item as `data`, rather than as
+one-off top-level keys. A bundle that grows a `drift` key for the drift gate
+cannot keep doing that as gates are added, and consumers would then have to know
+which gates got a field and which did not.

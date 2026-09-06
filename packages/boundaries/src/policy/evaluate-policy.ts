@@ -1,5 +1,5 @@
 import { failsWhenEmpty, type IPolicyRule, type PolicyScanZone, type PolicySurface } from '@shrkcrft/core';
-import { lexCodeZones, zoneAt } from '../extract/code-zones.ts';
+import { lexCodeZones, zoneKeepsAt } from '../extract/code-zones.ts';
 import { safeCompile } from '../util/safe-regex.ts';
 
 export const POLICY_LINT_SCHEMA = 'sharkcraft.policy-lint/v1' as const;
@@ -116,9 +116,12 @@ function markerNear(lines: readonly string[], line: number, marker: string): boo
 }
 
 /**
- * Whether the zone rule keeps a match at `index`. `all` keeps everything; the
- * narrower zones require the match to START in the named zone. Not applied to
- * inline-template units (their content is already a string body).
+ * Whether the zone rule keeps a match at `index`.
+ *
+ * Delegates the zone semantics to {@link zoneKeepsAt} — the one authority the
+ * extraction DSL also reads — and adds only the policy-specific exemption:
+ * inline-template units are NOT zoned, because their content is already a
+ * string body lifted out of a source file.
  */
 function zoneKeeps(
   zone: PolicyScanZone,
@@ -127,10 +130,7 @@ function zoneKeeps(
   index: number,
 ): boolean {
   if (zone === 'all' || unit.inlineTemplate || zones === undefined) return true;
-  const kind = zoneAt(zones, index);
-  if (zone === 'code') return kind === 'code';
-  if (zone === 'strings') return kind === 'string';
-  return kind === 'comment';
+  return zoneKeepsAt(zone, zones, index);
 }
 
 /**

@@ -85,6 +85,24 @@ export interface IGraphPath {
 }
 
 /** A load-bearing node and how many distinct files depend on it. */
+/**
+ * How one file reaches an imported module.
+ *
+ * Kept as a tagged edge rather than a flat node list because the three kinds
+ * answer different questions about a doomed module: a plain value import breaks
+ * loudly at runtime, a type-only import breaks only the build (and is invisible
+ * to any call-site query), and a re-export means the module is still surfaced
+ * publicly somewhere else — the one answer that makes a deletion unsafe.
+ */
+export interface IImporterEdge {
+  /** The importing FILE node. */
+  readonly node: INode;
+  /** `reexport` wins over `import` when a file does both. */
+  readonly kind: 'import' | 'reexport';
+  /** The whole import was `import type` — erased at emit time. */
+  readonly typeOnly: boolean;
+}
+
 export interface IGraphHub {
   node: INode;
   /** Distinct dependents: referencing files for a symbol, importers for a file. */
@@ -286,6 +304,102 @@ export class GraphQueryApi {
       if (out.length >= limit * 2) break;
     }
     return filterByPackage(out, opts.package).slice(0, limit);
+  }
+
+  /**
+   * Files with an import edge into `nodeId`, each tagged by EDGE KIND.
+   *
+   * `importersOf` answers "who imports this" with a bare node list, which is
+   * enough for a blast radius but not for the question a module RELOCATION
+   * asks: is this module safe to move, or does something surface it publicly?
+   * A re-export is the decisive case — it keeps the module reachable under
+   * another path — and a type-only import is the case a symbol-level `callers`
+   * query cannot see at all, because it produces no call site.
+   *
+   * De-duped per importing file, most-specific kind winning: a file that both
+   * imports and re-exports the target is reported once, as a re-export.
+   */
+  importerEdgesOf(nodeId: string): readonly IImporterEdge[] {
+    // Match on the SPECIFIER, not on the re-exported symbol.
+    //
+    // A resolved `ReExportsSymbol` edge points at the symbol it surfaces, so
+    // keying off the target's symbols finds named re-exports and silently
+    // misses `export * from './x'` — a barrel, i.e. the single most common way
+    // a module stays publicly reachable, and therefore the one case a deletion
+    // check must not miss. Both edge kinds carry the raw import `specifier`, and
+    // an importer re-exports the target exactly when one of its own re-export
+    // specifiers is the one that resolved to the target file.
+    const byFile = new Map<string, IImporterEdge>();
+    for (const e of this.inByTo.get(nodeId) ?? []) {
+      if (e.kind !== EdgeKind.ImportsFile) continue;
+      const node = this.snap.nodes.get(e.from);
+      if (!node) continue;
+      const specifier = e.data?.['specifier'];
+      const reExports =
+        typeof specifier === 'string' && this.reExportsSpecifier(e.from, specifier);
+      byFile.set(e.from, {
+        node,
+        kind: reExports ? 'reexport' : 'import',
+        typeOnly: e.data?.['typeOnly'] === true,
+      });
+    }
+    // A re-export whose file edge was deduped away still surfaces the module.
+    for (const symbol of this.symbolsIn(nodeId)) {
+      for (const e of this.inByTo.get(symbol.id) ?? []) {
+        if (e.kind !== EdgeKind.ReExportsSymbol) continue;
+        const existing = byFile.get(e.from);
+        if (existing) {
+          if (existing.kind !== 'reexport') byFile.set(e.from, { ...existing, kind: 'reexport' });
+          continue;
+        }
+        const node = this.snap.nodes.get(e.from);
+        if (node) byFile.set(e.from, { node, kind: 'reexport', typeOnly: false });
+      }
+    }
+    return [...byFile.values()].sort((a, b) =>
+      (a.node.path ?? a.node.id).localeCompare(b.node.path ?? b.node.id),
+    );
+  }
+
+  /**
+   * The file a bare module SPECIFIER resolves to, as the indexer resolved it.
+   *
+   * Asking the graph rather than re-deriving `exports`/`main`/tsconfig `paths`
+   * here is the whole point: the indexer already applied the same resolution
+   * the compiler does, including path aliases and `.js`-suffixed ESM
+   * specifiers. Re-deriving it would be a second resolver that agrees only by
+   * coincidence — and disagrees exactly on the aliased edges this query exists
+   * to find.
+   *
+   * The most-resolved target wins, so one consumer's deep import cannot
+   * outvote the package entry every other consumer reached.
+   */
+  fileForSpecifier(specifier: string): INode | undefined {
+    const votes = new Map<string, number>();
+    for (const e of this.snap.edges.values()) {
+      if (e.kind !== EdgeKind.ImportsFile) continue;
+      if (e.data?.['specifier'] !== specifier) continue;
+      if (!e.to.startsWith('file:')) continue;
+      votes.set(e.to, (votes.get(e.to) ?? 0) + 1);
+    }
+    let bestId: string | undefined;
+    let best = 0;
+    for (const [id, n] of votes) {
+      if (n > best || (n === best && bestId !== undefined && id < bestId)) {
+        bestId = id;
+        best = n;
+      }
+    }
+    return bestId ? this.snap.nodes.get(bestId) : undefined;
+  }
+
+  /** Does `fileNodeId` carry a re-export edge for this import specifier? */
+  private reExportsSpecifier(fileNodeId: string, specifier: string): boolean {
+    for (const e of this.outByFrom.get(fileNodeId) ?? []) {
+      if (e.kind !== EdgeKind.ReExportsSymbol) continue;
+      if (e.data?.['specifier'] === specifier) return true;
+    }
+    return false;
   }
 
   /** Files that import `nodeId` (directly). */

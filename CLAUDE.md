@@ -88,7 +88,9 @@ shrk check boundaries            # boundary enforcement (with tsconfig alias sup
 shrk finish                      # composite "safe to finish?" — runs boundaries+wiring+policy+orphans changed-only → one verdict
 shrk check orphans               # after a delete: surviving importers of removed files/exports (alias-resolved)
 shrk wiring chain|unprovided|orphans  # registration/DI graph: declared→provided→consumed (the silent-at-runtime bugs imports can't see)
-shrk gates check|coverage|list|explain|try  # run every rule plane (one exit code) · what each MATCHED (stale-selector detector) · dry-run a rule
+shrk gates check|coverage|list|explain|try|scaffold-selftest  # run every rule plane (one exit code) · what each MATCHED (stale-selector detector) · dry-run a rule · write a rule's selfTest from what it matches today
+shrk quality                     # THE "before you push" gate: every check + every rule plane, exhaustive, each failure with its repro command
+shrk graph importers <module>    # every module importing this one — alias/type-only/re-export aware (what `callers` cannot see)
 shrk baseline check|diff|update  # committed-ledger drift, two-way (a LOST entry fails like a gained one)
 shrk generated check|update      # generated files: hand-edit drift (regen→temp→diff) + "do not edit" headers
 shrk policy-lint [explain <id>]  # forbidden content the compiler never sees (inline templates, .scss, JSON)
@@ -116,7 +118,7 @@ primitive); `--changed-only` scopes by rule footprint.
 | `policyRules[]` | forbidden content in non-compiled artifacts |
 | `registries[]` | one id declared in two places (load-order roulette) |
 | `registrationGraph[]` | declared → provided → consumed, end to end |
-| `baselines[]` | a committed ledger that silently drifted (two-way: a LOST entry fails like a gained one) |
+| `baselines[]` | a committed ledger that silently drifted (two-way: a LOST entry fails like a gained one) · `mode: 'ceiling'` for a measured-number ratchet |
 | `generatedArtifacts[]` | a hand-edited generated file, and missing "do not edit" headers |
 | `docReferences[]` | an id cited in free-text prose that no longer resolves (`docs/doc-references.md`) |
 
@@ -150,6 +152,14 @@ behaviours, each with a reason worth remembering:
   longer compiles. It adds the import when the specifier is a pure function of
   the member name AND resolves to the declaring file; otherwise it refuses with
   `needs-import`. `gates check --strict` promotes warnings to failures.
+- **`scan` — the lexical layer under every regex.** A raw-text rule matches file
+  BYTES, so a pattern keyed on a code construct fires on a doc comment that
+  merely describes it (a false failure) and a count extractor counts a word
+  inside prose (a false green). `scan: code | strings | comments |
+  code-and-templates` blanks the excluded zones with equal-length whitespace, so
+  offsets stay true and EVERY extractor kind is zoned by one code path. One
+  vocabulary across the policy plane and the extraction DSL. `json-path` /
+  `filenames` reject it loudly rather than ignoring it.
 - **Shell-executing planes are local-config-only.** `baselines[].compute.run`
   and `generatedArtifacts[].regen` spawn a shell, so the pack-plane merge seam
   DROPS any pack-contributed element carrying one — mirroring the

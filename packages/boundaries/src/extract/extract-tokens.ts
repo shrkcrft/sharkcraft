@@ -6,6 +6,7 @@ import {
   type IWiringSource,
 } from '@shrkcrft/core';
 import { safeCompile } from '../util/safe-regex.ts';
+import { blankOutsideZone } from './code-zones.ts';
 import { extractImportEdges } from './import-edges.ts';
 import type { ITsconfigPathsMap } from '../scan/tsconfig-aliases.ts';
 import {
@@ -45,6 +46,15 @@ export interface IExtractContext {
 /** Outcome of running one source: the sites, or a configuration error. */
 export interface IExtractResult {
   readonly sites: readonly IExtractedSite[];
+  /**
+   * How many characters a non-`all` `scan` zone blanked before extraction.
+   *
+   * Surfaced (not merely applied) because a zone is the one setting that can
+   * make a rule match LESS while still reading green: an author who sees the
+   * number drop can tell "my pattern was matching prose" from "my glob went
+   * stale". `explain` prints it.
+   */
+  readonly blankedChars?: number;
   /** Set when the SOURCE is misconfigured (never thrown — rules degrade). */
   readonly error?: string;
   /**
@@ -74,46 +84,61 @@ export function extractTokens(
 
   const kind = resolveExtractorKind(source)!;
   const anchor = resolveExtractorAnchor(source);
+
+  // Zone the CONTENT once, up front, instead of teaching every extractor about
+  // comments. Blanking preserves length and newlines, so each extractor still
+  // reports the true `file:line` and none of them needs zone logic of its own.
+  const zone = source.scan ?? 'all';
+  let blankedChars = 0;
+  const scanned: readonly IExtractFileEntry[] =
+    zone === 'all'
+      ? files
+      : files.map((f) => {
+          const blanked = blankOutsideZone(f.content, zone);
+          blankedChars += blanked.blankedChars;
+          return { path: f.path, content: blanked.content };
+        });
+
   let sites: IExtractedSite[];
   switch (kind) {
     case 'regex-capture':
-      sites = byRegex(source, files);
+      sites = byRegex(source, scanned);
       break;
     case 'array-members':
-      sites = byBracketLiteral(anchor!, '[', files, (el) => elementToken(el));
+      sites = byBracketLiteral(anchor!, '[', scanned, (el) => elementToken(el));
       break;
     case 'object-keys':
-      sites = byBracketLiteral(anchor!, '{', files, (el) =>
+      sites = byBracketLiteral(anchor!, '{', scanned, (el) =>
         source.capture === 'value' ? elementValue(el) : elementToken(el),
       );
       break;
     case 'enum-members':
-      sites = byEnumMembers(anchor!, source.capture === 'value', files);
+      sites = byEnumMembers(anchor!, source.capture === 'value', scanned);
       break;
     case 'export-names':
-      sites = byExportNames(files);
+      sites = byExportNames(scanned);
       break;
     case 'call-args':
-      sites = byCallArgs(anchor!, source.argIndex ?? 0, false, files);
+      sites = byCallArgs(anchor!, source.argIndex ?? 0, false, scanned);
       break;
     case 'decorator-args':
-      sites = byCallArgs(anchor!, source.argIndex ?? 0, true, files);
+      sites = byCallArgs(anchor!, source.argIndex ?? 0, true, scanned);
       break;
     case 'string-union-members':
-      sites = byStringUnion(anchor!, files);
+      sites = byStringUnion(anchor!, scanned);
       break;
     case 'json-path':
-      sites = byJsonPath(source.jsonPath!, files);
+      sites = byJsonPath(source.jsonPath!, scanned);
       break;
     case 'filenames':
-      sites = byFilenames(source, files);
+      sites = byFilenames(source, scanned);
       break;
     case 'import-edges': {
-      const edges = extractImportEdges(source, files, {
+      const edges = extractImportEdges(source, scanned, {
         ...(context.tsconfigPaths ? { tsconfigPaths: context.tsconfigPaths } : {}),
       });
       if (edges.error) return { sites: [], error: edges.error };
-      if (edges.hint) return { sites: edges.sites, hint: edges.hint };
+      if (edges.hint) return { sites: edges.sites, hint: edges.hint, ...zoneMeta(zone, blankedChars) };
       sites = edges.sites;
       break;
     }
@@ -139,7 +164,12 @@ export function extractTokens(
       });
     }
   }
-  return { sites };
+  return { sites, ...zoneMeta(zone, blankedChars) };
+}
+
+/** The zone provenance to attach to a result — omitted entirely when unzoned. */
+function zoneMeta(zone: string, blankedChars: number): { blankedChars?: number } {
+  return zone === 'all' ? {} : { blankedChars };
 }
 
 

@@ -77,6 +77,51 @@ silent deletion ships; narrowing must be a visible, explicit choice.
 > disappear (an **adoption ratchet**: a feature, once adopted, stays adopted).
 > Read the "Fails on" column, not the name.
 
+### `mode: 'ceiling'` — a measured number under a limit
+
+The other shape people hand-roll is a **ratchet on a number**: "no more than N
+raw literals of kind X", "bundle under N kB", "lint warnings ≤ N". A bespoke
+script for that misses the entire trust layer this plane already provides —
+loud-skip, the shared `--json` envelope, `selfTest`, and the `gates coverage`
+stale-selector detector — so the shape lives here instead.
+
+```ts
+{
+  id: 'transition-ceiling',
+  description: 'hardcoded transition durations must not grow',
+  mode: 'ceiling',            // no committed artifact — the pin IS `ceiling`
+  ceiling: 200,
+  direction: 'at-most',       // 'at-most' (default) | 'at-least' (a floor)
+  compute: {
+    kind: 'extractor',
+    source: {
+      files: ['src/**/*.scss'],
+      extract: 'regex-capture',
+      pattern: '(transition:[^;]+)',
+      scan: 'code',           // ← so a commented-out rule cannot pad the count
+    },
+  },
+}
+```
+
+- **The value.** A `command` whose stdout *is* a number (`wc -l`, a byte count,
+  a warning total) reports that number; anything else is measured by entry
+  count, exactly as a ledger counts.
+- **The pin lives in the config**, not in a committed file, so raising a ceiling
+  is a reviewable one-line diff in `sharkcraft.config.ts` — and there is no
+  second place to look for "what is this pinned to". Declaring `baseline` on a
+  ceiling rule is a config error for that reason.
+- **`baseline update` never edits the config.** For a ceiling it prints the exact
+  `ceiling: <new>,` line to apply by hand — the same explicit bless a ledger
+  gets, without this command growing the ability to rewrite the rules it
+  enforces.
+- **An empty compute is still a loud skip.** `0 ≤ 200` is not a pass when the
+  extractor produced nothing; that is how a broken selector greens a ratchet
+  forever.
+- The two vocabularies are **disjoint**: a ledger takes `two-way` /
+  `additions-only` / `no-shrink`, a ceiling takes `at-most` / `at-least`. Mixing
+  them fails the config load rather than silently falling back to a default.
+
 ### `expectEmpty` — when an EMPTY set is the assertion
 
 A [fence](extraction-dsl.md#the-targeted-fence-and-expectempty) — "these two

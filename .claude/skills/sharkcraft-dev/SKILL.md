@@ -95,6 +95,10 @@ shrk packs list
 shrk graph callers <symbol>            # who calls / references X (path:line)
 shrk graph context <file-or-symbol>    # imports, callers, bridge + framework — is X wired?
 shrk graph impact <file-or-symbol> --full   # what breaks if I change this
+shrk graph importers <module>          # BEFORE moving/deleting a module: every
+                                       # importer, alias- and re-export-aware
+                                       # (`callers` is symbol-scoped and misses
+                                       # type-only imports and re-exports)
 shrk graph why <fromId> <toId>         # shortest-path between two graph nodes
 
 # Will my plan introduce boundary trouble?
@@ -150,11 +154,21 @@ existing sibling — naming and registration must match.
 bun x tsc -p tsconfig.base.json --noEmit       # types
 bun test <focused-file>                        # the specific tests
 bun test                                       # full suite (cheap on Bun)
-shrk doctor                            # config + entries
-shrk check boundaries                  # cross-layer imports
-shrk coverage                          # what's still missing
+shrk quality                           # ← THE "before you push" command
 shrk packs doctor --require-signatures # if packs touched
 ```
+
+**`shrk quality` is the reflex**, not the individual verbs. It runs doctor,
+readiness, boundaries, coverage, drift, the context/agent tests, the pack
+doctor **and** all seven data-defined rule planes — every one of them to
+completion, so N independent failures cost one local run instead of N CI
+round-trips. Each failing row prints the command that reproduces it alone, so
+you never have to re-derive which verb owns a finding.
+
+Exit `0` clean · `1` a blocking gate failed · `2` ran but proved nothing (a gate
+errored, or a rule's selector matched nothing — an unmeasured verdict is never a
+pass). Add `--changed-only` on the inner loop, `--strict` for a zero-warning
+gate.
 
 Before claiming done on a significant change:
 
@@ -171,7 +185,7 @@ One compact summary:
 - Construct + name.
 - Files touched (use `path:line` notation).
 - New tests added + green count.
-- Validation result (`tsc / bun test / shrk doctor / shrk check boundaries`).
+- Validation result (`tsc / bun test / shrk quality`).
 - Any assumption you made the user didn't specify (so they can correct).
 
 If the change touches release behavior or pack contributions, mention

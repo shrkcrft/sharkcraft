@@ -163,3 +163,43 @@ export function baselineCount(rule: IBaselineRule, text: string): number {
   const pair = canonicalizePair(text, text, form);
   return textEntries(pair.expected.text).length;
 }
+
+/** The verdict of a `mode: 'ceiling'` baseline: one measured number vs its limit. */
+export interface ICeilingVerdict {
+  readonly value: number;
+  readonly ceiling: number;
+  readonly direction: 'at-most' | 'at-least';
+  readonly failed: boolean;
+  /** Headroom left (`at-most`) or shortfall (`at-least`); negative when failing. */
+  readonly slack: number;
+}
+
+/**
+ * Measured value for a ceiling rule's computed text.
+ *
+ * A `command` compute whose stdout IS a number (`wc -l`, a bundle size, a
+ * warning count) reports that number; anything else is measured by entry count,
+ * the same way a ledger counts. Guessing wrong in either direction would make
+ * the ratchet silently measure something other than what the author wrote, so
+ * the rule is one line and stated here rather than inferred per call site.
+ */
+export function ceilingValue(rule: IBaselineRule, text: string): number {
+  const trimmed = text.trim();
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+  return baselineCount(rule, text);
+}
+
+/**
+ * Compare a measured value against the rule's declared ceiling.
+ *
+ * `at-most` is the default because the shape people hand-roll is almost always
+ * a debt ratchet — "no more than N of X, and never more". A floor (`at-least`)
+ * is the same engine with the comparison flipped, so a coverage ratchet does
+ * not need a second gate.
+ */
+export function evaluateCeiling(rule: IBaselineRule, value: number): ICeilingVerdict {
+  const ceiling = rule.ceiling ?? 0;
+  const direction = rule.direction === 'at-least' ? 'at-least' : 'at-most';
+  const slack = direction === 'at-most' ? ceiling - value : value - ceiling;
+  return { value, ceiling, direction, failed: slack < 0, slack };
+}

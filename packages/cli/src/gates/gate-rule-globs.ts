@@ -29,7 +29,9 @@ export function gateRuleGlobs(view: IGateRuleView): readonly string[] {
     return [
       ...gateRuleSources(view).flatMap(sourceGlobs),
       ...(rule.watchFiles ?? []),
-      rule.baseline,
+      // A ceiling rule has no committed artifact — its pinned value is the
+      // number in the config, so its footprint is its compute alone.
+      ...(rule.baseline ? [rule.baseline] : []),
     ];
   }
   if (view.plane === 'generated') {

@@ -1,4 +1,4 @@
-import type { IWiringRule, IWiringSource } from '@shrkcrft/core';
+import type { IWiringRule, IWiringSource, ScanZone } from '@shrkcrft/core';
 import { matchesAny } from '../scan/glob.ts';
 import { readMatchingFiles } from '../util/walk-files.ts';
 import {
@@ -31,6 +31,17 @@ export interface IWiringSideExplain {
    * guaranteed to stay in step with the other planes.
    */
   readonly viaExtractor?: string;
+  /** The lexical zone this side extracted from, when it is not the default `all`. */
+  readonly scan?: ScanZone;
+  /**
+   * Characters a non-`all` `scan` blanked before extraction.
+   *
+   * A zone is the one setting that legitimately makes a rule match LESS while
+   * still reading green, so the amount removed is shown rather than assumed: a
+   * suspicious drop separates "the pattern was reading prose" from "the glob
+   * went stale".
+   */
+  readonly blankedChars?: number;
 }
 
 /**
@@ -69,6 +80,18 @@ export interface IWiringExplain {
 export interface IExplainWiringOptions {
   /** Project-relative directories to prune from the walk. */
   readonly excludeDirs?: readonly string[];
+}
+
+/**
+ * The zone the registered side extracted under — only when EVERY sink agrees on
+ * a non-default one. Reporting one sink's zone as the side's would be a claim
+ * the explain cannot back.
+ */
+function registeredScanZone(sources: readonly IWiringSource[]): ScanZone | undefined {
+  if (sources.length === 0) return undefined;
+  const first = sources[0]!.scan ?? 'all';
+  if (first === 'all') return undefined;
+  return sources.every((s) => (s.scan ?? 'all') === first) ? first : undefined;
 }
 
 function sortSites(sites: readonly IWiringTokenSite[]): IWiringTokenSite[] {
@@ -131,11 +154,13 @@ export function explainWiring(
   const registeredFiles = new Set<string>();
   const registeredSites: IWiringTokenSite[] = [];
   let registeredError: string | undefined;
+  let registeredBlanked = 0;
   for (const source of sinkSources) {
     const files = filesFor(source);
     for (const f of files) registeredFiles.add(f.path);
     const res = collectSourceSites(source, files);
     if (res.error && !registeredError) registeredError = res.error;
+    if (res.blankedChars !== undefined) registeredBlanked += res.blankedChars;
     registeredSites.push(...res.sites);
   }
 
@@ -164,6 +189,9 @@ export function explainWiring(
       filesScanned: declaredFiles.length,
       ...(declaredRes.error ? { error: declaredRes.error } : {}),
       ...(rule.declared?.$use ? { viaExtractor: rule.declared.$use } : {}),
+      ...(sourceSide?.scan && sourceSide.scan !== 'all'
+        ? { scan: sourceSide.scan, blankedChars: declaredRes.blankedChars ?? 0 }
+        : {}),
     },
     registered: {
       sites: sortSites(registeredSites),
@@ -171,6 +199,9 @@ export function explainWiring(
       filesScanned: registeredFiles.size,
       ...(registeredError ? { error: registeredError } : {}),
       ...(registeredExtractorRef(rule) ? { viaExtractor: registeredExtractorRef(rule) } : {}),
+      ...(registeredScanZone(sinkSources)
+        ? { scan: registeredScanZone(sinkSources)!, blankedChars: registeredBlanked }
+        : {}),
     },
     declaredNotRegistered: byDirection('declared-missing'),
     registeredNotDeclared: byDirection('registered-missing'),

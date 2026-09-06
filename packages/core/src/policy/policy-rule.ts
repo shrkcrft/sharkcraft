@@ -1,3 +1,4 @@
+import type { ScanZone } from '../scan/scan-zone.ts';
 import type { IRuleSelfTest } from '../wiring/wiring-rule.ts';
 
 /**
@@ -27,18 +28,15 @@ export type PolicySurface =
 /**
  * Which lexical zone of a file a rule's pattern may match in.
  *
- * `all` (default) is a plain text scan — every byte, including comments. The
- * other three narrow it: `code` kills the dominant false positive (a hit inside
- * a "we used to do this" comment), `strings` targets exactly what a
- * single-language linter cannot see (an inline template / embedded query), and
- * `comments` finds forbidden content in the prose itself (a leaked token, a
- * stale directive).
+ * An alias of the shared {@link ScanZone} vocabulary, which the extraction DSL
+ * uses under the same name. The two engines answer the identical question
+ * ("does a hit inside a comment count?") and must never grow two spellings of
+ * the answer.
  *
- * Zoning is lexical, C/JS-family (`'`/`"`/`` ` `` strings, `//` and block
- * comments) — designed for the `ts` and `style` surfaces. It is not applied to
- * inline-template units, whose content is already a string body.
+ * Zoning is not applied to inline-template units, whose content is already a
+ * string body.
  */
-export type PolicyScanZone = 'all' | 'code' | 'strings' | 'comments';
+export type PolicyScanZone = ScanZone;
 
 export interface IPolicyRule {
   /** Stable id, surfaced in findings and selectable with `--only`. */

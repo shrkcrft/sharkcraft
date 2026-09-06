@@ -23,6 +23,7 @@ import {
 } from '../command-registry.ts';
 import { ExitCode } from '../exit-codes.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { scanNote } from '../gates/gate-rule-view.ts';
 
 const SITE_DISPLAY_CAP = 50;
 
@@ -50,14 +51,16 @@ export function renderWiringExplain(report: IWiringExplain, wantJson: boolean): 
     kv(
       'declared',
       `${report.declared.distinctCount} distinct across ${report.declared.filesScanned} file(s)` +
-        (report.declared.viaExtractor ? `  (via $use:${report.declared.viaExtractor})` : ''),
+        (report.declared.viaExtractor ? `  (via $use:${report.declared.viaExtractor})` : '') +
+        scanNote(report.declared.scan, report.declared.blankedChars),
     ) + '\n',
   );
   process.stdout.write(
     kv(
       'registered',
       `${report.registered.distinctCount} distinct across ${report.registered.filesScanned} file(s)` +
-        (report.registered.viaExtractor ? `  (via $use:${report.registered.viaExtractor})` : ''),
+        (report.registered.viaExtractor ? `  (via $use:${report.registered.viaExtractor})` : '') +
+        scanNote(report.registered.scan, report.registered.blankedChars),
     ) + '\n',
   );
 
