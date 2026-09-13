@@ -13,6 +13,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import type { IVerdictCoverage } from '@shrkcrft/core';
 import {
   buildCheckAggregate,
   buildCheckResult,
@@ -22,14 +23,23 @@ import {
   CheckResultStatus,
   convertBiomeToCheckResult,
   convertEslintToCheckResult,
+  CustomCheckKind,
   CustomCheckScope,
+  customCheckScanSurface,
   doctorCustomChecks,
   inspectSharkcraft,
+  nearestIds,
   parseCheckResult,
   parseCheckResultFromFile,
   parseCustomCheckReportFromFile,
+  referenceIdExists,
+  referenceIdPool,
+  referenceKindsOf,
   runCustomCheck,
   type ICheckResult,
+  type ICustomCheckRegistry,
+  type ICustomCheckScanSurface,
+  type ISharkcraftInspection,
 } from '@shrkcrft/inspector';
 import {
   flagBool,
@@ -38,31 +48,135 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
+import { ExitCode } from '../exit-codes.ts';
+import { ALLOW_EMPTY_FLAG, allowEmptyValve } from '../gates/allow-empty.ts';
+import { settleVerdict } from '../gates/settle-verdict.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
 import { asJson, header } from '../output/format-output.ts';
 
 const CHECKS_DIR_REL = '.sharkcraft/checks';
 
+/** THE registry build for every `checks` verb — sources project-relative. */
+function loadCustomChecks(inspection: ISharkcraftInspection): ICustomCheckRegistry {
+  return buildCustomChecksRegistry(inspection.knowledgeEntries, { projectRoot: inspection.projectRoot });
+}
+
+/** Every declaration that can never run, one line each, with its file and why. */
+function droppedDeclarationLines(registry: ICustomCheckRegistry): string[] {
+  const lines: string[] = [];
+  for (const i of registry.invalid) {
+    const check = i.checkId ? ` [${i.checkId}]` : '';
+    lines.push(`  ✗ ${i.ruleId}${check}${i.source ? `  (${i.source})` : ''} — ${i.reason}`);
+  }
+  for (const i of registry.ignored) {
+    const checks = i.checkIds.length > 0 ? ` checks: ${i.checkIds.join(', ')}` : '';
+    lines.push(`  ✗ ${i.entryId} [type:${i.entryType}]${checks}${i.source ? `  (${i.source})` : ''} — ${i.reason}`);
+  }
+  return lines;
+}
+
+/** The concrete surface the registry scans — what an empty state names. */
+function scanSurfaceLines(surface: ICustomCheckScanSurface, scannedRules: number): string[] {
+  const lines = [
+    "  Custom checks are read from metadata.checks[] on type:'rule' entries in TypeScript rule / knowledge files:",
+  ];
+  if (surface.files.length === 0) {
+    lines.push('    (none — no TypeScript ruleFiles / knowledgeFiles in sharkcraft.config.ts, and no pack contributes one)');
+  }
+  for (const f of surface.files) lines.push(`    ${f.via.padEnd(16)} ${f.file}`);
+  const md =
+    surface.markdownRules > 0
+      ? ` — ${surface.markdownRules} of the rules scanned are Markdown`
+      : surface.markdownFiles.length > 0
+        ? ` (Markdown sources: ${surface.markdownFiles.join(', ')})`
+        : '';
+  lines.push(
+    `  Scanned ${scannedRules} type:'rule' ${scannedRules === 1 ? 'entry' : 'entries'}. Markdown rules cannot carry metadata${md}.`,
+  );
+  return lines;
+}
+
+/**
+ * `--rule` must name a RULE — resolved through the one reference registry, so
+ * a typo is a usage error with a did-you-mean, never an empty listing that
+ * reads as "nothing declared".
+ */
+function unknownRuleFilter(inspection: ISharkcraftInspection, id: string, usage: string, wantJson: boolean): number {
+  const kinds = referenceKindsOf(inspection, id).filter((k) => k !== 'rule');
+  const near = nearestIds(id, referenceIdPool(inspection, ['rule'])).map((n) => n.id);
+  const why =
+    kinds.length > 0
+      ? `"${id}" is a ${kinds.join(' | ')} id, not a type:'rule' entry — custom checks are declared on rules only.`
+      : `no type:'rule' entry has the id "${id}".`;
+  process.stderr.write(
+    `--rule ${id}: ${why}${near.length > 0 ? ` Did you mean: ${near.join(', ')}?` : ''}\nUsage: ${usage}\n`,
+  );
+  if (wantJson) {
+    process.stdout.write(
+      asJson({ error: 'unknown-rule', rule: id, resolvedAs: kinds, didYouMean: near, exitCode: ExitCode.UsageError }) + '\n',
+    );
+  }
+  return ExitCode.UsageError;
+}
+
+const CHECKS_LIST_USAGE = 'shrk checks list [--rule <ruleId>] [--kind <k>] [--json]';
+
 export const checksListCommand: ICommandHandler = {
   name: 'list',
-  description: 'List custom checks declared by rules (metadata.checks[]). Read-only.',
-  usage: 'shrk checks list [--rule <ruleId>] [--kind <k>] [--json]',
+  description:
+    "List custom checks declared on type:'rule' entries (metadata.checks[] in TypeScript rule / knowledge files, local or pack). Every declaration that can never run (on a non-rule entry, in a Markdown rule, a non-array value) is named with its file and reason. Exit 0 · 1 a dropped declaration · 3 --rule names no rule. Read-only.",
+  usage: CHECKS_LIST_USAGE,
+  booleanFlags: new Set(['json']),
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
-    const registry = buildCustomChecksRegistry(inspection.knowledgeEntries);
+    const registry = loadCustomChecks(inspection);
     const ruleFilter = flagString(args, 'rule');
     const kindFilter = flagString(args, 'kind');
+    const wantJson = flagBool(args, 'json');
+    if (ruleFilter && !referenceIdExists(inspection, 'rule', ruleFilter)) {
+      return unknownRuleFilter(inspection, ruleFilter, CHECKS_LIST_USAGE, wantJson);
+    }
     let entries = registry.entries;
     if (ruleFilter) entries = entries.filter((e) => e.ruleId === ruleFilter);
     if (kindFilter) entries = entries.filter((e) => e.descriptor.kind === kindFilter);
-    if (flagBool(args, 'json')) {
-      process.stdout.write(asJson({ ...registry, entries }) + '\n');
-      return 0;
+    const filterLabel = [ruleFilter ? `--rule ${ruleFilter}` : '', kindFilter ? `--kind ${kindFilter}` : '']
+      .filter(Boolean)
+      .join(' ');
+    const dropped = registry.invalid.length + registry.ignored.length;
+    // One data path: the exit, the JSON and the text all read these numbers.
+    const exit = dropped > 0 ? ExitCode.Failure : ExitCode.VerifiedPass;
+    const surface = customCheckScanSurface(inspection);
+    if (wantJson) {
+      process.stdout.write(
+        asJson({
+          ...registry,
+          entries,
+          declared: registry.entries.length,
+          ...(filterLabel ? { filters: { rule: ruleFilter ?? null, kind: kindFilter ?? null } } : {}),
+          surface,
+          exitCode: exit,
+        }) + '\n',
+      );
+      return exit;
     }
-    process.stdout.write(header(`Custom checks (${entries.length})`));
-    if (entries.length === 0) {
-      process.stdout.write('  (no checks declared — add metadata.checks[] to a rule)\n');
-      return 0;
+    process.stdout.write(
+      header(`Custom checks (${entries.length}${filterLabel ? ` of ${registry.entries.length}` : ''})`),
+    );
+    if (entries.length === 0 && registry.entries.length > 0) {
+      // Filters excluded everything — which is not "nothing declared".
+      const n = registry.entries.length;
+      process.stdout.write(`  ${n} ${n === 1 ? 'check' : 'checks'} declared, 0 match ${filterLabel}\n`);
+      const knownKinds: readonly string[] = Object.values(CustomCheckKind);
+      if (kindFilter && !knownKinds.includes(kindFilter)) {
+        process.stdout.write(`  (known kinds: ${knownKinds.join(', ')})\n`);
+      }
+    } else if (entries.length === 0 && dropped === 0) {
+      process.stdout.write('  No checks declared.\n');
+      for (const line of scanSurfaceLines(surface, registry.scannedRules)) process.stdout.write(`${line}\n`);
+    } else if (entries.length === 0) {
+      process.stdout.write(`  0 checks registered — every declaration below was dropped.\n`);
     }
     for (const e of entries) {
       const d = e.descriptor;
@@ -85,62 +199,126 @@ export const checksListCommand: ICommandHandler = {
         process.stdout.write(`    ${d.id}: ${d.ruleIds.join(', ')}\n`);
       }
     }
-    return 0;
+    if (dropped > 0) {
+      process.stdout.write(`\n  Dropped declarations (${dropped}) — declared, but can never run:\n`);
+      for (const line of droppedDeclarationLines(registry)) process.stdout.write(`${line}\n`);
+      process.stdout.write('\n  Fix each declaration above (`shrk checks doctor` validates the rest).\n');
+    }
+    return exit;
   },
 };
 
 export const checksDoctorCommand: ICommandHandler = {
   name: 'doctor',
-  description: 'Validate custom-check descriptors. Reports missing fields, duplicate ids, etc.',
-  usage: 'shrk checks doctor [--json] [--strict]',
+  description:
+    'Validate custom-check descriptors — missing fields, duplicate ids, and every declaration that can never run (on a non-rule entry, in a Markdown rule, a non-array value). Exit 0 validated · 1 errors (or warnings under --strict) · 2 nothing declared (--allow-empty accepts that explicitly). Read-only.',
+  usage: 'shrk checks doctor [--strict] [--allow-empty] [--json]',
+  booleanFlags: new Set(['json', 'strict', ALLOW_EMPTY_FLAG]),
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
-    const registry = buildCustomChecksRegistry(inspection.knowledgeEntries);
+    const registry = loadCustomChecks(inspection);
     const report = doctorCustomChecks(registry);
+    const surface = customCheckScanSurface(inspection);
+    const expected = report.declaredChecks;
+    const ignoredLabels = registry.ignored.map((i) => `${i.entryId}${i.source ? ` (${i.source})` : ''}`);
+    // Declared checks are the unit: registered and invalid ones were validated
+    // (an invalid one failed); an ignored one was never read. Nothing declared
+    // is expected 0 — "validated nothing" is never a ✓.
+    const coverage: IVerdictCoverage = {
+      unit: 'declared checks',
+      expected,
+      examined: registry.entries.length + registry.invalid.length,
+      root: inspection.projectRoot,
+      reason:
+        expected === 0
+          ? `no type:'rule' entry declares metadata.checks[] (${registry.scannedRules} rule${registry.scannedRules === 1 ? '' : 's'} scanned)`
+          : 'declared where the registry does not read them, so never validated',
+      ...(ignoredLabels.length > 0 ? { unexamined: ignoredLabels.slice(0, 20), unexaminedTotal: ignoredLabels.length } : {}),
+      ...allowEmptyValve(args, expected),
+    };
+    const strict = flagBool(args, 'strict');
+    const settled = settleVerdict(report.errors > 0 || (strict && report.warnings > 0) ? 1 : 0, [coverage]);
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson(report) + '\n');
-    } else {
-      process.stdout.write(header('Custom checks doctor'));
-      process.stdout.write(`  total      ${report.totalChecks}\n`);
-      process.stdout.write(`  errors     ${report.errors}\n`);
-      process.stdout.write(`  warnings   ${report.warnings}\n`);
-      if (report.details.length === 0) {
-        process.stdout.write('\nNo descriptor issues. ✓\n');
-      } else {
-        process.stdout.write('\nDetails:\n');
-        for (const d of report.details) {
-          process.stdout.write(
-            `  ${d.severity.padEnd(7)} [${d.checkId}] (${d.ruleId}) — ${d.message}\n`,
-          );
-        }
+      process.stdout.write(
+        asJson({
+          ...report,
+          coverage,
+          surface,
+          exitCode: settled.exit,
+          verdict: settled.verdict,
+          shortfalls: settled.shortfalls,
+          accepted: settled.accepted,
+        }) + '\n',
+      );
+      return settled.exit;
+    }
+    process.stdout.write(header('Custom checks doctor'));
+    process.stdout.write(`  declared   ${report.declaredChecks}\n`);
+    process.stdout.write(`  registered ${report.totalChecks}\n`);
+    process.stdout.write(`  errors     ${report.errors}\n`);
+    process.stdout.write(`  warnings   ${report.warnings}\n`);
+    process.stdout.write(`  scanned    ${report.scannedRules} type:'rule' ${report.scannedRules === 1 ? 'entry' : 'entries'}\n`);
+    if (report.details.length > 0) {
+      process.stdout.write('\nDetails:\n');
+      for (const d of report.details) {
+        process.stdout.write(
+          `  ${d.severity.padEnd(7)} [${d.checkId}] (${d.ruleId})${d.source ? ` ${d.source}` : ''} — ${d.message}\n`,
+        );
       }
     }
-    if (report.errors > 0) return 1;
-    if (flagBool(args, 'strict') && report.warnings > 0) return 1;
-    return 0;
+    const clean =
+      expected === 0
+        ? 'No checks declared — accepted.'
+        : report.warnings > 0
+          ? `No blocking descriptor issues — ${report.warnings} warning(s) reported above.`
+          : `${report.totalChecks} check descriptor(s) validated — no issues. ✓`;
+    const line = verdictLine(settled, clean, expected === 0 ? 'No checks declared — nothing validated.' : undefined);
+    if (line) process.stdout.write(`\n${line}\n`);
+    if (settled.exit === ExitCode.NotVerified && expected === 0) {
+      for (const l of scanSurfaceLines(surface, registry.scannedRules)) process.stdout.write(`${l}\n`);
+      process.stdout.write('Pass --allow-empty to accept a project with no custom checks explicitly.\n');
+    }
+    return settled.exit;
   },
 };
 
 export const checksRunCommand: ICommandHandler = {
   name: 'run',
   description:
-    'Run a custom check. Read-only by default — pass --execute to actually invoke the command.',
+    'Run a custom check. Read-only by default — pass --execute to actually invoke the command. A check declared where the registry does not read it (a non-rule entry, a Markdown rule) is named, with why.',
   usage:
     'shrk checks run <checkId> [--execute] [--report-path <path>] [--changed-only|--staged|--all] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const checkId = args.positional[0];
     if (!checkId) {
       process.stderr.write('Usage: shrk checks run <checkId> [--execute]\n');
-      return 2;
+      return ExitCode.UsageError;
     }
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
-    const registry = buildCustomChecksRegistry(inspection.knowledgeEntries);
+    const registry = loadCustomChecks(inspection);
     const entry = registry.entries.find((e) => e.descriptor.id === checkId);
     if (!entry) {
-      process.stderr.write(`No custom check with id "${checkId}".\n`);
-      return 1;
+      // Declared but not registered: say where it is and why, instead of
+      // "no such check" next to a declaration the author can see.
+      const ignored = registry.ignored.find((i) => i.checkIds.includes(checkId));
+      const invalid = registry.invalid.find((i) => i.checkId === checkId);
+      if (ignored) {
+        process.stderr.write(
+          `Custom check "${checkId}" is declared on ${ignored.entryId} (type:'${ignored.entryType}'${ignored.source ? `, ${ignored.source}` : ''}) but is not registered: ${ignored.reason}.\n`,
+        );
+      } else if (invalid) {
+        process.stderr.write(
+          `Custom check "${checkId}" is declared on rule ${invalid.ruleId}${invalid.source ? ` (${invalid.source})` : ''} but is invalid: ${invalid.reason}.\n`,
+        );
+      } else {
+        const near = nearestIds(checkId, registry.entries.map((e) => e.descriptor.id)).map((n) => n.id);
+        process.stderr.write(
+          `No custom check with id "${checkId}".${near.length > 0 ? ` Did you mean: ${near.join(', ')}?` : ''} (\`shrk checks list\` shows every declared check.)\n`,
+        );
+      }
+      return ExitCode.Failure;
     }
     const result = runCustomCheck(entry.descriptor, {
       cwd,
@@ -174,6 +352,8 @@ export const checksRunCommand: ICommandHandler = {
 
 export const checksParseReportCommand: ICommandHandler = {
   name: 'parse-report',
+  // positional[0] is the report FILE; a verb-shaped non-file is refused.
+  positionals: PositionalMode.Path,
   description:
     'Parse a sharkcraft.custom-check/v1 JSON report file (or text fallback) and validate its shape.',
   usage: 'shrk checks parse-report <path> [--check-id <id>] [--json]',
@@ -253,6 +433,8 @@ function listImportedResults(cwd: string): { path: string; raw: string }[] {
  */
 export const checksImportCommand: ICommandHandler = {
   name: 'import',
+  // positional[0] is the result FILE; a verb-shaped non-file is refused.
+  positionals: PositionalMode.Path,
   description:
     'Import a sharkcraft.check-result/v1 JSON file (or auto-convert from ESLint JSON) and store it under .sharkcraft/checks/.',
   usage:

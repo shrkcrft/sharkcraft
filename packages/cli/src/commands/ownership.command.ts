@@ -35,7 +35,7 @@ export const ownershipListCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
-    const cfg = (inspection.config as { ownershipFiles?: readonly string[] } | null)?.ownershipFiles;
+    const cfg = inspection.config?.ownershipFiles;
     const fromArgs = configuredFiles(args);
     const files = fromArgs ?? cfg ?? DEFAULT_OWNERSHIP_FILES;
     const r = await loadOwnershipRules(cwd, files);
@@ -67,7 +67,7 @@ export const ownershipForCommand: ICommandHandler = {
     }
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
-    const cfg = (inspection.config as { ownershipFiles?: readonly string[] } | null)?.ownershipFiles;
+    const cfg = inspection.config?.ownershipFiles;
     const fromArgs = configuredFiles(args);
     const files = fromArgs ?? cfg ?? DEFAULT_OWNERSHIP_FILES;
     const { rules } = await loadOwnershipRules(cwd, files);
@@ -110,7 +110,7 @@ export const ownershipAffectedCommand: ICommandHandler = {
         for (const p of b.plans) for (const t of p.expectedTargets) all.push(t);
       }
     }
-    const cfg = (inspection.config as { ownershipFiles?: readonly string[] } | null)?.ownershipFiles;
+    const cfg = inspection.config?.ownershipFiles;
     const fromArgs = configuredFiles(args);
     const files = fromArgs ?? cfg ?? DEFAULT_OWNERSHIP_FILES;
     const { rules } = await loadOwnershipRules(cwd, files);

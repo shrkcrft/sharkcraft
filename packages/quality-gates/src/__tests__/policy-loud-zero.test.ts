@@ -23,15 +23,19 @@ describe('policyLintGate loud-zero (G2)', () => {
     }
   });
 
-  test('skipped (loud) when a rule is configured but matches no files (evaluated 0)', () => {
+  test('loud when a rule is configured but matches no files (evaluated 0): never skipped, never a pass', () => {
     const root = mkdtempSync(join(tmpdir(), 'shrk-policy-gate-empty-'));
     try {
       // No stylesheets anywhere → the style rule scans nothing. Must NOT read as
-      // a green pass: evaluating zero files is `skipped`, surfaced loudly.
+      // a green pass — and not as `skipped` either (round 11): the rule was
+      // selected and examined nothing, which `shrk gate` must settle like
+      // `policy-lint` does. At `error` severity `failOnEmpty` defaults on, so it
+      // FAILS, carrying the rule's coverage.
       const r = policyLintGate(root, { rules: [STYLE_RULE] });
-      expect(r.status).toBe('skipped');
+      expect(r.status).toBe('fail');
       expect(r.message).toContain('nothing evaluated');
       expect(r.details?.evaluated).toBe(0);
+      expect(r.coverage?.[0]).toMatchObject({ subject: 'no-important', expected: 0, examined: 0 });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -1,4 +1,5 @@
 import { buildTaskPacket } from '@shrkcrft/inspector';
+import { templateRemainderSummary } from '@shrkcrft/templates';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 import { FORMAT_INPUT_PROPERTY, formatObjectArrays } from '../server/columnar-format.ts';
 
@@ -37,7 +38,9 @@ export const getTaskPacketTool: IToolDefinition = {
       })),
       relevantRules: packet.relevantRules.map((r) => ({ id: r.id, title: r.title })),
       relevantPaths: packet.relevantPaths.map((p) => ({ id: p.id, title: p.title })),
-      relevantTemplates: packet.relevantTemplates.map((t) => ({ id: t.id, name: t.name })),
+      // A template's declared remainder rides on its row — the shape `task
+      // --json` carries (`templateRemainderSummary`, R11-GAP-7).
+      relevantTemplates: packet.relevantTemplates.map((t) => ({ id: t.id, name: t.name, ...templateRemainderSummary(t) })),
       recommendedMcpTools: packet.recommendedMcpTools,
       recommendedCliCommands: packet.recommendedCliCommands,
       forbiddenActions: packet.forbiddenActions,

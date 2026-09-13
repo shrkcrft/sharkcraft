@@ -111,11 +111,8 @@ export function buildPublishPkg(
   // deps by listing them under `publishPinExact`. This is the safe default
   // for thin re-export wrappers (e.g. `shrk` → `@shrkcrft/cli`) where any
   // version skew between wrapper and target breaks the contract.
-  const pinExact = new Set<string>(
-    Array.isArray((orig as { publishPinExact?: unknown }).publishPinExact)
-      ? ((orig as { publishPinExact: string[] }).publishPinExact)
-      : [],
-  );
+  const rawPinExact = (orig as { publishPinExact?: unknown }).publishPinExact;
+  const pinExact = new Set<string>(Array.isArray(rawPinExact) ? (rawPinExact as string[]) : []);
   // Concretize internal workspace pins.
   for (const block of ['dependencies', 'devDependencies', 'peerDependencies'] as const) {
     const deps = out[block] as Record<string, string> | undefined;

@@ -84,7 +84,8 @@ describe('CLI registrations', () => {
 
   test('shrk checks doctor returns json with stable schema', () => {
     const r = shrk(['checks', 'doctor', '--json']);
-    expect(r.code === 0 || r.code === 1).toBe(true);
+    // 2 = nothing declared: an empty registry is not a validated one (round 11 §4.6).
+    expect([0, 1, 2]).toContain(r.code);
     const parsed = JSON.parse(r.out.trim());
     expect(parsed.schema).toBe('sharkcraft.custom-checks-doctor/v1');
   });

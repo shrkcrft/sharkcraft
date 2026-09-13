@@ -10,7 +10,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { buildCoverageReport } from './coverage-report.ts';
 import { runDoctor } from './sharkcraft-inspector.ts';
-import { buildPackDoctorReport, runPackReleaseChecksForReport, mergePackReleaseChecks } from './pack-doctor.ts';
+import { buildPackDoctorReportAsync, runPackReleaseChecksForReport, mergePackReleaseChecks } from './pack-doctor.ts';
 import { buildDocsCheck } from './docs-check.ts';
 import { buildExamplesCheck } from './examples-check.ts';
 import { buildPackSignatureStatusReport } from './pack-signature-status.ts';
@@ -348,7 +348,8 @@ export async function buildReleaseReadiness(
 
   // 4. Pack doctor + release-check
   try {
-    const packReport = buildPackDoctorReport(inspection, { requireSignatures: false });
+    // THE async doctor (registry-backed rejections included — R12-X2).
+    const packReport = await buildPackDoctorReportAsync(inspection, { requireSignatures: false });
     const releaseChecks = await runPackReleaseChecksForReport(inspection);
     mergePackReleaseChecks(inspection, packReport, releaseChecks, { strict });
     if (packReport.summary.errors > 0) {
@@ -533,11 +534,13 @@ export async function buildReleaseReadiness(
   const ready = blockers.length === 0;
 
   const checklist: string[] = [
-    'shrk doctor → green',
-    'shrk commands doctor → 0 errors / 0 warnings',
-    'shrk safety audit → no error findings',
-    'shrk coverage → green',
-    'shrk packs doctor --release --strict → green',
+    // The command is quoted, its expected outcome is not: "`shrk doctor` →
+    // green" is a command and a result, never a command with a `→` argument.
+    '`shrk doctor` → green',
+    '`shrk commands doctor` → 0 errors / 0 warnings',
+    '`shrk safety audit` → no error findings',
+    '`shrk coverage` → green',
+    '`shrk packs doctor --release --strict` → green',
     'bun x tsc -p tsconfig.base.json --noEmit → clean',
     'bun test → all green',
     'bun run release:preflight → all required steps passed',

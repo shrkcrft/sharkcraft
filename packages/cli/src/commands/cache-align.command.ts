@@ -70,7 +70,9 @@ export const alignCommand: ICommandHandler = {
 export const unalignCommand: ICommandHandler = {
   name: 'unalign',
   description: 'Restore the original volatile tokens in aligned text using its `--map`.',
-  usage: 'shrk [--cwd <dir>] unalign [<file>|-] [--stdin] --map <path>',
+  // `--map` defaults to .sharkcraft/cache-align/align.json (the file `align`
+  // writes), so it is optional — the usage used to mark it required.
+  usage: 'shrk [--cwd <dir>] unalign [<file>|-] [--stdin] [--map <path>]',
   run(args: ParsedArgs): number {
     const cwd = resolveCwd(args);
     const mapPath =

@@ -6,6 +6,7 @@ import {
 } from '@shrkcrft/presets';
 import { PackageManager } from '@shrkcrft/workspace';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { detectSharkcraftRepo } from './self-audit.ts';
 import {
   buildOnboardingPlan,
   type IInferredBoundaryRule,
@@ -732,6 +733,9 @@ function buildChangeProtocol(
   onboarding: IOnboardingPlan,
 ): IChangeProtocol {
   const entries: IChangeProtocolEntry[] = [];
+  // THE host authority: tool-maintenance commands (`release readiness`) apply
+  // only inside SharkCraft's own repository; elsewhere they exit 78.
+  const toolRepo = detectSharkcraftRepo(inspection.projectRoot);
 
   entries.push({
     id: 'change-protocol.feature',
@@ -763,11 +767,18 @@ function buildChangeProtocol(
     title: 'Change a public API',
     steps: [
       'Verify export barrels (`packages/*/src/index.ts`).',
-      'Look up consumers via `shrk api report` and `shrk impact`.',
-      'Document the change in a decision record (`shrk decisions new`).',
-      'Run release-readiness + boundary checks.',
+      'Look up consumers via `shrk graph importers <module>` and `shrk impact`.',
+      'Diff the public surface against its baseline (`shrk api-diff .sharkcraft/api-baseline.json --fail-on-breaking`).',
+      'Document the change in a decision record (`sharkcraft/decisions.ts`).',
+      toolRepo ? 'Run release-readiness + boundary checks.' : 'Run `shrk quality` + boundary checks.',
     ],
-    recommendedCommands: ['shrk api report', 'shrk impact', 'shrk decisions new', 'shrk release readiness'],
+    recommendedCommands: [
+      'shrk graph importers',
+      'shrk impact',
+      'shrk api-diff .sharkcraft/api-baseline.json --fail-on-breaking',
+      // `release readiness` maintains SharkCraft itself (exit 78 elsewhere).
+      toolRepo ? 'shrk release readiness' : 'shrk quality',
+    ],
   });
 
   if (inspection.workspace.frameworks.some((f) => /angular/i.test(f.name))) {
@@ -818,7 +829,9 @@ function buildTaskContextHints(
     hints.push({
       trigger: 'when a task lands in deprecated/legacy areas',
       hint: 'Deprecated or legacy areas exist — prefer the stable replacement when adding new code.',
-      recommendedCommand: 'shrk stability map',
+      // The stability map is part of this knowledge model; `ingest report`
+      // renders it (there is no separate stability verb).
+      recommendedCommand: 'shrk ingest report',
     });
   }
   if (contradictions.findings.length > 0) {

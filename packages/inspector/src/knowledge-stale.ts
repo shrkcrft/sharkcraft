@@ -1,27 +1,71 @@
 /**
- * Knowledge stale-check.
+ * Knowledge stale-check — THE staleness engine (every consumer reads it).
  *
- * Walks every knowledge entry's `references[]` + `anchors[]` and checks
- * whether each target still resolves against the current workspace.
+ * Walks every knowledge entry's `references[]` + `anchors[]` — and the
+ * references boundary rules and policy checks declare — and checks whether each
+ * target still resolves against the current workspace, and (with `contains` /
+ * `matches` / `count`) still says what the asset claims.
  *
- * Pure file-system + registry lookups — no network, no AST compilation.
- * Symbol checks are deterministic best-effort text scans so the doctor
- * stays cheap.
+ * It classifies every entry in scope into ONE of three buckets: `verified`,
+ * `stale`, `unverifiable`. An entry with nothing checkable used to contribute
+ * nothing and read as healthy — the less verifiable a corpus, the healthier it
+ * looked. The buckets make that shortfall a number the verdict can refuse on.
  *
- * Schema: sharkcraft.knowledge-stale/v1
+ * Callers MUST `await warmReferenceRegistries(inspection)` first: the
+ * playbook / policy / construct / helper registries are async-filled, and an
+ * unwarmed registry is reported `unknown` (NOT VERIFIED) here — never `stale`
+ * against a correct id.
+ *
+ * Pure file-system + registry lookups — no network, no whole-program
+ * compilation. Symbol checks use the single-file AST index.
+ *
+ * Schema: sharkcraft.knowledge-stale/v1 (additive fields since round 11)
  */
 
 import { existsSync, readdirSync, readFileSync, statSync, type Stats } from 'node:fs';
 import * as nodePath from 'node:path';
-import type {
-  IKnowledgeAnchor,
-  IKnowledgeEntry,
-  IKnowledgeReference,
-  KnowledgeReferenceKind,
+import { globListSelects, globToRegex } from '@shrkcrft/boundaries';
+import type { IAssetReference } from '@shrkcrft/core';
+import {
+  KNOWLEDGE_REFERENCE_KINDS,
+  todayUtcIso,
+  verifiedOnAgeDays,
+  type IKnowledgeAnchor,
+  type IKnowledgeEntry,
+  type IKnowledgeReference,
+  type KnowledgeReferenceKind,
 } from '@shrkcrft/knowledge';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
-import { HELPERS } from './helper-registry.ts';
-import { referenceIdExists } from './reference-registry.ts';
+import {
+  isCacheBackedKind,
+  isReferenceCacheWarm,
+  referenceIdExists,
+  referenceIdsFor,
+  type ReferenceKind,
+} from './reference-registry.ts';
+import { listPolicyDeclarations } from './policy-registry.ts';
+import {
+  checkReferenceContent,
+  checkReferenceCount,
+  hasContentAssertion,
+  type IReferenceAssertionResult,
+} from './reference-content-check.ts';
+import { ReferenceFailure } from './reference-failure.ts';
+import { KnowledgeEntryVerdict } from './knowledge-entry-verdict.ts';
+import { KnowledgeUnverifiableReason } from './knowledge-unverifiable-reason.ts';
+import type { IKnowledgeEntryVerdictRecord } from './knowledge-entry-verdict-record.ts';
+import type { IKnowledgeStaleCoverage } from './knowledge-stale-coverage.ts';
+import type { IKnowledgeKindBucket } from './knowledge-kind-bucket.ts';
+import type { IKnowledgeReferenceKindBucket } from './knowledge-reference-kind-bucket.ts';
+import type { IKnowledgeStaleAdvisory } from './knowledge-stale-advisory.ts';
+import type { IKnowledgeAgedEntry } from './knowledge-aged-entry.ts';
+import { KnowledgeAdvisoryCode } from './knowledge-advisory-code.ts';
+import { ReferenceAssetKind } from './reference-asset-kind.ts';
+import type { IReferenceSubject } from './reference-subject.ts';
+import { buildSymbolIndex, type ISymbolIndex } from './symbol-index.ts';
+// The `command` reference case (and its anchor twin) — one injected resolver.
+import { COMMAND_INDEX_NOT_INJECTED, resolveShrkCommandReference } from './reference-registry.ts';
+import { CommandResolutionStatus } from './command-resolution-status.ts';
 import { resolveSymbolInFile, SymbolResolution } from './symbol-index.ts';
 
 export const KNOWLEDGE_STALE_SCHEMA = 'sharkcraft.knowledge-stale/v1';
@@ -30,7 +74,16 @@ export enum ReferenceCheckOutcome {
   Ok = 'ok',
   Stale = 'stale',
   Missing = 'missing',
+  /** Well-formed, but the check cannot evaluate it (a `url`, an unwarmed registry). */
   Unknown = 'unknown',
+  /**
+   * MALFORMED — a kind outside the vocabulary, or the field its kind cannot be
+   * checked without is missing (a symbol reference with no `symbol`). It
+   * verifies nothing; it used to share `unknown` with an unfetched url and
+   * count toward a green run. Now it is a coverage shortfall on the verdict
+   * (not verified) and fails under `--fail-on invalid`.
+   */
+  Invalid = 'invalid',
 }
 
 export enum SymbolConfidence {
@@ -105,6 +158,20 @@ export interface IKnowledgeReferenceCheck {
   suggestion?: string;
   /** Structured replacement when the engine can identify the new location. */
   replaceWith?: IReferenceReplacement;
+  /**
+   * WHY a non-ok check did not pass — additive to {@link outcome}, which keeps
+   * its historical values. Lets `--fail-on path-missing|anchor-missing|content|count`
+   * gate each failure mode separately.
+   */
+  failure?: ReferenceFailure;
+  /** For a content / count assertion: what the asset claims. */
+  expected?: string | number;
+  /** For a content / count assertion: what the tree holds now. */
+  actual?: string | number;
+  /** Which asset kind declared the reference. Absent on knowledge checks (the historical shape). */
+  assetKind?: ReferenceAssetKind;
+  /** True for an IMPLICIT reference derived from a scope glob — advisory unless `--fail-on implicit`. */
+  implicit?: boolean;
 }
 
 export interface IKnowledgeAnchorCheck {
@@ -112,16 +179,63 @@ export interface IKnowledgeAnchorCheck {
   anchor: IKnowledgeAnchor;
   outcome: ReferenceCheckOutcome;
   message: string;
+  /** WHY a non-ok anchor did not pass. */
+  failure?: ReferenceFailure;
 }
 
 export interface IKnowledgeStaleReport {
   schema: typeof KNOWLEDGE_STALE_SCHEMA;
+  /** Knowledge entries in the CORPUS. A scoped run examines {@link entriesInScope}. */
   entries: number;
   totalReferences: number;
   totalAnchors: number;
-  counts: { ok: number; stale: number; missing: number; unknown: number };
+  /**
+   * Knowledge-reference outcomes (anchors and other assets' references are
+   * counted elsewhere). `invalid` = malformed references, never checked.
+   */
+  counts: { ok: number; stale: number; missing: number; unknown: number; invalid: number };
   referenceChecks: ReadonlyArray<IKnowledgeReferenceCheck>;
   anchorChecks: ReadonlyArray<IKnowledgeAnchorCheck>;
+  /** Knowledge entries the sweep examined — `changedFiles` narrows this, never {@link entries}. */
+  entriesInScope: number;
+  /** The three entry buckets over {@link entriesInScope}. */
+  coverage: IKnowledgeStaleCoverage;
+  /** One verdict per knowledge entry in scope, in corpus order. */
+  entryVerdicts: ReadonlyArray<IKnowledgeEntryVerdictRecord>;
+  /** Every unverifiable entry id in scope (renderers cap; this never does). */
+  unverifiableIds: ReadonlyArray<string>;
+  /** Non-ok checks per {@link ReferenceFailure} — knowledge references, anchors and other assets. */
+  failureCounts: Readonly<Record<ReferenceFailure, number>>;
+  /** Per asset kind. `scanned: 0` means NOT IN SWEEP — say so, never render it as clean zeros. */
+  byAssetKind: Readonly<Record<ReferenceAssetKind, IKnowledgeKindBucket>>;
+  /** Per knowledge entry `type` (rules and paths are where unreferenced entries cluster). */
+  byEntryType: Readonly<Record<string, IKnowledgeKindBucket>>;
+  /** Per reference kind, knowledge and other assets together. */
+  byReferenceKind: Readonly<Record<string, IKnowledgeReferenceKindBucket>>;
+  /**
+   * References declared by boundary rules and policy checks, plus IMPLICIT
+   * boundary references (`implicit: true`). Kept apart from
+   * {@link referenceChecks} so the nine consumers that map a check back to a
+   * knowledge entry never meet a rule id.
+   */
+  assetReferenceChecks: ReadonlyArray<IKnowledgeReferenceCheck>;
+  /** Reported, never gating on their own. */
+  advisories: ReadonlyArray<IKnowledgeStaleAdvisory>;
+  /**
+   * Policy checks keep their scope inside `evaluate()`; only declared
+   * references can verify them. `loaded: false` = the policy cache was not
+   * warm, so policies were NOT IN SWEEP.
+   */
+  policySweep: { readonly loaded: boolean; readonly declared: number; readonly withReferences: number };
+  /** Set when `staleAfterDays` was requested. */
+  age?: {
+    readonly asOf: string;
+    readonly staleAfterDays: number;
+    /** Oldest first. */
+    readonly aged: ReadonlyArray<IKnowledgeAgedEntry>;
+    /** In scope with no (valid) `verifiedOn`. */
+    readonly neverVerified: ReadonlyArray<string>;
+  };
 }
 
 /**
@@ -156,6 +270,18 @@ export interface IKnowledgeStaleCheckOptions {
    * single-file AST scan when the graph cannot answer.
    */
   graph?: ISymbolGraphResolver;
+  /**
+   * `--stale-after`, in days: list entries whose `verifiedOn` is older than
+   * this (and those with none). Author attestation — it never changes a
+   * reference outcome.
+   */
+  staleAfterDays?: number;
+  /** The date ages are measured to (`YYYY-MM-DD`). Default: today, UTC — echoed in `age.asOf`. */
+  asOf?: string;
+  /** Sweep boundary-rule and policy references too. Default `true`. */
+  includeAssets?: boolean;
+  /** Directories a `count` source never walks (e.g. the sharkcraft dir). */
+  excludeDirs?: readonly string[];
 }
 
 /**
@@ -191,211 +317,493 @@ function dirExists(projectRoot: string, rel: string): boolean {
  * imports the real accessors so the compiler can see a rename.
  */
 
-function commandExistsInInspection(inspection: ISharkcraftInspection, id: string): boolean {
-  return referenceIdExists(inspection, 'command', id);
-}
-
-function templateExists(inspection: ISharkcraftInspection, id: string): boolean {
-  return referenceIdExists(inspection, 'template', id);
-}
-
-function playbookExists(inspection: ISharkcraftInspection, id: string): boolean {
-  return referenceIdExists(inspection, 'playbook', id);
-}
-
-function constructExists(inspection: ISharkcraftInspection, id: string): boolean {
-  return referenceIdExists(inspection, 'construct', id);
-}
-
-function helperExists(id: string): boolean {
-  return HELPERS.some((h) => h.id === id);
-}
-
-function policyExists(inspection: ISharkcraftInspection, id: string): boolean {
-  return referenceIdExists(inspection, 'policy', id);
-}
-
-function boundaryRuleExists(inspection: ISharkcraftInspection, id: string): boolean {
-  return referenceIdExists(inspection, 'boundary-rule', id);
-}
-
-function pathConventionExists(inspection: ISharkcraftInspection, id: string): boolean {
-  return referenceIdExists(inspection, 'path-convention', id);
-}
-
-function packageExists(inspection: ISharkcraftInspection, id: string): boolean {
-  // Project packages live under `packages/<name>` for SharkCraft + many
-  // monorepos. Trust the inspection's package map if available, else
-  // fall back to a filesystem check.
-  const pkgs = (inspection as { packages?: { name: string }[] }).packages;
-  if (Array.isArray(pkgs)) {
-    if (pkgs.some((p) => p.name === id)) return true;
+/**
+ * A `command` reference (or anchor) through THE injected command resolver.
+ *
+ * Without a resolver (outside the CLI) the command was NOT checked: that is
+ * `Unknown` with a loud NOT VERIFIED message — never `Ok`. It used to be `Ok`
+ * for every `shrk …` string, which certified three dead commands in shrk's own
+ * knowledge as "Command available".
+ *
+ * Read as a command REFERENCE (`resolveShrkCommandReference`): a bare
+ * `frobnicate` is `shrk frobnicate` — stale — exactly as the self-config
+ * doctor and the agent-test runner read it, never `not-shrk` → `ok`.
+ */
+function checkCommandString(
+  inspection: ISharkcraftInspection,
+  id: string,
+  label: string,
+): { outcome: ReferenceCheckOutcome; message: string; suggestion?: string } {
+  const resolution = resolveShrkCommandReference(inspection, id);
+  switch (resolution.status) {
+    case CommandResolutionStatus.Unverified:
+      return {
+        outcome: ReferenceCheckOutcome.Unknown,
+        message: `${label} ${id}: ${COMMAND_INDEX_NOT_INJECTED}`,
+        suggestion: 'Run the check through the CLI (`shrk knowledge stale-check`), which injects the live command index.',
+      };
+    case CommandResolutionStatus.Ok:
+    case CommandResolutionStatus.PrefixOnly:
+    case CommandResolutionStatus.NotShrk:
+      return {
+        outcome: ReferenceCheckOutcome.Ok,
+        message:
+          resolution.status === CommandResolutionStatus.Ok
+            ? `Command available: ${id}`
+            : `Command ${id}: ${resolution.status}${resolution.reason ? ` (${resolution.reason})` : ''}`,
+      };
+    default: {
+      const closest = resolution.closest ?? [];
+      return {
+        outcome: ReferenceCheckOutcome.Stale,
+        message: `Command not registered: ${id} (${resolution.status}${resolution.reason ? ` — ${resolution.reason}` : ''})`,
+        suggestion:
+          closest.length > 0
+            ? `Did you mean \`${closest[0]}\`? Update the reference (or run \`shrk surface list\` for every real command).`
+            : 'Update the reference — run `shrk surface list` for every real command.',
+      };
+    }
   }
-  // file lookup as a backstop
-  const rel = id.startsWith('@') ? id.split('/')[1] ?? '' : id;
-  return dirExists(inspection.projectRoot, `packages/${rel}`);
+}
+
+/** One reference / anchor check, before it is attached to its subject. */
+interface IRefResult {
+  outcome: ReferenceCheckOutcome;
+  confidence?: SymbolConfidence;
+  message: string;
+  suggestion?: string;
+  failure?: ReferenceFailure;
+  expected?: string | number;
+  actual?: string | number;
+  /** A pinned symbol's declaration span — what `contains` / `matches` read. */
+  span?: { start: number; end: number };
+  /** An `Owner.member` spelling that WOULD resolve, for a bare member name. */
+  suggestedSymbol?: string;
+}
+
+/**
+ * Why an id could not be CHECKED against a cache-backed registry, or undefined
+ * when the registry is loaded and non-empty.
+ *
+ * A negative answer from an unloaded (or empty) registry proves nothing: every
+ * id checked against it would be reported stale, including correct ones — the
+ * fastest way to get a check switched off. So it reads as NOT VERIFIED
+ * (`unknown`), the same safety net the doc-reference linter uses. A POSITIVE
+ * answer is always trusted.
+ */
+function unloadedRegistryReason(
+  inspection: ISharkcraftInspection,
+  kind: ReferenceKind,
+): string | undefined {
+  if (!isCacheBackedKind(kind)) return undefined;
+  if (!isReferenceCacheWarm(inspection)) {
+    return `the ${kind} registry was not loaded — call warmReferenceRegistries() before building the report (NOT VERIFIED)`;
+  }
+  if (referenceIdsFor(inspection, kind).length === 0) {
+    return `the ${kind} registry is empty — it failed to load, or this repo declares no ${kind}s (NOT VERIFIED)`;
+  }
+  return undefined;
+}
+
+/**
+ * An id-keyed reference, through THE shared resolver. The helper kind reads
+ * built-ins AND pack helpers there; a private built-in-only list used to answer
+ * here, calling every pack helper stale.
+ */
+function checkRegisteredId(
+  inspection: ISharkcraftInspection,
+  kind: ReferenceKind,
+  id: string,
+  label: string,
+): IRefResult {
+  if (referenceIdExists(inspection, kind, id)) {
+    return { outcome: ReferenceCheckOutcome.Ok, message: `${label} exists: ${id}` };
+  }
+  const unloaded = unloadedRegistryReason(inspection, kind);
+  if (unloaded) {
+    return {
+      outcome: ReferenceCheckOutcome.Unknown,
+      failure: ReferenceFailure.Unverifiable,
+      message: `${label} ${id}: ${unloaded}`,
+      suggestion: 'Run through the CLI (`shrk knowledge stale-check`), which loads every registry first.',
+    };
+  }
+  return staleId(kind, id);
+}
+
+/** Workspace package name → its directory (relative), per inspection. */
+const WORKSPACE_PACKAGES = new WeakMap<object, ReadonlyMap<string, string>>();
+
+function readPackageJson(abs: string): { name?: unknown; workspaces?: unknown } | null {
+  try {
+    return JSON.parse(readFileSync(abs, 'utf8')) as { name?: unknown; workspaces?: unknown };
+  } catch {
+    return null;
+  }
+}
+
+/** Directories (relative) matching one `workspaces` glob. */
+function expandWorkspaceGlob(projectRoot: string, pattern: string): string[] {
+  const norm = pattern.replace(/^\.\//, '').replace(/\/+$/, '');
+  const segs = norm.split('/');
+  const firstGlob = segs.findIndex((s) => /[*?[{]/.test(s));
+  if (firstGlob === -1) return [norm];
+  const maxDepth = segs.includes('**') ? 4 : segs.length - firstGlob;
+  const out: string[] = [];
+  const walk = (rel: string, depth: number): void => {
+    if (depth > maxDepth) return;
+    let names: string[];
+    try {
+      names = readdirSync(nodePath.join(projectRoot, rel));
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      if (n === 'node_modules' || n.startsWith('.')) continue;
+      const child = rel ? `${rel}/${n}` : n;
+      if (!dirExists(projectRoot, child)) continue;
+      // One `workspaces` pattern against one directory — not a gate-plane list.
+      if (globToRegex(norm).test(child)) out.push(child);
+      walk(child, depth + 1);
+    }
+  };
+  walk(segs.slice(0, firstGlob).join('/'), 1);
+  return out;
+}
+
+/**
+ * Every workspace package the root `package.json` declares — the packages its
+ * `workspaces` globs reach, by their `name`. This replaces a read of
+ * `inspection.packages`, a property the inspection never has (the phantom-cast
+ * bug class): it answered "not a package" for every id and fell through to a
+ * hard-coded `packages/<name>` layout.
+ */
+function workspacePackages(inspection: ISharkcraftInspection): ReadonlyMap<string, string> {
+  const cached = WORKSPACE_PACKAGES.get(inspection);
+  if (cached) return cached;
+  const out = new Map<string, string>();
+  const root = readPackageJson(nodePath.join(inspection.projectRoot, 'package.json'));
+  if (root) {
+    if (typeof root.name === 'string') out.set(root.name, '.');
+    const ws = root.workspaces as unknown;
+    const patterns: unknown[] = Array.isArray(ws)
+      ? ws
+      : Array.isArray((ws as { packages?: unknown } | null)?.packages)
+        ? ((ws as { packages: unknown[] }).packages)
+        : [];
+    for (const pattern of patterns) {
+      if (typeof pattern !== 'string' || pattern.startsWith('!')) continue;
+      for (const dir of expandWorkspaceGlob(inspection.projectRoot, pattern)) {
+        const pkg = readPackageJson(nodePath.join(inspection.projectRoot, dir, 'package.json'));
+        if (pkg && typeof pkg.name === 'string' && !out.has(pkg.name)) out.set(pkg.name, dir);
+      }
+    }
+  }
+  WORKSPACE_PACKAGES.set(inspection, out);
+  return out;
+}
+
+function checkPackageReference(inspection: ISharkcraftInspection, id: string): IRefResult {
+  const dir = workspacePackages(inspection).get(id);
+  if (dir) {
+    return { outcome: ReferenceCheckOutcome.Ok, message: `Package exists: ${id} (${dir})` };
+  }
+  // Last-resort backstop for repos without a `workspaces` field — reported as
+  // probable, because a directory name is not a package name.
+  const rel = id.startsWith('@') ? (id.split('/')[1] ?? '') : id;
+  if (rel && dirExists(inspection.projectRoot, `packages/${rel}`)) {
+    return {
+      outcome: ReferenceCheckOutcome.Ok,
+      message: `Package exists (probable): packages/${rel}/ is present, but no workspace package.json declares the name ${id}.`,
+    };
+  }
+  return staleId('package', id);
 }
 
 function normalizeRel(p: string): string {
   return p.split(/[\\/]/).join('/').replace(/^\.\//, '');
 }
 
+/** `Foo` for `Foo.bar` / `Foo.prototype.bar`; null for a bare name. */
+function qualifiedOwner(sym: string): string | null {
+  const cleaned = sym.replace(/\.prototype\./g, '.');
+  const dot = cleaned.indexOf('.');
+  return dot > 0 && dot < cleaned.length - 1 ? cleaned.slice(0, dot) : null;
+}
+
 function checkSymbolReference(
   projectRoot: string,
   ref: IKnowledgeReference,
   graph?: ISymbolGraphResolver,
-): { outcome: ReferenceCheckOutcome; confidence: SymbolConfidence; message: string } {
+): IRefResult & { confidence: SymbolConfidence } {
   const sym = ref.symbol ?? '';
   if (!sym) {
     return {
-      outcome: ReferenceCheckOutcome.Unknown,
+      outcome: ReferenceCheckOutcome.Invalid,
       confidence: SymbolConfidence.Unknown,
-      message: 'Symbol reference has no `symbol` field.',
+      failure: ReferenceFailure.Malformed,
+      message: 'malformed reference: symbol reference missing required field `symbol`.',
     };
   }
+  // `Owner.member`: the graph indexes top-level symbols only, so it answers for
+  // the OWNER (moved-detection); the member itself is verified by the AST on
+  // the owner's declaring file.
+  const owner = qualifiedOwner(sym);
+  const lookup = owner ?? sym;
   // Graph-resolved, cross-file path (preferred when a graph is supplied).
   // A single-file AST scan cannot tell a *moved* symbol from a deleted one;
   // the graph's global symbol index can, so consult it first.
   if (graph) {
     const decl = graph
-      .findSymbol(sym)
+      .findSymbol(lookup)
       .map((n) => n.path)
       .filter((p): p is string => typeof p === 'string' && p.length > 0)
       .map(normalizeRel);
     if (decl.length > 0) {
       if (ref.path) {
         const target = normalizeRel(ref.path);
-        if (decl.includes(target)) {
+        if (!decl.includes(target)) {
+          // Symbol exists but no longer at the pinned file — it moved.
+          return {
+            outcome: ReferenceCheckOutcome.Stale,
+            confidence: SymbolConfidence.Missing,
+            failure: ReferenceFailure.AnchorMissing,
+            message: `Symbol \`${lookup}\` is no longer in ${ref.path}; the graph resolves it to ${decl
+              .slice(0, 3)
+              .join(', ')}.`,
+          };
+        }
+        if (!owner && !hasContentAssertion(ref)) {
           return {
             outcome: ReferenceCheckOutcome.Ok,
             confidence: SymbolConfidence.Exact,
             message: `\`${sym}\` resolves to ${ref.path} (graph).`,
           };
         }
-        // Symbol exists but no longer at the pinned file — it moved.
+        // The owner is at the pinned file; the member (and any content span)
+        // is verified by the AST below.
+      } else if (!owner) {
+        // No file pin, but the graph resolved it cross-file.
         return {
-          outcome: ReferenceCheckOutcome.Stale,
-          confidence: SymbolConfidence.Missing,
-          message: `Symbol \`${sym}\` is no longer in ${ref.path}; the graph resolves it to ${decl
-            .slice(0, 3)
-            .join(', ')}.`,
+          outcome: ReferenceCheckOutcome.Ok,
+          confidence: SymbolConfidence.Probable,
+          message: `\`${sym}\` resolves via the code graph to ${decl.slice(0, 3).join(', ')}.`,
+        };
+      } else if (decl.length === 1) {
+        return resolveSymbolAtPath(projectRoot, decl[0]!, sym, false);
+      } else {
+        return {
+          outcome: ReferenceCheckOutcome.Unknown,
+          confidence: SymbolConfidence.Unknown,
+          failure: ReferenceFailure.Unverifiable,
+          message: `\`${owner}\` is declared in ${decl.length} files (${decl.slice(0, 3).join(', ')}) — pin the path to check \`${sym}\`.`,
         };
       }
-      // No file pin, but the graph resolved it cross-file.
-      return {
-        outcome: ReferenceCheckOutcome.Ok,
-        confidence: SymbolConfidence.Probable,
-        message: `\`${sym}\` resolves via the code graph to ${decl.slice(0, 3).join(', ')}.`,
-      };
-    }
-    // Absent from the graph. The graph may be partial (locals, unindexed
-    // languages), so fall through to the AST/text backstop when a file is
-    // pinned; otherwise we cannot verify.
-    if (!ref.path) {
+    } else if (!ref.path) {
+      // Absent from the graph. The graph may be partial (locals, unindexed
+      // languages), so fall through to the AST/text backstop when a file is
+      // pinned; otherwise we cannot verify.
       return {
         outcome: ReferenceCheckOutcome.Unknown,
         confidence: SymbolConfidence.Unknown,
+        failure: ReferenceFailure.Unverifiable,
         message: `Symbol reference \`${sym}\` has no file pin and is absent from the code graph; stale-check cannot verify.`,
       };
     }
   }
-  const file = ref.path ? nodePath.join(projectRoot, ref.path) : null;
-  if (file) {
-    if (!existsSync(file)) {
-      return {
-        outcome: ReferenceCheckOutcome.Missing,
-        confidence: SymbolConfidence.Missing,
-        message: `Referenced file does not exist: ${ref.path}`,
-      };
-    }
-    // AST-backed resolution (falls back to text-scan if parse fails).
-    try {
-      const res = resolveSymbolInFile(file, sym);
-      switch (res.resolution) {
-        case SymbolResolution.ExactExport:
-          return {
-            outcome: ReferenceCheckOutcome.Ok,
-            confidence: SymbolConfidence.Exact,
-            message: res.message,
-          };
-        case SymbolResolution.ExactLocal:
-        case SymbolResolution.ExactReExport:
-          return {
-            outcome: ReferenceCheckOutcome.Ok,
-            confidence: SymbolConfidence.Exact,
-            message: res.message,
-          };
-        case SymbolResolution.ProbableText:
-          return {
-            outcome: ReferenceCheckOutcome.Ok,
-            confidence: SymbolConfidence.Probable,
-            message: res.message,
-          };
-        case SymbolResolution.Missing:
-          return {
-            outcome: ReferenceCheckOutcome.Stale,
-            confidence: SymbolConfidence.Missing,
-            message: res.message,
-          };
-        default:
-          return {
-            outcome: ReferenceCheckOutcome.Unknown,
-            confidence: SymbolConfidence.Unknown,
-            message: res.message,
-          };
-      }
-    } catch {
-      // Fallback to text scan.
-      try {
-        const text = readFileSync(file, 'utf8');
-        const declRe = new RegExp(
-          `(export\\s+(?:async\\s+)?(?:function|class|interface|enum|type|const|let|var)\\s+|class\\s+|function\\s+)${escapeRe(sym)}\\b`,
-        );
-        if (declRe.test(text)) {
-          return {
-            outcome: ReferenceCheckOutcome.Ok,
-            confidence: SymbolConfidence.Exact,
-            message: `Found declaration of \`${sym}\` in ${ref.path}.`,
-          };
-        }
-        if (text.includes(sym)) {
-          return {
-            outcome: ReferenceCheckOutcome.Ok,
-            confidence: SymbolConfidence.Probable,
-            message: `\`${sym}\` appears in ${ref.path}, but not as an exported declaration.`,
-          };
-        }
-        return {
-          outcome: ReferenceCheckOutcome.Stale,
-          confidence: SymbolConfidence.Missing,
-          message: `Symbol \`${sym}\` not found in ${ref.path}.`,
-        };
-      } catch {
-        return {
-          outcome: ReferenceCheckOutcome.Unknown,
-          confidence: SymbolConfidence.Unknown,
-          message: `Failed to read ${ref.path}.`,
-        };
-      }
-    }
-  }
+  if (ref.path) return resolveSymbolAtPath(projectRoot, ref.path, sym, true);
   // No file pinned — best-effort confidence is `unknown`.
   return {
     outcome: ReferenceCheckOutcome.Unknown,
     confidence: SymbolConfidence.Unknown,
-    message: `Symbol reference \`${sym}\` has no file pin; stale-check cannot verify.`,
+    failure: ReferenceFailure.Unverifiable,
+    message: `Symbol reference \`${sym}\` has no file pin; stale-check cannot verify (pin it as \`symbol:${sym}@<path>\`).`,
   };
+}
+
+/** Resolve `sym` in one file through the AST index (text-scan backstop). */
+function resolveSymbolAtPath(
+  projectRoot: string,
+  relPath: string,
+  sym: string,
+  pinned: boolean,
+): IRefResult & { confidence: SymbolConfidence } {
+  const file = nodePath.join(projectRoot, relPath);
+  if (!existsSync(file)) {
+    return {
+      outcome: ReferenceCheckOutcome.Missing,
+      confidence: SymbolConfidence.Missing,
+      failure: ReferenceFailure.PathMissing,
+      message: `Referenced file does not exist: ${relPath}`,
+    };
+  }
+  const via = pinned ? '' : ` (declaring file ${relPath}, from the code graph)`;
+  // AST-backed resolution (falls back to text-scan if parse fails).
+  try {
+    const res = resolveSymbolInFile(file, sym);
+    switch (res.resolution) {
+      case SymbolResolution.ExactExport:
+      case SymbolResolution.ExactLocal:
+      case SymbolResolution.ExactReExport:
+      case SymbolResolution.ExactMember:
+      case SymbolResolution.ExactLocalMember:
+        return {
+          outcome: ReferenceCheckOutcome.Ok,
+          confidence: pinned ? SymbolConfidence.Exact : SymbolConfidence.Probable,
+          message: res.message + via,
+          ...(res.span ? { span: res.span } : {}),
+        };
+      case SymbolResolution.ProbableText:
+        return {
+          outcome: ReferenceCheckOutcome.Ok,
+          confidence: SymbolConfidence.Probable,
+          message: res.message + via,
+        };
+      case SymbolResolution.Missing:
+        return {
+          outcome: ReferenceCheckOutcome.Stale,
+          confidence: SymbolConfidence.Missing,
+          failure: ReferenceFailure.AnchorMissing,
+          message: res.message + via,
+          ...(res.suggestedSymbol ? { suggestedSymbol: res.suggestedSymbol } : {}),
+        };
+      default:
+        return {
+          outcome: ReferenceCheckOutcome.Unknown,
+          confidence: SymbolConfidence.Unknown,
+          failure: ReferenceFailure.Unverifiable,
+          message: res.message + via,
+        };
+    }
+  } catch {
+    // Fallback to text scan.
+    const token = qualifiedOwner(sym) ? sym.slice(sym.lastIndexOf('.') + 1) : sym;
+    try {
+      const text = readFileSync(file, 'utf8');
+      const declRe = new RegExp(
+        `(export\\s+(?:async\\s+)?(?:function|class|interface|enum|type|const|let|var)\\s+|class\\s+|function\\s+)${escapeRe(token)}\\b`,
+      );
+      if (declRe.test(text)) {
+        return {
+          outcome: ReferenceCheckOutcome.Ok,
+          confidence: SymbolConfidence.Exact,
+          message: `Found declaration of \`${sym}\` in ${relPath}.`,
+        };
+      }
+      if (text.includes(token)) {
+        return {
+          outcome: ReferenceCheckOutcome.Ok,
+          confidence: SymbolConfidence.Probable,
+          message: `\`${sym}\` appears in ${relPath}, but not as an exported declaration.`,
+        };
+      }
+      return {
+        outcome: ReferenceCheckOutcome.Stale,
+        confidence: SymbolConfidence.Missing,
+        failure: ReferenceFailure.AnchorMissing,
+        message: `Symbol \`${sym}\` not found in ${relPath}.`,
+      };
+    } catch {
+      return {
+        outcome: ReferenceCheckOutcome.Unknown,
+        confidence: SymbolConfidence.Unknown,
+        failure: ReferenceFailure.Unverifiable,
+        message: `Failed to read ${relPath}.`,
+      };
+    }
+  }
 }
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Check one reference: does its target exist — and, when it declares
+ * `contains` / `matches` / `count`, does the target still say what the asset
+ * claims. Every non-ok result carries a {@link ReferenceFailure}.
+ */
 function checkReference(
   inspection: ISharkcraftInspection,
   ref: IKnowledgeReference,
   graph?: ISymbolGraphResolver,
-): { outcome: ReferenceCheckOutcome; confidence?: SymbolConfidence; message: string; suggestion?: string } {
+  excludeDirs: readonly string[] = [],
+): IRefResult {
+  const base = checkReferenceTarget(inspection, ref, graph);
+  const result =
+    base.outcome === ReferenceCheckOutcome.Ok
+      ? applyAssertions(inspection.projectRoot, ref, base, excludeDirs)
+      : base;
+  if (result.outcome === ReferenceCheckOutcome.Ok || result.failure !== undefined) return result;
+  return { ...result, failure: defaultFailure(ref.kind, result.outcome) };
+}
+
+/** The failure mode of a non-ok check that did not name one. */
+function defaultFailure(kind: string, outcome: ReferenceCheckOutcome): ReferenceFailure {
+  if (outcome === ReferenceCheckOutcome.Unknown) return ReferenceFailure.Unverifiable;
+  if (outcome === ReferenceCheckOutcome.Invalid) return ReferenceFailure.Malformed;
+  if (kind === 'file' || kind === 'directory') return ReferenceFailure.PathMissing;
+  if (kind === 'symbol') return ReferenceFailure.AnchorMissing;
+  return ReferenceFailure.IdUnregistered;
+}
+
+/**
+ * Content and count assertions, over a target that EXISTS — a mismatch on a
+ * missing file would report one break twice.
+ */
+function applyAssertions(
+  projectRoot: string,
+  ref: IKnowledgeReference,
+  base: IRefResult,
+  excludeDirs: readonly string[],
+): IRefResult {
+  const content = checkReferenceContent(projectRoot, ref, ref.kind === 'symbol' ? base.span : undefined);
+  if (content && !content.ok) return assertionFailure(base, content, 'content');
+  const count = checkReferenceCount(projectRoot, ref, countExcludeDirsFor(ref, excludeDirs));
+  if (count && !count.ok) return assertionFailure(base, count, 'count');
+  const held = [content?.message, count?.message].filter((m): m is string => m !== undefined);
+  if (held.length === 0) return base;
+  return {
+    ...base,
+    message: `${base.message} ${held.join(' ')}`,
+    ...(count ? { expected: count.expected, actual: count.actual } : {}),
+  };
+}
+
+function assertionFailure(
+  base: IRefResult,
+  a: IReferenceAssertionResult,
+  what: 'content' | 'count',
+): IRefResult {
+  const confidence = base.confidence ? { confidence: base.confidence } : {};
+  if (a.unverifiable) {
+    return {
+      outcome: ReferenceCheckOutcome.Unknown,
+      ...confidence,
+      failure: ReferenceFailure.Unverifiable,
+      message: `${base.message} Its ${what} assertion could not be evaluated: ${a.message}`,
+    };
+  }
+  return {
+    outcome: ReferenceCheckOutcome.Stale,
+    ...confidence,
+    failure: a.failure ?? (what === 'count' ? ReferenceFailure.CountMismatch : ReferenceFailure.ContentMismatch),
+    ...(a.expected !== undefined ? { expected: a.expected } : {}),
+    ...(a.actual !== undefined ? { actual: a.actual } : {}),
+    message: a.message,
+    suggestion:
+      what === 'count'
+        ? `Update the claim in the entry, then set count.expected: ${String(a.actual)}.`
+        : 'Update the entry (and the assertion) to what the code says now.',
+  };
+}
+
+/** Does the reference's TARGET exist? (Assertions are layered on by {@link checkReference}.) */
+function checkReferenceTarget(
+  inspection: ISharkcraftInspection,
+  ref: IKnowledgeReference,
+  graph?: ISymbolGraphResolver,
+): IRefResult {
   const projectRoot = inspection.projectRoot;
   switch (ref.kind) {
     case 'file': {
@@ -412,6 +820,7 @@ function checkReference(
       }
       return {
         outcome: ReferenceCheckOutcome.Stale,
+        failure: ReferenceFailure.PathMissing,
         message: `Directory missing: ${ref.path}`,
         suggestion: 'Move the directory or update the knowledge reference.',
       };
@@ -423,124 +832,291 @@ function checkReference(
     case 'command': {
       const id = ref.id ?? ref.command ?? '';
       if (!id) return missingField('command', 'id or command');
-      if (commandExistsInInspection(inspection, id)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `Command available: ${id}` };
-      }
-      return {
-        outcome: ReferenceCheckOutcome.Stale,
-        message: `Command not registered: ${id}`,
-        suggestion: 'Register the command in the command catalog or update the reference.',
-      };
+      return checkCommandString(inspection, id, 'Command');
     }
     case 'template': {
       if (!ref.id) return missingField('template', 'id');
-      if (templateExists(inspection, ref.id)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `Template exists: ${ref.id}` };
-      }
-      return staleId('template', ref.id);
+      return checkRegisteredId(inspection, 'template', ref.id, 'Template');
     }
     case 'playbook': {
       if (!ref.id) return missingField('playbook', 'id');
-      if (playbookExists(inspection, ref.id)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `Playbook exists: ${ref.id}` };
-      }
-      return staleId('playbook', ref.id);
+      return checkRegisteredId(inspection, 'playbook', ref.id, 'Playbook');
     }
     case 'construct': {
       if (!ref.id) return missingField('construct', 'id');
-      if (constructExists(inspection, ref.id)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `Construct exists: ${ref.id}` };
-      }
-      return staleId('construct', ref.id);
+      return checkRegisteredId(inspection, 'construct', ref.id, 'Construct');
     }
     case 'helper': {
       if (!ref.id) return missingField('helper', 'id');
-      if (helperExists(ref.id)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `Helper exists: ${ref.id}` };
-      }
-      return staleId('helper', ref.id);
+      return checkRegisteredId(inspection, 'helper', ref.id, 'Helper');
     }
     case 'policy': {
       if (!ref.id) return missingField('policy', 'id');
-      if (policyExists(inspection, ref.id)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `Policy exists: ${ref.id}` };
-      }
-      return staleId('policy', ref.id);
+      return checkRegisteredId(inspection, 'policy', ref.id, 'Policy');
     }
     case 'boundary-rule': {
       if (!ref.id) return missingField('boundary-rule', 'id');
-      if (boundaryRuleExists(inspection, ref.id)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `Boundary rule exists: ${ref.id}` };
-      }
-      return staleId('boundary-rule', ref.id);
+      return checkRegisteredId(inspection, 'boundary-rule', ref.id, 'Boundary rule');
     }
     case 'path-convention': {
       if (!ref.id) return missingField('path-convention', 'id');
-      if (pathConventionExists(inspection, ref.id)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `Path convention exists: ${ref.id}` };
-      }
-      return staleId('path-convention', ref.id);
+      return checkRegisteredId(inspection, 'path-convention', ref.id, 'Path convention');
     }
     case 'package': {
       if (!ref.id) return missingField('package', 'id');
-      if (packageExists(inspection, ref.id)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `Package exists: ${ref.id}` };
-      }
-      return staleId('package', ref.id);
+      return checkPackageReference(inspection, ref.id);
     }
     case 'url': {
       // We never fetch URLs. Mark them unknown unless we can resolve to a
       // local docs file.
       return {
         outcome: ReferenceCheckOutcome.Unknown,
+        failure: ReferenceFailure.Unverifiable,
         message: 'URL references are not verified (no network).',
       };
     }
+    default:
+      // A kind outside the vocabulary still loads (the validator reports it as
+      // an error); here it is MALFORMED — never a crash, never a silent row.
+      return {
+        outcome: ReferenceCheckOutcome.Invalid,
+        failure: ReferenceFailure.Malformed,
+        message: `malformed reference: unsupported kind "${String((ref as { kind?: unknown }).kind)}" — expected one of: ${KNOWLEDGE_REFERENCE_KINDS.join(', ')}.`,
+      };
   }
 }
 
-function missingField(
-  kind: KnowledgeReferenceKind,
-  field: string,
-): { outcome: ReferenceCheckOutcome; message: string } {
+function missingField(kind: KnowledgeReferenceKind, field: string): IRefResult {
   return {
-    outcome: ReferenceCheckOutcome.Unknown,
-    message: `${kind} reference missing required field: ${field}`,
+    outcome: ReferenceCheckOutcome.Invalid,
+    failure: ReferenceFailure.Malformed,
+    message: `malformed reference: ${kind} reference missing required field \`${field}\`.`,
   };
 }
 
-function staleFile(rel: string): { outcome: ReferenceCheckOutcome; message: string; suggestion?: string } {
+function staleFile(rel: string): IRefResult {
   return {
     outcome: ReferenceCheckOutcome.Stale,
+    failure: ReferenceFailure.PathMissing,
     message: `File missing: ${rel}`,
     suggestion: 'Restore the file or run `shrk knowledge rename-file <old> <new> --dry-run`.',
   };
 }
 
-function staleId(
-  kind: string,
-  id: string,
-): { outcome: ReferenceCheckOutcome; message: string; suggestion?: string } {
+function staleId(kind: string, id: string): IRefResult {
   return {
     outcome: ReferenceCheckOutcome.Stale,
+    failure: ReferenceFailure.IdUnregistered,
     message: `${kind} not found: ${id}`,
     suggestion: 'Register the target or remove the reference.',
   };
 }
 
-function entryTouchesChangedFiles(
-  entry: IKnowledgeEntry,
+function normalizeSlashes(p: string): string {
+  return p.split(/[\\/]/).join('/');
+}
+
+/** `./src/a.ts` / `src\a.ts` / `src/svc/` → `src/a.ts` / `src/svc`. */
+function normalizeScopePath(p: string): string {
+  return normalizeSlashes(p).replace(/^(?:\.\/)+/, '').replace(/\/+$/, '');
+}
+
+/**
+ * A changed path IS the target, or lies UNDER it — a `directory` reference
+ * whose files changed, or a directory deleted wholesale (git lists its files,
+ * never the directory itself).
+ */
+function pathTouched(target: string | undefined, changed: readonly string[]): boolean {
+  if (!target) return false;
+  const p = normalizeScopePath(target);
+  if (p === '' || p === '.') return false;
+  const under = `${p}/`;
+  return changed.some((c) => c === p || c.startsWith(under));
+}
+
+/**
+ * Is a subject — a knowledge entry, a boundary rule, a policy check — in a
+ * changeset's scope? THE one scoping rule for `--changed-only` / `--files`:
+ *
+ *   - the file that DECLARES it changed (its references were added or edited —
+ *     a typo in a new reference must be checked by the run that introduced it);
+ *   - a changed path equals a reference / anchor path, or lies under one;
+ *   - a changed path matches a `count` source glob (the number re-derives from
+ *     those globs, so a change there can move it with no pinned path changing).
+ *
+ * `source` is project-relative (`relativeSource`); `(unknown source)` matches
+ * nothing.
+ */
+function subjectTouchesChangedFiles(
+  subject: {
+    readonly source: string;
+    readonly references?: readonly IAssetReference[];
+    readonly anchors?: readonly IKnowledgeAnchor[];
+  },
   changed: ReadonlyArray<string>,
 ): boolean {
   if (changed.length === 0) return true;
-  const changedSet = new Set(changed.map((c) => c.split(/[\\/]/).join('/')));
-  for (const ref of entry.references ?? []) {
-    if (ref.path && changedSet.has(ref.path.split(/[\\/]/).join('/'))) return true;
+  const changedList = changed.map(normalizeScopePath);
+  if (changedList.includes(normalizeScopePath(subject.source))) return true;
+  for (const ref of subject.references ?? []) {
+    if (pathTouched(ref.path, changedList)) return true;
+    // The scope the count is MEASURED over (`inspectSource` selects through
+    // `globListSelects`), so a change to a file its `!` excludes is no touch.
+    const globs = ref.count?.source?.files;
+    if (globs && globs.length > 0 && changedList.some((c) => globListSelects(c, globs))) return true;
   }
-  for (const anchor of entry.anchors ?? []) {
-    if (anchor.path && changedSet.has(anchor.path.split(/[\\/]/).join('/'))) return true;
+  for (const anchor of subject.anchors ?? []) {
+    if (pathTouched(anchor.path, changedList)) return true;
   }
   return false;
+}
+
+/**
+ * The directories a `count` source never walks by default: the sharkcraft dir.
+ * Its `.ts` files hold the claims themselves — prose saying `registerService("<name>")`
+ * inside a count glob would count itself, and the mismatch hint would tell the
+ * author to bake that self-match into `expected` (policy-lint and finish prune
+ * the same dir for the same reason).
+ */
+function defaultCountExcludeDirs(inspection: ISharkcraftInspection): readonly string[] {
+  const dir = inspection.sharkcraftDir;
+  if (!dir) return [];
+  const rel = normalizeScopePath(nodePath.relative(inspection.projectRoot, dir));
+  return rel && rel !== '.' && !rel.startsWith('..') && !nodePath.isAbsolute(rel) ? [rel] : [];
+}
+
+/**
+ * The exclusions ONE count source walks under: an exclusion is dropped when the
+ * source's own globs target inside it (`sharkcraft/**` counts there on purpose).
+ */
+function countExcludeDirsFor(ref: IAssetReference, excludeDirs: readonly string[]): readonly string[] {
+  const globs = ref.count?.source?.files ?? [];
+  if (excludeDirs.length === 0 || globs.length === 0) return excludeDirs;
+  const prefixes = globs.filter((g) => !g.startsWith('!')).map((g) => staticGlobPrefix(g));
+  return excludeDirs.filter((d) => !prefixes.some((p) => p === d || p.startsWith(`${d}/`)));
+}
+
+/** Every {@link ReferenceFailure} at 0 — the report always carries the full map. */
+function emptyFailureCounts(): Record<ReferenceFailure, number> {
+  const out = {} as Record<ReferenceFailure, number>;
+  for (const f of Object.values(ReferenceFailure)) out[f] = 0;
+  return out;
+}
+
+function emptyKindBucket(): IKnowledgeKindBucket {
+  return { scanned: 0, zeroReferences: 0, referencesChecked: 0, verified: 0, stale: 0, unverifiable: 0 };
+}
+
+/**
+ * ok / stale / missing are real checks; unknown and invalid (malformed) proved
+ * nothing either way. THE predicate — the stale-check's entry buckets, its
+ * verdict fold (`declaredReferenceCoverage`) and the `shrk gate`
+ * knowledge-symbol gate all read it.
+ */
+export function isCheckableOutcome(o: ReferenceCheckOutcome): boolean {
+  return o !== ReferenceCheckOutcome.Unknown && o !== ReferenceCheckOutcome.Invalid;
+}
+
+function isFailingOutcome(o: ReferenceCheckOutcome): boolean {
+  return o === ReferenceCheckOutcome.Stale || o === ReferenceCheckOutcome.Missing;
+}
+
+/**
+ * One subject's bucket from its checks: any failing check makes it stale; any
+ * passing one (and no failing) makes it verified; NOTHING checkable makes it
+ * unverifiable — never healthy.
+ */
+function classifyChecks(checkable: number, failing: number): KnowledgeEntryVerdict {
+  if (failing > 0) return KnowledgeEntryVerdict.Stale;
+  if (checkable > 0) return KnowledgeEntryVerdict.Verified;
+  return KnowledgeEntryVerdict.Unverifiable;
+}
+
+function bumpBucket(b: IKnowledgeKindBucket, declared: number, verdict: KnowledgeEntryVerdict): void {
+  b.scanned += 1;
+  if (declared === 0) b.zeroReferences += 1;
+  b.referencesChecked += declared;
+  if (verdict === KnowledgeEntryVerdict.Verified) b.verified += 1;
+  else if (verdict === KnowledgeEntryVerdict.Stale) b.stale += 1;
+  else b.unverifiable += 1;
+}
+
+function tallyOutcome(b: IKnowledgeReferenceKindBucket, outcome: ReferenceCheckOutcome): void {
+  b.checked += 1;
+  if (outcome === ReferenceCheckOutcome.Ok) b.ok += 1;
+  else if (outcome === ReferenceCheckOutcome.Stale) b.stale += 1;
+  else if (outcome === ReferenceCheckOutcome.Missing) b.missing += 1;
+  else if (outcome === ReferenceCheckOutcome.Invalid) b.invalid += 1;
+  else b.unknown += 1;
+}
+
+function relativeSource(projectRoot: string, origin: string | undefined): string {
+  if (!origin) return '(unknown source)';
+  return normalizeSlashes(nodePath.isAbsolute(origin) ? nodePath.relative(projectRoot, origin) : origin);
+}
+
+function pct1(part: number, whole: number): number {
+  return whole > 0 ? Math.round((part / whole) * 1000) / 10 : 0;
+}
+
+/** The static directory part of a glob (`apps/legacy/**` → `apps/legacy`); `''` when it starts with a wildcard. */
+function staticGlobPrefix(glob: string): string {
+  const segs = normalizeSlashes(glob).replace(/^\.\//, '').split('/');
+  const firstGlob = segs.findIndex((s) => /[*?[{]/.test(s));
+  return (firstGlob === -1 ? segs : segs.slice(0, firstGlob)).join('/');
+}
+
+const BACKTICKED_IDENTIFIER = /`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)(?:\(\))?`/g;
+const TS_SOURCE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
+const PATH_ONLY_ADVISORY_CAP = 5;
+
+/**
+ * The path-only advisory: an entry whose references are all paths, whose prose
+ * names (in backticks) a symbol one of its referenced files DECLARES. Renaming
+ * that symbol would leave the entry wrong while every reference still resolves
+ * — the strong form (`symbol` pinned to the path) catches it. Never gating.
+ */
+function pathOnlyAdvisories(
+  projectRoot: string,
+  entry: IKnowledgeEntry,
+  refs: readonly IKnowledgeReference[],
+  cache: Map<string, ISymbolIndex | null>,
+): IKnowledgeStaleAdvisory[] {
+  if (refs.length === 0 || !refs.every((r) => r.kind === 'file' || r.kind === 'directory')) return [];
+  const files = refs
+    .filter((r) => r.kind === 'file' && r.path !== undefined && TS_SOURCE.test(r.path))
+    .map((r) => r.path!);
+  if (files.length === 0) return [];
+  const names = new Set<string>();
+  for (const text of [entry.summary ?? '', typeof entry.content === 'string' ? entry.content : '']) {
+    for (const m of text.matchAll(BACKTICKED_IDENTIFIER)) names.add(m[1]!);
+  }
+  const out: IKnowledgeStaleAdvisory[] = [];
+  for (const name of names) {
+    if (out.length >= PATH_ONLY_ADVISORY_CAP) break;
+    for (const rel of files) {
+      let idx = cache.get(rel);
+      if (idx === undefined) {
+        const abs = nodePath.join(projectRoot, rel);
+        idx = existsSync(abs) ? buildSymbolIndex(abs) : null;
+        cache.set(rel, idx);
+      }
+      if (!idx?.parsed) continue;
+      const declared = name.includes('.')
+        ? (idx.members ?? []).some((m) => `${m.owner}.${m.name}` === name)
+        : idx.exports.some((e) => e.name === name);
+      if (!declared) continue;
+      out.push({
+        code: KnowledgeAdvisoryCode.PathOnlyReference,
+        subjectId: entry.id,
+        assetKind: ReferenceAssetKind.Knowledge,
+        message: `entry names \`${name}\`, which ${rel} declares, but pins only the path — a rename inside the file would pass unnoticed. Add { kind: 'symbol', symbol: '${name}', path: '${rel}' }.`,
+        suggestion: { kind: 'symbol', symbol: name, path: rel },
+      });
+      break;
+    }
+  }
+  return out;
 }
 
 export function buildKnowledgeStaleReport(
@@ -548,9 +1124,25 @@ export function buildKnowledgeStaleReport(
   options: IKnowledgeStaleCheckOptions = {},
 ): IKnowledgeStaleReport {
   const strategy = options.renameStrategy ?? RenameStrategy.Strict;
+  const projectRoot = inspection.projectRoot;
+  // Default: never walk the sharkcraft dir — the claims live there and would
+  // count themselves (every caller gets this; none has to remember to pass it).
+  const excludeDirs = options.excludeDirs ?? defaultCountExcludeDirs(inspection);
   const referenceChecks: IKnowledgeReferenceCheck[] = [];
   const anchorChecks: IKnowledgeAnchorCheck[] = [];
-  const counts = { ok: 0, stale: 0, missing: 0, unknown: 0 };
+  const assetReferenceChecks: IKnowledgeReferenceCheck[] = [];
+  const counts = { ok: 0, stale: 0, missing: 0, unknown: 0, invalid: 0 };
+  const failureCounts = emptyFailureCounts();
+  const byAssetKind: Record<ReferenceAssetKind, IKnowledgeKindBucket> = {
+    [ReferenceAssetKind.Knowledge]: emptyKindBucket(),
+    [ReferenceAssetKind.BoundaryRule]: emptyKindBucket(),
+    [ReferenceAssetKind.Policy]: emptyKindBucket(),
+  };
+  const byEntryType: Record<string, IKnowledgeKindBucket> = {};
+  const byReferenceKind: Record<string, IKnowledgeReferenceKindBucket> = {};
+  const entryVerdicts: IKnowledgeEntryVerdictRecord[] = [];
+  const advisories: IKnowledgeStaleAdvisory[] = [];
+  const symbolIndexCache = new Map<string, ISymbolIndex | null>();
   let totalReferences = 0;
   let totalAnchors = 0;
   // Lazy symbol → file index, built on first stale-symbol need.
@@ -574,106 +1166,188 @@ export function buildKnowledgeStaleReport(
     dirBasenameIndex = buildBasenameDirIndex(inspection.projectRoot);
     return dirBasenameIndex;
   };
-  for (const entry of inspection.knowledgeEntries as IKnowledgeEntry[]) {
-    if (options.changedFiles && !entryTouchesChangedFiles(entry, options.changedFiles)) {
-      continue;
-    }
-    for (const ref of entry.references ?? []) {
-      totalReferences += 1;
-      const result = checkReference(inspection, ref, options.graph);
-      const outcome = result.outcome;
-      if (outcome === ReferenceCheckOutcome.Ok) counts.ok += 1;
-      else if (outcome === ReferenceCheckOutcome.Stale) counts.stale += 1;
-      else if (outcome === ReferenceCheckOutcome.Missing) counts.missing += 1;
-      else counts.unknown += 1;
-      const check: IKnowledgeReferenceCheck = {
-        entryId: entry.id,
-        reference: ref,
-        outcome,
-        message: result.message,
-        ...(result.confidence ? { symbolConfidence: result.confidence } : {}),
-        ...(result.suggestion ? { suggestion: result.suggestion } : {}),
+  /**
+   * Check ONE declared reference and attach its rename signal — the same path
+   * for a knowledge entry, a boundary rule and a policy check, so every asset
+   * kind is verified by one checker.
+   */
+  const checkOne = (
+    subjectId: string,
+    ref: IAssetReference,
+    assetKind?: ReferenceAssetKind,
+  ): IKnowledgeReferenceCheck => {
+    const result = checkReference(inspection, ref, options.graph, excludeDirs);
+    const outcome = result.outcome;
+    const check: IKnowledgeReferenceCheck = {
+      entryId: subjectId,
+      reference: ref,
+      outcome,
+      message: result.message,
+      ...(result.confidence ? { symbolConfidence: result.confidence } : {}),
+      ...(result.suggestion ? { suggestion: result.suggestion } : {}),
+      ...(result.failure ? { failure: result.failure } : {}),
+      ...(result.expected !== undefined ? { expected: result.expected } : {}),
+      ...(result.actual !== undefined ? { actual: result.actual } : {}),
+      ...(assetKind ? { assetKind } : {}),
+    };
+    tallyOutcome(
+      (byReferenceKind[ref.kind] ??= { checked: 0, ok: 0, stale: 0, missing: 0, unknown: 0, invalid: 0 }),
+      outcome,
+    );
+    if (result.failure) failureCounts[result.failure] += 1;
+    const isStaleOrMissing =
+      outcome === ReferenceCheckOutcome.Stale || outcome === ReferenceCheckOutcome.Missing;
+    // A bare MEMBER name: the qualified spelling resolves in the same file, so
+    // it is the replacement (`shrk fix --knowledge-stale` applies it).
+    if (isStaleOrMissing && result.suggestedSymbol) {
+      check.replaceWith = {
+        symbol: result.suggestedSymbol,
+        rationale: `\`${ref.symbol}\` is a member, not a top-level declaration — \`${result.suggestedSymbol}\` resolves in ${ref.path ?? 'the pinned file'}.`,
+        strategy: RenameStrategy.Strict,
       };
-      const isStaleOrMissing =
-        outcome === ReferenceCheckOutcome.Stale || outcome === ReferenceCheckOutcome.Missing;
-      // Symbol rename detection. Strict mode: emit `replaceWith.path`
-      // only for the single unambiguous candidate. Wide mode also
-      // emits scored candidate lists for the multi-candidate cases that
-      // strict silently drops.
-      if (isStaleOrMissing && ref.kind === 'symbol' && ref.symbol) {
-        const all = (getSymbolIndex().get(ref.symbol) ?? []).filter((p) => p !== ref.path);
-        if (all.length === 1) {
-          check.replaceWith = {
-            path: all[0]!,
-            rationale: `\`${ref.symbol}\` is exported from \`${all[0]!}\` — sole candidate.`,
-            strategy: RenameStrategy.Strict,
-          };
-        } else if (strategy === RenameStrategy.Wide && all.length > 1) {
+    }
+    // Symbol rename detection. Strict mode: emit `replaceWith.path`
+    // only for the single unambiguous candidate. Wide mode also
+    // emits scored candidate lists for the multi-candidate cases that
+    // strict silently drops.
+    if (isStaleOrMissing && ref.kind === 'symbol' && ref.symbol && !check.replaceWith) {
+      const all = (getSymbolIndex().get(ref.symbol) ?? []).filter((p) => p !== ref.path);
+      if (all.length === 1) {
+        check.replaceWith = {
+          path: all[0]!,
+          rationale: `\`${ref.symbol}\` is exported from \`${all[0]!}\` — sole candidate.`,
+          strategy: RenameStrategy.Strict,
+        };
+      } else if (strategy === RenameStrategy.Wide && all.length > 1) {
+        check.replaceWith = buildWideReplacement({
+          stalePath: ref.path ?? '',
+          paths: all,
+          kindLabel: `symbol \`${ref.symbol}\``,
+        });
+      }
+    }
+    // File rename detection (directory move, basename match).
+    if (isStaleOrMissing && ref.kind === 'file' && ref.path && !check.replaceWith) {
+      const indexed = getFileBasenameIndex();
+      const uniq = pickUniqueRenameCandidate(ref.path, indexed);
+      if (uniq) {
+        check.replaceWith = {
+          path: uniq,
+          rationale: `File basename \`${nodePath.basename(ref.path)}\` resolves uniquely to \`${uniq}\` (likely directory rename).`,
+          strategy: RenameStrategy.Strict,
+        };
+      } else if (strategy === RenameStrategy.Wide) {
+        const all = (indexed.get(nodePath.basename(ref.path)) ?? []).filter(
+          (p) => p !== ref.path,
+        );
+        if (all.length > 0) {
           check.replaceWith = buildWideReplacement({
-            stalePath: ref.path ?? '',
+            stalePath: ref.path,
             paths: all,
-            kindLabel: `symbol \`${ref.symbol}\``,
+            kindLabel: `file \`${nodePath.basename(ref.path)}\``,
           });
         }
       }
-      // File rename detection (directory move, basename match).
-      if (isStaleOrMissing && ref.kind === 'file' && ref.path && !check.replaceWith) {
-        const indexed = getFileBasenameIndex();
-        const uniq = pickUniqueRenameCandidate(ref.path, indexed);
-        if (uniq) {
-          check.replaceWith = {
-            path: uniq,
-            rationale: `File basename \`${nodePath.basename(ref.path)}\` resolves uniquely to \`${uniq}\` (likely directory rename).`,
-            strategy: RenameStrategy.Strict,
-          };
-        } else if (strategy === RenameStrategy.Wide) {
-          const all = (indexed.get(nodePath.basename(ref.path)) ?? []).filter(
-            (p) => p !== ref.path,
-          );
-          if (all.length > 0) {
-            check.replaceWith = buildWideReplacement({
-              stalePath: ref.path,
-              paths: all,
-              kindLabel: `file \`${nodePath.basename(ref.path)}\``,
-            });
-          }
+    }
+    // Directory rename detection.
+    if (isStaleOrMissing && ref.kind === 'directory' && ref.path && !check.replaceWith) {
+      const indexed = getDirBasenameIndex();
+      const uniq = pickUniqueRenameCandidate(ref.path, indexed);
+      if (uniq) {
+        check.replaceWith = {
+          path: uniq,
+          rationale: `Directory basename \`${nodePath.basename(ref.path)}\` resolves uniquely to \`${uniq}\`.`,
+          strategy: RenameStrategy.Strict,
+        };
+      } else if (strategy === RenameStrategy.Wide) {
+        const all = (indexed.get(nodePath.basename(ref.path)) ?? []).filter(
+          (p) => p !== ref.path,
+        );
+        if (all.length > 0) {
+          check.replaceWith = buildWideReplacement({
+            stalePath: ref.path,
+            paths: all,
+            kindLabel: `directory \`${nodePath.basename(ref.path)}\``,
+          });
         }
       }
-      // Directory rename detection.
-      if (isStaleOrMissing && ref.kind === 'directory' && ref.path && !check.replaceWith) {
-        const indexed = getDirBasenameIndex();
-        const uniq = pickUniqueRenameCandidate(ref.path, indexed);
-        if (uniq) {
-          check.replaceWith = {
-            path: uniq,
-            rationale: `Directory basename \`${nodePath.basename(ref.path)}\` resolves uniquely to \`${uniq}\`.`,
-            strategy: RenameStrategy.Strict,
-          };
-        } else if (strategy === RenameStrategy.Wide) {
-          const all = (indexed.get(nodePath.basename(ref.path)) ?? []).filter(
-            (p) => p !== ref.path,
-          );
-          if (all.length > 0) {
-            check.replaceWith = buildWideReplacement({
-              stalePath: ref.path,
-              paths: all,
-              kindLabel: `directory \`${nodePath.basename(ref.path)}\``,
-            });
-          }
-        }
+    }
+    return check;
+  };
+
+  for (const entry of inspection.knowledgeEntries as IKnowledgeEntry[]) {
+    if (
+      options.changedFiles &&
+      !subjectTouchesChangedFiles(
+        {
+          source: relativeSource(projectRoot, entry.source?.origin),
+          references: entry.references ?? [],
+          anchors: entry.anchors ?? [],
+        },
+        options.changedFiles,
+      )
+    ) {
+      continue;
+    }
+    const refs = entry.references ?? [];
+    const anchors = entry.anchors ?? [];
+    let checkable = 0;
+    let failing = 0;
+    for (const ref of refs) {
+      totalReferences += 1;
+      const check = checkOne(entry.id, ref);
+      if (check.outcome === ReferenceCheckOutcome.Ok) counts.ok += 1;
+      else if (check.outcome === ReferenceCheckOutcome.Stale) counts.stale += 1;
+      else if (check.outcome === ReferenceCheckOutcome.Missing) counts.missing += 1;
+      else if (check.outcome === ReferenceCheckOutcome.Invalid) counts.invalid += 1;
+      else counts.unknown += 1;
+      if (isCheckableOutcome(check.outcome)) {
+        checkable += 1;
+        if (isFailingOutcome(check.outcome)) failing += 1;
       }
       referenceChecks.push(check);
     }
-    for (const anchor of entry.anchors ?? []) {
+    for (const anchor of anchors) {
       totalAnchors += 1;
       const inspected = checkAnchor(inspection, anchor, options.graph);
+      const failure =
+        inspected.outcome === ReferenceCheckOutcome.Ok
+          ? undefined
+          : (inspected.failure ?? defaultFailure(anchor.kind, inspected.outcome));
+      if (failure) failureCounts[failure] += 1;
+      if (isCheckableOutcome(inspected.outcome)) {
+        checkable += 1;
+        if (isFailingOutcome(inspected.outcome)) failing += 1;
+      }
       anchorChecks.push({
         entryId: entry.id,
         anchor,
         outcome: inspected.outcome,
         message: inspected.message,
+        ...(failure ? { failure } : {}),
       });
     }
+    const verdict = classifyChecks(checkable, failing);
+    const declared = refs.length + anchors.length;
+    const reason =
+      verdict !== KnowledgeEntryVerdict.Unverifiable
+        ? undefined
+        : declared === 0
+          ? KnowledgeUnverifiableReason.NoReferences
+          : KnowledgeUnverifiableReason.OnlyUnverifiableReferences;
+    const type = String(entry.type);
+    entryVerdicts.push({
+      entryId: entry.id,
+      verdict,
+      ...(reason ? { reason } : {}),
+      source: relativeSource(projectRoot, entry.source?.origin),
+      type,
+      checkable,
+      failing,
+    });
+    bumpBucket(byAssetKind[ReferenceAssetKind.Knowledge], declared, verdict);
+    bumpBucket((byEntryType[type] ??= emptyKindBucket()), declared, verdict);
+    advisories.push(...pathOnlyAdvisories(projectRoot, entry, refs, symbolIndexCache));
   }
   // Content-similarity boost: when multiple wide replacements in the
   // SAME entry name the same candidate path, raise that candidate's score
@@ -681,6 +1355,133 @@ export function buildKnowledgeStaleReport(
   // followed" case where a single per-reference signal is weak but the
   // aggregate is strong.
   applyEntryCorroborationBoost(referenceChecks);
+
+  // Boundary rules and policy checks declare references too — swept by the
+  // same checker, counted per kind, and NOT folded into the knowledge buckets
+  // (their coverage is reported, not gated by default).
+  const includeAssets = options.includeAssets !== false;
+  const boundaryRules = includeAssets ? (inspection.boundaryRegistry?.list() ?? []) : [];
+  const policyDecls = includeAssets ? listPolicyDeclarations(inspection) : [];
+  const subjects: IReferenceSubject[] = [
+    ...boundaryRules.map((rule) => ({
+      assetKind: ReferenceAssetKind.BoundaryRule,
+      id: rule.id,
+      source: relativeSource(projectRoot, inspection.boundarySources?.get(rule.id)?.file),
+      references: rule.references ?? [],
+    })),
+    ...policyDecls.map((p) => ({
+      assetKind: ReferenceAssetKind.Policy,
+      id: p.qualifiedId,
+      source: relativeSource(projectRoot, p.sourceFile),
+      references: p.references ?? [],
+    })),
+  ];
+  for (const subject of subjects) {
+    if (
+      options.changedFiles &&
+      !subjectTouchesChangedFiles(
+        { source: subject.source ?? '(unknown source)', references: subject.references },
+        options.changedFiles,
+      )
+    ) {
+      continue;
+    }
+    let checkable = 0;
+    let failing = 0;
+    for (const ref of subject.references) {
+      const check = checkOne(subject.id, ref, subject.assetKind);
+      if (isCheckableOutcome(check.outcome)) {
+        checkable += 1;
+        if (isFailingOutcome(check.outcome)) failing += 1;
+      }
+      assetReferenceChecks.push(check);
+    }
+    bumpBucket(byAssetKind[subject.assetKind], subject.references.length, classifyChecks(checkable, failing));
+  }
+  // IMPLICIT references (boundary rules only — their scope is data): a `from`
+  // glob whose static prefix does not exist governs nothing there. Advisory
+  // unless `--fail-on implicit`; never counted in `failureCounts`. Policy
+  // checks keep their scope inside `evaluate()`, which cannot be read without
+  // running it — that gap is reported, not guessed at.
+  if (!options.changedFiles) {
+    for (const rule of boundaryRules) {
+      for (const glob of rule.from ?? []) {
+        if (glob.startsWith('!')) continue;
+        const prefix = staticGlobPrefix(glob);
+        if (!prefix || fileExists(projectRoot, prefix)) continue;
+        const message = `boundary rule ${rule.id} scopes '${glob}' but ${prefix} does not exist — the rule governs nothing there.`;
+        assetReferenceChecks.push({
+          entryId: rule.id,
+          reference: { kind: 'directory', path: prefix, note: `implicit: from '${glob}'` },
+          outcome: ReferenceCheckOutcome.Stale,
+          failure: ReferenceFailure.PathMissing,
+          implicit: true,
+          assetKind: ReferenceAssetKind.BoundaryRule,
+          message,
+          suggestion: 'Fix or remove the glob (gate it with --fail-on implicit).',
+        });
+        advisories.push({
+          code: KnowledgeAdvisoryCode.ImplicitPathMissing,
+          subjectId: rule.id,
+          assetKind: ReferenceAssetKind.BoundaryRule,
+          message,
+        });
+      }
+    }
+  }
+  const policySweep = {
+    loaded: isReferenceCacheWarm(inspection),
+    declared: policyDecls.length,
+    withReferences: policyDecls.filter((p) => (p.references?.length ?? 0) > 0).length,
+  };
+  if (policySweep.declared > policySweep.withReferences) {
+    advisories.push({
+      code: KnowledgeAdvisoryCode.PolicyScopeUnverifiable,
+      subjectId: 'policy',
+      assetKind: ReferenceAssetKind.Policy,
+      message: `policy: ${policySweep.declared} declared check(s), ${policySweep.withReferences} with references — the scope of the rest is unverifiable (it lives inside evaluate()).`,
+    });
+  }
+
+  const verified = entryVerdicts.filter((v) => v.verdict === KnowledgeEntryVerdict.Verified).length;
+  const stale = entryVerdicts.filter((v) => v.verdict === KnowledgeEntryVerdict.Stale).length;
+  const unverifiableIds = entryVerdicts
+    .filter((v) => v.verdict === KnowledgeEntryVerdict.Unverifiable)
+    .map((v) => v.entryId);
+  const entriesInScope = entryVerdicts.length;
+  const coverage: IKnowledgeStaleCoverage = {
+    entriesInScope,
+    verified,
+    stale,
+    unverifiable: unverifiableIds.length,
+    unverifiablePct: pct1(unverifiableIds.length, entriesInScope),
+    referencedRatio: entriesInScope > 0 ? (verified + stale) / entriesInScope : 0,
+  };
+
+  let age: IKnowledgeStaleReport['age'];
+  if (options.staleAfterDays !== undefined) {
+    const asOf = options.asOf ?? todayUtcIso();
+    const inScope = new Set(entryVerdicts.map((v) => v.entryId));
+    const aged: IKnowledgeAgedEntry[] = [];
+    const neverVerified: string[] = [];
+    for (const entry of inspection.knowledgeEntries as IKnowledgeEntry[]) {
+      if (!inScope.has(entry.id)) continue;
+      const days = entry.verifiedOn ? verifiedOnAgeDays(entry.verifiedOn, asOf) : undefined;
+      if (days === undefined) {
+        neverVerified.push(entry.id);
+      } else if (days > options.staleAfterDays) {
+        aged.push({
+          entryId: entry.id,
+          verifiedOn: entry.verifiedOn!,
+          ageDays: days,
+          source: relativeSource(projectRoot, entry.source?.origin),
+        });
+      }
+    }
+    aged.sort((a, b) => b.ageDays - a.ageDays || a.entryId.localeCompare(b.entryId));
+    age = { asOf, staleAfterDays: options.staleAfterDays, aged, neverVerified };
+  }
+
   return {
     schema: KNOWLEDGE_STALE_SCHEMA,
     entries: inspection.knowledgeEntries.length,
@@ -689,6 +1490,18 @@ export function buildKnowledgeStaleReport(
     counts,
     referenceChecks,
     anchorChecks,
+    entriesInScope,
+    coverage,
+    entryVerdicts,
+    unverifiableIds,
+    failureCounts,
+    byAssetKind,
+    byEntryType,
+    byReferenceKind,
+    assetReferenceChecks,
+    advisories,
+    policySweep,
+    ...(age ? { age } : {}),
   };
 }
 
@@ -1007,56 +1820,87 @@ function checkAnchor(
   inspection: ISharkcraftInspection,
   anchor: IKnowledgeAnchor,
   graph?: ISymbolGraphResolver,
-): { outcome: ReferenceCheckOutcome; message: string } {
+): { outcome: ReferenceCheckOutcome; message: string; failure?: ReferenceFailure } {
   switch (anchor.kind) {
     case 'file':
       if (!anchor.path) {
-        return { outcome: ReferenceCheckOutcome.Unknown, message: 'anchor has no path' };
+        return {
+          outcome: ReferenceCheckOutcome.Invalid,
+          failure: ReferenceFailure.Malformed,
+          message: 'malformed anchor: file anchor missing required field `path`.',
+        };
       }
       if (fileExists(inspection.projectRoot, anchor.path)) {
         return { outcome: ReferenceCheckOutcome.Ok, message: `anchor file exists: ${anchor.path}` };
       }
-      return { outcome: ReferenceCheckOutcome.Stale, message: `anchor file missing: ${anchor.path}` };
+      return {
+        outcome: ReferenceCheckOutcome.Stale,
+        failure: ReferenceFailure.PathMissing,
+        message: `anchor file missing: ${anchor.path}`,
+      };
     case 'symbol':
       return checkSymbolAnchor(inspection, anchor, graph);
-    case 'command':
-      if (anchor.targetId && commandExistsInInspection(inspection, anchor.targetId)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `command exists: ${anchor.targetId}` };
+    case 'command': {
+      if (!anchor.targetId) {
+        return { outcome: ReferenceCheckOutcome.Stale, message: 'command anchor unresolved: ?' };
       }
-      return { outcome: ReferenceCheckOutcome.Stale, message: `command anchor unresolved: ${anchor.targetId ?? '?'}` };
+      const r = checkCommandString(inspection, anchor.targetId, 'command anchor');
+      return { outcome: r.outcome, message: r.message };
+    }
     case 'construct':
-      if (anchor.targetId && constructExists(inspection, anchor.targetId)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `construct exists: ${anchor.targetId}` };
-      }
-      return { outcome: ReferenceCheckOutcome.Stale, message: `construct anchor unresolved: ${anchor.targetId ?? '?'}` };
+      return checkAnchorId(inspection, 'construct', anchor.targetId);
     case 'template':
-      if (anchor.targetId && templateExists(inspection, anchor.targetId)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `template exists: ${anchor.targetId}` };
-      }
-      return { outcome: ReferenceCheckOutcome.Stale, message: `template anchor unresolved: ${anchor.targetId ?? '?'}` };
+      return checkAnchorId(inspection, 'template', anchor.targetId);
     case 'helper':
-      if (anchor.targetId && helperExists(anchor.targetId)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `helper exists: ${anchor.targetId}` };
-      }
-      return { outcome: ReferenceCheckOutcome.Stale, message: `helper anchor unresolved: ${anchor.targetId ?? '?'}` };
+      return checkAnchorId(inspection, 'helper', anchor.targetId);
     case 'playbook':
-      if (anchor.targetId && playbookExists(inspection, anchor.targetId)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `playbook exists: ${anchor.targetId}` };
-      }
-      return { outcome: ReferenceCheckOutcome.Stale, message: `playbook anchor unresolved: ${anchor.targetId ?? '?'}` };
+      return checkAnchorId(inspection, 'playbook', anchor.targetId);
     case 'policy':
-      if (anchor.targetId && policyExists(inspection, anchor.targetId)) {
-        return { outcome: ReferenceCheckOutcome.Ok, message: `policy exists: ${anchor.targetId}` };
-      }
-      return { outcome: ReferenceCheckOutcome.Stale, message: `policy anchor unresolved: ${anchor.targetId ?? '?'}` };
+      return checkAnchorId(inspection, 'policy', anchor.targetId);
+    default:
+      return {
+        outcome: ReferenceCheckOutcome.Invalid,
+        failure: ReferenceFailure.Malformed,
+        message: `malformed anchor: unsupported anchor kind "${String((anchor as { kind?: unknown }).kind)}".`,
+      };
   }
+}
+
+/**
+ * An id-keyed anchor, through the same guarded resolver as a reference — an
+ * unloaded registry is NOT VERIFIED, never "unresolved".
+ */
+function checkAnchorId(
+  inspection: ISharkcraftInspection,
+  kind: ReferenceKind,
+  targetId: string | undefined,
+): { outcome: ReferenceCheckOutcome; message: string; failure?: ReferenceFailure } {
+  if (!targetId) {
+    return {
+      outcome: ReferenceCheckOutcome.Stale,
+      failure: ReferenceFailure.IdUnregistered,
+      message: `${kind} anchor unresolved: ?`,
+    };
+  }
+  const r = checkRegisteredId(inspection, kind, targetId, kind);
+  if (r.outcome === ReferenceCheckOutcome.Ok) {
+    return { outcome: ReferenceCheckOutcome.Ok, message: `${kind} exists: ${targetId}` };
+  }
+  if (r.outcome === ReferenceCheckOutcome.Unknown) {
+    return { outcome: r.outcome, message: r.message, failure: ReferenceFailure.Unverifiable };
+  }
+  return {
+    outcome: ReferenceCheckOutcome.Stale,
+    failure: ReferenceFailure.IdUnregistered,
+    message: `${kind} anchor unresolved: ${targetId}`,
+  };
 }
 
 function checkSymbolAnchor(
   inspection: ISharkcraftInspection,
   anchor: IKnowledgeAnchor,
   graph?: ISymbolGraphResolver,
-): { outcome: ReferenceCheckOutcome; message: string } {
+): { outcome: ReferenceCheckOutcome; message: string; failure?: ReferenceFailure } {
   const r = checkSymbolReference(
     inspection.projectRoot,
     {
@@ -1066,5 +1910,5 @@ function checkSymbolAnchor(
     },
     graph,
   );
-  return { outcome: r.outcome, message: r.message };
+  return { outcome: r.outcome, message: r.message, ...(r.failure ? { failure: r.failure } : {}) };
 }

@@ -2,14 +2,17 @@
 // release-dry-run: runs the full release validation chain.
 //   1. tsc --noEmit
 //   2. bun test
-//   3. build-dist
-//   4. publish-dry-run
-//   5. check-publish-readiness
+//   3. build-dist (refuses an unlinked / undeclared workspace dependency first)
+//   4. node-dist-smoke — the emitted CLI and MCP entries under node (round 13,
+//      13.2: every other step runs through Bun, which tsconfig paths blind to a
+//      missing workspace link, so "ready for release" was printable over a dist
+//      no node could load)
+//   5. publish-dry-run
+//   6. check-publish-readiness
 //
 // Stops at the first failing step. Does NOT publish anything.
 
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
 
 const ROOT = process.cwd();
 
@@ -23,6 +26,7 @@ const STEPS: readonly IStep[] = [
   { name: 'typecheck', cmd: 'bun', args: ['x', 'tsc', '-p', 'tsconfig.base.json', '--noEmit'] },
   { name: 'tests', cmd: 'bun', args: ['test'] },
   { name: 'build-dist', cmd: 'bun', args: ['run', 'scripts/build-dist.ts'] },
+  { name: 'node-dist-smoke', cmd: 'bun', args: ['run', 'scripts/node-dist-smoke.ts'] },
   { name: 'publish-dry-run', cmd: 'bun', args: ['run', 'scripts/publish-dry-run.ts'] },
   { name: 'check-publish-readiness', cmd: 'bun', args: ['run', 'scripts/check-publish-readiness.ts'] },
 ];

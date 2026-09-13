@@ -5,8 +5,6 @@
  *   - `shrk knowledge update <id>` — preview an incremental change.
  *   - `shrk knowledge remove <id>` — preview a removal (refuses if
  *     reverse references exist unless --force-preview).
- *   - `shrk knowledge author preview` — alias that classifies the
- *     operation by which flags were passed.
  *   - `shrk knowledge lint [--fix-preview]` — classify findings.
  *
  * All commands default to preview-only. Files land under
@@ -17,8 +15,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
+  buildDeclaredXrefReport,
   buildKnowledgeAuthoringPreview,
   buildKnowledgeLintFixPreview,
+  reverseReferenceLabel,
   buildKnowledgeStaleReport,
   inspectSharkcraft,
   KnowledgeAuthoringOperation,
@@ -273,8 +273,13 @@ export const knowledgeRemoveCommand: ICommandHandler = {
       forcePreview: flagBool(args, 'force-preview'),
       ...(flagString(args, 'reason') ? { reason: flagString(args, 'reason') ?? undefined } : {}),
     };
+    // Every declared cross-reference in the workspace — so an entry a construct,
+    // boundary rule or template points at is refused like one another entry
+    // points at (the collector warms the registries it resolves against).
+    const declaredXrefs = await buildDeclaredXrefReport(inspection);
     const result = buildKnowledgeAuthoringPreview(input, {
       entries: inspection.knowledgeEntries,
+      declaredXrefs,
     });
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(result) + '\n');
@@ -285,7 +290,7 @@ export const knowledgeRemoveCommand: ICommandHandler = {
       if (result.reverseReferences && result.reverseReferences.length > 0) {
         process.stdout.write(`\n  reverse references (${result.reverseReferences.length}):\n`);
         for (const r of result.reverseReferences) {
-          process.stdout.write(`    - ${r.fromEntryId} (${r.field})${r.note ? ` — ${r.note}` : ''}\n`);
+          process.stdout.write(`    - ${reverseReferenceLabel(r)} (${r.field})${r.note ? ` — ${r.note}` : ''}\n`);
         }
       }
       if (result.suggestedDeprecationInstead) {
@@ -345,6 +350,9 @@ export const knowledgeLintCommand: ICommandHandler = {
     }
     const entryIds = flagList(args, 'id');
     const includeAdvisory = !flagBool(args, 'no-advisory');
+    // Warm before resolving, so a correct playbook / policy id is not linted
+    // as a stale reference.
+    await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
     const stale = buildKnowledgeStaleReport(inspection);
     const staleIds = new Set<string>();
     for (const c of stale.referenceChecks) {
@@ -392,26 +400,5 @@ export const knowledgeLintCommand: ICommandHandler = {
     );
     void KnowledgeLintCategory;
     return warning ? 1 : 0;
-  },
-};
-
-export const knowledgeAuthorPreviewCommand: ICommandHandler = {
-  name: 'author',
-  description:
-    'Knowledge authoring preview entry-point. Dispatches to add/update/remove based on flags.',
-  usage:
-    'shrk knowledge author [preview] --id <id> [--operation add|update|remove] [common knowledge add/update/remove flags] [--write-preview] [--json]',
-  async run(args: ParsedArgs): Promise<number> {
-    // The first positional may be "preview" (the verb) — strip it.
-    if (args.positional[0] === 'preview') args.positional.shift();
-    const operation = (flagString(args, 'operation') ?? 'add') as 'add' | 'update' | 'remove';
-    switch (operation) {
-      case 'add':
-        return knowledgeAddCommand.run(args);
-      case 'update':
-        return knowledgeUpdateCommand.run(args);
-      case 'remove':
-        return knowledgeRemoveCommand.run(args);
-    }
   },
 };

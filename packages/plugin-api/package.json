@@ -41,7 +41,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@shrkcrft/core": "workspace:*"
+    "@shrkcrft/core": "workspace:*",
+    "@shrkcrft/knowledge": "workspace:*",
+    "@shrkcrft/templates": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

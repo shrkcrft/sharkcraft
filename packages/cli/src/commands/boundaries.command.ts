@@ -3,21 +3,28 @@ import * as nodePath from 'node:path';
 import {
   buildOnboardingPlan,
   buildPolyglotBoundaryReport,
+  ContributionKind,
+  describeBoundaryConfiguration,
   inspectSharkcraft,
   LanguageId,
   renderPolyglotBoundaryReportJson,
   renderPolyglotBoundaryReportMarkdown,
   renderPolyglotBoundaryReportText,
+  runBoundaryCheck,
   suggestBoundaryFixes,
   type suggestLanguageBoundaries,
 } from '@shrkcrft/inspector';
 import {
-  evaluateBoundaries,
-  loadTsconfigPaths,
-  scanImports,
+  boundaryForbiddenMatch,
+  boundaryIntendedEmptyLine,
+  boundaryPatternOverlaps,
+  boundaryRuleFailsOnEmpty,
+  boundaryRuleSeverity,
 } from '@shrkcrft/boundaries';
 import { flagBool, flagString, type ICommandHandler, type ParsedArgs, resolveCwd } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
+import { ExitCode } from '../exit-codes.ts';
 
 export const boundariesListCommand: ICommandHandler = {
   name: 'list',
@@ -26,20 +33,23 @@ export const boundariesListCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const rules = inspection.boundaryRegistry.list();
+    // A rule its loader refused is named (round 12, 12.1); `check boundaries`
+    // reports it as an ERRORED rule. The exit stays 0: a list is no verdict.
+    const note = { next: 'shrk check boundaries' };
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(rules) + '\n');
+      await writeRejectedEntriesNote(inspection, [ContributionKind.Boundary], { ...note, json: true });
       return 0;
     }
     process.stdout.write(header(`Boundary rules (${rules.length})`));
-    if (rules.length === 0) {
-      process.stdout.write('  (none registered)\n');
-      return 0;
-    }
+    if (rules.length === 0) process.stdout.write('  (none registered)\n');
     for (const r of rules) {
+      // The ENFORCED severity (unset = error) — one authority with the evaluator.
       process.stdout.write(
-        `  ${(r.severity ?? 'warning').toUpperCase().padEnd(8)} ${r.id.padEnd(36)} ${r.title}\n`,
+        `  ${boundaryRuleSeverity(r).toUpperCase().padEnd(8)} ${r.id.padEnd(36)} ${r.title}\n`,
       );
     }
+    await writeRejectedEntriesNote(inspection, [ContributionKind.Boundary], note);
     return 0;
   },
 };
@@ -66,15 +76,26 @@ export const boundariesGetCommand: ICommandHandler = {
     }
     process.stdout.write(header(`Boundary rule: ${rule.id}`));
     process.stdout.write(kv('title', rule.title) + '\n');
-    process.stdout.write(kv('severity', rule.severity ?? 'warning') + '\n');
+    process.stdout.write(kv('severity', boundaryRuleSeverity(rule)) + '\n');
     if (rule.from && rule.from.length > 0) {
       process.stdout.write(kv('from', rule.from.join(', ')) + '\n');
     }
     if (rule.forbiddenImports && rule.forbiddenImports.length > 0) {
       process.stdout.write(kv('forbidden', rule.forbiddenImports.join(', ')) + '\n');
+      process.stdout.write(kv('forbiddenMatch', boundaryForbiddenMatch(rule)) + '\n');
     }
     if (rule.allowedImports && rule.allowedImports.length > 0) {
       process.stdout.write(kv('allowed', rule.allowedImports.join(', ')) + '\n');
+    }
+    if (rule.exemptFiles && rule.exemptFiles.length > 0) {
+      process.stdout.write(kv('exemptFiles', rule.exemptFiles.join(', ')) + '\n');
+    }
+    if (rule.excludeTests) process.stdout.write(kv('excludeTests', 'true') + '\n');
+    for (const m of rule.expectEmptyUnits ?? []) {
+      process.stdout.write(kv('expectEmpty marker', `${boundaryIntendedEmptyLine(m)} (state: see \`shrk check boundaries\`)`) + '\n');
+    }
+    if (rule.exceptions && rule.exceptions.length > 0) {
+      process.stdout.write(kv('exceptions', String(rule.exceptions.length)) + '\n');
     }
     if (rule.suggestedFix) {
       process.stdout.write(kv('suggestedFix', rule.suggestedFix) + '\n');
@@ -86,7 +107,7 @@ export const boundariesGetCommand: ICommandHandler = {
 export const boundariesExplainCommand: ICommandHandler = {
   name: 'explain',
   description:
-    'Explain a boundary rule: where it came from (local vs pack), what it forbids, what to do about violations.',
+    'Explain a boundary rule: where it came from (local vs pack), what it forbids, what it exempts, what to do about violations.',
   usage: 'shrk [--cwd <dir>] boundaries explain <ruleId> [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const id = args.positional[0];
@@ -101,14 +122,29 @@ export const boundariesExplainCommand: ICommandHandler = {
       return 1;
     }
     const source = inspection.boundarySources.get(id);
+    // The one static answer the evaluator's coverage (`subsumedBy` /
+    // `shadowedBy`) and MCP `get_boundary_rule` read (round 12, R12-5.3/5.6).
+    const overlaps = boundaryPatternOverlaps(rule);
     const explanation = {
       id: rule.id,
       title: rule.title,
-      severity: rule.severity ?? 'warning',
+      // The severity the evaluator ENFORCES (an unset one is `error`) — this
+      // used to print `warning` for a rule that blocks CI.
+      severity: boundaryRuleSeverity(rule),
       origin: source ? (source.type === 'pack' ? `pack: ${source.packageName}` : 'local') : 'unknown',
       from: rule.from ?? [],
       forbiddenImports: rule.forbiddenImports ?? [],
+      forbiddenMatch: boundaryForbiddenMatch(rule),
       allowedImports: rule.allowedImports ?? [],
+      exemptFiles: rule.exemptFiles ?? [],
+      excludeTests: rule.excludeTests === true,
+      exceptions: rule.exceptions ?? [],
+      failOnEmpty: boundaryRuleFailsOnEmpty(rule),
+      redundantForbidden: overlaps.redundantForbidden.map((o) => ({ pattern: o.pattern, coveredBy: o.by })),
+      shadowedAllowed: overlaps.shadowedAllowed.map((o) => ({ pattern: o.pattern, shadowedBy: o.by })),
+      // Round 13: the rule's expectEmpty markers — each an 'intended empty'
+      // line below, next to redundant and shadowed.
+      expectEmptyUnits: rule.expectEmptyUnits ?? [],
       suggestedFix: rule.suggestedFix,
       howToFix:
         'Adjust the offending import to either (a) drop the disallowed dependency, (b) use a public interface from the allowed list, or (c) move the importer into a layer where this dependency is permitted.',
@@ -119,22 +155,74 @@ export const boundariesExplainCommand: ICommandHandler = {
     }
     process.stdout.write(header(`Boundary explain: ${rule.id}`));
     process.stdout.write(kv('title', rule.title) + '\n');
-    process.stdout.write(kv('severity', rule.severity ?? 'warning') + '\n');
+    process.stdout.write(kv('severity', explanation.severity) + '\n');
     process.stdout.write(kv('origin', explanation.origin) + '\n');
     if (explanation.from.length > 0) {
       process.stdout.write(kv('applies to', explanation.from.join(', ')) + '\n');
     }
     if (explanation.forbiddenImports.length > 0) {
-      process.stdout.write(kv('forbidden', explanation.forbiddenImports.join(', ')) + '\n');
+      process.stdout.write(
+        kv(
+          'forbidden',
+          `${explanation.forbiddenImports.join(', ')} (${explanation.forbiddenMatch === 'package' ? 'package semantics: each bare pattern covers its subpaths' : 'exact: entrypoint only'})`,
+        ) + '\n',
+      );
     }
     if (explanation.allowedImports.length > 0) {
       process.stdout.write(kv('allowed', explanation.allowedImports.join(', ')) + '\n');
     }
+    const pkgNote = explanation.forbiddenMatch === 'package';
+    for (const o of explanation.redundantForbidden) {
+      process.stdout.write(
+        kv(
+          'redundant',
+          `'${o.pattern}' is covered by '${o.coveredBy}'${pkgNote ? ' (package semantics)' : ''} — redundant; safe to delete`,
+        ) + '\n',
+      );
+    }
+    for (const o of explanation.shadowedAllowed) {
+      process.stdout.write(
+        kv(
+          'shadowed',
+          `allowed '${o.pattern}' can never admit an import — forbidden '${o.shadowedBy}' is checked first and covers it; carve the subpath out with exceptions[{ path, target, reason }]${pkgNote ? " or set forbiddenMatch: 'exact'" : ''}`,
+        ) + '\n',
+      );
+    }
+    // Round 13: each expectEmpty marker, beside redundant and shadowed. The
+    // assertion only — whether its target has appeared since (went live) is a
+    // run-time fact `shrk check boundaries` reports.
+    for (const m of explanation.expectEmptyUnits) {
+      process.stdout.write(kv('expectEmpty marker', `${boundaryIntendedEmptyLine(m)} (state: see \`shrk check boundaries\`)`) + '\n');
+    }
+    if (explanation.exemptFiles.length > 0 || explanation.excludeTests) {
+      process.stdout.write(
+        kv('exempt', [...explanation.exemptFiles, ...(explanation.excludeTests ? ['(test files)'] : [])].join(', ')) + '\n',
+      );
+    }
+    for (const ex of explanation.exceptions) {
+      process.stdout.write(kv('exception', `${ex.path} → ${ex.target} — ${ex.reason}`) + '\n');
+    }
+    process.stdout.write(
+      kv('failOnEmpty', explanation.failOnEmpty ? 'yes — matching no file fails the run' : 'no — matching no file is reported skipped') + '\n',
+    );
     if (rule.suggestedFix) process.stdout.write(`\nSuggested fix: ${rule.suggestedFix}\n`);
     process.stdout.write(`\nHow to fix: ${explanation.howToFix}\n`);
     return 0;
   },
 };
+
+/**
+ * `shrk explain <ruleId>` for a BOUNDARY rule id (round 13): the unified
+ * entrypoint resolved gate-plane rule ids only, so a boundary rule fell through
+ * to the knowledge topic search ("no matching knowledge entries"). Answers with
+ * `boundaries explain` when the id names a registered boundary rule; otherwise
+ * `undefined`, and the caller keeps its topic search.
+ */
+export async function tryExplainBoundaryRule(args: ParsedArgs, id: string): Promise<number | undefined> {
+  const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
+  if (!inspection.boundaryRegistry.has(id)) return undefined;
+  return boundariesExplainCommand.run({ ...args, positional: [id] });
+}
 
 export const boundariesInferCommand: ICommandHandler = {
   name: 'infer',
@@ -328,18 +416,21 @@ export const boundariesSuggestCommand: ICommandHandler = {
     const inspection = await inspectSharkcraft({ cwd });
     const rules = inspection.boundaryRegistry.list();
     if (rules.length === 0) {
-      process.stderr.write('No boundary rules configured.\n');
-      return 0;
+      // Zero rules is not "nothing to suggest" — nothing was checked (round 11,
+      // L-1). Say where discovery looked and why nothing loaded.
+      const status = describeBoundaryConfiguration(inspection);
+      process.stderr.write(
+        `No boundary rules loaded — nothing was checked (sharkcraft dir: ${status.sharkcraftDir ?? '(none found)'}).\n`,
+      );
+      for (const d of status.diagnostics) process.stderr.write(`  ! ${d}\n`);
+      return ExitCode.NotVerified;
     }
-    const scan = scanImports({ projectRoot: cwd });
-    const tsconfigPaths = loadTsconfigPaths(cwd);
-    const evalResult = evaluateBoundaries(scan, rules, {
-      ...(tsconfigPaths.aliases.size > 0 ? { tsconfigPaths } : {}),
-    });
+    // THE boundary orchestrator — the same violations `check boundaries` reports.
+    const result = runBoundaryCheck(inspection);
     const filter = args.positional[0];
     const filtered = filter
-      ? evalResult.violations.filter((v) => v.ruleId === filter || v.file.includes(filter))
-      : evalResult.violations;
+      ? result.violations.filter((v) => v.ruleId === filter || v.file.includes(filter))
+      : result.violations;
     const suggestions = suggestBoundaryFixes(
       inspection,
       filtered.map((v) => ({

@@ -1,5 +1,5 @@
 import * as nodePath from 'node:path';
-import { inspectSharkcraft, inspectionReferenceLookup } from '@shrkcrft/inspector';
+import { ContributionKind, inspectSharkcraft, inspectionReferenceLookup } from '@shrkcrft/inspector';
 import {
   applyPresetPlan,
   previewResolvedPresetApplication,
@@ -11,6 +11,7 @@ import {
   type IResolvedPreset,
   type IResolvedReferences,
 } from '@shrkcrft/presets';
+import { describeWorkspaceProfile } from '@shrkcrft/workspace';
 import {
   flagBool,
   resolveCwd,
@@ -18,6 +19,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
 
 function compact(p: IPreset): Record<string, unknown> {
   return {
@@ -54,6 +56,9 @@ export const presetsListCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const presets = inspection.presetRegistry.list();
+    // A preset its loader refused is named with every failing field (round
+    // 12, 12.1) — it was a `skipping invalid preset (…)` warning string.
+    const note = { next: 'shrk packs contributions' };
     if (flagBool(args, 'json')) {
       process.stdout.write(
         asJson(
@@ -63,6 +68,7 @@ export const presetsListCommand: ICommandHandler = {
           })),
         ) + '\n',
       );
+      await writeRejectedEntriesNote(inspection, [ContributionKind.Preset], { ...note, json: true });
       return 0;
     }
     process.stdout.write(header(`Presets (${presets.length})`));
@@ -77,6 +83,7 @@ export const presetsListCommand: ICommandHandler = {
         process.stdout.write(`      tags=[${p.tags.join(', ')}]\n`);
       }
     }
+    await writeRejectedEntriesNote(inspection, [ContributionKind.Preset], note);
     return 0;
   },
 };
@@ -255,32 +262,10 @@ export const presetsExplainCommand: ICommandHandler = {
 };
 
 function humanizeProfile(profile: string): string {
-  // Map WorkspaceProfile string values back to a short natural-language
-  // clause. Keep the mapping local — adding new profiles to the engine
-  // shouldn't break this command; unknown profiles fall through verbatim.
-  const map: Record<string, string> = {
-    'has-typescript': 'uses TypeScript',
-    'has-bun': 'uses Bun',
-    'has-nx': 'is an Nx workspace',
-    'has-turborepo': 'is a Turborepo workspace',
-    'has-package-workspaces': 'uses package workspaces (npm/pnpm/yarn)',
-    'has-react': 'uses React',
-    'has-next': 'uses Next.js',
-    'has-angular': 'uses Angular',
-    'has-vue': 'uses Vue',
-    'has-nestjs': 'uses NestJS',
-    'has-mcp-sdk': 'depends on the MCP SDK',
-    'has-tests': 'has a test runner',
-    'has-eslint': 'uses ESLint',
-    'has-biome': 'uses Biome',
-    'has-github-actions': 'has GitHub Actions',
-    'is-library': 'is published as a library',
-    'is-service': 'runs as a service',
-    'is-monorepo': 'is a monorepo',
-    'is-frontend': 'is a frontend',
-    'is-backend': 'is a backend',
-  };
-  return map[profile] ?? profile;
+  // THE WorkspaceProfile label table (@shrkcrft/workspace) — the builtin
+  // `workspace` profile kind renders the same clause. Unknown ids fall
+  // through verbatim.
+  return describeWorkspaceProfile(profile);
 }
 
 export const presetsRecommendCommand: ICommandHandler = {

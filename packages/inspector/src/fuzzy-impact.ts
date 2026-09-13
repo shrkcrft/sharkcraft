@@ -478,7 +478,7 @@ function buildResolution(
       resolvedLabel: best.label,
       alternatives,
       shouldRunImpact: false,
-      followUpCommands: [`shrk commands get ${best.id}`, `shrk ${best.id} --help`],
+      followUpCommands: [`shrk help ${best.id}`, `shrk ${best.id} --help`],
       diagnostics: [
         `"${best.id}" resolves to a CLI command, not a code construct. Use \`shrk impact <file>\` to analyse files this command would touch.`,
       ],

@@ -368,7 +368,7 @@ export function computeDevNextAction(load: IDevSessionLoad): IDevNextAction {
   if (state?.phase === DevSessionPhase.Completed) {
     return {
       action: 'Session complete',
-      command: `shrk session show ${id}`,
+      command: `shrk dev reports ${id}`,
       reason: 'Final report has been generated.',
       requiresHumanApproval: false,
     };

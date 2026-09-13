@@ -247,7 +247,7 @@ export function applyAssetPreview(input: IAssetPreviewInput): IAssetPreviewResul
     rules: 'shrk rules lint',
     paths: 'shrk paths list',
     templates: 'shrk templates drift --min-severity warning',
-    pipelines: 'shrk pipelines lint',
+    pipelines: 'shrk check pipelines',
     boundaries: 'shrk check boundaries --changed-only',
     presets: 'shrk presets list --json',
   };

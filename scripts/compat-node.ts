@@ -160,6 +160,9 @@ async function main(): Promise<number> {
           if (existsSync(cliDist)) {
             runtimeProbes.push(runCommand('node', [cliDist, 'version']));
             runtimeProbes.push(runCommand('node', [cliDist, 'help']));
+            // The `shrk` bin is the round-13 bootstrap, dist/shrk.js — probe it too.
+            const cliBin = nodePath.join(REPO_ROOT, 'packages/cli/dist/shrk.js');
+            if (existsSync(cliBin)) runtimeProbes.push(runCommand('node', [cliBin, 'version']));
             const dogfood = nodePath.join(REPO_ROOT, 'examples/dogfood-target');
             if (existsSync(dogfood)) {
               runtimeProbes.push(runCommand('node', [cliDist, '--cwd', dogfood, 'doctor']));

@@ -16,7 +16,11 @@
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import type { IKnowledgeReference } from '@shrkcrft/knowledge';
+import {
+  KNOWLEDGE_REFERENCE_KINDS,
+  type IKnowledgeReference,
+  type KnowledgeReferenceKind,
+} from '@shrkcrft/knowledge';
 import {
   AssetProvenanceSource,
 } from '@shrkcrft/inspector';
@@ -91,12 +95,21 @@ export function multiFlagValues(args: ParsedArgs, name: string): string[] {
 /**
  * Parse a `kind:value[:required]` reference spec. Returns null on
  * invalid input so callers can filter.
+ *
+ * A symbol may pin its declaring file — `symbol:<name>@<path>` — and address a
+ * member — `symbol:Owner.member@<path>`. This is the inverse of
+ * `formatKnowledgeReference`, so what the stale-check prints can be pasted
+ * back as a `--reference`.
+ *
+ * The accepted kinds are {@link KNOWLEDGE_REFERENCE_KINDS} — the one
+ * vocabulary the validator and the stale-check read — never a hand-copied list.
  */
 export function parseReferenceSpec(spec: string): IKnowledgeReference | null {
   const parts = spec.split(':');
   if (parts.length < 2) return null;
   const [kindRaw, ...rest] = parts;
-  const kind = kindRaw as IKnowledgeReference['kind'];
+  if (!KNOWLEDGE_REFERENCE_KINDS.includes(kindRaw as KnowledgeReferenceKind)) return null;
+  const kind = kindRaw as KnowledgeReferenceKind;
   const required = rest[rest.length - 1] === 'required';
   if (required) rest.pop();
   const value = rest.join(':');
@@ -105,20 +118,22 @@ export function parseReferenceSpec(spec: string): IKnowledgeReference | null {
     case 'file':
     case 'directory':
       return { kind, path: value, ...(required ? { required: true } : {}) };
-    case 'symbol':
+    case 'symbol': {
+      // `Name@path` pins the declaring file (a symbol name never contains `@`).
+      const at = value.indexOf('@');
+      if (at > 0 && at < value.length - 1) {
+        return {
+          kind,
+          symbol: value.slice(0, at),
+          path: value.slice(at + 1),
+          ...(required ? { required: true } : {}),
+        };
+      }
       return { kind, symbol: value, ...(required ? { required: true } : {}) };
-    case 'command':
-    case 'template':
-    case 'playbook':
-    case 'construct':
-    case 'helper':
-    case 'policy':
-    case 'boundary-rule':
-    case 'path-convention':
-    case 'package':
-    case 'url':
-      return { kind, id: value, ...(required ? { required: true } : {}) };
+    }
     default:
-      return null;
+      // Every other kind in the vocabulary is id-keyed (a command, a registry
+      // id, a url) — a kind added to the vocabulary is accepted here at once.
+      return { kind, id: value, ...(required ? { required: true } : {}) };
   }
 }

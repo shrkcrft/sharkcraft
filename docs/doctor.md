@@ -44,6 +44,15 @@ A finding is a blocker when:
   - `plan-signature-divergent` — a saved plan's HMAC signature no longer matches its body.
   - `asset-load-failed` — a knowledge / template / pipeline file failed to import.
 
+An **invalid** `sharkcraft.config.ts` is reported as an error-severity
+`config-invalid` finding, not a warning. An invalid config has, for example,
+an unrecognized key, an unresolved `$use`, or a syntax error. The finding
+names the file and every schema issue. The loader discards an invalid config
+whole: its knowledge, rule and template file lists go with it, and so does
+every config-declared gate plane. Doctor never also reports "No config file
+detected" for a file that exists. That message is reserved for a
+`sharkcraft/` folder with no config file.
+
 Everything else — `action-hint-quality`, advisory rules, `known-noise`
 suppressions — is **NOT** a blocker. Those still surface in the default
 `shrk doctor` output; `--blockers` just filters them out so an agent

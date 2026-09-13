@@ -314,14 +314,15 @@ export async function buildFixPreviewExtended(
   const suggestions: IFixPreviewSuggestion[] = [...sync.suggestions];
 
   if (kinds.has(FixKind.SelfConfig)) {
-    const { buildSelfConfigDoctorReport } = await import('./self-config-doctor.ts');
-    const report = await buildSelfConfigDoctorReport(inspection);
+    // THE doctor (v2) — the same checks `shrk self-config doctor` runs.
+    const { buildSelfConfigDoctorReportV2 } = await import('./self-config-doctor-v2.ts');
+    const report = await buildSelfConfigDoctorReportV2(inspection);
     for (const f of report.findings) {
       const severity: 'info' | 'warning' | 'error' =
         f.severity === 'error' ? 'error' : f.severity === 'warning' ? 'warning' : 'info';
       suggestions.push({
         kind: FixKind.SelfConfig,
-        targetId: f.referencingId ?? f.referencedId ?? f.code,
+        targetId: f.sourceId || f.targetId || f.code,
         severity,
         title: `Self-config: ${f.code}`,
         description: f.message,
@@ -332,8 +333,11 @@ export async function buildFixPreviewExtended(
   }
 
   if (kinds.has(FixKind.PackConflict) || kinds.has(FixKind.StalePackSignature)) {
-    const { buildPackContributionsInventory } = await import('./pack-contributions-inventory.ts');
-    const inv = buildPackContributionsInventory(inspection);
+    // The async inventory: loader-backed extraction, so a conflict preview is
+    // built from the ids the registries really load (the sync regex scrape
+    // marks them unverified).
+    const { buildPackContributionsInventoryAsync } = await import('./pack-contributions-inventory.ts');
+    const inv = await buildPackContributionsInventoryAsync(inspection);
     for (const c of inv.conflicts) {
       if (c.kind === 'stale-signature' && kinds.has(FixKind.StalePackSignature)) {
         suggestions.push({

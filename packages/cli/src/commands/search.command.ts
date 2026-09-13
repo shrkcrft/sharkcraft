@@ -1,8 +1,12 @@
 import {
+  assetDoctorProposedExit,
   buildSearchIndex,
+  ContributionKind,
   entrypointBanner,
   explainSearchTuning,
   inspectSharkcraft,
+  lintSearchTuning,
+  listSearchTuningIssues,
   loadConstructs,
   loadPlaybooks,
   loadSearchTuning,
@@ -13,8 +17,10 @@ import {
   SearchKind,
   SearchResultKind,
   SearchSource,
+  settledUnitStates,
   type ISearchOptions,
 } from '@shrkcrft/inspector';
+import { usageExitFor } from '../exit-codes.ts';
 import {
   flagBool,
   flagNumber,
@@ -24,7 +30,15 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson } from '../output/format-output.ts';
+import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
+import { formatCoverage, type IVerdictCoverage } from '@shrkcrft/core';
+import { ALLOW_EMPTY_FLAG, allowEmptyValve } from '../gates/allow-empty.ts';
+import { assetDoctorFailingUnits } from '../gates/asset-doctor-failing-units.ts';
+import { assetDoctorFailureLine } from '../gates/asset-doctor-failure-line.ts';
+import { settleVerdict } from '../gates/settle-verdict.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
 
 const VALID_KINDS = new Set(Object.values(SearchKind));
 const VALID_SOURCES = new Set(Object.values(SearchSource));
@@ -59,6 +73,37 @@ function parseSources(args: ParsedArgs): readonly SearchSource[] | undefined {
 
 export const searchCommand: ICommandHandler = {
   name: 'search',
+  // The positionals are the free-form query; `tuning` is dispatched here.
+  positionals: PositionalMode.Free,
+  // The group parses every subverb's argv, so the doctor's boolean flags live
+  // here too: none may swallow a following token. `search --fail-on-dead-units
+  // tuning doctor` used to bind `tuning` as the flag's value and run a
+  // universal search for "doctor" at exit 0 (round 13).
+  booleanFlags: new Set([ALLOW_EMPTY_FLAG, 'fail-on-dead-units', 'strict', 'json']),
+  subverbs: [
+    {
+      name: 'tuning',
+      description: 'List, doctor, or explain the search-tuning entries (local + pack).',
+      usage: 'shrk search tuning list|doctor|explain <query> [--format markdown|html|json]',
+      // An unknown token used to fall through to the listing at exit 0.
+      positionals: PositionalMode.None,
+      subverbs: [
+        { name: 'list', description: 'List the search-tuning entries (the default).', usage: 'shrk search tuning list [--format text|json]' },
+        {
+          name: 'doctor',
+          description:
+            'THE search-tuning lint plus the loader issues. A boost key whose target is missing is a dead unit (exit 2) unless its value is marked { weight, expectEmpty: true } (accepted, printed; reported once the target is registered).',
+          usage: 'shrk search tuning doctor [--strict] [--fail-on-dead-units] [--allow-empty] [--format text|json]',
+        },
+        {
+          name: 'explain',
+          description: 'Which tunings move the top results of a query, and by how much.',
+          usage: 'shrk search tuning explain <query> [--kind <kind>] [--source <source>] [--limit N] [--format markdown|html|json]',
+          positionals: PositionalMode.Free,
+        },
+      ],
+    },
+  ],
   description:
     'Universal search across commands, MCP tools, knowledge, rules, paths, conventions, templates, helpers, playbooks, constructs, policies, decisions, scaffold patterns, contract templates, migration profiles, feedback rules, task routing hints, docs, recent reports. Default emits the 7-section unified output; pass --legacy for the flat output.',
   usage:
@@ -241,27 +286,120 @@ export const searchTuningListCommand: ICommandHandler = {
       }
       return 0;
     }
-    const { entries, issues } = await loadSearchTuning(inspection);
     if (sub === 'doctor') {
-      if (flagBool(args, 'json')) {
-        process.stdout.write(asJson({ entries: entries.length, issues }) + '\n');
-        return issues.some((i) => i.severity === 'error') ? 1 : 0;
+      // `--format` takes what the doctor can print: text or JSON. `--format
+      // json` used to be ignored (text), and markdown / html were advertised
+      // but never rendered — a usage error now, never a silent fallback.
+      const format = flagString(args, 'format');
+      if (format !== undefined && format !== 'text' && format !== 'json') {
+        process.stderr.write(
+          `'shrk search tuning doctor' --format takes text or json (got "${format}"). Run \`shrk help search\` for the flags it accepts.\n`,
+        );
+        return usageExitFor('search tuning doctor');
       }
-      process.stdout.write(`Tuning entries: ${entries.length}\n`);
-      if (issues.length === 0) {
-        process.stdout.write('No issues.\n');
-        return 0;
+      const wantJson = flagBool(args, 'json') || format === 'json';
+      // THE search-tuning lint (shared with the self-config doctor) plus the
+      // loader's own issues. It used to print "No issues." over a dead bare
+      // key, a misspelled prefix, a missing target, triggers no query can
+      // produce and a silent total-cap discard.
+      const lint = await lintSearchTuning(inspection);
+      const issues = [...listSearchTuningIssues(inspection), ...lint.issues];
+      const errors = issues.filter((i) => i.severity === 'error').length;
+      const warnings = issues.filter((i) => i.severity === 'warning').length;
+      // THE asset-doctor proposal (round 13): errors, warnings under --strict,
+      // and every settled unit THE --fail-on-dead-units predicate fails.
+      const proposed = assetDoctorProposedExit(
+        { errors, warnings, units: lint.liveness.flatMap((s) => s.units) },
+        { strict: flagBool(args, 'strict'), failOnDeadUnits: flagBool(args, 'fail-on-dead-units') },
+      );
+      // Dead keys / triggers and unverifiable keys are coverage: never a pass.
+      // No tuning declared examined nothing: NOT VERIFIED (2), like every other
+      // asset doctor over an empty input, unless `--allow-empty` accepts it.
+      const coverage: readonly IVerdictCoverage[] =
+        lint.entries === 0
+          ? [
+              ...lint.coverage,
+              {
+                unit: 'search-tuning entries',
+                expected: 0,
+                examined: 0,
+                reason: 'no search tuning declared',
+                ...allowEmptyValve(args, 0),
+              },
+            ]
+          : lint.coverage;
+      const settled = settleVerdict(proposed, coverage);
+      // THE units that fail this run (round 13 review) — printed and in
+      // --json, so a 1 from --fail-on-dead-units is never silent about why.
+      const failing = assetDoctorFailingUnits(lint.liveness.flatMap((s) => s.units), {
+        failOnDeadUnits: flagBool(args, 'fail-on-dead-units'),
+        strict: flagBool(args, 'strict'),
+      });
+      if (wantJson) {
+        process.stdout.write(
+          asJson({
+            entries: lint.entries,
+            failingUnits: failing.map((u) => ({ list: u.list, unit: u.unit, state: u.state, message: u.message })),
+            issues,
+            probes: lint.probes,
+            coverage,
+            deadUnits: lint.deadUnits,
+            units: settledUnitStates(lint.liveness),
+            exitCode: settled.exit,
+            verdict: settled.verdict,
+            shortfalls: settled.shortfalls,
+            accepted: settled.accepted,
+          }) + '\n',
+        );
+        return settled.exit;
       }
+      const p = lint.probes;
+      process.stdout.write(`Tuning entries: ${lint.entries}\n`);
+      process.stdout.write(
+        `Boost keys:     probed ${p.probed} · resolved ${p.resolved} · missing ${p.missing} · unprefixed ${p.unprefixed} · unknown-kind ${p.unknownKind} · unverified ${p.unverified}\n`,
+      );
+      for (const c of coverage) process.stdout.write(`Coverage:       ${formatCoverage(c)}\n`);
       for (const i of issues) {
         process.stdout.write(
-          `  ${i.severity.toUpperCase().padEnd(8)} ${i.code.padEnd(20)} ${i.message}${i.tuningId ? `  (${i.tuningId})` : ''}\n`,
+          `  ${i.severity.toUpperCase().padEnd(8)} ${i.code.padEnd(22)} ${i.message}${i.tuningId ? `  (${i.tuningId})` : ''}\n`,
         );
       }
-      return issues.some((i) => i.severity === 'error') ? 1 : 0;
+      // A stale LOCAL expectEmpty marker withholds the ✓ (a pack's is INFO).
+      const keys = lint.liveness[0];
+      const staleLocal = (keys?.wentLive ?? []).filter((u) => u.mark?.packageName === undefined).length;
+      const clean =
+        lint.entries === 0
+          ? 'No search tuning declared — nothing to verify.'
+          : warnings > 0
+            ? `No blocking search-tuning issues — ${warnings} warning(s) reported above.`
+            : staleLocal > 0
+              ? `No blocking search-tuning issues — ${staleLocal} expectEmpty marker(s) went live (listed above; remove the markers).`
+              : `Every boost key fires${(keys?.intendedEmpty.length ?? 0) > 0 ? ' or is intended empty' : ''} and every trigger is reachable. ✓`;
+      const line = verdictLine(settled, clean);
+      if (line) process.stdout.write(line + '\n');
+      // Round 13 review: a 1 from --fail-on-dead-units names its units.
+      if (settled.exit === 1) {
+        const failure = assetDoctorFailureLine('search-tuning doctor', failing);
+        if (failure) process.stdout.write(failure + '\n');
+      }
+      return settled.exit;
     }
-    // Default: list.
-    if (flagBool(args, 'json')) {
+    // Default: list. It renders text or JSON: a `--format` it cannot render is a
+    // usage error, never a silent text fallback (round 13 review — its usage
+    // advertised markdown / html, which printed the text listing at exit 0).
+    const listFormat = flagString(args, 'format');
+    if (listFormat !== undefined && listFormat !== 'text' && listFormat !== 'json') {
+      process.stderr.write(
+        `'shrk search tuning list' --format takes text or json (got "${listFormat}"). Run \`shrk help search\` for the flags it accepts.\n`,
+      );
+      return usageExitFor('search tuning list');
+    }
+    const { entries } = await loadSearchTuning(inspection);
+    // A tuning entry its loader refused (no id) is named (round 12, 12.1).
+    const note = { next: 'shrk search tuning doctor' };
+    if (flagBool(args, 'json') || listFormat === 'json') {
       process.stdout.write(asJson(entries) + '\n');
+      await writeRejectedEntriesNote(inspection, [ContributionKind.SearchTuning], { ...note, json: true });
       return 0;
     }
     process.stdout.write(`Search tuning (${entries.length} entries)\n`);
@@ -270,6 +408,7 @@ export const searchTuningListCommand: ICommandHandler = {
         `  ${e.id.padEnd(36)} ${e.source}${e.packageName ? ` (${e.packageName})` : ''}\n`,
       );
     }
+    await writeRejectedEntriesNote(inspection, [ContributionKind.SearchTuning], note);
     return 0;
   },
 };
@@ -343,21 +482,3 @@ function renderUniversalSearchSummary(
   lines.push('(text mode is summary-only — pass --verbose / --full for the 7-section bundle, --json for machine output.)');
   return lines.join('\n') + '\n';
 }
-
-/**
- * Top-level `shrk search-tuning <verb>` alias.
- *
- * Lets users invoke `shrk search-tuning explain "<query>"` without
- * remembering the nested `shrk search tuning explain ...` form. Routes
- * directly through the existing handler to avoid drift.
- */
-export const searchTuningTopLevelCommand: ICommandHandler = {
-  name: 'search-tuning',
-  description:
-    'Alias — `shrk search-tuning <list|doctor|explain>` (delegates to `shrk search tuning ...`).',
-  usage:
-    'shrk search-tuning <list|doctor|explain> [<query>] [--kind <kind>] [--source <source>] [--limit N] [--format text|markdown|html|json]',
-  async run(args: ParsedArgs): Promise<number> {
-    return searchTuningListCommand.run(args);
-  },
-};

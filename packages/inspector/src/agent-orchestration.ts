@@ -99,7 +99,7 @@ function planPhase(intent: IChangeIntent, mode: OrchestrationMode): IOrchestrati
         ]
       : [
           `shrk dev start "${intent.task}"`,
-          `shrk handoff "${intent.task}" --output .sharkcraft/handoff.md`,
+          `shrk brief "${intent.task}" --mode handoff --output .sharkcraft/handoff.md`,
           `shrk gen <templateId> <name> --dry-run --save-plan /tmp/plan.json`,
         ];
   return {
@@ -138,7 +138,7 @@ function applyPhase(intent: IChangeIntent, mode: OrchestrationMode): IOrchestrat
   const writePhase = intent.kind === ChangeIntentKind.Release ? 'release' : 'apply';
   const cmds =
     writePhase === 'release'
-      ? ['shrk release readiness --strict', 'shrk release smoke --scenario all', 'shrk release:preflight']
+      ? ['shrk release readiness --strict', 'shrk release smoke --scenario all', 'bun run release:preflight']
       : [
           'shrk apply /tmp/plan.json --verify-signature --validate --verification typecheck --verification unit-tests',
         ];

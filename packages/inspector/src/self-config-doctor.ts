@@ -1,25 +1,35 @@
 /**
- * Self-config doctor.
+ * Self-config doctor — the v1 schema (`sharkcraft.self-config-doctor/v1`).
  *
- * Cross-reference walker over the workspace's loaded contributions. Validates
- * the *graph* of references between knowledge, rules, paths, conventions,
- * templates, playbooks, helpers, profiles, agent-tests, search tuning,
- * feedback rules, decisions, contract templates, migration profiles, plugin
- * lifecycle profiles, MCP tool names, and CLI command catalog entries.
+ * v1 is a PROJECTION of v2 (`buildSelfConfigDoctorReportV2`). It used to be a
+ * second doctor with its own private checks: the CLI (v2) and the MCP tool /
+ * `fix preview --self-config` (v1) answered "is my config healthy?" with
+ * different check sets, and v1 still carried the hand-written `lookups.x.has`
+ * chain that reported correct ids as unknown. Now there is one set of checks;
+ * v1 only renames fields for back-compat (`sourceId` → `referencingId`,
+ * `targetId` → `referencedId`, `targetKind` → `referencedKind`, `file` →
+ * `sourceFile`) and maps the v2 `pack-signature-stale` code back to its v1
+ * spelling `pack-conflict:stale-signature`.
+ *
+ * `buildSelfConfigGraph` keeps its own lookup (a node list, not a check).
  *
  * Read-only. Never imports executable pack code beyond the loaders that
  * already do.
  */
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { buildPackContributionsInventory } from './pack-contributions-inventory.ts';
-import { listTaskRoutingHints } from './task-routing-hint-registry.ts';
+import type { IVerdictCoverage } from '@shrkcrft/core';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import {
   referenceIdsFor,
   warmReferenceRegistries,
   type ReferenceKind,
 } from './reference-registry.ts';
+import {
+  buildSelfConfigDoctorReportV2,
+  type ISelfConfigDoctorReportV2,
+  type ISelfConfigFindingV2,
+} from './self-config-doctor-v2.ts';
 
 export const SELF_CONFIG_DOCTOR_SCHEMA = 'sharkcraft.self-config-doctor/v1';
 
@@ -38,6 +48,8 @@ export interface ISelfConfigFinding {
   readonly referencedId?: string;
   readonly referencedKind?: string;
   readonly nextCommand?: string;
+  /** How many times v2 found this same finding (omitted when once). */
+  readonly occurrences?: number;
 }
 
 export interface ISelfConfigDoctorReport {
@@ -46,8 +58,17 @@ export interface ISelfConfigDoctorReport {
   readonly projectRoot: string;
   readonly findings: readonly ISelfConfigFinding[];
   readonly totals: Readonly<Record<string, number>>;
-  readonly verdict: 'ok' | 'warnings' | 'errors';
+  /**
+   * v2's verdict. `unverified` (round 11): no errors, but a coverage record has
+   * a shortfall — a dead or unverifiable unit, e.g. command strings over MCP,
+   * which cannot inject the CLI's command index. See `coverage`.
+   */
+  readonly verdict: 'ok' | 'warnings' | 'errors' | 'unverified';
   readonly nextCommands: readonly string[];
+  /** v2's per-unit coverage — what each probe family examined. */
+  readonly coverage?: readonly IVerdictCoverage[];
+  /** v2's dead units (selectors that match nothing, boosts that never fire). */
+  readonly deadUnits?: readonly string[];
 }
 
 export interface ISelfConfigGraphNode {
@@ -77,17 +98,11 @@ interface IIdLookup {
   conventions: Set<string>;
   contractTemplates: Set<string>;
   migrationProfiles: Set<string>;
-  helpers: Set<string>;
-  registrationHints: Set<string>;
 }
 
 /**
- * Every set is a projection of the SHARED reference registry.
- *
- * This used to build its own sets from its own sources, and carried eleven more
- * fields that nothing read — nine of them hardcoded `new Set()`, so any check
- * that had started using one would have reported every correct id as unknown.
- * The v2 doctor made exactly that mistake with `policies` and `commands`.
+ * The graph's node sets — every set a projection of the SHARED reference
+ * registry (no check reads them; the checks are v2's).
  */
 async function buildLookups(inspection: ISharkcraftInspection): Promise<IIdLookup> {
   await warmReferenceRegistries(inspection);
@@ -101,327 +116,56 @@ async function buildLookups(inspection: ISharkcraftInspection): Promise<IIdLooku
     conventions: ids('convention'),
     contractTemplates: ids('contract-template'),
     migrationProfiles: ids('migration-profile'),
-    helpers: ids('helper'),
-    registrationHints: ids('registration-hint'),
   };
 }
 
-function addFinding(
-  out: ISelfConfigFinding[],
-  finding: ISelfConfigFinding,
-): void {
-  out.push(finding);
+/** v2's `pack-signature-stale` is v1's `pack-conflict:stale-signature`. */
+function v1Code(code: string): string {
+  return code === 'pack-signature-stale' ? 'pack-conflict:stale-signature' : code;
 }
 
-async function checkKnowledgeReferences(
-  inspection: ISharkcraftInspection,
-  lookups: IIdLookup,
-  findings: ISelfConfigFinding[],
-): Promise<void> {
-  for (const k of inspection.knowledgeEntries) {
-    for (const ref of k.references ?? []) {
-      if (ref.kind === 'file' && ref.path) {
-        const abs = nodePath.isAbsolute(ref.path)
-          ? ref.path
-          : nodePath.join(inspection.projectRoot, ref.path);
-        if (!existsSync(abs)) {
-          findings.push({
-            severity: ref.required ? SelfConfigSeverity.Error : SelfConfigSeverity.Warning,
-            code: 'knowledge-ref-missing-file',
-            message: `Knowledge "${k.id}" references missing file "${ref.path}".`,
-            referencingId: k.id,
-            referencedId: ref.path,
-            referencedKind: 'file',
-            sourceFile: k.source?.origin ?? undefined,
-            nextCommand: 'shrk knowledge stale-check --ci',
-          });
-        }
-      }
-      // Anchors / symbols / commands left to dedicated checkers
-      // (existing `shrk knowledge stale-check`).
-    }
-  }
-  // Touch lookups so the param isn't unused — future expansions may reference it.
-  void lookups;
+function projectFinding(f: ISelfConfigFindingV2): ISelfConfigFinding {
+  return {
+    severity:
+      f.severity === 'error'
+        ? SelfConfigSeverity.Error
+        : f.severity === 'warning'
+          ? SelfConfigSeverity.Warning
+          : SelfConfigSeverity.Info,
+    code: v1Code(f.code),
+    message: f.message,
+    ...(f.file !== undefined ? { sourceFile: f.file } : {}),
+    referencingId: f.sourceId,
+    referencedId: f.targetId,
+    referencedKind: f.targetKind,
+    ...(f.nextCommand !== undefined ? { nextCommand: f.nextCommand } : {}),
+    ...(f.occurrences !== undefined ? { occurrences: f.occurrences } : {}),
+  };
 }
 
-async function checkSearchTuningTargets(
-  inspection: ISharkcraftInspection,
-  lookups: IIdLookup,
-  findings: ISelfConfigFinding[],
-): Promise<void> {
-  const { listSearchTuning } = await import('./search-tuning-registry.ts');
-  const entries = listSearchTuning(inspection);
-  for (const entry of entries) {
-    for (const idMap of [entry.boostIds, ...(entry.taskHints ?? []).map((h) => h.boostIds)]) {
-      if (!idMap) continue;
-      for (const targetId of Object.keys(idMap)) {
-        const exists =
-          lookups.knowledge.has(targetId) ||
-          lookups.rules.has(targetId) ||
-          lookups.templates.has(targetId) ||
-          lookups.pipelines.has(targetId) ||
-          lookups.contractTemplates.has(targetId) ||
-          lookups.conventions.has(targetId);
-        if (!exists) {
-          findings.push({
-            severity: SelfConfigSeverity.Warning,
-            code: 'search-tuning-target-missing',
-            message: `Search tuning "${entry.id}" boosts unknown id "${targetId}".`,
-            referencingId: entry.id,
-            referencedId: targetId,
-            referencedKind: 'unknown',
-            sourceFile: entry.sourceFile,
-          });
-        }
-      }
-    }
-  }
-}
-
-async function checkAgentTestExpectations(
-  inspection: ISharkcraftInspection,
-  lookups: IIdLookup,
-  findings: ISelfConfigFinding[],
-): Promise<void> {
-  let agentTests: readonly { id: string; expectedKnowledge?: readonly string[]; expectedTemplates?: readonly string[] }[] = [];
-  try {
-    const { loadAgentContractTests } = await import('./test-runner.ts');
-    agentTests = (await loadAgentContractTests(inspection)) as unknown as typeof agentTests;
-  } catch {
-    return;
-  }
-  for (const t of agentTests) {
-    for (const id of t.expectedKnowledge ?? []) {
-      if (!lookups.knowledge.has(id)) {
-        findings.push({
-          severity: SelfConfigSeverity.Error,
-          code: 'agent-test-knowledge-missing',
-          message: `Agent test "${t.id}" expects unknown knowledge id "${id}".`,
-          referencingId: t.id,
-          referencedId: id,
-          referencedKind: 'knowledge',
-        });
-      }
-    }
-    for (const id of t.expectedTemplates ?? []) {
-      if (!lookups.templates.has(id)) {
-        findings.push({
-          severity: SelfConfigSeverity.Error,
-          code: 'agent-test-template-missing',
-          message: `Agent test "${t.id}" expects unknown template id "${id}".`,
-          referencingId: t.id,
-          referencedId: id,
-          referencedKind: 'template',
-        });
-      }
-    }
-  }
-}
-
-async function checkPackContributionConflicts(
-  inspection: ISharkcraftInspection,
-  findings: ISelfConfigFinding[],
-): Promise<void> {
-  const inv = buildPackContributionsInventory(inspection);
-  for (const c of inv.conflicts) {
-    findings.push({
-      severity:
-        c.severity === 'error'
-          ? SelfConfigSeverity.Error
-          : c.severity === 'warning'
-            ? SelfConfigSeverity.Warning
-            : SelfConfigSeverity.Info,
-      code: `pack-conflict:${c.kind}`,
-      message: c.message,
-      referencingId: c.id,
-      referencedKind: c.contributionKind,
-      ...(c.nextCommand ? { nextCommand: c.nextCommand } : {}),
-    });
-  }
+/** The v1 shape of a v2 report — field renames only; no check of its own. */
+export function projectSelfConfigDoctorV2ToV1(report: ISelfConfigDoctorReportV2): ISelfConfigDoctorReport {
+  return {
+    schema: SELF_CONFIG_DOCTOR_SCHEMA,
+    generatedAt: report.generatedAt,
+    projectRoot: report.projectRoot,
+    findings: report.findings.map(projectFinding),
+    totals: { error: report.totals.error, warning: report.totals.warning, info: report.totals.info },
+    verdict: report.verdict,
+    nextCommands: report.nextCommands,
+    coverage: report.coverage,
+    deadUnits: report.deadUnits,
+  };
 }
 
 /**
- * Verify template metadata cross-references resolve:
- *   - `metadata.requiredConventionIds` → conventions registry
- *   - `metadata.requiredHelperIds` → helpers registry
- *   - `metadata.registrationHintIds` → registration-hints registry
- *   - `metadata.requiredProfileIds` → profile registry
+ * The v1 report: {@link projectSelfConfigDoctorV2ToV1} of THE doctor. Kept
+ * for the MCP `get_self_config_doctor` default and v1 JSON consumers.
  */
-async function checkTemplateMetadataReferences(
-  inspection: ISharkcraftInspection,
-  lookups: IIdLookup,
-  findings: ISelfConfigFinding[],
-): Promise<void> {
-  const templates = (inspection.templates ?? []) as readonly {
-    id: string;
-    metadata?: {
-      requiredConventionIds?: readonly string[];
-      requiredHelperIds?: readonly string[];
-      requiredProfileIds?: readonly string[];
-      registrationHintIds?: readonly string[];
-    };
-  }[];
-  for (const t of templates) {
-    const m = t.metadata;
-    if (!m) continue;
-    for (const id of m.requiredConventionIds ?? []) {
-      if (!lookups.conventions.has(id)) {
-        findings.push({
-          severity: SelfConfigSeverity.Warning,
-          code: 'template-convention-missing',
-          message: `Template "${t.id}" requires convention "${id}" but it is not registered.`,
-          referencingId: t.id,
-          referencedId: id,
-          referencedKind: 'convention',
-          nextCommand: `shrk conventions list --source pack`,
-        });
-      }
-    }
-    for (const id of m.requiredHelperIds ?? []) {
-      if (!lookups.helpers.has(id)) {
-        findings.push({
-          severity: SelfConfigSeverity.Warning,
-          code: 'template-helper-missing',
-          message: `Template "${t.id}" requires helper "${id}" but it is not registered.`,
-          referencingId: t.id,
-          referencedId: id,
-          referencedKind: 'helper',
-          nextCommand: `shrk helper list --source pack`,
-        });
-      }
-    }
-    for (const id of m.requiredProfileIds ?? []) {
-      if (!lookups.migrationProfiles.has(id)) {
-        findings.push({
-          severity: SelfConfigSeverity.Warning,
-          code: 'template-profile-missing',
-          message: `Template "${t.id}" requires profile "${id}" but it is not registered.`,
-          referencingId: t.id,
-          referencedId: id,
-          referencedKind: 'profile',
-          nextCommand: `shrk profiles list`,
-        });
-      }
-    }
-    for (const id of m.registrationHintIds ?? []) {
-      if (!lookups.registrationHints.has(id)) {
-        findings.push({
-          severity: SelfConfigSeverity.Warning,
-          code: 'template-registration-hint-missing',
-          message: `Template "${t.id}" references registration hint "${id}" but it is not registered.`,
-          referencingId: t.id,
-          referencedId: id,
-          referencedKind: 'registration-hint',
-          nextCommand: `shrk registrations list`,
-        });
-      }
-    }
-  }
-}
-
-/**
- * Verify routing hint targets resolve to commands/templates/playbooks/helpers/profiles/conventions/knowledge.
- */
-async function checkRoutingHintTargets(
-  inspection: ISharkcraftInspection,
-  lookups: IIdLookup,
-  findings: ISelfConfigFinding[],
-): Promise<void> {
-  const entries = await listTaskRoutingHints(inspection);
-  for (const e of entries) {
-    const rec = e.hint.recommends;
-    for (const id of rec.templates ?? []) {
-      if (!lookups.templates.has(id)) {
-        findings.push({
-          severity: SelfConfigSeverity.Info,
-          code: 'routing-hint-template-missing',
-          message: `Routing hint "${e.hint.id}" recommends template "${id}" but it is not registered.`,
-          referencingId: e.hint.id,
-          referencedId: id,
-          referencedKind: 'template',
-        });
-      }
-    }
-    for (const id of rec.helpers ?? []) {
-      if (!lookups.helpers.has(id)) {
-        findings.push({
-          severity: SelfConfigSeverity.Info,
-          code: 'routing-hint-helper-missing',
-          message: `Routing hint "${e.hint.id}" recommends helper "${id}" but it is not registered.`,
-          referencingId: e.hint.id,
-          referencedId: id,
-          referencedKind: 'helper',
-        });
-      }
-    }
-    for (const id of rec.conventions ?? []) {
-      if (!lookups.conventions.has(id)) {
-        findings.push({
-          severity: SelfConfigSeverity.Info,
-          code: 'routing-hint-convention-missing',
-          message: `Routing hint "${e.hint.id}" recommends convention "${id}" but it is not registered.`,
-          referencingId: e.hint.id,
-          referencedId: id,
-          referencedKind: 'convention',
-        });
-      }
-    }
-    for (const id of rec.profiles ?? []) {
-      if (!lookups.migrationProfiles.has(id)) {
-        findings.push({
-          severity: SelfConfigSeverity.Info,
-          code: 'routing-hint-profile-missing',
-          message: `Routing hint "${e.hint.id}" recommends profile "${id}" but it is not registered.`,
-          referencingId: e.hint.id,
-          referencedId: id,
-          referencedKind: 'profile',
-        });
-      }
-    }
-  }
-}
-
 export async function buildSelfConfigDoctorReport(
   inspection: ISharkcraftInspection,
 ): Promise<ISelfConfigDoctorReport> {
-  const findings: ISelfConfigFinding[] = [];
-  const lookups = await buildLookups(inspection);
-
-  await checkKnowledgeReferences(inspection, lookups, findings);
-  await checkSearchTuningTargets(inspection, lookups, findings);
-  await checkAgentTestExpectations(inspection, lookups, findings);
-  await checkPackContributionConflicts(inspection, findings);
-  // Template metadata + routing hint cross-references.
-  await checkTemplateMetadataReferences(inspection, lookups, findings);
-  await checkRoutingHintTargets(inspection, lookups, findings);
-
-  const totals = {
-    error: findings.filter((f) => f.severity === 'error').length,
-    warning: findings.filter((f) => f.severity === 'warning').length,
-    info: findings.filter((f) => f.severity === 'info').length,
-  };
-  const verdict: 'ok' | 'warnings' | 'errors' =
-    totals.error > 0 ? 'errors' : totals.warning > 0 ? 'warnings' : 'ok';
-  const nextCommands: string[] = [];
-  if (totals.error > 0) {
-    nextCommands.push(
-      'Fix the listed errors — start with the most-referenced ids first.',
-      'shrk packs conflicts',
-      'shrk knowledge stale-check --ci',
-    );
-  } else if (totals.warning > 0) {
-    nextCommands.push('Review warnings — most can be resolved by adding the referenced id or removing the stale reference.');
-  }
-  return {
-    schema: SELF_CONFIG_DOCTOR_SCHEMA,
-    generatedAt: new Date().toISOString(),
-    projectRoot: inspection.projectRoot,
-    findings,
-    totals,
-    verdict,
-    nextCommands,
-  };
+  return projectSelfConfigDoctorV2ToV1(await buildSelfConfigDoctorReportV2(inspection));
 }
 
 export async function buildSelfConfigGraph(
@@ -477,7 +221,8 @@ export function renderSelfConfigDoctorText(report: ISelfConfigDoctorReport): str
   lines.push(`  info          ${report.totals['info'] ?? 0}`);
   lines.push('');
   if (report.findings.length === 0) {
-    lines.push('  No cross-reference issues. ✓');
+    // No ✓: whether this is a pass is the settled verdict's call.
+    lines.push('  No findings.');
     return lines.join('\n') + '\n';
   }
   for (const f of report.findings.slice(0, 100)) {
@@ -503,7 +248,7 @@ export function renderSelfConfigDoctorMarkdown(report: ISelfConfigDoctorReport):
   lines.push(`- info: ${report.totals['info'] ?? 0}`);
   lines.push('');
   if (report.findings.length === 0) {
-    lines.push('No cross-reference issues. ✓');
+    lines.push('No findings.');
     return lines.join('\n') + '\n';
   }
   lines.push('| Severity | Code | Message | Next |');

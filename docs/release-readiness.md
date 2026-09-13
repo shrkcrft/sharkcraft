@@ -39,8 +39,8 @@ The JSON form is `sharkcraft.release-readiness/v1`:
   "passed": [{ "id": "doctor", "status": "pass", "message": "…" }],
   "skipped": [],
   "checklist": [
-    "shrk doctor → green",
-    "shrk commands doctor → 0 errors / 0 warnings",
+    "`shrk doctor` → green",
+    "`shrk commands doctor` → 0 errors / 0 warnings",
     "…"
   ]
 }

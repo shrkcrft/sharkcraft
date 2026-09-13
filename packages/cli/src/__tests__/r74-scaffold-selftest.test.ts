@@ -20,10 +20,16 @@ function coverage(ids: string[]): IGateCoverage {
     filesMatched: ids.length,
     unitsMatched: ids.length,
     unitLabel: 'ids',
+    idLabel: 'registry ids',
+    consulted: 'registry "handlers" — source src/**/*.ts (export-names)',
     sampleIds: ids.slice(0, 5),
     allIds: ids,
     failOnEmpty: false,
     expectationFailures: [],
+    deadGlobs: [],
+    globsChecked: 1,
+    // Round 11: every coverage row carries what it examined (required field).
+    coverage: { unit: 'ids', expected: ids.length, examined: ids.length },
   };
 }
 

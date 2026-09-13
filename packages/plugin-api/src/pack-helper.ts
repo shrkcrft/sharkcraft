@@ -60,6 +60,73 @@ export interface IPackHelper {
 export interface IPackHelperValidationIssue {
   readonly field: string;
   readonly message: string;
+  /**
+   * `error` (default when absent) makes the helper invalid; `warning` is
+   * reported but the helper still loads — e.g. an unknown key on an operation.
+   */
+  readonly severity?: 'error' | 'warning';
+}
+
+/**
+ * The closed allow-list of helper operation kinds and their fields — the one
+ * table `validatePackHelper` checks every `operations[i]` against. A helper op
+ * written with `key`/`value` instead of `snippet` used to load, validate and
+ * then render nothing.
+ */
+export const PACK_HELPER_OPERATION_FIELDS = {
+  'append-line': { required: ['targetPath', 'snippet'], optional: ['description'] },
+  'insert-before': { required: ['targetPath', 'anchor', 'snippet'], optional: ['description'] },
+  'replace-line': { required: ['targetPath', 'find', 'replaceWith'], optional: ['description'] },
+  'remove-line': { required: ['targetPath', 'find'], optional: ['description'] },
+  'manual-checklist': { required: ['checklist'], optional: ['description', 'targetPath'] },
+} as const satisfies Record<
+  IPackHelperOperationInput['kind'],
+  { readonly required: readonly string[]; readonly optional: readonly string[] }
+>;
+
+function validateHelperOperations(ops: unknown, issues: IPackHelperValidationIssue[]): void {
+  if (ops === undefined) return;
+  if (!Array.isArray(ops)) {
+    issues.push({ field: 'operations', message: 'operations must be an array' });
+    return;
+  }
+  const kinds = Object.keys(PACK_HELPER_OPERATION_FIELDS);
+  ops.forEach((raw, i) => {
+    const at = `operations[${i}]`;
+    if (!raw || typeof raw !== 'object') {
+      issues.push({ field: at, message: 'operation must be an object' });
+      return;
+    }
+    const op = raw as Record<string, unknown>;
+    const kind = op.kind;
+    const spec =
+      typeof kind === 'string'
+        ? (PACK_HELPER_OPERATION_FIELDS as Record<string, { required: readonly string[]; optional: readonly string[] }>)[kind]
+        : undefined;
+    if (!spec) {
+      issues.push({
+        field: `${at}.kind`,
+        message: `unknown operation kind ${JSON.stringify(kind)} — must be one of ${kinds.join(', ')}`,
+      });
+      return;
+    }
+    for (const field of spec.required) {
+      const v = op[field];
+      const present = field === 'checklist' ? Array.isArray(v) && v.length > 0 : typeof v === 'string' && v.length > 0;
+      if (!present) {
+        issues.push({ field: `${at}.${field}`, message: `required for kind "${String(kind)}"` });
+      }
+    }
+    const allowed = new Set<string>(['kind', ...spec.required, ...spec.optional]);
+    const unknown = Object.keys(op).filter((k) => !allowed.has(k));
+    if (unknown.length > 0) {
+      issues.push({
+        field: at,
+        severity: 'warning',
+        message: `unknown key(s) ${unknown.join(', ')} on kind "${String(kind)}" are ignored (allowed: ${[...allowed].join(', ')})`,
+      });
+    }
+  });
 }
 
 export interface IPackHelperValidationResult {
@@ -91,5 +158,6 @@ export function validatePackHelper(value: unknown): IPackHelperValidationResult 
       issues.push({ field: 'safety.outputKind', message: 'outputKind must be preview|plan|checklist' });
     }
   }
-  return { valid: issues.length === 0, issues };
+  validateHelperOperations(o.operations, issues);
+  return { valid: !issues.some((i) => i.severity !== 'warning'), issues };
 }

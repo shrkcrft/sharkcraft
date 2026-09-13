@@ -62,10 +62,29 @@ export function resolveExtractorRef(
   // `undefined` local value must NOT clobber the base, so drop those keys.
   const overrides: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(source)) {
-    if (key === '$use' || value === undefined) continue;
+    if (key === '$use' || key === 'expectEmptyUnits' || value === undefined) continue;
     overrides[key] = value;
   }
-  return { source: { ...base, ...overrides, $use: ref } as IWiringSource };
+  // The `expectEmpty` markers travel WITH the list they mark (round 13): a
+  // local `files` replaces the extractor's list wholesale, so it replaces the
+  // extractor's `files` markers too (local marks, never the shared ones); a
+  // local `to` replaces the whole target, `to.files` markers included. A list
+  // the consumer does not spell keeps the extractor's markers.
+  const spellsLocally = (list: string): boolean =>
+    list === 'files' ? source.files !== undefined : list === 'to.files' ? source.to !== undefined : true;
+  const marks = [
+    ...(base.expectEmptyUnits ?? []).filter((m) => !spellsLocally(m.list)),
+    ...(source.expectEmptyUnits ?? []).filter((m) => spellsLocally(m.list)),
+  ];
+  const { expectEmptyUnits: _shared, ...baseFields } = base;
+  return {
+    source: {
+      ...baseFields,
+      ...overrides,
+      ...(marks.length > 0 ? { expectEmptyUnits: marks } : {}),
+      $use: ref,
+    } as IWiringSource,
+  };
 }
 
 /**

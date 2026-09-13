@@ -104,6 +104,18 @@ export interface ISharkCraftPackContributions {
    * do-not-edit header").
    */
   generatedArtifactFiles?: readonly string[];
+  /**
+   * Prose doc-reference rule files — the plane behind `shrk docs references
+   * check` (`docReferences[]`). Each default-exports
+   * `readonly IDocReferenceRule[]`, merged local-wins by `id`.
+   *
+   * Round 13: a declared slot. The merge seam always READ this key, but no
+   * manifest declared it, so a rejected element was a diagnostic string only
+   * and a valid pack file appeared on no contributions surface. It now goes
+   * through the round-12 rejection channel like every other gate plane (no
+   * shell, no writes — so there is no veto beyond the plane's schema).
+   */
+  docReferenceFiles?: readonly string[];
   /** Context regression test files. */
   contextTestFiles?: readonly string[];
   /** Agent contract test files. */
@@ -195,6 +207,7 @@ export const CONTRIBUTION_FILE_KEYS = [
   'reusePrimitiveFiles',
   'baselineFiles',
   'generatedArtifactFiles',
+  'docReferenceFiles',
   'contextTestFiles',
   'agentTestFiles',
   'delegateRecipeFiles',
@@ -249,6 +262,17 @@ export interface ISharkCraftPackSignature {
    * about being dev-only — they do not prove publisher identity.
    */
   dev?: boolean;
+  /**
+   * Content record captured at sign time: pack-root-relative POSIX path →
+   * `sha256:<hex>` of the file's bytes, for every contribution file (and, for
+   * a compiled `.js` contribution, its mapped source). This is what pack-asset
+   * freshness compares against — "the file differs from what was signed" is
+   * divergence, never an mtime. Not covered by the HMAC (the signature block
+   * is excluded from the canonical form): it is a freshness record, not a
+   * trust claim. Absent on signatures made before content digests existed —
+   * such a signature's freshness reads as unrecorded, never as fresh.
+   */
+  contentDigests?: Readonly<Record<string, string>>;
 }
 
 export interface ISharkCraftPackManifest {

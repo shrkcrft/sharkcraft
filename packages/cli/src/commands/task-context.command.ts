@@ -519,7 +519,7 @@ async function collectLikelyFilesV2(input: ILikelyFilesInput): Promise<ILikelyFi
   if (constructMatches.length > 0) suggestedFirstCommands.push(`shrk constructs get ${constructMatches[0]!.id}`);
   if (sorted.length > 0 && sorted[0]) suggestedFirstCommands.push(`shrk impact ${sorted[0].path}`);
   if (generatedFiles.length > 0) suggestedFirstCommands.push('shrk generated report');
-  if (stabilityWarnings.length > 0) suggestedFirstCommands.push('shrk stability map');
+  if (stabilityWarnings.length > 0) suggestedFirstCommands.push('shrk ingest report');
   if (suggestedFirstCommands.length === 0) suggestedFirstCommands.push('shrk task "' + task + '"');
 
   return {

@@ -33,6 +33,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson } from '../output/format-output.ts';
 
 function writeOutOrPrint(args: ParsedArgs, cwd: string, body: string): number {
@@ -256,6 +257,32 @@ const languagesTestsCommand: ICommandHandler = {
 
 export const languagesCommand: ICommandHandler = {
   name: 'languages',
+  positionals: PositionalMode.None,
+  // Each spec reuses its handler's own description / usage — one source.
+  subverbs: [
+    ...[
+      languagesDetectCommand,
+      languagesCommandsCommand,
+      languagesDepsCommand,
+      languagesTestsCommand,
+      languagesBoundariesCommand,
+      languagesRunCommand,
+      languagesCacheCommand,
+    ].map((h) => ({ name: h.name, description: h.description, usage: h.usage })),
+    {
+      name: 'runner',
+      description: 'The language runner policy.',
+      usage: 'shrk languages runner config [--json]',
+      positionals: PositionalMode.None,
+      subverbs: [
+        {
+          name: 'config',
+          description: 'Show the language runner policy (allowlist + denylist + built-in deny patterns). Read-only.',
+          usage: 'shrk languages runner config [--json]',
+        },
+      ],
+    },
+  ],
   description:
     'Polyglot language support: detect language profiles, infer commands, scan dependencies, predict test impact, enforce boundaries, run safe commands, manage cache. Read-only by default.',
   usage: 'shrk languages <detect|commands|deps|tests|boundaries|run|cache> [...]',

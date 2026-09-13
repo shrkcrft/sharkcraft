@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import * as nodePath from 'node:path';
 import {
   buildReleaseReadiness,
+  detectSharkcraftRepo,
   inspectSharkcraft,
   ReleaseReadinessSeverity,
   renderReleaseReadinessHtml,
@@ -24,6 +25,7 @@ import {
   type SmokeScenarioId,
   type IInstallSmokeReport,
   type IInstallSmokeStepResult,
+  type IReleaseReadinessCheck,
 } from '@shrkcrft/inspector';
 import {
   flagBool,
@@ -32,6 +34,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 const SMOKE_SCENARIO_IDS: readonly SmokeScenarioId[] = [
@@ -523,8 +526,10 @@ async function runInstallSmoke(args: ParsedArgs): Promise<number> {
     return runInstallSmokeTarball(args);
   }
   const cwd = resolveCwd(args);
+  // `cliEntry` is only WHERE the in-repo CLI lives; whether this IS the tool
+  // repo is decided by the one host authority (round 11 §5.1).
   const cliEntry = nodePath.join(cwd, 'packages', 'cli', 'src', 'main.ts');
-  const isRepo = existsSync(cliEntry);
+  const isRepo = detectSharkcraftRepo(cwd);
   const stepResults: IInstallSmokeStepResult[] = [];
   for (const step of getInstallSmokePlan()) {
     const start = Date.now();
@@ -621,35 +626,89 @@ async function runReadiness(args: ParsedArgs): Promise<number> {
     }
   }
   // Knowledge stale-check.
-  const cfgKnowledge =
-    (inspection.config as { knowledgeCheck?: { enabled?: boolean; strict?: boolean; failOn?: readonly string[] } } | null)
-      ?.knowledgeCheck;
+  const cfgKnowledge = inspection.config?.knowledgeCheck;
   if (includeKnowledgeCheck || cfgKnowledge?.enabled) {
-    const { buildKnowledgeStaleReport, ReferenceCheckOutcome } = await import('@shrkcrft/inspector');
+    const { buildKnowledgeStaleReport, describeInspectionDiscovery } = await import('@shrkcrft/inspector');
+    const { evaluateKnowledgeStaleGate, knowledgeStaleGateInput, settleKnowledgeStaleGate } = await import(
+      '../knowledge/knowledge-stale-gate.ts'
+    );
+    // Warm (with the CLI command index) before resolving — the same warm the
+    // stale-check verb does, so readiness cannot read a correct playbook /
+    // policy / helper id as broken.
+    await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
     const staleReport = buildKnowledgeStaleReport(inspection);
-    let requiredFailing = 0;
-    for (const c of staleReport.referenceChecks) {
-      const isRequired = (c.reference as { required?: boolean }).required === true;
-      if (
-        isRequired &&
-        (c.outcome === ReferenceCheckOutcome.Stale || c.outcome === ReferenceCheckOutcome.Missing)
-      ) {
-        requiredFailing++;
-      }
-    }
-    const knowledgeStrict = cfgKnowledge?.strict ?? strict;
-    const knowledgeReady =
-      requiredFailing === 0 &&
-      (!knowledgeStrict || staleReport.counts.stale === 0);
-    (report as unknown as { knowledgeCheck?: unknown }).knowledgeCheck = {
+    // THE stale-check verdict — the verb's own input builder, gate and settle.
+    // `knowledgeCheck.ready` is exactly `shrk knowledge stale-check` exiting 0:
+    // an unexamined corpus (unverifiable entries, a file that never loaded) is
+    // never ready, and a stale reference fails it as the verb does.
+    const gateInput = knowledgeStaleGateInput({
+      flags: {},
+      knowledgeCheck: cfgKnowledge,
+      discovery: describeInspectionDiscovery(inspection, cwd),
+      scoped: false,
+    });
+    const cov = staleReport.coverage;
+    const common = {
       enabled: true,
-      strict: knowledgeStrict,
+      strict: cfgKnowledge?.strict === true,
+      failOn: [...gateInput.failOn],
       counts: staleReport.counts,
-      requiredFailing,
-      ready: knowledgeReady,
+      coverage: cov,
+      unverifiableIds: staleReport.unverifiableIds,
+      ...(gateInput.minReferenced ? { minReferenced: gateInput.minReferenced.ratio } : {}),
+      requireReferences: gateInput.requireReferences,
+      repro: 'shrk knowledge stale-check',
     };
+    let knowledgeReady: boolean;
+    let knowledgeMessage: string;
+    if (gateInput.usageProblem) {
+      knowledgeReady = false;
+      knowledgeMessage = gateInput.usageProblem;
+      (report as unknown as { knowledgeCheck?: unknown }).knowledgeCheck = {
+        ...common,
+        exit: 3,
+        verdict: 'usage-error',
+        reasons: [gateInput.usageProblem],
+        shortfalls: [],
+        accepted: [],
+        ready: false,
+      };
+    } else {
+      const gate = evaluateKnowledgeStaleGate(staleReport, gateInput);
+      const settled = settleKnowledgeStaleGate(gate);
+      knowledgeReady = settled.exit === 0;
+      knowledgeMessage =
+        gate.reasons.length > 0
+          ? gate.reasons.join('; ')
+          : settled.shortfalls.length > 0
+            ? `NOT VERIFIED — ${settled.shortfalls.slice(0, 3).join('; ')}`
+            : `${cov.verified} of ${cov.entriesInScope} knowledge entries verified`;
+      (report as unknown as { knowledgeCheck?: unknown }).knowledgeCheck = {
+        ...common,
+        requiredFailing: gate.requiredStale + gate.requiredMissing,
+        reasons: gate.reasons,
+        exit: settled.exit,
+        verdict: settled.verdict,
+        shortfalls: settled.shortfalls,
+        accepted: settled.accepted,
+        ready: knowledgeReady,
+      };
+    }
     if (!knowledgeReady) {
       (report as { ready: boolean }).ready = false;
+      // Name the blocker: a NOT READY with no blocker listed sends the reader
+      // hunting for the cause.
+      (report as unknown as { blockers: readonly IReleaseReadinessCheck[] }).blockers = [
+        ...report.blockers,
+        {
+          id: 'knowledge-check',
+          title: 'Knowledge stale-check',
+          status: 'fail',
+          severity: ReleaseReadinessSeverity.Error,
+          message: knowledgeMessage,
+          suggestion: 'shrk knowledge stale-check',
+        },
+      ];
     }
   }
   const wantHtml = flagBool(args, 'html');
@@ -700,6 +759,20 @@ async function runReadiness(args: ParsedArgs): Promise<number> {
 
 export const releaseCommand: ICommandHandler = {
   name: 'release',
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: 'readiness',
+      description: 'Release readiness aggregator — docs, changelog, examples, preflight.',
+      usage:
+        'shrk release readiness [--strict] [--preflight <file|dir|auto>] [--html] [--report] [--json] [--with-docs-check] [--with-examples-check]',
+    },
+    {
+      name: 'smoke',
+      description: 'Release smoke harness (writes only into temp fixtures).',
+      usage: 'shrk release smoke [--scenario all|<id>] [--temp-dir <path>] [--keep-temp] [--json] [--report] [--html]',
+    },
+  ],
   description: 'Release readiness aggregator + smoke harness. Read-only verdicts; smoke writes only into temp fixtures.',
   usage:
     'shrk release readiness [--strict] [--preflight <file|dir|auto>] [--html] [--report] [--json] [--with-docs-check] [--with-examples-check]\n  shrk release smoke [--scenario all|<id>] [--temp-dir <path>] [--keep-temp] [--json] [--report] [--html]',
@@ -708,6 +781,14 @@ export const releaseCommand: ICommandHandler = {
     if (sub === 'smoke') return runReleaseSmoke({ ...args, positional: args.positional.slice(1) });
     if (sub === 'readiness') return runReadiness({ ...args, positional: args.positional.slice(1) });
     process.stderr.write('Usage: shrk release readiness | smoke\n');
+    // Both subverbs maintain SharkCraft itself (the surface gate refuses them
+    // with 78 elsewhere) — outside its repository say so, and name the gate that
+    // does apply, instead of a usage line listing only refused verbs.
+    if (!detectSharkcraftRepo(resolveCwd(args))) {
+      process.stderr.write(
+        "  Both maintain SharkCraft itself and do not apply to this repository (they exit 78 here). This repository's own gate: `shrk quality`.\n",
+      );
+    }
     return 2;
   },
 };

@@ -21,10 +21,10 @@ its plugin entry.
 
 ```bash
 shrk packs new my-pack --kind framework --write
-shrk packs doctor   my-pack
-shrk packs test     my-pack
-shrk packs sign     my-pack --secret "$SHARKCRAFT_PACK_SECRET"
-shrk packs verify   my-pack
+cd my-pack && npm install && npm run typecheck
+shrk packs test          my-pack --load --typecheck
+shrk packs release-check my-pack --typecheck
+shrk packs sign          my-pack --secret "$SHARKCRAFT_PACK_SECRET"
 ```
 
 `packs new` is **dry-run by default**; pass `--write` to materialize the
@@ -49,21 +49,60 @@ any kind.
 
 ```
 my-pack/
-  package.json
+  package.json            # sharkcraft.manifest → ./src/sharkcraft.plugin.ts
   README.md
   SECURITY.md
-  tsconfig.json
+  tsconfig.json           # strict, noEmit, allowImportingTsExtensions
   src/
-    sharkcraft.plugin.ts
+    sharkcraft.plugin.ts  # `{ schema, info, contributions } satisfies ISharkCraftPackManifest`
     assets/
       knowledge.ts
       rules.ts
       paths.ts
-      templates.ts
-      pipelines.ts
-      presets.ts
+      templates.ts        # framework / --with-examples
+      pipelines.ts        # framework / --with-examples
+      presets.ts          # --preset <id>
+      boundaries.ts       # architecture / --with-examples
       docs/overview.md
 ```
+
+The scaffold is a **valid, discoverable, type-clean** pack (round 11):
+
+- `package.json` `sharkcraft.manifest` points at `src/sharkcraft.plugin.ts` —
+  discovery reads nothing else; without it the pack is `INVALID`.
+- That file default-exports a real manifest, and every asset the scaffold
+  emits is declared in it. A file the manifest does not list is never loaded,
+  so no empty, unlisted asset is emitted.
+- Every asset is annotated with a **type-only** import and `satisfies`:
+
+  ```ts
+  import type { IKnowledgeEntry } from '@shrkcrft/plugin-api';
+  export default [
+    { id: 'pack.overview', title: 'Pack overview', type: 'technical', priority: 'medium',
+      scope: [], tags: [], appliesWhen: ['onboarding'], content: '…' },
+  ] satisfies readonly Omit<IKnowledgeEntry, 'source'>[];
+  ```
+
+  `import type` is erased at runtime, so the structural-arrays guarantee below
+  still holds; `satisfies` makes a misspelled field, a missing required one, or
+  a reference `kind` outside the union fail `npm run typecheck` where it is
+  written. The SDK re-exports `IKnowledgeEntry`, `IKnowledgeReference`,
+  `KnowledgeReferenceKind`, `ITemplateDefinition` and `ITemplateChange` as
+  types for this.
+- `scripts`: `typecheck` (`tsc -p tsconfig.json`), `test`
+  (`shrk packs test . --load --typecheck`), `release-check`.
+
+### Group modules
+
+Split a large asset into group modules and re-export them from the file the
+manifest lists — `export * from './group.ts'`. The loader collects every
+entry-shaped export of a listed module, so nothing is named twice. A
+hand-maintained array works too, but an entry added to a group and not to the
+array is invisible to every lookup: `shrk doctor` / `shrk packs doctor`
+report it as `unregistered-export` (error), naming the export and its line. A
+second, DIFFERENT object reusing an id in one module is reported as
+`duplicate id "<id>" … shadowed by an earlier export` (only the first
+registers).
 
 ## Safety
 
@@ -79,15 +118,59 @@ my-pack/
 ## Pack contribution test
 
 ```bash
-shrk packs test <path>                       # structural validation only
+shrk packs test <path>                       # manifest + declared files (structural)
 shrk packs test <path> --require-signature
 shrk packs test <path> --load                # imports + validates exports
 shrk packs test <path> --trusted-load        # also runs template renderers with default vars
+shrk packs test <path> --typecheck           # type-checks the manifest + every TS contribution
 ```
 
-`--load` actually imports the pack's TypeScript assets, asserts that each
-exports an array, and that every item has a string `id`. It also checks
-that pipelines declare steps.
+`packs test` reads the manifest `package.json` points at
+(`sharkcraft.manifest`) and checks every contribution file it declares — no
+hard-coded asset list. A `package.json` with no `sharkcraft.manifest` is an
+error (`no-manifest`): discovery would report the pack INVALID.
+
+`--load` imports the manifest and every declared contribution module, asserts
+the manifest validates, that each knowledge/rule/path/template/pipeline/
+preset/boundary file exports an array, and that every item has a string
+`id`. It also checks that pipelines declare steps.
+
+**Round 12 (12.1c / 12.1f):** `--load` also runs, for EVERY declared slot,
+the loader — or the acceptance predicate — the engine applies to it at
+runtime (`validateContributionFile`). An entry it would refuse is an
+`asset-entry-rejected` **error** (exit 1), annotated or not:
+
+```
+  ERROR    asset-entry-rejected         conventions.ts 'conv.b' (default[1]) — severity: severity must be one of: info, warning, error (got undefined) — the convention loader refuses it, so it would not take effect
+  ↳ Annotate the asset with a type-only import and `satisfies IConvention[]` (from @shrkcrft/plugin-api) — see docs/pack-authoring.md — then `shrk packs test . --typecheck` catches this at build time.
+```
+
+`--typecheck` verifies only what an asset's own type annotations declare — a
+bare `export default [ … ]` literal is structurally unconstrained, so tsc
+passes it. Annotate the asset so the typecheck can fail it too:
+
+```ts
+import type { IConvention } from '@shrkcrft/plugin-api';
+
+export default [
+  { id: 'conv.a', title: 'A', kind: 'naming', severity: 'warning', rules: [] },
+] satisfies IConvention[];
+```
+
+What only a consuming repository can decide — a duplicate across files or
+packs, a construct facet's target construct, a gate-plane `$use` extractor —
+is judged at load (`shrk packs contributions`), not by `packs test`.
+
+`--typecheck` (round 11) runs the in-process TypeScript check
+(`typecheckFiles`, the same one `gen --typecheck` uses) over the manifest and
+every `.ts` contribution, with the pack's own `tsconfig.json` (strict
+defaults otherwise). Each diagnostic in a file under the pack root is a
+`typecheck-error` issue (`<file>:<line>:<col> TS<code> <message>`) → exit 1.
+A pack with no TS file to check, or a run where TypeScript could not start,
+examined nothing → exit **2** (`NOT VERIFIED`), never a pass. The same opt-in
+`--typecheck` exists on `packs doctor` (per discovered pack) and
+`packs release-check` (finding `typecheck-error`). Pack loading itself stays
+transpile-only: the typecheck is costly and never part of default loading.
 
 `--trusted-load` additionally runs each template's `targetPath()` and
 `content()` with synthesized default variables — useful for catching
@@ -100,6 +183,19 @@ The loader uses dynamic `import()` of local files only.
 
 Direct TypeScript loading requires Bun. Under Node, `--load` reports the
 limitation as a warning and falls back to the structural-only path.
+
+### Pack test cases (`definePackTest`)
+
+| Ranker-surfaced (order-sensitive) | Registry existence (stable) |
+|---|---|
+| `expectKnowledgeIds`, `expectRuleIds`, `expectTemplateIds`, `expectPipelineIds`, `mustNotIncludeIds` | `expectPlaybookIds`, `expectConstructIds` |
+
+A surfaced-class miss is `unknown-id` (not registered — can never pass) or
+`not-surfaced` (registered, not in the packet); each names the registry it
+consulted (`consulted: { kind, listVerb, size }`). `expectPlaybookIds` /
+`expectConstructIds` are existence checks through the shared reference
+registry — before round 11 they were declared but never evaluated, so a typo'd
+id passed silently.
 
 ## Release check (R13 / R14)
 
@@ -191,3 +287,50 @@ options:
 4. Drop the helper import entirely if the contributions no longer need it.
 
 MCP: `get_pack_compat_report` returns the same payload server-side.
+
+## `expectEmpty` markers: forward-compat (round 13)
+
+Round 13 lets a list entry say "this target does not exist yet" — `{ pattern,
+expectEmpty: true, reason? }`, or `{ weight, expectEmpty: true, reason? }` for a
+search-tuning boost value — on boundary rules, the gate planes, and the assets
+a pack ships: registration hints (`discovery.targetGlobs` /
+`discovery.targetFile`), scaffold patterns (`matchPaths`) and search tuning
+(`boostIds` / `taskHints[].boostIds`). A pre-emptive entry is the main pack use
+case: a framework pack names the binding, the route table or the guide only
+adopting apps will have. See [intended-empty.md](intended-empty.md).
+
+**Markers need engine 0.1.0-alpha.31 or later.** There is no manifest field
+declaring a minimum engine yet, and an older engine does NOT refuse the object
+form loudly for every kind. What 0.1.0-alpha.30 does with a marker in an asset
+file:
+
+| Where the marker is | 0.1.0-alpha.30 |
+|---|---|
+| a registration hint's `discovery.targetGlobs` entry | the hint LOADS (its validator checks only that the list is non-empty), then `registrations doctor` and `self-config doctor` crash: `glob.includes is not a function` |
+| a scaffold pattern's `matchPaths` entry | it loads as the glob `[object Object]`, which matches nothing — silently |
+| a search-tuning boost value | it loads, silently clamped to 0 (an info `boost-clamped` only) |
+
+Gate-plane config validates its lists as strings, so an object entry there
+fails validation instead (a local config load error; a pack's gate-plane element
+is dropped with a diagnostic). Boundary rules do NOT: the 0.1.0-alpha.30
+validator checks only that `from` / `forbiddenImports` / `allowedImports` are
+arrays, so a boundary rule carrying a marker LOADS and the object entry matches
+nothing — a fence that silently never fires. Ship markers only in a pack
+release that requires this engine (say so in your README and in
+`peerDependencies`), or keep the entry plain until your consumers upgrade — a
+plain planned entry reads as a dead unit (exit 2 on the asset doctors), never as
+a crash.
+
+From 0.1.0-alpha.31 on, every loader refuses what it cannot read LOUDLY,
+through the round-12 rejection channel (`packs contributions`, `packs list`,
+`packs test --load`, each doctor): an entry that is neither a string nor a
+well-formed marker, a boost value that is neither a number nor a well-formed
+marker, a marker on a search-tuning key that can never fire, and an authored
+`expectEmptyUnits` (the loader derives that ledger). Never a crash, never a
+silent clamp. `shrk packs test <path> --load` runs the same acceptance
+predicates, so the pack's own CI catches a malformed marker before release.
+
+A pack's marker is stamped with the pack. When the consumer's target appears it
+reads **went-live** as INFO and never fails the consumer — not under
+`--fail-on-dead-units`, not under `--strict` — because the consumer cannot edit
+it. Remove it in your next release.

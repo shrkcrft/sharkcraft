@@ -13,6 +13,9 @@ import {
   EdgeKind,
   GraphQueryApi,
   GraphStore,
+  graphFreshnessBehind,
+  graphFreshnessCoverage,
+  graphFreshnessRemedy,
   hasCallGraphReferences,
   isGraphStoreCorruptError,
   NodeKind,
@@ -28,6 +31,9 @@ import { compactArrayToColumnar } from '@shrkcrft/compress';
 import { flagBool, flagNumber, flagPositiveInt, flagString, resolveCwd, type ParsedArgs } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { maybeRunInWatchMode } from '../output/watch-loop.ts';
+import { indexBehindHint } from '../graph/index-behind-hint.ts';
+import { settleVerdict } from '../gates/settle-verdict.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
 
 /**
  * Opt-in `--table`/`--compact`: columnarise each homogeneous object-array field
@@ -162,20 +168,6 @@ function resultStaleness(
       ? { stale: { modified: stale.modified, deleted: stale.deleted }, staleHint: STALE_RESULT_HINT }
       : null,
   };
-}
-
-/**
- * A "the index is N files behind" qualifier for a not-found / empty result, so
- * an agent doesn't read a bare "not-found" as "this symbol doesn't exist / is
- * safe to create" when the truth is "it's in a file the index hasn't seen yet."
- * Runs the full freshness walk — only call it on the rare miss path.
- */
-function indexBehindHint(cwd: string): string | null {
-  const f = detectGraphFreshness(cwd);
-  if (!f.hasIndex) return null;
-  const behind = f.modified.length + f.added.length + f.deleted.length;
-  if (behind === 0) return null;
-  return `Index is ${behind} file(s) behind (${f.modified.length} modified, ${f.added.length} new, ${f.deleted.length} deleted) — run \`shrk graph index --changed\` and retry.`;
 }
 
 /**
@@ -347,6 +339,16 @@ export async function runGraphCycles(args: ParsedArgs): Promise<number> {
   const typeOnlyLoopCount = Math.max(0, api.cycles({ includeTypeEdges: true }).length - runtimeCycles.length);
   const filtered = allCycles.filter((c) => c.size >= minSize);
   const limited = filtered.slice(0, limit);
+  // A cycle verdict is DERIVED from the persisted index: over an index behind
+  // the working tree, a cycle among the changed files cannot show, so the
+  // clean answer is NOT VERIFIED (2), never "No cycles ✓" (round 11 review
+  // R11-GAP-1). THE freshness authority decides — `detectGraphFreshness`, the
+  // one `graph status` reads — through the shared coverage record.
+  const freshness = detectGraphFreshness(cwd);
+  const staleCoverage = graphFreshnessCoverage(freshness, 'graph index');
+  const settled = settleVerdict(0, staleCoverage ? [staleCoverage] : []);
+  const behind = graphFreshnessBehind(freshness);
+  const indexState = !freshness.hasIndex ? 'unmeasured' : behind > 0 ? 'stale' : 'fresh';
   if (wantJson) {
     process.stdout.write(
       asJson({
@@ -359,22 +361,40 @@ export async function runGraphCycles(args: ParsedArgs): Promise<number> {
           size: c.size,
           paths: c.paths ?? c.nodeIds.map((id) => id.replace(/^file:/, '')),
         })),
+        freshness: {
+          state: indexState,
+          behind,
+          ...(staleCoverage ? { nextCommand: graphFreshnessRemedy(freshness) } : {}),
+        },
+        ...(staleCoverage ? { coverage: staleCoverage } : {}),
+        exitCode: settled.exit,
+        verdict: settled.verdict,
+        shortfalls: settled.shortfalls,
       }) + '\n',
     );
-    return 0;
+    return settled.exit;
   }
   process.stdout.write(header('Graph cycles'));
   process.stdout.write(kv('total', String(filtered.length)) + '\n');
+  if (staleCoverage) {
+    process.stdout.write(
+      kv('index', `${indexState} — ${behind} change(s) since it was built; run \`${graphFreshnessRemedy(freshness)}\``) + '\n',
+    );
+  }
   if (!includeTypeEdges && typeOnlyLoopCount > 0) {
     process.stdout.write(
       kv('type-only loops', `${typeOnlyLoopCount} (excluded — compile-time only; --include-type-edges to audit)`) + '\n',
     );
   }
+  const kind = includeTypeEdges ? '' : 'runtime ';
   if (filtered.length === 0) {
-    process.stdout.write(
-      `\nNo ${includeTypeEdges ? '' : 'runtime '}cycles in the file-import graph. ✓\n`,
+    const line = verdictLine(
+      settled,
+      `No ${kind}cycles in the file-import graph. ✓`,
+      `No ${kind}cycles in the INDEXED graph — but the index is behind the working tree, so a cycle among the changed files cannot show.`,
     );
-    return 0;
+    process.stdout.write(`\n${line}\n`);
+    return settled.exit;
   }
   process.stdout.write(kv('shown', `${limited.length}/${filtered.length}`) + '\n');
   process.stdout.write('\n');
@@ -392,7 +412,9 @@ export async function runGraphCycles(args: ParsedArgs): Promise<number> {
       `\n(${filtered.length - limit} more — pass --limit ${filtered.length} to see all)\n`,
     );
   }
-  return 0;
+  const tail = verdictLine(settled, '');
+  if (tail) process.stdout.write(`\n${tail}\n`);
+  return settled.exit;
 }
 
 function parseLimit(args: ParsedArgs): number {
@@ -464,6 +486,12 @@ export async function runGraphUnresolved(args: ParsedArgs): Promise<number> {
   for (const g of list) g.specifiers = [...new Set(g.specifiers)].sort();
   const total = list.reduce((n, g) => n + g.specifiers.length, 0);
   const limited = list.slice(0, limit);
+  // A listing (not a verdict verb, so its exit is unchanged) — but a ✓ over an
+  // index behind the working tree is a clean answer derived from a stale input,
+  // so it is dropped and the gap named (the shared freshness record).
+  const freshness = detectGraphFreshness(cwd);
+  const stale = graphFreshnessCoverage(freshness) !== undefined;
+  const behind = graphFreshnessBehind(freshness);
 
   if (wantJson) {
     process.stdout.write(
@@ -476,6 +504,11 @@ export async function runGraphUnresolved(args: ParsedArgs): Promise<number> {
           path: g.path ?? g.from.replace(/^file:/, ''),
           unresolved: g.specifiers,
         })),
+        freshness: {
+          state: !freshness.hasIndex ? 'unmeasured' : stale ? 'stale' : 'fresh',
+          behind,
+          ...(stale ? { nextCommand: graphFreshnessRemedy(freshness) } : {}),
+        },
       }) + '\n',
     );
     return 0;
@@ -484,7 +517,11 @@ export async function runGraphUnresolved(args: ParsedArgs): Promise<number> {
   process.stdout.write(kv('total edges', String(total)) + '\n');
   process.stdout.write(kv('files', String(list.length)) + '\n');
   if (list.length === 0) {
-    process.stdout.write('\nNo unresolved imports. ✓\n');
+    process.stdout.write(
+      stale
+        ? `\nNo unresolved imports in the INDEXED graph — the index is ${behind} change(s) behind the working tree; run \`${graphFreshnessRemedy(freshness)}\` for a current answer.\n`
+        : '\nNo unresolved imports. ✓\n',
+    );
     return 0;
   }
   process.stdout.write(kv('shown', `${limited.length}/${list.length}`) + '\n');
@@ -626,7 +663,10 @@ export async function runGraphStatus(args: ParsedArgs): Promise<number> {
   // `stale` (disk drift) are orthogonal — a store can be digest-valid yet
   // stale — so precedence is corrupt > stale > fresh.
   const fresh = detectGraphFreshness(cwd);
-  const behind = fresh.modified.length + fresh.added.length + fresh.deleted.length;
+  // Files AND workspace package entries (a package.json-only edit changes what
+  // a bare import resolves to while every source file is byte-identical).
+  const behind = graphFreshnessBehind(fresh);
+  const pkgsChanged = fresh.packagesChanged;
   const state = !verify.ok ? ('corrupt' as const) : behind > 0 ? ('stale' as const) : ('fresh' as const);
   const payload = {
     ok: verify.ok,
@@ -648,7 +688,11 @@ export async function runGraphStatus(args: ParsedArgs): Promise<number> {
     modifiedSinceIndex: fresh.modified.length,
     newSinceIndex: fresh.added.length,
     deletedSinceIndex: fresh.deleted.length,
-    ...(behind > 0 ? { nextCommand: 'shrk graph index --changed' } : {}),
+    packagesChangedSinceIndex: pkgsChanged.length,
+    ...(pkgsChanged.length > 0 ? { packagesChanged: pkgsChanged } : {}),
+    // An incremental update does not re-resolve unchanged files' imports of a
+    // package whose entry changed; only a full index does.
+    ...(behind > 0 ? { nextCommand: graphFreshnessRemedy(fresh) } : {}),
   };
   if (wantJson) {
     process.stdout.write(asJson(payload) + '\n');
@@ -679,10 +723,15 @@ export async function runGraphStatus(args: ParsedArgs): Promise<number> {
   process.stdout.write(kv('last indexed', payload.lastIndexedAt) + '\n');
   process.stdout.write(kv('state', payload.state) + '\n');
   if (behind > 0) {
+    const pkgPart =
+      pkgsChanged.length > 0
+        ? `, ${pkgsChanged.length} workspace package(s) changed (${pkgsChanged.slice(0, 3).join(', ')}${pkgsChanged.length > 3 ? `, +${pkgsChanged.length - 3} more` : ''})`
+        : '';
+    const remedy = `\`${graphFreshnessRemedy(fresh)}\``;
     process.stdout.write(
       kv(
         'drift',
-        `${fresh.modified.length} modified, ${fresh.added.length} new, ${fresh.deleted.length} deleted since index — run \`shrk graph index --changed\``,
+        `${fresh.modified.length} modified, ${fresh.added.length} new, ${fresh.deleted.length} deleted${pkgPart} since index — run ${remedy}`,
       ) + '\n',
     );
   }

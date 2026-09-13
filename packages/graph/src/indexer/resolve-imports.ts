@@ -237,6 +237,24 @@ function resolveWorkspaceTarget(
   return probeCandidate(nodePath.resolve(projectRoot, pkg.dir, sub));
 }
 
+/**
+ * The file a bare `import … from '<pkg.name>'` resolves to (project-relative,
+ * POSIX) — or `undefined` when nothing resolves.
+ *
+ * This is NOT a second resolver: it is exactly {@link resolveWorkspaceTarget},
+ * the function every consumer's bare workspace import already goes through
+ * (package.json entry when that file exists, else a `src/index.*` probe). So
+ * the root a public-surface walk starts from and the file the consumer edges
+ * point at agree by construction.
+ */
+export function resolvePackageEntryFile(
+  pkg: IWorkspacePackage,
+  projectRoot: string,
+): string | undefined {
+  const abs = resolveWorkspaceTarget(pkg.name, pkg, projectRoot);
+  return abs ? toProjectRel(projectRoot, abs) : undefined;
+}
+
 function existsSafe(p: string): boolean {
   try {
     return existsSync(p);

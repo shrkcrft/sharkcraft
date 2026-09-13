@@ -1,4 +1,8 @@
-import { loadAgentContractTests, runAgentContractTest } from '@shrkcrft/inspector';
+import {
+  loadAgentContractTests,
+  runAgentContractTest,
+  warmReferenceRegistries,
+} from '@shrkcrft/inspector';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
 export const listAgentTestsTool: IToolDefinition = {
@@ -26,6 +30,10 @@ export const runAgentTestTool: IToolDefinition = {
     const tests = await loadAgentContractTests(ctx.inspection);
     const test = tests.find((t) => t.id === id);
     if (!test) return { isError: true, text: `No agent contract test with id "${id}".` };
+    // The same registry `shrk test agent` resolves against (MCP ≡ CLI). No
+    // command index here: an unsurfaced `expectedCommands` entry is reported
+    // NOT VERIFIED (verdict `not-verified`), never a false failure.
+    await warmReferenceRegistries(ctx.inspection);
     return { data: runAgentContractTest(ctx.inspection, test) };
   },
 };

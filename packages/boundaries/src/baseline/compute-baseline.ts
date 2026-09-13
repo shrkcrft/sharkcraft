@@ -1,6 +1,6 @@
 import type { IWiringSource } from '@shrkcrft/core';
-import { matchesAny } from '../scan/glob.ts';
-import { readMatchingFiles } from '../util/walk-files.ts';
+import { readSelectedFiles } from '../util/read-selected-files.ts';
+import type { IUnreadFile } from '../util/unread-file.ts';
 import { loadTsconfigPaths } from '../scan/tsconfig-aliases.ts';
 import { extractTokens } from '../extract/extract-tokens.ts';
 
@@ -9,7 +9,14 @@ export interface IExtractorCompute {
   /** Canonical serialization: a pretty-printed JSON array of sorted, unique ids. */
   readonly text: string;
   readonly ids: readonly string[];
+  /** Matched files the compute READ. */
   readonly filesScanned: number;
+  /**
+   * Matched files the reader did NOT read (over the read cap, or unreadable).
+   * The recompute is incomplete without them: an id only they hold is missing
+   * from `ids`, so the baseline's coverage names them and never reads clean.
+   */
+  readonly unread: readonly IUnreadFile[];
   /** Set when the source is misconfigured (never throws). */
   readonly error?: string;
 }
@@ -30,18 +37,20 @@ export function computeBaselineFromExtractor(
   source: IWiringSource,
   excludeDirs: readonly string[] = [],
 ): IExtractorCompute {
-  const cache = readMatchingFiles(projectRoot, source.files ?? [], new Set(excludeDirs));
-  const files = [...cache.entries()]
-    .filter(([path]) => matchesAny(path, source.files ?? []))
-    .map(([path, content]) => ({ path, content }));
+  // The files the source's list SELECTS — a `!` entry excludes, so an id only
+  // an excluded file holds is not in the recomputed ledger.
+  const selected = readSelectedFiles(projectRoot, source.files ?? [], new Set(excludeDirs));
+  const files = [...selected.files.entries()].map(([path, content]) => ({ path, content }));
+  const unread = selected.unread;
   const res = extractTokens(source, files, { tsconfigPaths: loadTsconfigPaths(projectRoot) });
   if (res.error) {
-    return { text: '[]', ids: [], filesScanned: files.length, error: res.error };
+    return { text: '[]', ids: [], filesScanned: files.length, unread, error: res.error };
   }
   const ids = [...new Set(res.sites.map((s) => s.token))].sort();
   return {
     text: JSON.stringify(ids, null, 2) + '\n',
     ids,
     filesScanned: files.length,
+    unread,
   };
 }

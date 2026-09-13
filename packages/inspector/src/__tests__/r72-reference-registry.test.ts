@@ -14,10 +14,14 @@ import { listPolicyIds } from '../policy-registry.ts';
 import {
   emptyReferenceKinds,
   referenceIdExists,
+  referenceIdStatus,
   referenceIdsFor,
+  resolveCommandReference,
   warmReferenceRegistries,
   type DocReferenceKind,
 } from '../reference-registry.ts';
+import { CommandResolutionStatus } from '../command-resolution-status.ts';
+import { ReferenceIdStatus } from '../reference-id-status.ts';
 import type { ISharkcraftInspection } from '../sharkcraft-inspector.ts';
 
 /**
@@ -208,12 +212,33 @@ describe('the empty-registry guard', () => {
     expect(res.findings.map((f) => f.token)).toEqual(['nge.phantom']);
   });
 
-  test('emptyReferenceKinds exempts `command`, whose check is shape-based', () => {
-    // `command` deliberately has no list (the catalog lives above this layer),
-    // so it resolves by shape. Calling it "empty" would refuse every rule that
-    // mentions it.
-    expect(emptyReferenceKinds(inspection, ['command'])).toEqual([]);
-    expect(referenceIdExists(inspection, 'command', 'shrk gen')).toBe(true);
+  test('`command` without an injected resolver is UNVERIFIABLE — never "exists" by shape', () => {
+    // `command` has no list (the command index lives above this layer). It used
+    // to resolve by SHAPE — `id.startsWith('shrk ')` — which certified every
+    // `shrk …` string, dead ones included, as a real command. Without the
+    // resolver the CLI injects, the honest answer is "could not look": the
+    // kind reads as empty (a rule resolving only `command` refuses loudly) and
+    // the tri-state says Unverifiable.
+    expect(emptyReferenceKinds(inspection, ['command'])).toEqual(['command']);
+    expect(referenceIdStatus(inspection, 'command', 'shrk gen')).toBe(ReferenceIdStatus.Unverifiable);
+    expect(referenceIdExists(inspection, 'command', 'shrk gen')).toBe(false);
+    expect(referenceIdExists(inspection, 'command', 'shrk frobnicate zzz')).toBe(false);
+  });
+
+  test('an injected resolver answers `command` — and only for the inspection it was given', async () => {
+    const withResolver = { ...inspection } as ISharkcraftInspection;
+    await warmReferenceRegistries(withResolver, {
+      commandResolver: (raw) =>
+        raw === 'shrk gen'
+          ? { status: CommandResolutionStatus.Ok, matched: 'gen' }
+          : { status: CommandResolutionStatus.UnknownVerb, closest: ['shrk gen'] },
+    });
+    expect(emptyReferenceKinds(withResolver, ['command'])).toEqual([]);
+    expect(referenceIdStatus(withResolver, 'command', 'shrk gen')).toBe(ReferenceIdStatus.Exists);
+    expect(referenceIdStatus(withResolver, 'command', 'shrk frobnicate')).toBe(ReferenceIdStatus.Missing);
+    expect(resolveCommandReference(withResolver, 'shrk frobnicate').closest).toEqual(['shrk gen']);
+    // The original inspection object never received one.
+    expect(resolveCommandReference(inspection, 'shrk gen').status).toBe(CommandResolutionStatus.Unverified);
   });
 });
 
@@ -231,17 +256,76 @@ describe('the phantom cast cannot come back', () => {
       for (const [i, line] of text.split('\n').entries()) {
         if (line.trimStart().startsWith('*') || line.trimStart().startsWith('//')) continue;
         // Both halves of the anti-pattern: reading the property, and the cast
-        // that invents it. `commandCatalog` is exempt — the CLI really does
-        // attach it (explore.command.ts), so it is a genuine optional field.
+        // that invents it. `commandCatalog` is NOT exempt (round 11): the
+        // exemption claimed "the CLI really does attach it (explore.command.ts)",
+        // but explore passes the catalog as an `exploreArea()` INPUT, never on
+        // the inspection — three phantom reads answered "every shrk string
+        // exists" (reference-registry) and "no command exists" (test-runner,
+        // query-resolver). Commands resolve through the injected resolver.
         if (/\.(playbookRegistry|constructRegistry)\b/.test(line)) {
           offenders.push(`${file}:${i + 1} reads a phantom registry property`);
         }
-        if (/as\s*\{\s*(playbookRegistry|constructRegistry|constructs|policyChecks)\?:/.test(line)) {
+        if (/inspection\s+as\s*\{[^}]*commandCatalog\??:/.test(line) || /\)\.commandCatalog\b/.test(line)) {
+          offenders.push(`${file}:${i + 1} reads a phantom inspection.commandCatalog`);
+        }
+        if (/as\s*\{\s*(playbookRegistry|constructRegistry|constructs|policyChecks|commandCatalog)\?:/.test(line)) {
           offenders.push(`${file}:${i + 1} casts an inspection to a shape it never has`);
+        }
+        // Round 11: the stale-check's package lookup read `(inspection as {
+        // packages?: … }).packages` — never set, so every package id fell
+        // through to a hard-coded `packages/<name>` guess. (A package.json
+        // `workspaces as { packages?: … }` cast is legitimate and not matched.)
+        if (/inspection\s+as\s*\{\s*packages\?:/.test(line)) {
+          offenders.push(`${file}:${i + 1} casts an inspection to a shape it never has (packages)`);
         }
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  test('no production source casts inspection.config to a shape (r75 ratchet)', () => {
+    // The config twin of the lock above. `inspection.config as { fooFiles?: … }`
+    // type-checks for a key ISharkCraftConfig does not declare — and the STRICT
+    // schema rejects that key, discarding the WHOLE config. So the cast reads a
+    // key that can never be present: `taskRoutingHintFiles` / `playbookFiles`
+    // shipped exactly like that. Declare the key (ISharkCraftConfig +
+    // SharkCraftConfigSchema) and read the typed field instead.
+    //
+    // KNOWN_CASTS covers the casts that predate this lock, as `<file>:<first key>`.
+    // It can only shrink. A new cast fails, and so does a listed cast that is
+    // gone, so the list cannot rot into a blanket exemption: when you fix one,
+    // delete its entry. UNDECLARED entries read a key the schema rejects, which
+    // makes them dead paths from local config. The rest are redundant casts of
+    // declared keys.
+    // Round 11 stage 0 retired 12 entries: `conventionFiles` was declared (the
+    // plugin-api documents it as a local key) and is read typed;
+    // `ownership.sources` became the declared `ownershipFiles`;
+    // `policyOverrides` is read typed; the other nine (pack-manifest-only keys,
+    // and the engine-input `localPolicyFiles`) were dead local reads, deleted.
+    const KNOWN_CASTS = new Set<string>([
+      'sharkcraft-inspector.ts:surface', // declared — redundant cast
+      'sharkcraft-inspector.ts:actionHintDiagnostics', // declared — redundant cast
+    ]);
+    const src = join(import.meta.dir, '..');
+    const found = new Set<string>();
+    const offenders: string[] = [];
+    for (const file of readdirSync(src)) {
+      if (!file.endsWith('.ts')) continue;
+      const text = readFileSync(join(src, file), 'utf8');
+      for (const [i, line] of text.split('\n').entries()) {
+        if (line.trimStart().startsWith('*') || line.trimStart().startsWith('//')) continue;
+        const m = /inspection\.config\s+as\s+(?:unknown\s+as\s+)?\{\s*(\w*)/.exec(line);
+        if (!m) continue;
+        const key = `${file}:${m[1] || '<multi-line>'}`;
+        found.add(key);
+        if (!KNOWN_CASTS.has(key)) {
+          offenders.push(`${file}:${i + 1} casts inspection.config — declare the key and read the typed field`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+    // A fixed cast must leave the ratchet too.
+    expect([...KNOWN_CASTS].filter((k) => !found.has(k))).toEqual([]);
   });
 
   test('every ID kind either lists ids or documents why it cannot', () => {

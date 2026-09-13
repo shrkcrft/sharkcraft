@@ -1,4 +1,4 @@
-import { runQualityGates } from '@shrkcrft/quality-gates';
+import { prepareQualityGateRun, runQualityGates, settleQualityGateReport } from '@shrkcrft/quality-gates';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
 interface IInput {
@@ -10,7 +10,7 @@ interface IInput {
 export const getQualityGateTool: IToolDefinition = {
   name: 'get_quality_gate',
   description:
-    'Read-only: run the code-intelligence quality-gate aggregator (graph freshness, architecture, impact since `main`) and return the unified pass/fail report. The CI / pre-merge hook for AI-agent-authored changes.',
+    'Read-only: run the code-intelligence quality-gate aggregator (graph freshness, architecture, impact since `main`, the project\'s wiring + policy rules, knowledge symbol refs) and return the unified report with the SAME settled `exitCode` / `verdict` / `shortfalls` `shrk gate` exits on — a gate that examined only part of its scope is `not-verified`, never `pass`. The CI / pre-merge hook for AI-agent-authored changes.',
   cliCommand: 'gate',
   inputSchema: {
     type: 'object',
@@ -21,16 +21,30 @@ export const getQualityGateTool: IToolDefinition = {
     },
     additionalProperties: false,
   },
-  handler(input, ctx) {
+  async handler(input, ctx) {
     const args = input as IInput;
-    const report = runQualityGates({
-      projectRoot: ctx.inspection.projectRoot,
-      impact: {
-        ...(args.sinceRef ? { sinceRef: args.sinceRef } : {}),
-        ...(args.failOn ? { failOn: args.failOn } : {}),
-      },
+    // THE gate-run assembly `shrk gate` uses (`prepareQualityGateRun`): the
+    // project's wiring / policy rules, the plane scan scope, the knowledge
+    // inspection. It used to pass the impact options only.
+    const prepared = await prepareQualityGateRun({
+      cwd: ctx.inspection.projectRoot,
+      ...(args.sinceRef ? { sinceRef: args.sinceRef } : {}),
+      ...(args.failOn ? { failOn: args.failOn } : {}),
       ...(args.disable ? { disable: args.disable } : {}),
+      inspection: ctx.inspection,
     });
-    return { data: report };
+    const report = runQualityGates(prepared.options);
+    // THE settle `shrk gate` exits on — never `overall` read raw.
+    const settled = settleQualityGateReport(report);
+    return {
+      data: {
+        ...report,
+        exitCode: settled.exit,
+        verdict: settled.verdict,
+        shortfalls: settled.shortfalls,
+        accepted: settled.accepted,
+        ...(prepared.planeDiagnostics.length > 0 ? { planeDiagnostics: prepared.planeDiagnostics } : {}),
+      },
+    };
   },
 };

@@ -30,6 +30,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header } from '../output/format-output.ts';
 import {
   applyActionHintStub,
@@ -281,6 +282,17 @@ async function runActionHintApply(
 
 export const fixCommand: ICommandHandler = {
   name: 'fix',
+  positionals: PositionalMode.None,
+  subverbs: [
+    { name: 'list', description: 'List the fixable findings.', usage: 'shrk fix list [--kinds <a,b>] [--json]' },
+    { name: 'doctor', description: 'Fix-system health.', usage: 'shrk fix doctor [--json]' },
+    {
+      name: 'preview',
+      description: 'Preview the fixes (the default).',
+      usage:
+        'shrk fix preview [--action-hints|--knowledge-stale|--template-drift] [--kinds <a,b>] [--target <id>] [--write-preview] [--apply [--allow-divergent] [--drop-stale] [--drop-missing] [--rename-strategy strict|wide]] [--json]',
+    },
+  ],
   description:
     'Fix preview system. Preview-only by default. `--write-preview` writes drafts to .sharkcraft/fixes/. `--action-hints --apply` splices stubbed actionHints. `--knowledge-stale --apply [--drop-stale] [--drop-missing]` removes the offending reference in place. `--rename-strategy=wide` surfaces multi-candidate rename suggestions that strict mode silently drops.',
   usage:
@@ -341,6 +353,9 @@ async function runKnowledgeStaleApply(
   // Rebuild the stale report directly so we have full IKnowledgeReferenceCheck
   // shape (the FixKind suggestions are stringy and lose the kind/path/symbol/id).
   const { buildKnowledgeStaleReport, ReferenceCheckOutcome, RenameStrategy } = await import('@shrkcrft/inspector');
+  // Warm before resolving, or a correct playbook / policy id reads as broken
+  // and a --drop-stale would delete a TRUE reference.
+  await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
   const stale = buildKnowledgeStaleReport(inspection, {
     renameStrategy: useWide ? RenameStrategy.Wide : RenameStrategy.Strict,
   });
@@ -576,6 +591,9 @@ async function runTemplateDriftApply(
 ): Promise<number> {
   const wantJson = flagBool(args, 'json');
   const { buildTemplateDriftReport } = await import('@shrkcrft/inspector');
+  // Warm first: an unwarmed related id is NOT VERIFIED (never "unresolved"), so
+  // without it this fix would find nothing — and must never drop a real id.
+  await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
   const drift = buildTemplateDriftReport(inspection, {});
   // Pull related-id-unresolved findings and pair each with its source.
   const templateSources = inspection.templateSources;
@@ -823,6 +841,8 @@ function runFixList(args: ParsedArgs): number {
 async function runFixDoctor(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const inspection = await inspectSharkcraft({ cwd });
+  // The preview folds in the stale report — warm before it resolves any id.
+  await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
   const report = buildFixPreview(inspection);
   const errors = report.suggestions.filter((s) => s.severity === 'error').length;
   const warnings = report.suggestions.filter((s) => s.severity === 'warning').length;

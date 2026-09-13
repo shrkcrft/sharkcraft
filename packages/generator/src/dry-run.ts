@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { safeResolveTargetPath, type UnsafeTargetPathError } from '@shrkcrft/core';
 import {
   renderTemplate,
+  templateRemainderLines,
   validateTemplateVariables,
   type ITemplateChange,
   type ITemplateDefinition,
@@ -17,6 +18,7 @@ import {
   type IPlannedChange,
   type IPlannedOperation,
 } from './planned-change.ts';
+import { describeInvalidPlannedOperation, validatePlannedOperation } from './planned-operation-fields.ts';
 
 export interface IDryRunResult {
   plan: IGenerationPlan;
@@ -45,6 +47,7 @@ export function planGeneration(
         hasConflicts: false,
         warnings,
         postGenerationNotes: template.postGenerationNotes ?? [],
+        remainderLines: templateRemainderLines(template),
       },
       safe: false,
     };
@@ -118,10 +121,15 @@ export function planGeneration(
 
   // 2) v2 planned changes — evaluate against the live filesystem, threaded
   //    through the overlay so successive changes to one file compose.
-  for (const tplChange of rendered.changes) {
-    const evaluated = planOne(tplChange, request.projectRoot, overlay);
+  //    Each op is shape-checked against PLANNED_OPERATION_FIELDS first, so a
+  //    misspelled op becomes a located Conflict instead of a TypeError.
+  rendered.changes.forEach((tplChange, index) => {
+    const evaluated = planOne(tplChange, request.projectRoot, overlay, {
+      where: `template '${template.id}' change[${index}]`,
+      warnings,
+    });
     changes.push(evaluated);
-  }
+  });
 
   const { hasConflicts } = summarizeConflicts(changes);
 
@@ -134,6 +142,7 @@ export function planGeneration(
       hasConflicts,
       warnings,
       postGenerationNotes: rendered.postGenerationNotes,
+      remainderLines: templateRemainderLines(template),
     },
     safe: !hasConflicts && changes.length > 0,
   };
@@ -143,8 +152,31 @@ function planOne(
   tplChange: ITemplateChange,
   projectRoot: string,
   overlay?: Map<string, string>,
+  ctx?: { readonly where: string; readonly warnings: string[] },
 ): IFileChange {
   const op: IPlannedOperation = tplChange.operation;
+  const where = ctx?.where ?? 'change';
+  const shape = validatePlannedOperation(op);
+  const rawTarget = typeof tplChange.targetPath === 'string' ? tplChange.targetPath : '';
+  const invalid =
+    describeInvalidPlannedOperation(shape, where) ??
+    (rawTarget.length === 0 ? `${where} (${shape.kind}): missing targetPath` : undefined);
+  if (invalid) {
+    return {
+      type: FileChangeType.Conflict,
+      absolutePath: rawTarget,
+      relativePath: rawTarget,
+      contents: '',
+      reason: invalid,
+      sizeBytes: 0,
+      operation: op,
+    };
+  }
+  if (shape.unknown.length > 0) {
+    ctx?.warnings.push(
+      `${where} (${shape.kind}): unknown key(s) ${shape.unknown.join(', ')} are ignored by the engine`,
+    );
+  }
   let safe: ReturnType<typeof safeResolveTargetPath>;
   try {
     safe = safeResolveTargetPath(tplChange.targetPath, projectRoot);
@@ -172,12 +204,27 @@ function planOne(
     : existsSync(safe.absolutePath)
       ? readFileSafe(safe.absolutePath)
       : null;
-  const result = evaluatePlannedChange({
-    change,
-    absolutePath: safe.absolutePath,
-    relativePath: safe.relativePath,
-    existing,
-  });
+  let result: IFileChange;
+  try {
+    result = evaluatePlannedChange({
+      change,
+      absolutePath: safe.absolutePath,
+      relativePath: safe.relativePath,
+      existing,
+    });
+  } catch (e) {
+    // A well-shaped op can still carry a wrong-typed value; the plan must name
+    // the change, never surface a bare TypeError.
+    return {
+      type: FileChangeType.Conflict,
+      absolutePath: safe.absolutePath,
+      relativePath: safe.relativePath,
+      contents: existing ?? '',
+      reason: `${where} (${shape.kind}): could not be evaluated — ${(e as Error).message}`,
+      sizeBytes: 0,
+      operation: op,
+    };
+  }
   // Record the cumulative content (Skip/Conflict carry the unchanged bytes,
   // which is exactly what a later op on the same file should see).
   overlay?.set(safe.absolutePath, result.contents);

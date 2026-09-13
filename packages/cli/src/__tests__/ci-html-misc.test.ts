@@ -70,14 +70,18 @@ describe('shrk ci scaffold new flags', () => {
     expect(r.stdout).toContain('shrk safety audit');
   });
 
-  test('--with-command-doctor adds the commands doctor step', () => {
-    const root = makeFixture();
-    const r = shrk(
-      ['ci', 'scaffold', 'github-actions', '--with-command-doctor'],
-      root,
-    );
-    expect(r.status).toBe(0);
-    expect(r.stdout).toContain('shrk commands doctor');
+  // Round 11 review (intentional change): `commands doctor` maintains SharkCraft
+  // itself and exits 78 outside its repository, so the step would fail every
+  // consumer CI run — the flag is refused there and still applies in the tool
+  // repository.
+  test('--with-command-doctor adds the commands doctor step in the SharkCraft repo, and is refused elsewhere', () => {
+    const own = shrk(['ci', 'scaffold', 'github-actions', '--with-command-doctor'], REPO_ROOT);
+    expect(own.status).toBe(0);
+    expect(own.stdout).toContain('shrk commands doctor');
+    const consumer = shrk(['ci', 'scaffold', 'github-actions', '--with-command-doctor'], makeFixture());
+    expect(consumer.status).toBe(2);
+    expect(consumer.stderr).toContain('does not apply to this repository');
+    expect(consumer.stdout).not.toContain('shrk commands doctor');
   });
 
   test('--with-pack-tests --pack-paths inserts a pack-test step per path', () => {

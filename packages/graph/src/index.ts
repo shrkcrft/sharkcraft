@@ -32,7 +32,15 @@ export * from './indexer/incremental-updater.ts';
 export * from './indexer/unresolved-imports.ts';
 export * from './indexer/call-graph-support.ts';
 export * from './indexer/resolve-reexports.ts';
+export * from './indexer/re-export-index-model.ts';
+export * from './indexer/re-export-index.ts';
+export * from './indexer/package-node.ts';
+export * from './indexer/package-entry-divergence.ts';
+export * from './indexer/package-entry-divergence-record.ts';
+export * from './indexer/graph-source-path.ts';
 
 export * from './query/query-api.ts';
+export * from './query/enumerate-public-surface.ts';
+export * from './query/module-export-walk.ts';
 export * from './query/graph-api-cache.ts';
 export * from './query/cycle-detection.ts';

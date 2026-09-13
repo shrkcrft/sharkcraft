@@ -84,7 +84,7 @@ const RELEASE: IDevCycleProfile = {
     { id: 'release-readiness', title: 'Release readiness (strict)', command: 'shrk release readiness --strict', canFail: false, category: 'gate' },
     { id: 'release-smoke', title: 'Release smoke (default scenarios)', command: 'shrk release smoke', canFail: true, category: 'gate' },
     { id: 'safety-audit', title: 'Safety audit', command: 'shrk safety audit', canFail: false, category: 'audit' },
-    { id: 'product-check', title: 'Product check', command: 'shrk product check', canFail: true, category: 'gate' },
+    { id: 'product-check', title: 'Product check', command: 'shrk quality', canFail: true, category: 'gate' },
     { id: 'commands-doctor', title: 'Commands doctor', command: 'shrk commands doctor', canFail: true, category: 'doctor' },
   ],
 };

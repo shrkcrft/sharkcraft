@@ -42,6 +42,8 @@ Optional flags:
 - `likelyTests` — co-located or conventional test files.
 - `suggestedTestCommands` / `suggestedValidationCommands` /
   `suggestedReviewCommands`.
+- `areaCoverage` — `{ classificationRate, degraded, unclassifiedTargets }`:
+  how far the area-derived fields above can be trusted (see below).
 - `risk` (`low|medium|high|critical`) + `riskReasons`.
 - `truncations` — lists that exceeded `--limit`.
 - `diagnostics` — warnings emitted during analysis.
@@ -53,6 +55,41 @@ public-API touches, boundary rule density, package count, ownership
 review status, missing tests, core touches, policy surface touches, and
 area span. Returns one of `low | medium | high | critical`
 plus a list of `riskReasons` for transparency.
+
+## Area attribution coverage
+
+`affectedAreas`, the boundary risks derived from them, and the `core-area`
+reason are only as complete as the **area map** (`shrk repo areas`). Its
+built-in pattern table knows one layout (`packages/<core|ui|api>`, `src/…`); a
+two-level package root (`libs/<group>/<lib>/…`) classified ~14% of files, and an
+unclassified target is invisible to every area-derived signal. So:
+
+- the area map reports `classifiedFiles / totalFiles`, `classificationRate` and
+  `degraded` (rate below `areaMap.minClassificationRate`, default 0.5);
+- impact carries it as `areaCoverage`, adds the risk reason
+  `area-attribution-degraded` (it flags, it never LOWERS the risk), and prints
+  `Area attribution: degraded (Z% of repo classified; n/m target(s) unclassified)`
+  in text and markdown. Report only — no exit code changes.
+
+Fix it by declaring the project's layout — project patterns run before the
+built-in table (and `shrk changes`' area buckets use the same patterns first):
+
+```ts
+// sharkcraft.config.ts
+export default {
+  areaMap: {
+    patterns: [
+      { kind: 'core', match: ['libs/*/core/**'] },
+      { kind: 'ui', match: ['libs/*/ui/**'], id: 'ui-libs' },
+    ],
+    // replaceDefaults: true,      // drop the built-in table entirely
+    // minClassificationRate: 0.6,
+  },
+};
+```
+
+`kind` is one of `core | ui | app | api | tests | docs | infra | generated`
+(`unknown` is what an unmatched file gets, never a declaration).
 
 ## MCP
 
@@ -167,6 +204,15 @@ re-exports). Exit `1` when any orphan survives. Nothing deleted → a loud
 `skipped`, never a green pass. The diff is streamed (no `ENOBUFS` on large
 changesets). This generalizes `shrk impact --deleted` into a first-class verb.
 
+`shrk impact --deleted` answers the same question from the same scan and
+settles the same way: "no orphaned importers" (exit `0`) only when every
+deleted source file was checked against an index current for every surviving
+importer. An index that never read files changed since it was built, a deleted
+source file the index does not know, or nothing deleted is NOT VERIFIED (`2`,
+with the same lead and remedy as `check orphans`); `--allow-empty` accepts an
+empty scope — never a stale one. `--json` carries `coverage`,
+`indexDivergence`, `exitCode`, `verdict` and `shortfalls`.
+
 ## The composite "done?" gate — `shrk finish`
 
 `shrk finish` is the single call an agent runs after editing to ask *"is this
@@ -182,8 +228,12 @@ shrk finish --json
 ```
 
 A sub-gate with no applicable rules (no wiring rules, nothing deleted, …) is
-reported as `skipped`, not silently passed. A superset of `diff-check` (which
-runs only boundaries + imports).
+reported as `skipped`, not silently passed. A wiring or policy rule the
+changeset SELECTED that examined nothing (a stale glob) is not "no applicable
+rules": the sub-gate reports `partial` (the composite is `2`), or `fail` when
+`failOnEmpty` makes the empty rule a failure — exactly what `check wiring
+--changed-only` / `policy-lint --changed-only` read. A superset of
+`diff-check` (which runs only boundaries + imports).
 
 ## Limitations
 

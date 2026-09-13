@@ -3,9 +3,11 @@ import * as nodePath from 'node:path';
 import {
   AdoptionCheckpointStatus,
   buildConstructAdoptionDiff,
+  buildDeclaredXrefReport,
   buildConstructAdoptionPlan,
   buildSearchIndex,
   ConstructAdoptionCategory,
+  ContributionKind,
   evaluateAdoptionCheckpoint,
   hashDiffBody,
   inferConstructs,
@@ -36,6 +38,8 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
+import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
 import { asJson, header } from '../output/format-output.ts';
 
 /**
@@ -202,20 +206,26 @@ export const constructsListCommand: ICommandHandler = {
   description: 'List registered constructs.',
   usage: 'shrk constructs list [--type <type>] [--json]',
   async run(args: ParsedArgs): Promise<number> {
-    const { constructs } = await loadAll(args);
+    const { constructs, inspection } = await loadAll(args);
     const type = flagString(args, 'type');
     const list = type ? constructs.filter((c) => c.type === type) : constructs;
+    // A construct (or facet) its loader refused is named (round 12, 12.1) —
+    // an id-less one used to vanish, and one without `type` crashed this list.
+    const kinds = [ContributionKind.Construct, ContributionKind.ConstructFacet];
+    const note = { next: 'shrk packs contributions' };
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(list) + '\n');
+      await writeRejectedEntriesNote(inspection, kinds, { ...note, json: true });
       return 0;
     }
     process.stdout.write(header(`Constructs (${list.length})`));
     if (list.length === 0) process.stdout.write('  (none)\n');
     for (const c of list) {
       process.stdout.write(
-        `  ${c.id.padEnd(40)} ${c.type.padEnd(12)} ${c.title}\n`,
+        `  ${c.id.padEnd(40)} ${String(c.type ?? '').padEnd(12)} ${c.title ?? ''}\n`,
       );
     }
+    await writeRejectedEntriesNote(inspection, kinds, note);
     return 0;
   },
 };
@@ -456,18 +466,31 @@ export const constructsRelatedCommand: ICommandHandler = {
       process.stderr.write('Usage: shrk constructs related <id>\n');
       return 2;
     }
-    const { constructs } = await loadAll(args);
+    const { constructs, inspection } = await loadAll(args);
     const c = constructs.find((x) => x.id === id);
     if (!c) {
       return emitConstructMiss(id, args);
     }
+    // Each id annotated from THE declared cross-reference collector: the
+    // namespace(s) it resolved into, or UNRESOLVED. The `[kind]` label is the
+    // FIELD's kind — it used to be the only thing printed, so a dangling id
+    // rendered exactly like a live one.
+    const xrefs = await buildDeclaredXrefReport(inspection);
+    const rowFor = new Map(
+      xrefs.rows
+        .filter((r) => r.sourceKind === 'construct' && r.sourceId === id)
+        .map((r) => [`${r.field}|${r.targetId}`, r] as const),
+    );
     const related = [
-      ...(c.relatedKnowledge ?? []).map((id) => ({ kind: 'knowledge', id })),
-      ...(c.relatedRules ?? []).map((id) => ({ kind: 'rule', id })),
-      ...(c.relatedTemplates ?? []).map((id) => ({ kind: 'template', id })),
-      ...(c.relatedPipelines ?? []).map((id) => ({ kind: 'pipeline', id })),
-      ...(c.relatedPathConventions ?? []).map((id) => ({ kind: 'path', id })),
-    ];
+      ...(c.relatedKnowledge ?? []).map((rid) => ({ kind: 'knowledge', id: rid, field: 'relatedKnowledge' })),
+      ...(c.relatedRules ?? []).map((rid) => ({ kind: 'rule', id: rid, field: 'relatedRules' })),
+      ...(c.relatedTemplates ?? []).map((rid) => ({ kind: 'template', id: rid, field: 'relatedTemplates' })),
+      ...(c.relatedPipelines ?? []).map((rid) => ({ kind: 'pipeline', id: rid, field: 'relatedPipelines' })),
+      ...(c.relatedPathConventions ?? []).map((rid) => ({ kind: 'path', id: rid, field: 'relatedPathConventions' })),
+    ].map((r) => {
+      const row = rowFor.get(`${r.field}|${r.id}`);
+      return { kind: r.kind, id: r.id, resolvedAs: row?.resolvedAs ?? [], status: row?.status ?? 'unverified' };
+    });
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson({ id, related }) + '\n');
       return 0;
@@ -477,7 +500,17 @@ export const constructsRelatedCommand: ICommandHandler = {
       process.stdout.write('  (none)\n');
       return 0;
     }
-    for (const r of related) process.stdout.write(`  • [${r.kind}] ${r.id}\n`);
+    for (const r of related) {
+      const resolved =
+        r.status === 'ok'
+          ? `→ ${r.resolvedAs.join(' | ')}`
+          : r.status === 'dangling'
+            ? 'UNRESOLVED — no registry has this id'
+            : r.status === 'wrong-kind'
+              ? `WRONG KIND — resolves as ${r.resolvedAs.join(' | ')}`
+              : 'NOT VERIFIED';
+      process.stdout.write(`  • [${r.kind}] ${r.id}  ${resolved}\n`);
+    }
     return 0;
   },
 };
@@ -708,6 +741,17 @@ export const constructsInferCommand: ICommandHandler = {
 
 export const constructsAdoptCommand: ICommandHandler = {
   name: 'adopt',
+  // An unknown token used to fall through to the adoption plan at exit 0.
+  positionals: PositionalMode.None,
+  subverbs: [
+    { name: 'status', description: 'Construct-adoption status.', usage: 'shrk constructs adopt status [--json]' },
+    { name: 'review', description: 'Review the construct-adoption plan.', usage: 'shrk constructs adopt review [--json]' },
+    {
+      name: 'diff',
+      description: 'Diff the adoption plan against constructs.ts.',
+      usage: 'shrk constructs adopt diff [--format text|markdown|html|json] [--record-checkpoint]',
+    },
+  ],
   description:
     'Build a construct-adoption plan from inferred drafts; classify safe / manual / low-confidence / already-covered / conflict. Never modifies constructs.ts.',
   usage:

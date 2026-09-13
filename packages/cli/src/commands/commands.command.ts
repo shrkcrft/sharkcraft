@@ -6,12 +6,18 @@ import {
   type ParsedArgs,
   resolveCwd
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header } from '../output/format-output.ts';
 import {
   BUILTIN_PROFILES,
   getProfile,
   type ISurfaceProfile
 } from '../surface/profiles.ts';
+import type { IVerdictCoverage } from '@shrkcrft/core';
+import { CommandDispatchKind } from '../surface/command-dispatch-kind.ts';
+import { buildCommandIndex } from '../surface/command-index.ts';
+import { settleVerdict } from '../gates/settle-verdict.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
 import {
   buildCommandSafetyMatrix,
   COMMAND_CATALOG,
@@ -34,17 +40,65 @@ import {
   renderPrimaryCommandsText
 } from '@shrkcrft/inspector';
 
-export function makeCommandsCommand(registry: CommandRegistry): ICommandHandler {
+/**
+ * `catalog` is the rows `commands doctor` checks against `registry` (default
+ * COMMAND_CATALOG) — injectable so a test can prove a catalog/registry join
+ * end to end through the verb. Every other subcommand browses COMMAND_CATALOG.
+ */
+export function makeCommandsCommand(
+  registry: CommandRegistry,
+  catalog: readonly ICommandCatalogEntry[] = COMMAND_CATALOG,
+): ICommandHandler {
   return {
     name: 'commands',
+    // `suggest` / `explain` were hard-deleted (folded into the unknown-command
+    // did-you-mean and `shrk explain` — see command-catalog.ts) but still
+    // advertised here, so `commands suggest x` fell through to the default
+    // listing at exit 0. The declared set below is what `run` actually handles;
+    // anything else is an unknown subcommand.
     description:
-      'Browse the command catalog. Default view is compact (primary + common); pass --all for the full catalog, or --profile <id> (e.g. agent) for the surface a profile sees. Subcommands: primary | advanced | deprecated | hidden | retirement-plan | docs-check | surface | profile | machine | legacy | overlaps | taxonomy | matrix | tree | search | suggest | explain | entrypoints | doctor | ux-check.',
+      'Browse the command catalog. Default view is compact (primary + common); pass --all for the full catalog, or --profile <id> (e.g. agent) for the surface a profile sees. Subcommands: primary | advanced | deprecated | hidden | retirement-plan | docs-check | surface | profile | machine | legacy | overlaps | taxonomy | matrix | tree | search | entrypoints | doctor | ux-check.',
     usage:
-      'shrk commands [primary|advanced|deprecated|hidden|retirement-plan|docs-check|surface <s>|profile [<id>]|machine|legacy|overlaps|taxonomy|matrix|tree|search <q>|suggest <p>|explain <cmd>|entrypoints|doctor|ux-check] [--all] [--profile <id>] [--safety <level>] [--category <name>] [--json]',
+      'shrk commands [primary|advanced|deprecated|hidden|retirement-plan|docs-check|surface <s>|profile [<id>]|machine|legacy|overlaps|taxonomy|matrix|tree|search <q>|entrypoints|doctor|ux-check] [--all] [--profile <id>] [--safety <level>] [--category <name>] [--json]',
+    positionals: PositionalMode.None,
+    subverbs: [
+      { name: 'primary', description: 'The primary (spine) commands.', usage: 'shrk commands primary [--json]' },
+      { name: 'advanced', description: 'The advanced commands.', usage: 'shrk commands advanced [--json]' },
+      { name: 'deprecated', description: 'Deprecated commands and their replacements.', usage: 'shrk commands deprecated [--json]' },
+      { name: 'hidden', description: 'Commands hidden from default help.', usage: 'shrk commands hidden [--json]' },
+      { name: 'retirement-plan', description: 'The command retirement plan.', usage: 'shrk commands retirement-plan [--json]' },
+      { name: 'docs-check', description: 'Catalog rows vs the docs that mention them.', usage: 'shrk commands docs-check [--json]' },
+      { name: 'surface', description: 'The catalog filtered to one command surface.', usage: 'shrk commands surface <surface> [--json]', positionals: PositionalMode.Free },
+      {
+        name: 'profile',
+        description: 'List surface profiles, or render the catalog as one profile sees it.',
+        usage: 'shrk commands profile [<id>] [--json]',
+        positionals: PositionalMode.Free,
+      },
+      { name: 'machine', description: 'Machine-oriented (JSON / MCP) commands.', usage: 'shrk commands machine [--json]' },
+      { name: 'legacy', description: 'Legacy command spellings.', usage: 'shrk commands legacy [--json]' },
+      { name: 'overlaps', description: 'Commands that overlap, and which to prefer.', usage: 'shrk commands overlaps [--json]' },
+      {
+        name: 'taxonomy',
+        description: 'The command taxonomy.',
+        usage: 'shrk commands taxonomy [--format text|markdown|json] [--output <path>] [--write-docs] [--json]',
+      },
+      { name: 'matrix', description: 'The command safety matrix.', usage: 'shrk commands matrix [--format markdown|json] [--json]' },
+      { name: 'tree', description: 'The command tree.', usage: 'shrk commands tree [--json]' },
+      { name: 'search', description: 'Filter the catalog by a query.', usage: 'shrk commands search <query> [--json]', positionals: PositionalMode.Free },
+      {
+        name: 'entrypoints',
+        aliases: ['workflows'],
+        description: 'The entrypoint matrix (human / agent / machine / debug).',
+        usage: 'shrk commands entrypoints [--json]',
+      },
+      { name: 'doctor', description: 'Registry ↔ catalog ↔ index consistency.', usage: 'shrk commands doctor [--json]' },
+      { name: 'ux-check', description: 'Command UX checks.', usage: 'shrk commands ux-check [--json]' },
+    ],
     async run(args: ParsedArgs): Promise<number> {
       const sub = args.positional[0];
       if (sub === 'doctor') {
-        return runCommandsDoctor(args, registry);
+        return runCommandsDoctor(args, registry, catalog);
       }
       if (sub === 'ux-check') {
         return runCommandsUxCheck(args);
@@ -748,7 +802,13 @@ export interface ICommandsDoctorReport {
     registeredSubcommands: number;
     errors: number;
     warnings: number;
+    /** Rows of the command index (0 without a registry). */
+    indexEntries: number;
+    /** Registered, dispatchable paths with no catalog row (`registry-path-not-in-catalog`). */
+    uncatalogued: number;
   };
+  /** What the exhaustiveness pass examined: every registered handler path. */
+  coverage: IVerdictCoverage;
 }
 
 export interface ICommandsUxIssue {
@@ -1026,15 +1086,22 @@ async function runCommandsUxCheck(args: ParsedArgs): Promise<number> {
   return report.passed ? 0 : 1;
 }
 
-/** Pure: build the doctor report. Exported for tests. */
+/**
+ * Pure: build the doctor report. Exported for tests.
+ *
+ * `catalog` defaults to COMMAND_CATALOG. A test passes its own rows (with a
+ * registry of its own) to prove a join end to end — every check below reads
+ * the SAME rows, so a fixture catalog is never mixed with the real one.
+ */
 export function buildCommandsDoctorReport(
   registry: CommandRegistry | null,
+  catalog: readonly ICommandCatalogEntry[] = COMMAND_CATALOG,
 ): ICommandsDoctorReport {
   const issues: ICommandsDoctorIssue[] = [];
 
   // 1. No duplicate commands.
   const seen = new Set<string>();
-  for (const e of COMMAND_CATALOG) {
+  for (const e of catalog) {
     if (seen.has(e.command)) {
       issues.push({
         code: 'duplicate-command',
@@ -1047,7 +1114,7 @@ export function buildCommandsDoctorReport(
 
   // 2. Every entry has a safety level + description + category.
   const validLevels = new Set<string>(Object.values(SafetyLevel));
-  for (const e of COMMAND_CATALOG) {
+  for (const e of catalog) {
     if (!e.description || e.description.trim().length === 0) {
       issues.push({
         code: 'missing-description',
@@ -1072,7 +1139,7 @@ export function buildCommandsDoctorReport(
   }
 
   // 3. writes-source ⇒ not MCP-available.
-  for (const e of COMMAND_CATALOG) {
+  for (const e of catalog) {
     if (e.writesSource && e.mcpAvailable) {
       issues.push({
         code: 'writes-source-via-mcp',
@@ -1083,7 +1150,7 @@ export function buildCommandsDoctorReport(
   }
 
   // 4. writesSource ⇒ writesFiles.
-  for (const e of COMMAND_CATALOG) {
+  for (const e of catalog) {
     if (e.writesSource && !e.writesFiles) {
       issues.push({
         code: 'writes-source-without-writes-files',
@@ -1094,7 +1161,7 @@ export function buildCommandsDoctorReport(
   }
 
   // 5. runs-shell safety level ⇒ runsShell flag (and vice versa).
-  for (const e of COMMAND_CATALOG) {
+  for (const e of catalog) {
     if (e.safetyLevel === SafetyLevel.RunsShell && !e.runsShell) {
       issues.push({
         code: 'shell-level-without-flag',
@@ -1113,7 +1180,7 @@ export function buildCommandsDoctorReport(
       const sub = registry.listGroup(g);
       registeredSub += sub.length;
     }
-    for (const e of COMMAND_CATALOG) {
+    for (const e of catalog) {
       const parts = e.command.split(' ');
       const top = parts[0]!;
       const second = parts[1];
@@ -1149,7 +1216,7 @@ export function buildCommandsDoctorReport(
     }
     // 7. Registered commands without a catalog entry.
     for (const c of registry.list()) {
-      const inCatalog = COMMAND_CATALOG.some((e) => e.command === c.name || e.command.startsWith(c.name + ' '));
+      const inCatalog = catalog.some((e) => e.command === c.name || e.command.startsWith(c.name + ' '));
       if (!inCatalog) {
         // Promoted to error for primary verbs: if a user types
         // `shrk help <cmd>` we should be able to print catalog metadata
@@ -1179,7 +1246,7 @@ export function buildCommandsDoctorReport(
     // canonical target carries the entry.
     const aliasGroups = new Set(registry.listGroupAliases().keys());
     const catalogTopWords = new Set<string>();
-    for (const e of COMMAND_CATALOG) {
+    for (const e of catalog) {
       const top = e.command.split(/\s+/)[0];
       if (top) catalogTopWords.add(top);
     }
@@ -1195,42 +1262,126 @@ export function buildCommandsDoctorReport(
     }
   }
 
+  // 9. Exhaustiveness, at PATH granularity, over THE command index (what
+  // `surface list` and `help` show). Checks 6–8 only compared top-level
+  // handlers and groups, so 75 registered 2-level paths (`knowledge list`,
+  // `gates check`, …) with no catalog row — and so no safety metadata — read
+  // as "OK ✓".
+  let indexEntries = 0;
+  let uncatalogued = 0;
+  const handlerPaths = registry ? registry.listAll().map(({ path }) => path.join(' ')) : [];
+  let unreached: string[] = [];
+  if (registry) {
+    const index = buildCommandIndex(registry, catalog);
+    indexEntries = index.entries.length;
+    // The pass below examines INDEX rows. A registered handler path the index
+    // join dropped was never examined — an unexamined unit, not a clean one.
+    unreached = handlerPaths.filter((p) => !index.byPath.has(p));
+    for (const e of index.entries) {
+      if (e.dispatch === CommandDispatchKind.Meta) continue;
+      if (!e.catalogued) {
+        uncatalogued += 1;
+        issues.push({
+          code: 'registry-path-not-in-catalog',
+          message: `"${e.path}" is registered and dispatchable but has no catalog row (no safety metadata) — add one to command-catalog.ts`,
+          severity: 'warning',
+        });
+      }
+      // A catalog row documenting an internal subverb of a handler that
+      // DECLARES its subverbs — but not this one — documents a verb the handler
+      // does not dispatch. (Handlers that declare nothing stay unchecked.)
+      if (e.dispatch === CommandDispatchKind.Subverb && e.declared === false && e.parent) {
+        const parentTokens = e.parent.split(' ');
+        const declared = registry.getAt(parentTokens)?.subverbs;
+        const name = e.tokens[parentTokens.length];
+        if (declared && name !== undefined && !declared.some((s) => s.name === name || s.aliases?.includes(name))) {
+          issues.push({
+            code: 'undeclared-internal-subverb',
+            message: `catalog documents "${e.path}" but "${e.parent}" declares its subverbs and "${name}" is not one of them`,
+            severity: 'error',
+          });
+        }
+      }
+    }
+  }
+
   const errors = issues.filter((i) => i.severity === 'error').length;
   const warnings = issues.filter((i) => i.severity === 'warning').length;
   return {
     passed: errors === 0,
     issues,
     summary: {
-      catalogEntries: COMMAND_CATALOG.length,
+      catalogEntries: catalog.length,
       registeredCommands: registered,
       registeredSubcommands: registeredSub,
       errors,
       warnings,
+      indexEntries,
+      uncatalogued,
+    },
+    // Without a registry the path-level pass examined nothing — say so rather
+    // than let a catalog-only run read as a full exhaustiveness check.
+    coverage: {
+      unit: 'registered command paths',
+      expected: handlerPaths.length,
+      examined: handlerPaths.length - unreached.length,
+      ...(unreached.length > 0
+        ? {
+            unexamined: unreached.slice(0, 20),
+            unexaminedTotal: unreached.length,
+            reason: 'not reached by the command index',
+          }
+        : {}),
+      ...(registry ? {} : { reason: 'no command registry was supplied' }),
     },
   };
 }
 
-function runCommandsDoctor(args: ParsedArgs, registry: CommandRegistry | null): number {
-  const report = buildCommandsDoctorReport(registry);
+/**
+ * The exit-0 sentence. A ✓ only when there is nothing at all to report — "OK ✓"
+ * under 78 warnings read as a clean catalog (policy-lint's §13 precedent).
+ */
+function commandsDoctorCleanLine(report: ICommandsDoctorReport): string {
+  const infos = report.issues.filter((i) => i.severity === 'info').length;
+  if (report.summary.warnings > 0) {
+    return `\nNo blocking catalog drift — ${report.summary.warnings} warning(s) reported above.`;
+  }
+  if (infos > 0) return `\nNo catalog drift — ${infos} note(s) reported above.`;
+  return '\nVerdict: OK ✓';
+}
+
+function runCommandsDoctor(
+  args: ParsedArgs,
+  registry: CommandRegistry | null,
+  catalog: readonly ICommandCatalogEntry[] = COMMAND_CATALOG,
+): number {
+  const report = buildCommandsDoctorReport(registry, catalog);
   const strict = flagBool(args, 'strict');
   // `--strict` promotes any catalog drift (warnings AND info) to a
   // failing verdict. Without --strict, only errors fail the verdict.
   const failed = report.summary.errors > 0 || (strict && report.summary.warnings > 0);
+  // Settle first, render second: the path-level pass must have examined every
+  // registered path for a clean verdict to be a pass.
+  const settled = settleVerdict(failed ? 1 : 0, [report.coverage]);
   if (flagBool(args, 'json')) {
     process.stdout.write(
       asJson({
         ...report,
         strict,
-        verdict: failed ? 'drift' : 'clean',
+        verdict: settled.exit === 0 ? 'clean' : settled.exit === 1 ? 'drift' : 'not-verified',
+        exitCode: settled.exit,
+        shortfalls: settled.shortfalls,
       }) + '\n',
     );
-    return failed ? 1 : 0;
+    return settled.exit;
   }
   process.stdout.write(header('Command catalog doctor'));
   process.stdout.write(
     `  catalogEntries: ${report.summary.catalogEntries}\n` +
       `  registered:     ${report.summary.registeredCommands}\n` +
       `  subcommands:    ${report.summary.registeredSubcommands}\n` +
+      `  index entries:  ${report.summary.indexEntries}\n` +
+      `  uncatalogued:   ${report.summary.uncatalogued}\n` +
       `  errors:         ${report.summary.errors}\n` +
       `  warnings:       ${report.summary.warnings}\n` +
       (strict ? `  strict:         on\n` : '') +
@@ -1238,15 +1389,16 @@ function runCommandsDoctor(args: ParsedArgs, registry: CommandRegistry | null): 
   );
   if (report.issues.length === 0) {
     process.stdout.write('No issues.\n');
-    return 0;
   }
   for (const i of report.issues) {
     process.stdout.write(
       `  ${i.severity.toUpperCase().padEnd(8)} ${i.code.padEnd(34)} ${i.message}\n`,
     );
   }
-  process.stdout.write(`\nVerdict: ${failed ? 'CATALOG DRIFT' : 'OK ✓'}\n`);
-  return failed ? 1 : 0;
+  if (settled.exit === 1) process.stdout.write('\nVerdict: CATALOG DRIFT\n');
+  const line = verdictLine(settled, commandsDoctorCleanLine(report));
+  if (line) process.stdout.write(line + '\n');
+  return settled.exit;
 }
 
 function printCatalog(args: ParsedArgs, entries: readonly ICommandCatalogEntry[]): number {
@@ -1335,7 +1487,7 @@ function printCompactCatalog(args: ParsedArgs, entries: readonly ICommandCatalog
   process.stdout.write('  $ shrk commands overlaps                — overlapping surfaces + preferred entrypoint\n');
   process.stdout.write('  $ shrk commands retirement-plan         — lifecycle backlog\n');
   process.stdout.write('  $ shrk commands taxonomy                — domain grouping\n');
-  process.stdout.write('  $ shrk commands explain <cmd>           — detail for one command\n');
+  process.stdout.write('  $ shrk explain <cmd>                    — detail for one command\n');
   return 0;
 }
 
@@ -1510,17 +1662,27 @@ function extractShrkRefs(content: string): readonly string[] {
 
 async function runCommandsDocsCheck(args: ParsedArgs): Promise<number> {
   const report = await buildDocsCheckReport();
+  // Zero docs read checked nothing: a ✓ over it is the "check that cannot
+  // fail" this round removes — NOT VERIFIED (2), never a pass.
+  const examinedNothing = report.filesChecked === 0;
+  const exit = !report.passed ? 1 : examinedNothing ? 2 : 0;
   if (flagBool(args, 'json')) {
-    process.stdout.write(asJson(report) + '\n');
-    return report.passed ? 0 : 1;
+    process.stdout.write(
+      asJson({ ...report, exitCode: exit, ...(examinedNothing ? { verdict: 'not-verified' } : {}) }) + '\n',
+    );
+    return exit;
   }
   process.stdout.write(header('Commands docs-check'));
   process.stdout.write(
     `  files ${report.filesChecked}  errors ${report.summary.errors}  warnings ${report.summary.warnings}  info ${report.summary.info}\n\n`,
   );
   if (report.issues.length === 0) {
-    process.stdout.write('No docs drift detected. ✓\n');
-    return 0;
+    process.stdout.write(
+      examinedNothing
+        ? `NOT VERIFIED: 0 of ${DOCS_TO_CHECK.length} docs to check exist here (${DOCS_TO_CHECK.join(', ')}) — nothing was checked (this is not a pass).\n`
+        : 'No docs drift detected. ✓\n',
+    );
+    return exit;
   }
   for (const i of report.issues) {
     const tag = `[${i.severity.padEnd(8)}] ${i.code.padEnd(28)}`;

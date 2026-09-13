@@ -36,7 +36,10 @@ export interface IDashboardOverviewResponse {
 }
 
 export interface IDashboardDoctorResponse {
-  readonly verdict: 'ready' | 'not-ready';
+  /** `not-verified`: no error, but part of the setup could not be verified — never ready. */
+  readonly verdict: 'ready' | 'not-ready' | 'not-verified';
+  /** What the doctor could not verify, when the verdict is `not-verified`. */
+  readonly shortfalls?: readonly string[];
   readonly readinessScore: number;
   readonly checks: readonly {
     readonly id: string;
@@ -58,7 +61,8 @@ export interface IDashboardQualityResponse {
   readonly readiness: string;
   readonly gates: readonly {
     readonly id: string;
-    readonly status: 'pass' | 'warn' | 'fail' | 'skipped';
+    /** `not-verified`: passed over part of its scope, or could not run — never a pass. */
+    readonly status: 'pass' | 'warn' | 'fail' | 'skipped' | 'not-verified';
     readonly message?: string;
   }[];
   readonly blockers: readonly string[];
@@ -200,6 +204,15 @@ export interface IDashboardBoundaryResponse {
     readonly message?: string;
   }[];
   readonly ruleCount: number;
+  /** The settled boundary verdict — `shrk check boundaries`' own (round 13). */
+  readonly verdict?: 'pass' | 'fail' | 'not-verified' | 'usage-error';
+  readonly exitCode?: number;
+  /** One sentence for the panel: what the check found, never "no violations" over a failing or unverified run. */
+  readonly summary?: string;
+  /** Dead selector units, and expectEmpty units accepted (intended empty) or gone live — counts. */
+  readonly deadUnitCount?: number;
+  readonly intendedEmptyCount?: number;
+  readonly wentLiveCount?: number;
 }
 
 export interface IDashboardDriftResponse {
@@ -714,6 +727,12 @@ export interface IDashboardKnowledgeGraphResponse {
     readonly kind: string;
   }[];
   readonly truncated: boolean;
+  /**
+   * Declared `related` / `actionHints.relatedKnowledge` edges NOT drawn because
+   * the target is not an entry in the drawn set (dangling, not a knowledge id,
+   * or outside the node cap). Absent when every declared edge was drawn.
+   */
+  readonly droppedEdges?: number;
 }
 
 export interface IDashboardKnowledgeSource {

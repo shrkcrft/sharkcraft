@@ -149,7 +149,7 @@ export const getDashboardSummaryTool: IToolDefinition = {
     }
 
     const next: string[] = [];
-    if (!quality || quality.overall === 'fail') next.push('shrk quality');
+    if (!quality || quality.overall === 'fail' || quality.overall === 'not-verified') next.push('shrk quality');
     if (drift.counts.error > 0) next.push('shrk drift');
     if (bundles.some((b) => b.status === 'planned' || b.status === 'partially-applied')) {
       const id = bundles.find((b) => b.status !== 'applied' && b.status !== 'validated')?.id;

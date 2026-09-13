@@ -1,10 +1,10 @@
-import { existsSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
+  enumerateScaffoldPatternCandidates,
   inferTemplateBodyV2,
   inspectSharkcraft,
   loadScaffoldPatternsFromInspection,
-  matchScaffoldPattern,
+  walkScaffoldCandidateFiles,
   extractVariablesForFile,
   type IInferredTemplateScaffoldV2,
   type IScaffoldPatternWithSource,
@@ -17,6 +17,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header } from '../output/format-output.ts';
 
 const KIND_MAP: Record<string, 'service' | 'utility' | 'test' | 'component'> = {
@@ -45,6 +46,14 @@ interface ICandidateV2 {
 
 export const inferCommand: ICommandHandler = {
   name: 'infer',
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: 'templates',
+      description: 'Template-body draft candidates (TypeScript compiler API + pack scaffold patterns).',
+      usage: 'shrk infer templates [--ast] [--kind service|utility|test|component] [--include <glob>] [--limit N] [--json]',
+    },
+  ],
   description:
     'Inference helpers (templates / boundaries). `shrk infer templates --ast` produces template-body draft candidates using the TypeScript compiler API when available, with scaffold-pattern–driven detection from installed packs.',
   usage:
@@ -172,21 +181,19 @@ interface ICollectInput {
 
 function collectCandidateFiles(input: ICollectInput): ICandidate[] {
   const seen = new Map<string, ICandidate>();
-  // 1. Scaffold-pattern matches.
+  // 1. Scaffold-pattern matches — THE enumeration the scaffold doctor counts
+  //    with, so a pattern the doctor calls dead is one infer never matches.
   if (input.patterns.length > 0) {
-    walk(input.cwd, (abs, rel) => {
-      for (const p of input.patterns) {
-        if (matchScaffoldPattern(p.pattern, rel)) {
-          if (!seen.has(abs)) seen.set(abs, { absPath: abs, pattern: p });
-          return;
-        }
-      }
-    });
+    const byId = new Map(input.patterns.map((p) => [p.pattern.id, p] as const));
+    for (const m of enumerateScaffoldPatternCandidates(input.cwd, input.patterns).firstMatch) {
+      const abs = nodePath.join(input.cwd, m.file);
+      if (!seen.has(abs)) seen.set(abs, { absPath: abs, pattern: byId.get(m.patternId) });
+    }
   }
-  // 2. Generic kind-based scan if there are no matches yet.
+  // 2. Generic kind-based scan if there are no matches yet (the same walker).
   if (seen.size === 0) {
     const dirToken = kindToDir(input.kind);
-    walk(input.cwd, (abs, rel) => {
+    walkScaffoldCandidateFiles(input.cwd, (abs, rel) => {
       if (rel.includes(`/${dirToken}/`) && /\.(tsx?|jsx?)$/.test(abs)) {
         if (!seen.has(abs)) seen.set(abs, { absPath: abs });
       }
@@ -211,33 +218,6 @@ function kindToDir(kind: 'service' | 'utility' | 'test' | 'component'): string {
     case 'component':
       return 'components';
   }
-}
-
-function walk(root: string, onFile: (abs: string, rel: string) => void): void {
-  const visit = (dir: string): void => {
-    let entries: string[];
-    try {
-      entries = readdirSync(dir);
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      if (e === 'node_modules' || e === '.git' || e === 'dist' || e === '.sharkcraft' || e === '__tests__') continue;
-      const full = nodePath.join(dir, e);
-      let st;
-      try {
-        st = statSync(full);
-      } catch {
-        continue;
-      }
-      if (st.isDirectory()) visit(full);
-      else if (st.isFile()) {
-        const rel = nodePath.relative(root, full).split(nodePath.sep).join('/');
-        onFile(full, rel);
-      }
-    }
-  };
-  if (existsSync(root)) visit(root);
 }
 
 function globRe(g: string): RegExp {

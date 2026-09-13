@@ -95,14 +95,30 @@ describe('shrk safety audit', () => {
 });
 
 describe('shrk commands doctor', () => {
-  test('json output reports passed=true with no errors', () => {
-    const root = makeFixture();
-    const r = shrk(['--cwd', root, 'commands', 'doctor', '--json'], root);
+  // Round 11 §5.1: `commands doctor` audits SharkCraft's OWN command catalog —
+  // a tool-maintenance command. It runs where its object lives (the SharkCraft
+  // repo); in a consumer fixture like makeFixture() it is gated, exit 78.
+  test('json output reports passed=true with no errors (in the SharkCraft repo)', () => {
+    const r = shrk(['--cwd', REPO_ROOT, 'commands', 'doctor', '--json'], REPO_ROOT);
     const out = JSON.parse(r.stdout) as {
       passed: boolean;
       summary: { errors: number };
     };
     expect(out.summary.errors).toBe(0);
     expect(out.passed).toBe(true);
+  });
+
+  test('in a consumer repo it is gated (exit 78), never a failing check', () => {
+    const root = makeFixture();
+    const r = shrk(['--cwd', root, 'commands', 'doctor', '--json'], root);
+    expect(r.status).toBe(78);
+    // Round 11 docs review (intentional): under `--json` the refusal is the
+    // documented machine body on stdout — schema + reasonCode — instead of the
+    // text on stderr (the gate used to print the text alone, so `--json` read
+    // zero bytes).
+    const body = JSON.parse(r.stdout) as { schema: string; reasonCode: string; reason: string };
+    expect(body.schema).toBe('sharkcraft.surface.not-enabled.v1');
+    expect(body.reasonCode).toBe('tool-maintenance');
+    expect(body.reason).toContain('maintains SharkCraft itself');
   });
 });

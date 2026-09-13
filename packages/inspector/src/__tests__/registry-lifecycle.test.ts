@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildRegistryLifecycleReport,
+  registryLifecycleVerdict,
   renderRegistryLifecycleReportText,
 } from '../registry-lifecycle.ts';
 
@@ -79,9 +80,12 @@ describe('registry-lifecycle heuristic', () => {
       const report = buildRegistryLifecycleReport({ projectRoot: root, files: [] });
       expect(report.changedOnly).toBe(true);
       expect(report.filesScanned).toBe(0);
-      // The renderer must not read as a clean pass.
+      // The verdict is not a pass (the CLI settles the same coverage to exit 2),
+      // and the renderer states the empty scope instead of a clean pass.
+      expect(registryLifecycleVerdict(report).verdict).toBe('not-verified');
+      expect(report.coverage.expected).toBe(0);
       const text = renderRegistryLifecycleReportText(report);
-      expect(text.toLowerCase()).toContain('not verified');
+      expect(text).toContain('0 files in the changed scope — nothing to judge');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -190,8 +194,10 @@ describe('registry-lifecycle heuristic', () => {
     try {
       const report = buildRegistryLifecycleReport({ projectRoot: root });
       expect(report.registersFound).toBe(0);
+      expect(registryLifecycleVerdict(report).verdict).toBe('not-verified');
+      expect(report.registrationCoverage.expected).toBe(0);
       const text = renderRegistryLifecycleReportText(report);
-      expect(text).toContain('NOT verified');
+      expect(text).toContain('0 register* declarations in the examined files — nothing to judge');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

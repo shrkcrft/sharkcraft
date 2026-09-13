@@ -31,6 +31,15 @@ export interface IRunValidationLoopResult {
   commandsRun: IValidationCommandResult[];
   commandsFailed: string[];
   boundaryViolations: number;
+  /**
+   * THE boundary verdict (`runBoundaryCheck`, what `check boundaries`
+   * reports): `not-verified` when zero rules loaded or part of a rule's scope
+   * was never examined — never a silent `boundaryViolations: 0`. Absent when
+   * the scan itself could not run.
+   */
+  boundaryVerdict?: 'pass' | 'fail' | 'not-verified' | 'usage-error';
+  /** Why the boundary verdict is not a clean pass, when it is not. */
+  boundaryShortfalls?: readonly string[];
   reportPath?: string;
 }
 
@@ -122,18 +131,20 @@ export async function runValidationLoop(
     }
   }
 
-  // Boundary scan as a non-fatal warning (mirrors `shrk apply --validate`).
+  // Boundary scan as a non-fatal warning (mirrors `shrk apply --validate`) —
+  // through THE boundary orchestrator (round 11 review R11-GAP-3). It used to
+  // evaluate without the tsconfig alias map, skip unread files, and report
+  // `boundaryViolations: 0` over zero rules; zero rules or an unexamined scope
+  // is now `boundaryVerdict: not-verified` (a warning), an errored rule fails.
   try {
-    const { inspectSharkcraft } = await import('@shrkcrft/inspector');
-    const { evaluateBoundaries, scanImports } = await import('@shrkcrft/boundaries');
+    const { inspectSharkcraft, runBoundaryCheck } = await import('@shrkcrft/inspector');
     const inspection = await inspectSharkcraft({ cwd: options.cwd });
-    if (inspection.boundaryRegistry.size() > 0) {
-      const scan = scanImports({ projectRoot: options.cwd });
-      const evalResult = evaluateBoundaries(scan, inspection.boundaryRegistry.list());
-      out.boundaryViolations = evalResult.violations.length;
-      out.warnings += evalResult.counts.warning;
-      if (evalResult.counts.error > 0) out.passed = false;
-    }
+    const evalResult = runBoundaryCheck(inspection);
+    out.boundaryViolations = evalResult.violations.length;
+    out.boundaryVerdict = evalResult.verdict;
+    if (evalResult.shortfalls.length > 0) out.boundaryShortfalls = evalResult.shortfalls;
+    out.warnings += evalResult.counts.warning + (evalResult.verdict === 'not-verified' ? 1 : 0);
+    if (evalResult.counts.error > 0 || evalResult.loadIssues.length > 0) out.passed = false;
   } catch {
     // boundary scan is best-effort.
   }

@@ -5,6 +5,8 @@ export * from './framework-detector.ts';
 export * from './tsconfig-reader.ts';
 export * from './folder-scanner.ts';
 export * from './profile-detector.ts';
+export * from './workspace-profile-labels.ts';
+export * from './list-workspace-profiles.ts';
 export * from './workspace-summary.ts';
 export * from './workspace-inspector.ts';
 export * from './project-shape.ts';

@@ -1,13 +1,21 @@
-import type { IWiringSource } from '@shrkcrft/core';
-import { matchesAny } from '../scan/glob.ts';
-import { readMatchingFiles } from '../util/walk-files.ts';
+import { normalizeWiringSource, type IWiringSource } from '@shrkcrft/core';
+import { readSelectedFiles } from '../util/read-selected-files.ts';
+import { readGlobListUnits } from '../util/dead-glob-units.ts';
+import type { IGlobListUnits } from '../util/i-glob-list-units.ts';
+import type { IUnreadFile } from '../util/unread-file.ts';
 import { extractTokens, type IExtractedSite } from './extract-tokens.ts';
 import { loadTsconfigPaths } from '../scan/tsconfig-aliases.ts';
 
 /** What one source actually resolved to against the live tree. */
 export interface ISourceInspection {
-  /** Files the globs matched (after the shared walk's skip rules). */
+  /** Files the globs matched and the reader READ (after the shared walk's skip rules). */
   readonly filesScanned: number;
+  /**
+   * Files the globs matched that the reader did NOT read (over the read cap,
+   * or unreadable). A source with any is not "matched nothing" and not fully
+   * examined: its coverage names them (`readScopeCoverage`).
+   */
+  readonly unread: readonly IUnreadFile[];
   /** Distinct ids extracted, sorted. */
   readonly ids: readonly string[];
   /** Every capture site, in stable (file, line) order. */
@@ -33,14 +41,18 @@ export interface ISourceInspection {
  */
 export function inspectSource(
   projectRoot: string,
-  source: IWiringSource,
+  rawSource: IWiringSource,
   excludeDirs: readonly string[] = [],
 ): ISourceInspection {
+  // The engine entry normalises idempotently (round 13): a loaded source comes
+  // back equal; a hand-built one with a `{ pattern, expectEmpty }` entry reads
+  // its pattern as the glob, and a malformed entry is a misconfiguration —
+  // never a glob reader handed an object.
+  const normalized = normalizeWiringSource(rawSource);
+  if (!normalized.ok) return { filesScanned: 0, unread: [], ids: [], sites: [], error: normalized.error.message };
+  const source = normalized.value;
   const globs = source.files ?? [];
-  const cache = readMatchingFiles(projectRoot, globs, new Set(excludeDirs));
-  const files = [...cache.entries()]
-    .filter(([path]) => matchesAny(path, globs))
-    .map(([path, content]) => ({ path, content }));
+  const { files, unread } = sourceFiles(projectRoot, globs, excludeDirs);
   // `import-edges` resolves alias specifiers the way the compiler would, so it
   // needs the project's tsconfig paths. Loading it here (rather than inside the
   // extractor) keeps every extractor a pure function of its inputs.
@@ -50,9 +62,61 @@ export function inspectSource(
   );
   return {
     filesScanned: files.length,
+    unread,
     ids: [...new Set(sites.map((s) => s.token))].sort(),
     sites,
     ...(res.error ? { error: res.error } : {}),
     ...(res.hint ? { hint: res.hint } : {}),
+  };
+}
+
+/**
+ * ONE source's glob units: the dead ones (each with its reason), the live
+ * negations with what each excludes, and how many globs were checked — through
+ * the one dead-unit decision, `globListUnits`.
+ *
+ * It reads the same walk {@link inspectSource} reads (inside
+ * `withFileReadCache` a second call over the same globs is a memo hit), so the
+ * answer is about the files the source actually SEES — after `SKIP_DIRS` and
+ * `excludeDirs`. The walk is the list's POSITIVE set (every file an inclusion
+ * glob matched), so a negation is judged by what it removes from it, never by
+ * what it "matches". A file over the read cap was still MATCHED, so a glob that
+ * matched only such a file is not dead. Only `files[]` walk globs count: an
+ * `import-edges` `to.files` matches resolved specifiers, not walked files.
+ */
+export function sourceGlobUnits(
+  projectRoot: string,
+  source: IWiringSource,
+  excludeDirs: readonly string[] = [],
+): IGlobListUnits {
+  return readGlobListUnits(projectRoot, source.files ?? [], new Set(excludeDirs));
+}
+
+/**
+ * The globs of ONE source that do nothing — a dead unit inside a rule whose
+ * other globs may still keep it connected. The labels of
+ * {@link sourceGlobUnits}`.dead` (a dead negation keeps its `!`).
+ */
+export function sourceDeadGlobs(
+  projectRoot: string,
+  source: IWiringSource,
+  excludeDirs: readonly string[] = [],
+): readonly string[] {
+  return sourceGlobUnits(projectRoot, source, excludeDirs).dead.map((u) => u.glob);
+}
+
+/**
+ * The files a source's glob list SELECTS (an inclusion glob matches, no
+ * negation does), after the shared walk's skip rules: read, and unread.
+ */
+function sourceFiles(
+  projectRoot: string,
+  globs: readonly string[],
+  excludeDirs: readonly string[],
+): { files: { path: string; content: string }[]; unread: IUnreadFile[] } {
+  const selected = readSelectedFiles(projectRoot, globs, new Set(excludeDirs));
+  return {
+    files: [...selected.files.entries()].map(([path, content]) => ({ path, content })),
+    unread: [...selected.unread],
   };
 }

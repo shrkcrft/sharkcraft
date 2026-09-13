@@ -32,10 +32,13 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header } from '../output/format-output.ts';
 
 export const whyCommand: ICommandHandler = {
   name: 'why',
+  // The positional is a file (or a fuzzy query) — never refused by the guard.
+  positionals: PositionalMode.Free,
   description:
     'Explain the constraints that apply to a file: package / layer, path conventions, rules, boundary rules, and related knowledge. Read-only. Pure composition — no LLM, no shell.',
   usage: 'shrk why <file> [--limit 10] [--json]',

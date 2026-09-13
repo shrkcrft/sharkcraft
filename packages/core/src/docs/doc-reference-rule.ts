@@ -1,3 +1,5 @@
+import type { IUnitMark } from '../liveness/i-unit-mark.ts';
+
 /**
  * Doc-reference rules — the "free-text id has gone stale" plane.
  *
@@ -85,4 +87,10 @@ export interface IDocReferenceRule {
   readonly severity?: 'error' | 'warning';
   /** Remediation hint shown on every unresolved reference. */
   readonly hint?: string;
+  /**
+   * The `expectEmpty` marker ledger of {@link files} (round 13, `list:
+   * 'files'`): a document directory that does not exist yet. Filled by the
+   * loader / merge seam; `files` stays a plain string list. Never authored.
+   */
+  readonly expectEmptyUnits?: readonly IUnitMark[];
 }

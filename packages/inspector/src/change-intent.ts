@@ -11,7 +11,11 @@
  * available.
  */
 import { listConstructs, loadConstructs } from './construct-registry.ts';
+import { matchTerm, prepareTermQuery } from './match-terms.ts';
+import { classifyQueryIntent } from './query-intent.ts';
+import { QueryIntent } from './query-intent-kind.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { detectSharkcraftRepo } from './self-audit.ts';
 
 export const CHANGE_INTENT_SCHEMA = 'sharkcraft.change-intent/v1';
 
@@ -47,6 +51,8 @@ export interface IChangeIntent {
   suggestedFirstCommand: string;
   confidence: ChangeIntentConfidence;
   reasons: readonly string[];
+  /** THE query-intent classification this kind was checked against (round 11). */
+  queryIntent?: QueryIntent;
 }
 
 interface IKindMatcher {
@@ -136,30 +142,52 @@ const SUGGESTED_COMMAND: ReadonlyMap<ChangeIntentKind, string> = new Map([
   [ChangeIntentKind.Bugfix, 'shrk impact --since main'],
   [ChangeIntentKind.Refactor, 'shrk check boundaries --json'],
   [ChangeIntentKind.Test, 'shrk tests missing --since main'],
-  [ChangeIntentKind.Docs, 'shrk docs check'],
+  // Consumer-applicable: `docs check` / `release readiness` maintain SharkCraft
+  // itself and exit 78 outside its repository (round 11 review CLI-7).
+  [ChangeIntentKind.Docs, 'shrk docs references check'],
   [ChangeIntentKind.Migration, 'shrk brief "<task>" && shrk orchestrate "<task>" --mode conservative'],
   [ChangeIntentKind.Architecture, 'shrk architecture map'],
   [ChangeIntentKind.Policy, 'shrk policy run --explain-overrides'],
-  [ChangeIntentKind.Release, 'shrk release readiness --strict'],
+  [ChangeIntentKind.Release, 'shrk quality'],
   [ChangeIntentKind.Unknown, 'shrk start-here'],
 ]);
 
-function lc(s: string): string {
-  return s.toLowerCase();
-}
+/**
+ * Inside SharkCraft's own repository (THE host authority,
+ * `detectSharkcraftRepo`) the docs / release intents keep the tool's own
+ * gates — there they apply.
+ */
+const TOOL_REPO_SUGGESTED_COMMAND: ReadonlyMap<ChangeIntentKind, string> = new Map([
+  [ChangeIntentKind.Docs, 'shrk docs check'],
+  [ChangeIntentKind.Release, 'shrk release readiness --strict'],
+]);
 
+/**
+ * Domains through THE term matcher: `lower.includes(kw)` fired `ci` on
+ * "decide" / "specific" / "pricing" and `sign` (pack) on "design" / "assign",
+ * inflating the signal-count confidence below.
+ */
 function detectDomains(task: string): string[] {
-  const lower = lc(task);
+  const query = prepareTermQuery(task);
   const out: string[] = [];
   for (const [domain, keywords] of DOMAIN_KEYWORDS) {
     for (const kw of keywords) {
-      if (lower.includes(kw)) {
+      if (matchTerm(query, kw)) {
         out.push(domain);
         break;
       }
     }
   }
   return [...new Set(out)];
+}
+
+/** Ids whose (≥ 3 char) segments appear as task terms — THE term matcher, not substring. */
+function idsMentioned(ids: readonly string[], task: string): string[] {
+  const query = prepareTermQuery(task);
+  return ids.filter((id) => {
+    const tokens = id.split(/[.\-_/]/).filter((t) => t.length >= 3);
+    return tokens.some((t) => matchTerm(query, t));
+  });
 }
 
 function matchKind(task: string): { kind: ChangeIntentKind; riskHints: string[]; requiresReview: boolean; matchedPatterns: number } {
@@ -209,31 +237,34 @@ export async function classifyChangeIntent(
     };
   }
 
-  const { kind, riskHints, requiresReview, matchedPatterns } = matchKind(trimmed);
+  const matched = matchKind(trimmed);
+  let { kind, riskHints, requiresReview } = matched;
+  const { matchedPatterns } = matched;
+  // Consult THE query-intent classifier: a create word used as a noun or
+  // adjective ("fix the broken BUILD", "why does the NEW route fail") must not
+  // make a repair / diagnosis query a feature.
+  const queryIntent = classifyQueryIntent(trimmed);
+  const repairShaped = queryIntent.intent === QueryIntent.Repair || queryIntent.intent === QueryIntent.Diagnose;
+  const overridden = repairShaped && (kind === ChangeIntentKind.Feature || kind === ChangeIntentKind.Unknown);
+  if (overridden) {
+    const bugfix = MATCHERS.find((m) => m.kind === ChangeIntentKind.Bugfix);
+    kind = ChangeIntentKind.Bugfix;
+    riskHints = bugfix?.riskHints ? [...bugfix.riskHints] : [];
+    requiresReview = bugfix?.requiresReview === true;
+  }
   const domains = detectDomains(trimmed);
 
-  // Likely constructs: any construct id whose tokens appear in the task.
-  const constructs = listConstructs(inspection).map((c) => c.id);
-  const likelyConstructs = constructs.filter((id) => {
-    const tokens = id.split(/[.\-_/]/).filter((t) => t.length >= 3);
-    return tokens.some((t) => lc(trimmed).includes(lc(t)));
-  });
-
-  // Likely templates / pipelines: by id token match.
-  const templates = inspection.templates.map((t) => t.id);
-  const likelyTemplates = templates.filter((id) => {
-    const tokens = id.split(/[.\-_/]/).filter((t) => t.length >= 3);
-    return tokens.some((t) => lc(trimmed).includes(lc(t)));
-  });
-
-  const pipelines = inspection.pipelines.map((p) => p.id);
-  const likelyPipelines = pipelines.filter((id) => {
-    const tokens = id.split(/[.\-_/]/).filter((t) => t.length >= 3);
-    return tokens.some((t) => lc(trimmed).includes(lc(t)));
-  });
+  // Likely constructs / templates / pipelines: any id whose segments appear as task terms.
+  const likelyConstructs = idsMentioned(listConstructs(inspection).map((c) => c.id), trimmed);
+  const likelyTemplates = idsMentioned(inspection.templates.map((t) => t.id), trimmed);
+  const likelyPipelines = idsMentioned(inspection.pipelines.map((p) => p.id), trimmed);
 
   const reasons: string[] = [];
-  if (matchedPatterns > 0) {
+  if (overridden) {
+    reasons.push(
+      `Query intent is "${queryIntent.intent}"${queryIntent.vetoedBy ? ` ("${queryIntent.vetoedBy}" vetoes the create reading)` : ''} — classified as "${kind}".`,
+    );
+  } else if (matchedPatterns > 0) {
     reasons.push(`Matched ${matchedPatterns} pattern(s) for kind "${kind}".`);
   } else {
     reasons.push('No strong verb match; defaulted by domain hints.');
@@ -254,7 +285,12 @@ export async function classifyChangeIntent(
     kind === ChangeIntentKind.Release ||
     kind === ChangeIntentKind.Migration;
 
-  const suggestedFirstCommand = SUGGESTED_COMMAND.get(kind) ?? 'shrk start-here';
+  const suggestedFirstCommand =
+    (TOOL_REPO_SUGGESTED_COMMAND.has(kind) && detectSharkcraftRepo(inspection.projectRoot)
+      ? TOOL_REPO_SUGGESTED_COMMAND.get(kind)
+      : undefined) ??
+    SUGGESTED_COMMAND.get(kind) ??
+    'shrk start-here';
 
   return {
     schema: CHANGE_INTENT_SCHEMA,
@@ -269,6 +305,7 @@ export async function classifyChangeIntent(
     suggestedFirstCommand,
     confidence,
     reasons,
+    queryIntent: queryIntent.intent,
   };
 }
 

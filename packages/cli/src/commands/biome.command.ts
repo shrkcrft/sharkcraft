@@ -8,6 +8,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header } from '../output/format-output.ts';
 
 /**
@@ -387,6 +388,25 @@ export const biomeExplainLimitationsCommand: ICommandHandler = {
 
 export const biomeCommand: ICommandHandler = {
   name: 'biome',
+  // positional[0] is the bridge verb — `run` refuses anything else. Each spec
+  // reuses its verb handler's usage, so the flags the verb reads (`--force`,
+  // `--output`, `--from`, …) are documented for the post-run flag detector.
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: 'scaffold',
+      aliases: ['config'],
+      description: biomeScaffoldCommand.description,
+      usage: biomeScaffoldCommand.usage,
+    },
+    { name: 'report', description: biomeReportCommand.description, usage: biomeReportCommand.usage },
+    { name: 'rules', description: biomeRulesCommand.description, usage: biomeRulesCommand.usage },
+    {
+      name: 'explain-limitations',
+      description: biomeExplainLimitationsCommand.description,
+      usage: biomeExplainLimitationsCommand.usage,
+    },
+  ],
   description:
     'Biome bridge. `scaffold` emits a minimal biome.json that ignores SharkCraft generated paths; `report` converts boundary JSON to a Biome-adjacent diagnostics shape; `rules` inventories what can be bridged; `explain-limitations` documents what cannot. `config` is an alias for `scaffold`.',
   usage: 'shrk biome <scaffold|config|report|rules|explain-limitations> [...flags]',

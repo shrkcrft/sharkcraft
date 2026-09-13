@@ -90,12 +90,18 @@ afterEach(() => {
 });
 
 describe('shrk diff-check — clean cwd (no rules, no diff)', () => {
-  test('returns verdict=ok when there are no changed files', async () => {
+  // Round 11: an empty diff checked NOTHING — it is not-verified (2), never
+  // "ok" (0). `--allow-empty` accepts it explicitly.
+  test('returns verdict=not-verified (exit 2) when there are no changed files', async () => {
     const r = await runDiffCheck(WORK, { json: true });
-    expect(r.exitCode).toBe(0);
+    expect(r.exitCode).toBe(2);
     expect(r.envelope).not.toBeNull();
     expect(r.envelope?.schema).toBe('sharkcraft.diff-check/v1');
-    expect(r.envelope?.verdict).toBe('ok');
+    expect(r.envelope?.verdict).toBe('not-verified');
+    expect((r.envelope?.gate as { exit: number }).exit).toBe(2);
+    const accepted = await runDiffCheck(WORK, { json: true, 'allow-empty': true });
+    expect(accepted.exitCode).toBe(0);
+    expect(accepted.envelope?.verdict).toBe('ok');
     expect(typeof r.envelope?.nextAction).toBe('string');
     const scope = r.envelope?.scope as { fileCount: number };
     expect(scope.fileCount).toBe(0);
@@ -140,10 +146,10 @@ describe('shrk diff-check — envelope shape', () => {
 });
 
 describe('shrk diff-check — verdict + nextAction language', () => {
-  test('verdict=ok carries the "Safe to declare done" next action', async () => {
+  test('an empty diff is not-verified, and its nextAction says nothing was verified', async () => {
     const r = await runDiffCheck(WORK, { json: true });
-    expect(r.envelope?.verdict).toBe('ok');
-    expect(typeof r.envelope?.nextAction).toBe('string');
+    expect(r.envelope?.verdict).toBe('not-verified');
+    expect(String(r.envelope?.nextAction)).toContain('Nothing was verified');
   });
 
   test('non-JSON output prints a "Next:" line', async () => {

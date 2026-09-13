@@ -236,7 +236,7 @@ export function previewComplianceEvidencePacket(
       '(if present) release-smoke.json',
       '(if present) self-audit.json',
     ],
-    nextCommand: `shrk compliance evidence ${profileId} --output .sharkcraft/compliance-evidence/${profileId}`,
+    nextCommand: 'shrk release readiness --report',
   };
 }
 

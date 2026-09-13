@@ -156,7 +156,7 @@ function suggestAdditions(missing: readonly string[], taskOrDomain: string): str
 
 function buildNextCommands(taskOrDomain: string): string[] {
   return [
-    `shrk why-not <id> --for-task "${taskOrDomain}"`,
+    `shrk task "${taskOrDomain}" --explain-ranking`,
     `shrk search "${taskOrDomain}" --explain`,
     `shrk task "${taskOrDomain}" --show-coverage-gaps`,
     `shrk fix preview --template-drift`,

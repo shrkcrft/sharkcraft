@@ -1,6 +1,7 @@
 import {
   loadContextTests,
   runContextTest,
+  warmReferenceRegistries,
 } from '@shrkcrft/inspector';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
@@ -29,6 +30,7 @@ export const runContextTestTool: IToolDefinition = {
     const tests = await loadContextTests(ctx.inspection);
     const test = tests.find((t) => t.id === id);
     if (!test) return { isError: true, text: `No context test with id "${id}".` };
+    await warmReferenceRegistries(ctx.inspection);
     return { data: runContextTest(ctx.inspection, test) };
   },
 };

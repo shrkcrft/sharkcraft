@@ -7,6 +7,12 @@
     "paths": {
       "@shrkcrft/core": [
         "../core/dist/index.d.ts"
+      ],
+      "@shrkcrft/knowledge": [
+        "../knowledge/dist/index.d.ts"
+      ],
+      "@shrkcrft/templates": [
+        "../templates/dist/index.d.ts"
       ]
     },
     "tsBuildInfoFile": "./dist/.tsbuildinfo"

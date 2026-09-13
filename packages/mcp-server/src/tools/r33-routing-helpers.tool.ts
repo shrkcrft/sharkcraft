@@ -34,10 +34,16 @@ export const explainTaskRoutingTool: IToolDefinition = {
   },
 };
 
-export const listHelpersTool: IToolDefinition = {
-  // Renamed from `list_helpers` to dedup with the helper-registry tool;
-  // both used to register under the same name. The alias on the import side
-  // (`listPackHelpersTool`) was already pointing here.
+// Exported as `listPackHelpersTool` / `getPackHelperTool` — NOT the
+// `listHelpersTool` / `getHelperTool` names `r28-helpers.tool.ts` already
+// exports. With the shared names, the repo's own `mcp-tool-registered` wiring
+// rule counted both files' exports as ONE token each, so dropping these two
+// tools from ALL_TOOLS left it green (declared 282 / registered 284: the
+// registered side held the import aliases, which no declared site produced).
+// Distinct names make each tool its own declared token.
+export const listPackHelpersTool: IToolDefinition = {
+  // Wire name renamed from `list_helpers` to dedup with the helper-registry
+  // tool; both used to register under the same name.
   name: 'list_pack_helpers',
   description: 'List pack/local-contributed helpers. Read-only.',
   inputSchema: {
@@ -52,14 +58,13 @@ export const listHelpersTool: IToolDefinition = {
   },
 };
 
-export const getHelperTool: IToolDefinition = {
-  // Renamed from `get_helper` to dedup with the helper-registry tool in
-  // `r28-helpers.tool.ts`; both registered under the same name, and
+export const getPackHelperTool: IToolDefinition = {
+  // Wire name renamed from `get_helper` to dedup with the helper-registry tool
+  // in `r28-helpers.tool.ts`; both registered under the same name, and
   // `toolsByName` is last-wins, so the r28 tool was unreachable via
   // `tools/call` while `tools/list` advertised the name twice. Completes the
   // dedup pass that already renamed this file's `list_helpers` →
-  // `list_pack_helpers`; the import-side alias (`getPackHelperTool`) was
-  // already pointing here.
+  // `list_pack_helpers`.
   name: 'get_pack_helper',
   description: 'Get one pack/local-contributed helper by id. Read-only.',
   inputSchema: {

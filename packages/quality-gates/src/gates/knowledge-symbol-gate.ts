@@ -1,6 +1,8 @@
+import { coverageShortfall, type IVerdictCoverage } from '@shrkcrft/core';
 import { loadGraphApiCached } from '@shrkcrft/graph';
 import {
   buildKnowledgeStaleReport,
+  declaredReferenceCoverage,
   ReferenceCheckOutcome,
   type ISharkcraftInspection,
 } from '@shrkcrft/inspector';
@@ -82,13 +84,53 @@ export function knowledgeSymbolGate(
     (c) =>
       c.outcome === ReferenceCheckOutcome.Stale || c.outcome === ReferenceCheckOutcome.Missing,
   );
+  // THE declared-reference fold (`declaredReferenceCoverage`) — the one the
+  // stale-check's own verdict settles on — restricted to this gate's kinds.
+  // Only a CHECKED reference counts as examined: an `unknown` one (unpinned,
+  // ambiguous, a file that failed to read) is neither resolving nor broken,
+  // and a malformed one was never checked. This gate used to count both as
+  // "resolve" and PASS where `shrk knowledge stale-check` exits 2.
+  const refCoverage: IVerdictCoverage = { ...declaredReferenceCoverage({ references: scoped }), subject: 'knowledge-symbol' };
+  const gateCoverage: readonly IVerdictCoverage[] = [refCoverage];
+  const ok = scoped.filter((c) => c.outcome === ReferenceCheckOutcome.Ok).length;
+  const unknown = scoped.filter((c) => c.outcome === ReferenceCheckOutcome.Unknown).length;
+  const invalid = scoped.filter((c) => c.outcome === ReferenceCheckOutcome.Invalid).length;
+  const tally =
+    `${ok} of ${evaluated} symbol/file reference(s) resolve` +
+    (unknown > 0 ? `; ${unknown} could not be verified (unpinned, ambiguous or unreadable)` : '') +
+    (invalid > 0 ? `; ${invalid} malformed` : '');
+  // This gate is scoped to symbol/file references, so its pass says nothing
+  // about entries that declare none — name them instead of letting "N resolve"
+  // read as "the corpus is healthy". (`shrk knowledge stale-check` gates them.)
+  const coverage = report.coverage;
+  const unverifiableNote =
+    coverage.unverifiable > 0
+      ? `; ${coverage.unverifiable} of ${coverage.entriesInScope} entries unverifiable (no checkable reference — see \`shrk knowledge stale-check\`)`
+      : '';
   if (broken.length === 0) {
+    const shortfall = coverageShortfall(refCoverage);
+    if (shortfall !== undefined) {
+      // Nothing broken among what was checked, but not everything asked for
+      // was checked: NOT VERIFIED — `shrk gate` settles it to 2 through the
+      // coverage below, as `knowledge stale-check` does.
+      return {
+        id: 'knowledge-symbol',
+        label: 'Knowledge symbol refs',
+        status: 'warn',
+        message: `NOT VERIFIED — ${shortfall}. ${tally}${unverifiableNote}. This is not a pass.`,
+        details: { evaluated, ok, unknown, invalid, graphResolved: Boolean(graph), coverage, shortfalls: [shortfall] },
+        coverage: gateCoverage,
+        nextCommands: ['shrk knowledge stale-check'],
+        durationMs: Date.now() - start,
+      };
+    }
     return {
       id: 'knowledge-symbol',
       label: 'Knowledge symbol refs',
       status: 'pass',
-      message: `${evaluated} symbol/file reference(s) resolve.`,
-      details: { evaluated, graphResolved: Boolean(graph) },
+      message: `${tally}${unverifiableNote}.`,
+      details: { evaluated, ok, unknown, invalid, graphResolved: Boolean(graph), coverage },
+      coverage: gateCoverage,
       durationMs: Date.now() - start,
     };
   }
@@ -106,7 +148,8 @@ export function knowledgeSymbolGate(
     label: 'Knowledge symbol refs',
     status: failOnStale ? 'fail' : 'warn',
     message: `${broken.length}/${evaluated} symbol/file reference(s) stale or missing (moved/renamed).`,
-    details: { evaluated, broken: broken.length, samples, graphResolved: Boolean(graph) },
+    details: { evaluated, broken: broken.length, ok, unknown, invalid, samples, graphResolved: Boolean(graph) },
+    coverage: gateCoverage,
     nextCommands: ['shrk knowledge audit', 'shrk doctor'],
     durationMs: Date.now() - start,
   };

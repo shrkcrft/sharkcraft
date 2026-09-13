@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import type { IPublicExportSurface } from '@shrkcrft/core';
 import type { IEdge } from '../schema/edge.ts';
 import { EdgeKind } from '../schema/edge-kind.ts';
 import type { IGraphSnapshot } from '../schema/graph-snapshot.ts';
@@ -8,6 +9,10 @@ import { NodeKind } from '../schema/node-kind.ts';
 import { GraphStore } from '../store/graph-store.ts';
 import { fingerprintFile } from '../store/file-fingerprint.ts';
 import { findFileCycles, type IFileCycle, type IFindFileCyclesOptions } from './cycle-detection.ts';
+import { buildReExportIndex } from '../indexer/re-export-index.ts';
+import type { IReExportIndex } from '../indexer/re-export-index-model.ts';
+import { createModuleExportWalker, enumeratePublicSurface } from './enumerate-public-surface.ts';
+import type { IModuleExportWalk } from './module-export-walk.ts';
 
 /** Read the representative source line stored on a reference/call edge. */
 function edgeLine(e: IEdge): number | undefined {
@@ -152,6 +157,10 @@ export class GraphQueryApi {
   private readonly symbolByName: ReadonlyMap<string, readonly INode[]>;
   private readonly outByFrom: ReadonlyMap<string, readonly IEdge[]>;
   private readonly inByTo: ReadonlyMap<string, readonly IEdge[]>;
+  /** Built on first use — most queries never need the barrel chains. */
+  private reExportIndexMemo: IReExportIndex | undefined;
+  private publicSurfaceMemo: IPublicExportSurface | undefined;
+  private moduleWalkerMemo: ((file: string) => IModuleExportWalk) | undefined;
 
   constructor(private readonly snap: IGraphSnapshot) {
     const fileByPath = new Map<string, INode>();
@@ -763,6 +772,56 @@ export class GraphQueryApi {
       if (n && n.kind === NodeKind.File) return n;
     }
     return undefined;
+  }
+
+  /**
+   * The workspace's PUBLIC export surface: every construct reachable from a
+   * workspace package's root entry (what `import … from '<pkg>'` resolves to),
+   * through barrel re-exports, plus the packages that could not be walked and
+   * why. Lazy and memoized per snapshot — see {@link enumeratePublicSurface}.
+   *
+   * Needs an index built with package `entryFile` (round 11); an older index
+   * reports its packages under `packagesWithoutEntry` rather than guessing.
+   */
+  publicExportSurface(): IPublicExportSurface {
+    if (this.publicSurfaceMemo === undefined) {
+      this.publicSurfaceMemo = enumeratePublicSurface(
+        [...this.snap.nodes.values()],
+        [...this.snap.edges.values()],
+        this.reExportIndex(),
+      );
+    }
+    return this.publicSurfaceMemo;
+  }
+
+  /**
+   * The symbol id `name` lands on when imported from `filePath`, following
+   * barrel re-export chains with the same resolver the reference rewriter and
+   * the public surface use. `undefined` when the name resolves to nothing.
+   */
+  resolveExportedName(filePath: string, name: string): string | undefined {
+    return this.reExportIndex().resolveName(filePath, name);
+  }
+
+  /**
+   * What `import … from '<filePath>'` can bind — the SAME ESM export walk the
+   * public surface runs from each package root (own declarations, named and
+   * namespace re-exports, `export *` minus defaults, the module's own default).
+   * A curated `importPath` that is not a package root is checked with this, so
+   * "is it exported, and as the default or a named export?" has one answer.
+   */
+  moduleExports(filePath: string): IModuleExportWalk {
+    if (this.moduleWalkerMemo === undefined) {
+      this.moduleWalkerMemo = createModuleExportWalker([...this.snap.nodes.values()], this.reExportIndex());
+    }
+    return this.moduleWalkerMemo(filePath);
+  }
+
+  private reExportIndex(): IReExportIndex {
+    if (this.reExportIndexMemo === undefined) {
+      this.reExportIndexMemo = buildReExportIndex([...this.snap.nodes.values()], [...this.snap.edges.values()]);
+    }
+    return this.reExportIndexMemo;
   }
 
   topHubs(limit = 10, pathPrefix?: string): IGraphHubs {

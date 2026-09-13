@@ -30,6 +30,9 @@ export default defineSharkCraftConfig({
       consumer: { files: ['src/main.ts'], pattern: "register\\('([\\w-]+)'\\)" },
       // Optional: human synonyms that resolve to a canonical id (see --resolve).
       aliases: { 'ls': 'list', 'cmd-list': 'list' },
+      // Optional: a source matching 0 ids FAILS (1) instead of reading
+      // not-verified (2) — in every query below and in `gates coverage|check`.
+      failOnEmpty: true,
     },
   ],
 });
@@ -53,6 +56,16 @@ Exit codes are meaningful: `registry … exists <id>` returns `0` when the id is
 declared and `1` when it is not, so it composes in a script ("fail if the id is
 already taken"). An **unknown registry name** errors with exit `2` and lists the
 declared registries — it never silently succeeds with an empty answer.
+
+**An inventory that matched 0 ids answers nothing.** When the `source` selector
+matches no id at all — a moved directory, a renamed pattern — `list`, `exists`,
+`where` and `duplicates` all exit `2` (not verified) instead of answering, or
+`1` when the registry sets `failOnEmpty: true`. This holds **whatever guard flag
+is passed**: `exists <id> --fail-if-taken` used to report "free" (`0`) over a
+scan that saw nothing, so the `&& <author>` guard below marched on, and a bare
+`exists <id>` said "no" for an id that IS declared. The `--json` payload carries
+`verified: false`, `exitCode`, `verdict` and `shortfalls` (`exists` reports
+`exists: null`, `where` reports `found: null`).
 
 ### Guard mode & alias resolution
 

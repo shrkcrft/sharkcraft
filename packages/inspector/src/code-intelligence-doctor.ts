@@ -210,12 +210,29 @@ export interface IGraphDivergence {
   readonly added: readonly string[];
   /** Indexed files that no longer exist. */
   readonly deleted: readonly string[];
+  /**
+   * Workspace packages whose indexed record diverged (a package.json entry
+   * edited, a package added / removed / moved) — an index input no file
+   * fingerprint covers. Optional: absent reads as none.
+   */
+  readonly packagesChanged?: readonly string[];
 }
 
-/** Files the index is behind by, or `undefined` when divergence was not measured. */
+/**
+ * Files + workspace packages the index is behind by (`graphFreshnessBehind`'s
+ * count, so this and `graph status` agree), or `undefined` when divergence was
+ * not measured.
+ */
 function behindCount(d: IGraphDivergence | undefined): number | undefined {
   if (!d || !d.hasIndex) return undefined;
-  return d.modified.length + d.added.length + d.deleted.length;
+  return d.modified.length + d.added.length + d.deleted.length + (d.packagesChanged?.length ?? 0);
+}
+
+/** "N file(s)", plus " and P workspace package(s)" when any package diverged. */
+function behindPhrase(d: IGraphDivergence): string {
+  const files = d.modified.length + d.added.length + d.deleted.length;
+  const pkgs = d.packagesChanged?.length ?? 0;
+  return pkgs > 0 ? `${files} file(s) and ${pkgs} workspace package(s)` : `${files} file(s)`;
 }
 
 /** A human summary of what diverged, for the stale message. */
@@ -224,6 +241,8 @@ function divergenceSummary(d: IGraphDivergence): string {
   if (d.modified.length > 0) parts.push(`${d.modified.length} modified`);
   if (d.added.length > 0) parts.push(`${d.added.length} new`);
   if (d.deleted.length > 0) parts.push(`${d.deleted.length} deleted`);
+  const pkgs = d.packagesChanged ?? [];
+  if (pkgs.length > 0) parts.push(`package entry changed: ${pkgs.slice(0, 3).join(', ')}${pkgs.length > 3 ? ` +${pkgs.length - 3} more` : ''}`);
   return parts.join(', ');
 }
 
@@ -355,9 +374,12 @@ function graphChecks(
       advisory: true,
       category: CATEGORY,
       message:
-        `Graph index STALE — ${behind} file(s) changed since index ` +
+        `Graph index STALE — ${behindPhrase(divergence as IGraphDivergence)} changed since index ` +
         `(${divergenceSummary(divergence as IGraphDivergence)})${ageStr}; ${counts}${cycleTag}.`,
-      fix: 'Re-index with `shrk graph index --changed` (or `--full`).',
+      fix:
+        ((divergence as IGraphDivergence).packagesChanged?.length ?? 0) > 0
+          ? 'Re-index with `shrk graph index` — a workspace package entry changed, and only a full index re-resolves the imports of it.'
+          : 'Re-index with `shrk graph index --changed` (or `--full`).',
       whyThisMatters:
         'Stale code graph makes `shrk impact`, `shrk graph callers`, and context packs return outdated answers.',
     });
@@ -471,7 +493,7 @@ function ruleGraphChecks(
       message: `Rule-graph bridge is stale${ageStr} — ${counts}.`,
       fix: 'Re-build with `shrk graph index` (bridges build alongside graph).',
       whyThisMatters:
-        'A stale bridge means `shrk rules where applies-to <file>` and rule-aware impact answers may miss recent edits.',
+        'A stale bridge means `shrk why <file>` and rule-aware impact answers may miss recent edits.',
     });
   } else {
     out.push({
@@ -506,7 +528,7 @@ function ruleGraphChecks(
         advisory: true,
         category: CATEGORY,
         message: `${baseMsg} ${uncovered} file(s) have no applicable rule.`,
-        fix: 'Inspect with `shrk rules where applies-to <file>` and either broaden a rule\'s `appliesTo` / boundary `from`, or accept the gap.',
+        fix: 'Inspect with `shrk why <file>` and either broaden a rule\'s `appliesTo` / boundary `from`, or accept the gap.',
         whyThisMatters:
           'Files with no applicable rule are invisible to rule-aware impact, validation hints, and agent context packs. A growing coverage gap usually means the rule registry is drifting behind the codebase.',
       });
@@ -774,7 +796,7 @@ function architectureChecks(
         advisory: true,
         category: CATEGORY,
         message:
-          `Architecture delta NOT VERIFIED — the graph index is ${behind} file(s) behind ` +
+          `Architecture delta NOT VERIFIED — the graph index is ${behindPhrase(divergence as IGraphDivergence)} behind ` +
           `(${divergenceSummary(divergence as IGraphDivergence)}), so any count derived from it is out of date.`,
         fix: 'Re-index with `shrk graph index --changed`, then `shrk arch check`.',
         whyThisMatters:

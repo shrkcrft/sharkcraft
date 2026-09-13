@@ -219,7 +219,8 @@ const SCENARIOS: Record<SmokeScenarioId, ISmokeScenario> = {
   governance: {
     id: 'governance',
     title: 'Governance',
-    description: 'Run quality, commands doctor, runtime doctor, safety audit, release readiness.',
+    description:
+      'Run quality and safety audit; commands doctor and release readiness are tool-maintenance commands, gated (78) in this consumer fixture.',
     setup: [
       {
         title: 'Initialise fixture from dogfood-target',
@@ -229,18 +230,22 @@ const SCENARIOS: Record<SmokeScenarioId, ISmokeScenario> = {
     steps: [
       { title: 'Quality', command: ['shrk', 'quality'], assertions: [{ type: 'output-not-empty', required: true }] },
       {
-        title: 'Commands doctor',
+        // Round 11 §5.1: `commands doctor` maintains SharkCraft itself. The
+        // fixture is a dogfood COPY — a consumer host — so the surface gate
+        // refuses it with 78 and a reason, never a failing check.
+        title: 'Commands doctor (tool-maintenance: gated here)',
         command: ['shrk', 'commands', 'doctor'],
-        assertions: [
-          { type: 'stdout-contains', value: 'errors:', required: false, note: 'doctor mentions error count' },
-        ],
+        allowedExitCodes: [78],
+        assertions: [{ type: 'output-not-empty', required: true, note: 'the gate explains the refusal' }],
       },
       { title: 'Safety audit', command: ['shrk', 'safety', 'audit'], assertions: [{ type: 'output-not-empty', required: false }] },
       {
-        title: 'Release readiness',
+        title: 'Release readiness (tool-maintenance: gated here)',
         command: ['shrk', 'release', 'readiness'],
+        allowedExitCodes: [78],
         assertions: [
-          { type: 'stdout-contains', value: 'Verdict', required: false },
+          { type: 'output-not-empty', required: true, note: 'the gate explains the refusal' },
+          { type: 'stderr-not-contains', value: 'NOT READY', required: true, note: 'the tool\'s own readiness never ran' },
         ],
       },
     ],

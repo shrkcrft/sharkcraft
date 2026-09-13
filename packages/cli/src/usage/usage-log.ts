@@ -115,12 +115,17 @@ export function sanitizeFlagNames(rawArgv: readonly string[]): string[] {
 /**
  * Extract the leading command path (top-level + first
  * subcommand if present, no flags) from raw argv.
+ *
+ * `maxTokens` defaults to 2, which is what the usage log records. The
+ * verdict-verb check passes `VERDICT_PATH_TOKENS` (3) so a three-token verdict
+ * verb (`docs references check`) can be told apart from its informational
+ * siblings (`docs references list`).
  */
-export function extractCommandPath(rawArgv: readonly string[]): string {
+export function extractCommandPath(rawArgv: readonly string[], maxTokens = 2): string {
   const tokens: string[] = [];
   for (const t of rawArgv) {
     if (t.startsWith('-')) break;
-    if (tokens.length >= 2) break;
+    if (tokens.length >= maxTokens) break;
     tokens.push(t);
   }
   return tokens.join(' ');

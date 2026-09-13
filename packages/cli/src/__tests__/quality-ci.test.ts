@@ -60,7 +60,12 @@ interface IQualityRunJson {
   readonly skipped: number;
   readonly errored: number;
   readonly exitCode: number;
-  readonly items: { id: string; status: string; severity: string }[];
+  readonly items: {
+    id: string;
+    status: string;
+    severity: string;
+    data?: { examinedNothing?: boolean };
+  }[];
 }
 
 describe('shrk quality', () => {
@@ -85,8 +90,12 @@ describe('shrk quality', () => {
     const r = shrk(['--cwd', root, 'quality', '--json'], root);
     const out = JSON.parse(r.stdout) as IQualityRunJson;
     // Nothing was skipped for lack of a chance to run: the whole point is that
-    // N independent failures cost ONE local pass, not N CI round-trips.
-    expect(out.items.every((i) => i.status !== 'skipped')).toBe(true);
+    // N independent failures cost ONE local pass, not N CI round-trips. (Round
+    // 11: a gate with NOTHING to examine — zero context tests — reports
+    // `skipped` instead of a vacuous `passed`; that is not a fail-fast skip.)
+    expect(
+      out.items.every((i) => i.status !== 'skipped' || i.data?.examinedNothing === true),
+    ).toBe(true);
   });
 
   test('--strict promotes advisory failures into blocking ones', () => {

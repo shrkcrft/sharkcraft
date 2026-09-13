@@ -5,6 +5,7 @@ import {
   flagNumber,
   flagString,
   flagList,
+  requireInputSelector,
   resolveCwd,
   type ICommandHandler,
   type ParsedArgs,
@@ -62,6 +63,13 @@ export const pathsSearchCommand: ICommandHandler = {
   description: 'Search path conventions.',
   usage: 'shrk paths search <query> [--scope x,y] [--limit 10]',
   async run(args: ParsedArgs): Promise<number> {
+    // No query and no scope is a usage error (3), never `Results (0)` at exit 0.
+    const noSelector = requireInputSelector(args, {
+      flags: ['scope'],
+      positional: true,
+      usage: 'shrk paths search <query> [--scope x,y] [--limit 10]',
+    });
+    if (noSelector !== null) return noSelector;
     const query = args.positional.join(' ').trim();
     const scope = flagList(args, 'scope');
     const limit = flagNumber(args, 'limit') ?? 10;

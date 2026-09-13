@@ -7,7 +7,26 @@ import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { validatePackHelper, type IPackHelper } from '@shrkcrft/plugin-api';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
-import { importModuleViaLoader } from '@shrkcrft/core';
+import {
+  importModuleViaLoader,
+  readContributionExport,
+  RejectionCause,
+  type IContributionExport,
+  type IRejectedEntry,
+} from '@shrkcrft/core';
+
+/**
+ * THE helper acceptance predicate (round 12, 12.1): every ERROR of
+ * `validatePackHelper` (a warning never refuses a helper), `<field>:
+ * <message>` — `[]` means accepted.
+ */
+export function packHelperRejectionReasons(raw: unknown): readonly string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return ['(entry): must be an object'];
+  const v = validatePackHelper(raw as IPackHelper);
+  if (v.valid) return [];
+  const errors = v.issues.filter((i) => i.severity !== 'warning');
+  return (errors.length > 0 ? errors : v.issues).map((i) => `${i.field}: ${i.message}`);
+}
 
 export const PACK_HELPER_REGISTRY_SCHEMA = 'sharkcraft.pack-helper-registry/v1';
 
@@ -32,15 +51,8 @@ export interface IPackHelperDoctorIssue {
   readonly source?: string;
 }
 
-async function importDefault<T>(file: string): Promise<readonly T[]> {
-  const mod = (await importModuleViaLoader(file)) as {
-    default?: readonly T[] | T;
-    helpers?: readonly T[];
-  };
-  if (Array.isArray(mod.default)) return mod.default;
-  if (mod.default && typeof mod.default === 'object') return [mod.default as T];
-  if (Array.isArray(mod.helpers)) return mod.helpers;
-  return [];
+async function importHelpers(file: string): Promise<IContributionExport> {
+  return readContributionExport(await importModuleViaLoader(file), { namedKeys: ['helpers'] });
 }
 
 function localFiles(inspection: ISharkcraftInspection): string[] {
@@ -51,66 +63,113 @@ function localFiles(inspection: ISharkcraftInspection): string[] {
     const abs = nodePath.join(dir, name);
     if (existsSync(abs)) out.push(abs);
   }
-  const cfg = inspection.config as { helperFiles?: readonly string[] } | null;
-  for (const rel of cfg?.helperFiles ?? []) {
-    out.push(nodePath.isAbsolute(rel) ? rel : nodePath.join(dir, rel));
-  }
+  // More helper files come from pack manifests (`helperFiles`, loaded below) —
+  // there is no local-config key for them; the strict config schema rejects
+  // one, so a local read here could never be reached.
   return out;
 }
 
 export async function loadPackHelpers(
   inspection: ISharkcraftInspection,
-): Promise<{ entries: readonly IPackHelperEntry[]; issues: readonly IPackHelperDoctorIssue[] }> {
+): Promise<{
+  entries: readonly IPackHelperEntry[];
+  issues: readonly IPackHelperDoctorIssue[];
+  /** Every helper file this load considered (absolute path) and what happened to it. */
+  files: readonly { readonly file: string; readonly status: 'loaded' | 'failed' | 'missing' }[];
+  /** Every declared helper the loader refused — invalid or a duplicate id (round 12, 12.1). */
+  rejected: readonly IRejectedEntry[];
+}> {
   const entries: IPackHelperEntry[] = [];
   const issues: IPackHelperDoctorIssue[] = [];
-  const seen = new Set<string>();
+  const rejected: IRejectedEntry[] = [];
+  const files: { file: string; status: 'loaded' | 'failed' | 'missing' }[] = [];
+  const seen = new Map<string, string>();
 
   const ingest = (
-    raw: IPackHelper,
+    raw: unknown,
     source: PackHelperSource,
     packageName: string | undefined,
     sourceFile: string,
+    at: Pick<IRejectedEntry, 'file' | 'index' | 'exportName'>,
   ): void => {
-    const v = validatePackHelper(raw);
-    if (!v.valid) {
-      for (const i of v.issues) {
+    const rawId = raw && typeof raw === 'object' ? (raw as { id?: unknown }).id : undefined;
+    const helperId = typeof rawId === 'string' ? rawId : undefined;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const i of validatePackHelper(raw as IPackHelper).issues) {
+        // Errors make the helper invalid (skipped); warnings (e.g. an unknown key
+        // on an operation, which the engine would silently drop) still surface.
+        const warning = i.severity === 'warning';
         issues.push({
-          severity: 'error',
-          code: 'invalid-helper',
+          severity: warning ? 'warning' : 'error',
+          code: warning ? 'helper-warning' : 'invalid-helper',
           message: `${i.field}: ${i.message}`,
-          helperId: typeof raw.id === 'string' ? raw.id : undefined,
+          ...(helperId ? { helperId } : {}),
           source: sourceFile,
         });
       }
+    }
+    const reasons = packHelperRejectionReasons(raw);
+    if (reasons.length > 0) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        issues.push({ severity: 'error', code: 'invalid-helper', message: reasons[0]!, source: sourceFile });
+      }
+      rejected.push({ ...at, ...(helperId ? { entryId: helperId } : {}), reasons, cause: RejectionCause.Invalid });
       return;
     }
-    if (seen.has(raw.id)) {
+    const helper = raw as IPackHelper;
+    const prev = seen.get(helper.id);
+    if (prev !== undefined) {
       issues.push({
         severity: 'error',
         code: 'duplicate-id',
-        message: `Helper "${raw.id}" already loaded; skipping ${sourceFile}.`,
-        helperId: raw.id,
+        message: `Helper "${helper.id}" already loaded; skipping ${sourceFile}.`,
+        helperId: helper.id,
         source: sourceFile,
+      });
+      rejected.push({
+        ...at,
+        entryId: helper.id,
+        reasons: [`id: "${helper.id}" is already declared in ${prev}`],
+        cause: RejectionCause.DuplicateId,
       });
       return;
     }
-    seen.add(raw.id);
+    seen.set(helper.id, sourceFile);
     entries.push({
-      helper: raw,
+      helper,
       source,
       ...(packageName ? { packageName } : {}),
       sourceFile,
     });
   };
+  const ingestAll = (
+    exp: IContributionExport,
+    file: string,
+    source: PackHelperSource,
+    packageName: string | undefined,
+    sourceFile: string,
+  ): void => {
+    exp.items.forEach((h, i) =>
+      ingest(h, source, packageName, sourceFile, {
+        file,
+        index: exp.single ? -1 : i,
+        ...(exp.exportName ? { exportName: exp.exportName } : {}),
+      }),
+    );
+  };
 
   for (const file of localFiles(inspection)) {
     try {
-      const list = await importDefault<IPackHelper>(file);
+      const exp = await importHelpers(file);
       const rel = nodePath.relative(inspection.projectRoot, file) || file;
-      for (const h of list) ingest(h, PackHelperSource.Local, undefined, rel);
+      files.push({ file, status: 'loaded' });
+      ingestAll(exp, file, PackHelperSource.Local, undefined, rel);
     } catch (e) {
+      files.push({ file, status: 'failed' });
+      // A helper file that cannot be imported contributes nothing: an error,
+      // like every other contribution load failure.
       issues.push({
-        severity: 'warning',
+        severity: 'error',
         code: 'load-failed',
         message: `Failed to load ${file}: ${(e as Error).message}`,
         source: file,
@@ -122,8 +181,9 @@ export async function loadPackHelpers(
     for (const rel of contributions.helperFiles ?? []) {
       const file = nodePath.resolve(pack.packageRoot, rel);
       if (!existsSync(file)) {
+        files.push({ file, status: 'missing' });
         issues.push({
-          severity: 'warning',
+          severity: 'error',
           code: 'missing-file',
           message: `Pack ${pack.packageName} declares ${rel} but file is missing.`,
           source: file,
@@ -131,11 +191,13 @@ export async function loadPackHelpers(
         continue;
       }
       try {
-        const list = await importDefault<IPackHelper>(file);
-        for (const h of list) ingest(h, PackHelperSource.Pack, pack.packageName, rel);
+        const exp = await importHelpers(file);
+        files.push({ file, status: 'loaded' });
+        ingestAll(exp, file, PackHelperSource.Pack, pack.packageName, rel);
       } catch (e) {
+        files.push({ file, status: 'failed' });
         issues.push({
-          severity: 'warning',
+          severity: 'error',
           code: 'load-failed',
           message: `Pack ${pack.packageName} (${rel}): ${(e as Error).message}`,
           source: file,
@@ -143,7 +205,7 @@ export async function loadPackHelpers(
       }
     }
   }
-  return { entries, issues };
+  return { entries, issues, files, rejected };
 }
 
 export async function listPackHelpers(

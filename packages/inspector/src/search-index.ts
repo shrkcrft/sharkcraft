@@ -10,6 +10,8 @@ import {
   tuningBoostFor,
   type ISearchTuningEntry,
 } from './search-tuning-registry.ts';
+import { searchDocumentId } from './search-document-id.ts';
+import { tuningQueryTokens } from './tuning-query-tokens.ts';
 
 export const SEARCH_INDEX_SCHEMA = 'sharkcraft.search-index/v1';
 
@@ -161,7 +163,7 @@ function loadDocFiles(projectRoot: string): ISearchDocument[] {
       const titleMatch = /^#\s+(.+)/m.exec(content);
       const title = titleMatch?.[1]?.trim() ?? f.replace(/\.md$/, '');
       out.push({
-        id: `doc:${f}`,
+        id: searchDocumentId('doc', f),
         kind: SearchKind.Doc,
         title,
         content: safeContent(content, 1200),
@@ -180,7 +182,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
   for (const k of inspection.knowledgeEntries) {
     const src = inspection.entrySources.get(k.id);
     docs.push({
-      id: `knowledge:${k.id}`,
+      id: searchDocumentId('knowledge', k.id),
       kind: SearchKind.Knowledge,
       title: k.title ?? k.id,
       content: safeContent(
@@ -197,7 +199,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
   }
   for (const r of inspection.ruleService.list()) {
     docs.push({
-      id: `rule:${r.id}`,
+      id: searchDocumentId('rule', r.id),
       kind: SearchKind.Rule,
       title: r.title ?? r.id,
       content: safeContent(r.summary ?? r.content ?? '', 800),
@@ -216,7 +218,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
   for (const p of inspection.pathService.list()) {
     const meta = (p.metadata ?? {}) as { path?: string; description?: string };
     docs.push({
-      id: `path:${p.id}`,
+      id: searchDocumentId('path', p.id),
       kind: SearchKind.Path,
       title: p.title ?? p.id,
       content: safeContent(meta.description ?? p.summary ?? p.content ?? '', 400),
@@ -232,7 +234,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
   for (const t of inspection.templateRegistry.list()) {
     const src = inspection.templateSources.get(t.id);
     docs.push({
-      id: `template:${t.id}`,
+      id: searchDocumentId('template', t.id),
       kind: SearchKind.Template,
       title: t.name ?? t.id,
       content: safeContent((t as { description?: string }).description ?? '', 800),
@@ -247,7 +249,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
   for (const p of inspection.pipelineRegistry.list()) {
     const src = inspection.pipelineSources.get(p.id);
     docs.push({
-      id: `pipeline:${p.id}`,
+      id: searchDocumentId('pipeline', p.id),
       kind: SearchKind.Pipeline,
       title: p.title ?? p.id,
       content: safeContent((p as { description?: string }).description ?? '', 800),
@@ -267,7 +269,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
     for (const p of presets) {
       const src = inspection.presetSources?.get(p.id);
       docs.push({
-        id: `preset:${p.id}`,
+        id: searchDocumentId('preset', p.id),
         kind: SearchKind.Preset,
         title: p.name ?? p.id,
         content: safeContent(p.description ?? '', 400),
@@ -280,7 +282,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
   }
   for (const pack of inspection.packs.validPacks ?? []) {
     docs.push({
-      id: `pack:${pack.packageName}`,
+      id: searchDocumentId('pack', pack.packageName),
       kind: SearchKind.Pack,
       title: pack.packageName,
       content: safeContent(pack.manifest?.info?.description ?? '', 400),
@@ -302,7 +304,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
       allowedImports?: readonly string[];
     };
     docs.push({
-      id: `boundary:${r.id}`,
+      id: searchDocumentId('boundary', r.id),
       kind: SearchKind.Boundary,
       title: rb.title ?? r.id,
       content: safeContent(rb.description ?? rb.message ?? '', 400),
@@ -315,19 +317,12 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
       },
     });
   }
-  // Policies (registered checks).
-  try {
-    const cfg = inspection.config as { policyCheckFiles?: readonly string[] } | null;
-    void cfg;
-  } catch {
-    /* ignore */
-  }
   // Bundles, sessions.
   try {
     const bundles = listFeatureBundles(inspection.projectRoot);
     for (const b of bundles) {
       docs.push({
-        id: `bundle:${b.id}`,
+        id: searchDocumentId('bundle', b.id),
         kind: SearchKind.Bundle,
         title: b.task ?? b.id,
         content: safeContent(b.task ?? '', 400),
@@ -342,7 +337,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
     const sessions = listDevSessionsDetailed(inspection.projectRoot);
     for (const s of sessions) {
       docs.push({
-        id: `session:${s.id}`,
+        id: searchDocumentId('session', s.id),
         kind: SearchKind.Session,
         title: s.task || s.id,
         source: SearchSource.Session,
@@ -357,7 +352,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
     const constructs = listConstructs(inspection);
     for (const c of constructs) {
       docs.push({
-        id: `construct:${c.id}`,
+        id: searchDocumentId('construct', c.id),
         kind: SearchKind.Construct,
         title: c.title ?? c.id,
         content: safeContent(c.description ?? '', 600),
@@ -368,7 +363,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
       });
       for (const f of facetsFor(c)) {
         docs.push({
-          id: `facet:${c.id}:${f.id}`,
+          id: searchDocumentId('facet', `${c.id}:${f.id}`),
           kind: SearchKind.ConstructFacet,
           title: `${c.id} / ${f.kind}: ${f.value}`,
           content: safeContent(f.description ?? '', 200),
@@ -384,7 +379,7 @@ export function buildSearchIndex(inspection: ISharkcraftInspection): ISearchDocu
     const playbooks = listPlaybooks(inspection);
     for (const p of playbooks) {
       docs.push({
-        id: `playbook:${p.id}`,
+        id: searchDocumentId('playbook', p.id),
         kind: SearchKind.Playbook,
         title: p.title ?? p.id,
         content: safeContent(p.description ?? '', 600),
@@ -532,6 +527,9 @@ export function searchIndex(
   const tokens = tokenize(query.toLowerCase());
   const tuning =
     options.tuning ?? (inspection ? listSearchTuning(inspection) : []);
+  // Scoring keeps its own tokens; trigger matching reads THE tuning tokenizer,
+  // the same one the task ranker, the context re-ranker and `why` read.
+  const tuningTokens = tuningQueryTokens(query);
   const hits: ISearchHit[] = [];
   for (const doc of index) {
     const { score, matchedFields, reasons } = scoreDocument(doc, query, tokens, options);
@@ -541,7 +539,7 @@ export function searchIndex(
     if (tuning.length > 0) {
       const boost = tuningBoostFor(
         { id: doc.id, kind: doc.kind, ...(doc.tags ? { tags: doc.tags } : {}), source: doc.source },
-        tokens,
+        tuningTokens,
         tuning,
       );
       if (boost.delta !== 0) {

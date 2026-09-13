@@ -1,4 +1,5 @@
-import { readMatchingFiles, SKIP_DIRS } from '../util/walk-files.ts';
+import { readSelectedFiles } from '../util/read-selected-files.ts';
+import type { IUnreadFile } from '../util/unread-file.ts';
 
 export const TRACE_SCHEMA = 'sharkcraft.trace/v1' as const;
 
@@ -56,6 +57,11 @@ export interface ITraceReport {
   readonly byRole: Readonly<Record<TraceRole, readonly ITraceSite[]>>;
   /** Const names found bound to the literal (`const NAME = 'literal'`), if any. */
   readonly aliases: readonly string[];
+  /**
+   * Matched files the reader did not read (over the read cap, or unreadable),
+   * so a site inside one is missing from `byRole`. Set only when non-empty.
+   */
+  readonly unread?: readonly IUnreadFile[];
 }
 
 export interface ITraceOptions {
@@ -161,7 +167,9 @@ export function traceLiteral(
 ): ITraceReport {
   const globs = options.globs && options.globs.length > 0 ? options.globs : TRACE_DEFAULT_GLOBS;
   const exclude = new Set(options.excludeDirs ?? []);
-  const cache = readMatchingFiles(projectRoot, globs, exclude);
+  // One glob list (the caller's `--glob`s, or the defaults): a `!` excludes.
+  const matched = readSelectedFiles(projectRoot, globs, exclude);
+  const cache = matched.files;
 
   const sites: ITraceSite[] = [];
   const aliasNames = new Set<string>();
@@ -244,5 +252,6 @@ export function traceLiteral(
       [TraceRole.Reference]: sortSites(byRole[TraceRole.Reference]),
     },
     aliases: [...aliasNames].sort(),
+    ...(matched.unread.length > 0 ? { unread: matched.unread } : {}),
   };
 }

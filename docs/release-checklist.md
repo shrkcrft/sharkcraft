@@ -33,9 +33,11 @@ bun run shrk --cwd examples/dogfood-target doctor \
   --strict --min-score 70                                 # self-check
 ```
 
-The single command that runs every required gate (typecheck, tests,
-build-dist, dashboard-build, publish-dry-run, release-check, install-smoke,
-compat-node) is:
+The single command that runs every gate is below. The required ones are
+workspace-links, typecheck, import-hygiene, schemas-drift, doctor-json-audit,
+tests, build-dist, node-dist-smoke, dashboard-build and publish-dry-run; the
+non-blocking ones are taxonomy-drift, release-check, install-smoke and
+compat-node:
 
 ```bash
 bun run release:preflight
@@ -44,6 +46,50 @@ bun run release:preflight --with-e2e
 ```
 
 If any gate fails, fix it on the branch before continuing.
+
+### The two node-facing gates (round 13)
+
+Every other gate runs through Bun, which resolves `@shrkcrft/*` through tsconfig
+paths. It therefore cannot see a missing workspace link, even though the emitted
+dist needs that link under node. A tree built without re-running `bun install`
+used to reach "ready to tag" with a dist that died under node on every command.
+Two REQUIRED steps close that gap:
+
+- **`workspace-links`** runs first. Every `workspace:` pin in the runtime
+  dependency sections of every `packages/*` package must resolve to the
+  workspace package itself. Every src import of a workspace package must be
+  declared in `dependencies`, `peerDependencies` or `optionalDependencies`;
+  devDependencies-only fails. A link no manifest declares is a warning. The same
+  check runs at the top of `bun run build` and `bun run build:dist`. On its own:
+
+  ```bash
+  bun run scripts/lib/workspace-links.ts
+  ```
+
+- **`node-dist-smoke`** runs right after build-dist, and CI runs it after its
+  build. It runs the emitted entries under node from a temp directory:
+  - `node packages/cli/dist/main.js --version` must exit 0 and print the version;
+  - `node packages/mcp-server/dist/main.js`, with stdin closed, must not die
+    with `ERR_MODULE_NOT_FOUND`;
+  - both bin bootstraps (`dist/shrk.js`, `dist/shrk-mcp.js`) get the same
+    probes.
+
+  ```bash
+  bun run scripts/node-dist-smoke.ts
+  ```
+
+A broken tool install that still reaches a user exits `70` with one line naming
+the missing link. See [exit-codes.md](exit-codes.md).
+
+The SharkCraft-only verbs these gates lean on — `release readiness`,
+`release smoke`, `install smoke`, `self audit`, `docs check`,
+`examples check`, `commands doctor` / `commands ux-check` — are
+**tool-maintenance** commands (round 11): they run in this repository
+(`detectSharkcraftRepo`), and anywhere else — a consumer repo, a temp fixture —
+they are gated with exit 78, never a failure. To exercise one against another
+tree on purpose, enable it there: `shrk surface enable "release readiness"
+--write`. See
+[surface-tiers.md](./surface-tiers.md#tool-maintenance-commands-round-11).
 
 ## 3. Build dist (publish mode)
 
@@ -55,7 +101,14 @@ bun run dashboard:build       # Vite-built browser bundle (@shrkcrft/dashboard)
 `build:dist` topologically sorts publishable packages by internal dependency
 and emits `dist/` from `src/` via a per-package `tsconfig.build.json`. It
 skips the `dashboard` package (Vite-built) and any package marked
-`private: true`.
+`private: true`. Before it emits (or wipes) anything, it refuses a workspace
+dependency that is not linked or an import a package does not declare, with
+exit 1 — the same check as the `workspace-links` gate. `bun run build` does the
+same before its per-package typecheck.
+
+The `shrk` bin is `dist/shrk.js`, a bootstrap that loads `dist/main.js`
+(`@shrkcrft/mcp-server`'s `shrk-mcp` bin is `dist/shrk-mcp.js`). Both stay
+executable after a rebuild.
 
 `dashboard:build` runs `vite build` inside `packages/dashboard/`, producing
 `packages/dashboard/dist/index.html` + chunked JS/CSS. `release:preflight`
@@ -243,15 +296,17 @@ exits non-zero on the first required failure:
 bun run release:preflight
 ```
 
-That covers typecheck → tests → build:dist → publish-dry-run →
-release:check → install-smoke-test. Equivalent to:
+That covers workspace-links → typecheck → tests → build:dist →
+node-dist-smoke → publish-dry-run → release:check → install-smoke-test. Equivalent to:
 
 ```bash
 bun install \
+  && bun run scripts/lib/workspace-links.ts \
   && bun x tsc -p tsconfig.base.json --noEmit \
   && bun test \
   && bun run shrk --cwd examples/dogfood-target doctor --strict --min-score 70 \
   && bun run build:dist \
+  && bun run scripts/node-dist-smoke.ts \
   && bun run release:dry-run \
   && bun run scripts/install-smoke-test.ts \
   && echo "Ready to tag + publish."

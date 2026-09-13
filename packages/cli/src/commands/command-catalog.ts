@@ -30,6 +30,16 @@ export enum CommandAudience {
   Ci = 'ci',
   PackAuthor = 'pack-author',
   Maintainer = 'maintainer',
+  /**
+   * The command's OBJECT is SharkCraft itself — its own docs set, examples
+   * tree, release artifacts, command catalog, round snapshots (round 11
+   * §5.1). Outside SharkCraft's own repository (`detectSharkcraftRepo`, the
+   * one host authority) such a command is gated: tier source
+   * `tool-maintenance`, hidden from `--help`, and invoking it exits 78 through
+   * the surface gate — never a check failure. `surface.enabled` is the escape
+   * hatch.
+   */
+  ToolMaintenance = 'tool-maintenance',
 }
 
 /**
@@ -245,7 +255,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   entry({
     command: 'surface',
     description:
-      'Inspect / change the adaptive command surface. Subcommands: list, enable, disable, hide, unhide, reset, explain.',
+      'Inspect / change the adaptive command surface. Subcommands: list, enable, disable, hide, unhide, deny, allow, reset, explain, profiles.',
     category: 'core',
     safetyLevel: SafetyLevel.WritesSource,
     writesFiles: true,
@@ -304,8 +314,27 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     taskRole: CommandTaskRole.Config,
   }),
   entry({
+    command: 'surface deny',
+    description:
+      'Disable a command or a whole group (`<group> *`) in this repository — it stops being callable (exit 78) and leaves --help. Writes surface.disabled; preview-first.',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSource,
+    writesFiles: true,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Config,
+  }),
+  entry({
+    command: 'surface allow',
+    description: 'Reverse a prior `surface deny` — remove the selector from surface.disabled (preview-first).',
+    category: 'core',
+    safetyLevel: SafetyLevel.WritesSource,
+    writesFiles: true,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Config,
+  }),
+  entry({
     command: 'surface reset',
-    description: 'Clear surface.enabled + surface.hidden in sharkcraft.config.ts (preview-first).',
+    description: 'Clear surface.enabled + surface.hidden + surface.disabled in sharkcraft.config.ts (preview-first).',
     category: 'core',
     safetyLevel: SafetyLevel.WritesSource,
     writesFiles: true,
@@ -469,7 +498,8 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   }),
   entry({
     command: 'check boundaries',
-    description: 'Boundary enforcement against tsconfig aliases + import graph.',
+    description:
+      'Boundary enforcement against tsconfig aliases + import graph (imports read from code, not comments). Bare forbidden patterns cover subpaths; exemptFiles / excludeTests / exceptions are marked, never dropped; a rule matching nothing is never "evaluated" (0/1/2/3, gate envelope). [--rule <id>] [--rule-file <path> | --diff-against <path>] [--changed-only …] [--fail-on-dead-units] [--include-comments] [--allow-empty] [--json]',
     category: 'core',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
@@ -479,7 +509,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   entry({
     command: 'check wiring',
     description:
-      'Completeness checks: flags config-defined "declared but not wired" tokens (a declared value/identifier set that must be a subset of a registered set). Generic + deterministic; rules from sharkcraft.config.ts wiringRules[]. [--changed-only] [--only <ids>] [--json]',
+      'Completeness checks: flags config-defined "declared but not wired" tokens (a declared value/identifier set that must be a subset of a registered set). Generic + deterministic; rules from sharkcraft.config.ts wiringRules[]. A subset rule whose registered side holds tokens no declared site produced is `partial` (exit 2) unless `registeredExtras` accepts them. [--changed-only] [--only <ids>] [--allow-empty] [--json]',
     category: 'core',
     safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Common,
@@ -488,7 +518,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   entry({
     command: 'check orphans',
     description:
-      'Write-safety guard: after deleting file(s)/export(s), finds surviving files that still import them or reference a symbol they declared — alias-resolved, incl. barrel re-exports the type checker misses. Reverse-closure over the diff vs --since (or --staged) against the code-graph snapshot; each survivor reported with file:line. [--since <ref>] [--staged] [--json]',
+      'Write-safety guard: after deleting file(s)/export(s), finds surviving files that still import them or reference a symbol they declared — alias-resolved, incl. barrel re-exports the type checker misses. Reverse-closure over the diff vs --since (or --staged) against the code-graph snapshot; each survivor reported with file:line. Nothing deleted is NOT a pass (exit 2) unless --allow-empty. [--since <ref>] [--staged] [--allow-empty] [--json]',
     category: 'core',
     safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Common,
@@ -497,7 +527,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   entry({
     command: 'policy-lint',
     description:
-      'Lint template/markup, stylesheet, and AOT-invisible TS surfaces against config-defined policyRules[] — sees `.html` files AND inline `template:` strings that tsc/AOT cannot. Deterministic; no AI. [--surface template|style|ts] [--changed-only] [--only <ids>] [--json]',
+      'Lint template/markup, stylesheet, and AOT-invisible TS surfaces against config-defined policyRules[] — sees `.html` files AND inline `template:` strings that tsc/AOT cannot. Deterministic; no AI. No rules declared is NOT a pass (exit 2) unless --allow-empty. [--surface template|style|ts] [--changed-only] [--only <ids>] [--allow-empty] [--json]',
     category: 'core',
     safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Common,
@@ -542,7 +572,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   entry({
     command: 'gates coverage',
     description:
-      'The stale-selector detector: what every data-defined rule actually MATCHED against the live tree, flagging each rule that matched 0 files/ids (a rule matching nothing is a bug in the rule, never a pass) and running each rule\'s declared selfTest expectations. Run it in CI so a rule quietly dying is itself a failure. Exit 2 when a rule matched nothing, 1 when it set failOnEmpty. [--plane <p>] [--json]',
+      'The stale-selector detector: what every data-defined rule actually MATCHED against the live tree, flagging each rule that matched 0 files/ids (a rule matching nothing is a bug in the rule, never a pass), each glob inside a connected rule that matched 0 files (advisory; --fail-on-dead-units fails on it), and running each rule\'s declared selfTest expectations (every failure names the selector it consulted). Run it in CI so a rule quietly dying is itself a failure. Exit 2 when a rule matched nothing, 1 when it set failOnEmpty or broke its selfTest. [--plane <p>] [--fail-on-dead-units] [--json]',
     category: 'core',
     safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Common,
@@ -691,6 +721,15 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Common,
     taskRole: CommandTaskRole.Search,
+  }),
+  entry({
+    command: 'reuse coverage',
+    description:
+      'Curated reusePrimitives[] vs the real public export surface: curated vs exported counts, dead curated entries, importPaths that do not expose their symbol, and curation gaps (an exported name the reuse lookup answers with a different curated entry). Exit 2 over a missing/stale index. [--min-coverage <pct>] [--package <name>] [--include-types] [--json]',
+    category: 'analysis',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Validate,
   }),
   entry({
     command: 'diff-check',
@@ -1516,6 +1555,26 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     taskRole: CommandTaskRole.Inspect,
   }),
   entry({
+    command: 'self-config resolve',
+    description:
+      'Which registry an id resolves in — every kind, most specific first, with the verb that shows it — and every declared cross-reference pointing at it; did-you-mean when it resolves nowhere. Exit 0 resolved · 1 unresolved · 3 no id. [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: false,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Explain,
+  }),
+  entry({
+    command: 'self-config xrefs',
+    description:
+      'Every declared cross-reference id (knowledge related / seeAlso / supersededBy / action hints, construct related* + facets with resolvesAs, boundary related*, template related) with the namespace it resolved into and its status. [--source <kind>:<id>] [--dangling-only] [--json]',
+    category: 'core',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: false,
+    surface: CommandSurface.Advanced,
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
     command: 'self-config doctor',
     description: 'Cross-reference integrity for self-config (rule wiring, action hints, verification commands).',
     category: 'core',
@@ -1685,7 +1744,29 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'meta',
     safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Advanced,
-    intendedAudience: [CommandAudience.Maintainer],
+    intendedAudience: [CommandAudience.Maintainer, CommandAudience.ToolMaintenance],
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  // Round 11 review: both read SharkCraft's OWN catalog and docs
+  // (command-entrypoints / start-here / overview; the `overlaps` view), so in
+  // a consumer repo `docs-check` reported a green check over 0 files.
+  entry({
+    command: 'commands docs-check',
+    description:
+      "Check SharkCraft's own command docs (command-entrypoints / start-here / overview) and catalog pointers for drift.",
+    category: 'meta',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    intendedAudience: [CommandAudience.Maintainer, CommandAudience.ToolMaintenance],
+    taskRole: CommandTaskRole.Inspect,
+  }),
+  entry({
+    command: 'commands retirement-plan',
+    description: "SharkCraft's own command retirement plan (derived from `commands overlaps`).",
+    category: 'meta',
+    safetyLevel: SafetyLevel.ReadOnly,
+    surface: CommandSurface.Advanced,
+    intendedAudience: [CommandAudience.Maintainer, CommandAudience.ToolMaintenance],
     taskRole: CommandTaskRole.Inspect,
   }),
   entry({
@@ -2000,7 +2081,8 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     mcpAvailable: true,
   }),
   // `commands suggest` hard-deleted (folded into unknown-command did-you-mean).
-  // `commands explain` hard-deleted (folded into `shrk explain`).
+  // `commands explain` hard-deleted (use `shrk help <cmd>`; `shrk explain` is the
+  // knowledge / rule topic explainer and never describes a command).
   // `doctor watch` removed (use `shrk doctor --watch`).
   entry({
     command: 'knowledge stale-check --watch',
@@ -2820,7 +2902,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
     surface: CommandSurface.Advanced,
-    intendedAudience: [CommandAudience.Human, CommandAudience.Ci],
+    intendedAudience: [CommandAudience.Human, CommandAudience.Ci, CommandAudience.ToolMaintenance],
     taskRole: CommandTaskRole.Release,
   }),
   entry({
@@ -2829,6 +2911,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'release',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   // Additions: human entrypoint, governance, smoke harness.
   entry({
@@ -2851,12 +2934,16 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     intendedAudience: [CommandAudience.Human],
     taskRole: CommandTaskRole.Start,
   }),
+  // Tool-maintenance rows (round 11 §5.1): their object is SharkCraft ITSELF —
+  // its docs set, examples tree, release artifacts. Gated outside the tool's
+  // own repository (tier source `tool-maintenance`, exit 78 — never a failure).
   entry({
     command: 'docs check',
     description: 'Verify docs/ and README content.',
     category: 'governance',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   entry({
     command: 'examples check',
@@ -2864,6 +2951,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'governance',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   entry({
     command: 'self audit',
@@ -2871,6 +2959,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'release',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   entry({
     command: 'release smoke',
@@ -2880,6 +2969,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     writesFiles: true,
     runsShell: true,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   entry({
     command: 'install smoke',
@@ -2888,6 +2978,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     safetyLevel: SafetyLevel.WritesDraftsOnly,
     runsShell: true,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   entry({
     command: 'ci permissions --fix-preview',
@@ -2923,6 +3014,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'release',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   entry({
     command: 'release readiness --html',
@@ -2930,6 +3022,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'release',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   // `ci scaffold jenkins|azure --with-release-readiness` hard-deleted with their parents.
   entry({
@@ -2956,6 +3049,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     writesFiles: true,
     runsShell: true,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   entry({
     command: 'release smoke --matrix',
@@ -2965,6 +3059,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     writesFiles: true,
     runsShell: true,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   entry({
     command: 'install smoke --tarball',
@@ -2974,6 +3069,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     writesFiles: true,
     runsShell: true,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   entry({
     command: 'self audit --run',
@@ -2982,6 +3078,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     safetyLevel: SafetyLevel.WritesDraftsOnly,
     runsShell: true,
     mcpAvailable: true,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   entry({
     command: 'diagnostics list',
@@ -2996,7 +3093,10 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     description: 'Audit catalog UX — descriptions, safety metadata, alias collisions.',
     category: 'meta',
     safetyLevel: SafetyLevel.ReadOnly,
-    mcpAvailable: true,
+    // No MCP tool backs this verb (round 11: every tool-maintenance row that
+    // claims mcpAvailable must name a gated tool — r75-tool-maintenance-mcp-gate).
+    mcpAvailable: false,
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
   }),
   entry({
     command: 'report site --pack-compat',
@@ -3200,7 +3300,8 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     writesFiles: true,
     mcpAvailable: false,
   }),
-  // `heal from-command|-error|-file|-report` hard-deleted. Use `shrk heal --from <source>`.
+  // `heal from-command|-error|-file|-report` hard-deleted, and later the `heal`
+  // group itself. Preview-only repair suggestions live in `shrk fix`.
   entry({
     command: 'contract check',
     description:
@@ -3380,6 +3481,14 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     mcpAvailable: true,
   }),
   entry({
+    command: 'helper doctor',
+    description:
+      'Validate every helper file (built-in + pack/local): load failures, invalid helpers, duplicate ids, unknown operation keys. Read-only; exit 2 when nothing was examined.',
+    category: 'lifecycle',
+    safetyLevel: SafetyLevel.ReadOnly,
+    mcpAvailable: false,
+  }),
+  entry({
     command: 'packs dev-status',
     description: 'Pack-author dev status. Read-only.',
     category: 'packs',
@@ -3396,14 +3505,16 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   }),
   entry({
     command: 'check registry-lifecycle',
-    description: 'register*/remove* symmetry rule. Read-only.',
+    description:
+      'register*/remove* symmetry rule. Sorted, bounded scan: a capped / over-budget / interrupted run exits 2 with the `--offset <n>` that continues it (`--limit <n>`, `--limit 0` uncapped, `--budget-ms <n>`). Read-only.',
     category: 'core',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
   }),
   entry({
     command: 'registry lifecycle',
-    description: 'register*/remove* symmetry rule (standalone command). Read-only.',
+    description:
+      'register*/remove* symmetry rule (standalone command) — the same body and flags as `check registry-lifecycle`, including `--offset` continuation. Read-only.',
     category: 'core',
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: true,
@@ -3461,7 +3572,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     safetyLevel: SafetyLevel.WritesDraftsOnly,
     writesFiles: true,
     surface: CommandSurface.Advanced,
-    intendedAudience: [CommandAudience.Human],
+    intendedAudience: [CommandAudience.Human, CommandAudience.ToolMaintenance],
     taskRole: CommandTaskRole.Diagnose,
   }),
   entry({
@@ -3470,7 +3581,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'meta',
     safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Advanced,
-    intendedAudience: [CommandAudience.Human, CommandAudience.Agent],
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
     taskRole: CommandTaskRole.Inspect,
   }),
   entry({
@@ -3479,7 +3590,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'meta',
     safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Advanced,
-    intendedAudience: [CommandAudience.Human, CommandAudience.Agent],
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
     taskRole: CommandTaskRole.Inspect,
   }),
   entry({
@@ -3489,7 +3600,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     category: 'meta',
     safetyLevel: SafetyLevel.ReadOnly,
     surface: CommandSurface.Advanced,
-    intendedAudience: [CommandAudience.Human, CommandAudience.Agent],
+    intendedAudience: [CommandAudience.Human, CommandAudience.Agent, CommandAudience.ToolMaintenance],
     taskRole: CommandTaskRole.Inspect,
   }),
   // Explore a directory (workspace-aware).
@@ -3533,7 +3644,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: false,
     surface: CommandSurface.Advanced,
-    intendedAudience: [CommandAudience.Maintainer, CommandAudience.Agent],
+    intendedAudience: [CommandAudience.Maintainer, CommandAudience.Agent, CommandAudience.ToolMaintenance],
     taskRole: CommandTaskRole.Inspect,
   }),
   entry({
@@ -3544,7 +3655,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: false,
     surface: CommandSurface.Advanced,
-    intendedAudience: [CommandAudience.Maintainer],
+    intendedAudience: [CommandAudience.Maintainer, CommandAudience.ToolMaintenance],
     taskRole: CommandTaskRole.Inspect,
   }),
   entry({
@@ -3555,7 +3666,7 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
     safetyLevel: SafetyLevel.ReadOnly,
     mcpAvailable: false,
     surface: CommandSurface.Common,
-    intendedAudience: [CommandAudience.Human, CommandAudience.Maintainer],
+    intendedAudience: [CommandAudience.Human, CommandAudience.Maintainer, CommandAudience.ToolMaintenance],
     taskRole: CommandTaskRole.Inspect,
   }),
   // ── D3-2: registered command groups that resolved live but had ZERO
@@ -3656,14 +3767,16 @@ export const COMMAND_CATALOG: readonly ICommandCatalogEntry[] = Object.freeze([
   // checks — custom-check registry declared by rules (metadata.checks[]).
   entry({
     command: 'checks list',
-    description: 'List custom checks declared by rules (metadata.checks[]). Read-only.',
+    description:
+      "List custom checks declared on type:'rule' entries (metadata.checks[] in TypeScript rule / knowledge files, local or pack). Names every dropped declaration (a non-rule entry, a Markdown rule, a non-array value) and exits 1 on one. Read-only.",
     category: 'checks',
     safetyLevel: SafetyLevel.ReadOnly,
     taskRole: CommandTaskRole.Inspect,
   }),
   entry({
     command: 'checks doctor',
-    description: 'Validate custom-check descriptors (missing fields, duplicate ids).',
+    description:
+      'Validate custom-check descriptors (missing fields, duplicate ids, declarations that can never run). Exit 0 · 1 errors · 2 nothing declared (--allow-empty accepts).',
     category: 'checks',
     safetyLevel: SafetyLevel.ReadOnly,
     taskRole: CommandTaskRole.Diagnose,
@@ -3926,6 +4039,7 @@ export const R46_OVERLAY: Readonly<Record<string, IR46OverlayEntry>> = Object.fr
   'helper get': { verdict: 'hidden', reason: 'Helpers advanced.' },
   'helper list': { verdict: 'hidden', reason: 'Helpers advanced.' },
   'helper plan': { verdict: 'hidden', reason: 'Helpers advanced.' },
+  'helper doctor': { verdict: 'hidden', reason: 'Helpers advanced.' },
   // memory.
   'memory diagnostics': { verdict: 'hidden', reason: 'Memory support tools are advanced.' },
   'memory diff': { verdict: 'hidden', reason: 'Memory support tools are advanced.' },
@@ -3982,6 +4096,14 @@ export function commandAudience(e: ICommandCatalogEntry): readonly CommandAudien
   return e.mcpAvailable
     ? [CommandAudience.Human, CommandAudience.Agent]
     : [CommandAudience.Human];
+}
+
+/**
+ * True when the row maintains SharkCraft itself ({@link CommandAudience.ToolMaintenance}).
+ * The tier resolver gates such a row outside the tool's own repository.
+ */
+export function isToolMaintenance(e: ICommandCatalogEntry): boolean {
+  return commandAudience(e).includes(CommandAudience.ToolMaintenance);
 }
 
 /** Task role (or `undefined` when not classified). */
@@ -4133,21 +4255,29 @@ export function defaultShowInHelp(e: ICommandCatalogEntry): boolean {
  * R46-pruned are excluded), sorted by command.
  */
 export function listExplainFamily(): readonly ICommandCatalogEntry[] {
-  return COMMAND_CATALOG.filter((e) => {
-    const lc = commandLifecycle(e);
-    if (
-      lc === CommandLifecycle.Deprecated ||
-      lc === CommandLifecycle.Retired ||
-      lc === CommandLifecycle.Alias
-    ) {
-      return false;
-    }
-    if (R46_OVERLAY[e.command]) return false;
-    const role = commandTaskRole(e);
-    return role === CommandTaskRole.Explain || /(^|\s)explain$/.test(e.command);
-  })
+  return COMMAND_CATALOG.filter(isExplainFamily)
     .slice()
     .sort((a, b) => a.command.localeCompare(b.command));
+}
+
+/**
+ * Membership in the explain / dry-run family ({@link listExplainFamily}).
+ * `--full-help` lists the family in its own section, so the surface summary's
+ * `visibleInHelp` counts it too: the one visibility authority and the help
+ * renderer must answer "is X in --help" identically.
+ */
+export function isExplainFamily(e: ICommandCatalogEntry): boolean {
+  const lc = commandLifecycle(e);
+  if (
+    lc === CommandLifecycle.Deprecated ||
+    lc === CommandLifecycle.Retired ||
+    lc === CommandLifecycle.Alias
+  ) {
+    return false;
+  }
+  if (R46_OVERLAY[e.command]) return false;
+  const role = commandTaskRole(e);
+  return role === CommandTaskRole.Explain || /(^|\s)explain$/.test(e.command);
 }
 
 /**

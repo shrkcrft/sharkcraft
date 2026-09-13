@@ -11,7 +11,8 @@
  *
  * Read-only; no AI; deterministic. Schema: sharkcraft.changes-summary/v1.
  */
-import { globToRegex } from '@shrkcrft/boundaries';
+import { boundaryRuleScope, boundaryScopeDecision, type IBoundaryRuleScope } from '@shrkcrft/boundaries';
+import { createAreaClassifier } from './area-map.ts';
 import { getChangedFiles } from './git-helpers.ts';
 import { resolveVerificationCommands } from './resolve-verification-commands.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
@@ -234,24 +235,32 @@ const PACKAGE_ROOT_RE = /^(?:packages|apps|libs|modules|services)\/([^/]+)\//;
  * is surfaced as a self-diagnostic (`unknownRate`), not a low-risk diff.
  */
 function buildAreaResolver(inspection: ISharkcraftInspection): AreaResolver {
-  const boundaryMatchers: { area: string; matchers: RegExp[] }[] = [];
+  // Each rule's governed scope, read through THE boundary scope authority
+  // (`boundaryRuleScope` / `boundaryScopeDecision`) — the one the evaluator
+  // uses. A `!`-prefixed `from` entry is an exemption there, never a literal
+  // glob, and a file the rule exempts (`exemptFiles`, `excludeTests`) is not
+  // attributed to the rule's area.
+  const boundaryMatchers: { area: string; scope: IBoundaryRuleScope }[] = [];
   try {
     for (const rule of inspection.boundaryRegistry?.list() ?? []) {
-      const from = rule.from ?? [];
-      if (from.length === 0) continue;
-      boundaryMatchers.push({
-        area: rule.tags?.[0] ?? rule.id,
-        matchers: from.map((g) => globToRegex(g)),
-      });
+      const scope = boundaryRuleScope(rule);
+      if (scope.include.length === 0) continue;
+      boundaryMatchers.push({ area: rule.tags?.[0] ?? rule.id, scope });
     }
   } catch {
     // Boundary registry unavailable — fall through to built-ins + package roots.
   }
+  // Project-declared areas (`areaMap.patterns`) win FIRST, through the same
+  // classifier the area map uses — one answer to "which area is this file in"
+  // for a file the project named, not two tables agreeing by coincidence.
+  const configured = createAreaClassifier(inspection.config?.areaMap, { builtIns: false });
   return (file: string): string => {
+    const declared = configured(file);
+    if (declared.source === 'config') return declared.id ?? declared.kind;
     const builtin = classifyArea(file);
     if (builtin !== ChangeArea.Unknown) return builtin;
     for (const b of boundaryMatchers) {
-      if (b.matchers.some((re) => re.test(file))) return b.area;
+      if (boundaryScopeDecision(b.scope, file) === 'in') return b.area;
     }
     const pkg = PACKAGE_ROOT_RE.exec(file);
     if (pkg?.[1]) return pkg[1];
@@ -384,7 +393,7 @@ function suggestValidationCommands(
     out.add('shrk packs verify');
   }
   if (files.some((f) => f.area === ChangeArea.Inspector)) {
-    out.add('shrk product check');
+    out.add('shrk quality');
   }
   return Array.from(out);
 }

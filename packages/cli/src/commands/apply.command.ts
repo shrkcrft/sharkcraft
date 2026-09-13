@@ -59,6 +59,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header } from '../output/format-output.ts';
 import { printError } from '../output/print-error.ts';
 import { runValidationLoop } from '../validation/run-validation-loop.ts';
@@ -245,6 +246,8 @@ async function runApplyBatchFromCli(args: ParsedArgs, batchPath: string): Promis
 
 export const applyCommand: ICommandHandler = {
   name: 'apply',
+  // positional[0] is the plan FILE; a verb-shaped non-file is refused.
+  positionals: PositionalMode.Path,
   description:
     'Apply a previously-saved generation plan (sharkcraft.plan/v1 JSON). The CLI is the only write path; MCP never writes. Plans that live under .sharkcraft/sessions/<id>/plans/ automatically update the session metadata (signature + divergence + applied + validation).',
   usage:

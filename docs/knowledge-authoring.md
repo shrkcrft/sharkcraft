@@ -105,7 +105,12 @@ shrk knowledge update <id> \
   [--reason <text>] [--write-preview] [--json]
 
 # Preview removal. Refuses if reverse references exist; suggest
-# deprecation as a safer alternative.
+# deprecation as a safer alternative. "Reverse references" means EVERY
+# declared cross-reference (round 11): another entry's related / seeAlso /
+# supersededBy / actionHints.relatedKnowledge, a construct's relatedKnowledge /
+# relatedRules / relatedPathConventions or a declared facet, a boundary rule's
+# related*, a template's related — printed as e.g.
+# `construct:fx-construct (relatedKnowledge)`.
 shrk knowledge remove <id> \
   [--force-preview] [--reason <text>] [--write-preview] [--json]
 
@@ -134,6 +139,29 @@ recording the operation, asset id, reason, source (`cli` or `agent`),
 session id (if available), author (`$SHARKCRAFT_AUTHOR` / `$USER`), and
 the path of the draft. See [`asset-provenance.md`](./asset-provenance.md).
 
+## Group modules (round 11)
+
+A listed knowledge / rules / paths / templates file registers EVERY
+entry-shaped export it has, so the simplest way to split a large file is to
+re-export its groups: `export * from './group-a.ts'`. A hand-maintained array
+(`import { a1 } from './group-a.ts'; export default [a1]`) also works, but an
+entry added to the group and not to the array is invisible to every lookup —
+`shrk doctor` reports it as **Unregistered entry exports** (error), naming the
+export, its line and the aggregator (`detectUnregisteredExports`; one level
+of the aggregator's own relative imports, no globbing). Listing the group
+files directly in `knowledgeFiles` registers them too. A second, DIFFERENT
+object reusing an id in one module is a loader warning
+(`duplicate id "<id>" … shadowed by an earlier export`) — only the first
+registers, and `shrk doctor` prints it as a **Loader warning**. (Ids repeated
+ACROSS files are the validator's `duplicate-id`.)
+
+A raw entry literal may omit `tags` / `scope` / `appliesWhen`: the TypeScript
+loader normalises each to `[]` (as `defineKnowledgeEntry` does), and a non-list
+value is replaced with a loader warning naming the entry and field. The
+Markdown loader warns for every frontmatter key it does not carry onto the
+entry — notably `metadata`, which a Markdown entry cannot hold (so a Markdown
+rule cannot declare `metadata.checks[]`; see [custom-checks.md](./custom-checks.md)).
+
 ## Reference grammar
 
 `--reference` accepts a compact `kind:value[:required]` form:
@@ -141,10 +169,51 @@ the path of the draft. See [`asset-provenance.md`](./asset-provenance.md).
 | Kind | Form | Example |
 | --- | --- | --- |
 | `file` / `directory` | `file:<path>` | `file:packages/cli/src/main.ts` |
-| `symbol` | `symbol:<name>` | `symbol:CommandRegistry` |
+| `symbol` | `symbol:<name>[@<path>]` | `symbol:CommandRegistry@packages/cli/src/command-registry.ts` |
+| `symbol` (a member) | `symbol:<Owner>.<member>@<path>` | `symbol:CommandRegistry.listAll@packages/cli/src/command-registry.ts` |
 | `command` / `template` / `playbook` / `construct` / `helper` / `policy` / `boundary-rule` / `path-convention` / `package` / `url` | `<kind>:<id>` | `template:app.service` |
 
-Append `:required` to mark the reference as required for stale-check.
+Append `:required` to mark the reference as required for stale-check. The
+stale-check prints references in the same grammar, so a line it reports can be
+pasted back as a `--reference`.
+
+### Reference shape (round 11)
+
+`KNOWLEDGE_REFERENCE_KINDS` (`@shrkcrft/knowledge`) is THE vocabulary: the
+validator, the stale-check and this grammar all read it. At load time
+`shrk doctor` reports, per entry and reference:
+
+| Code | Severity | When |
+| --- | --- | --- |
+| `invalid-reference` | error | a `kind` outside the vocabulary (the message lists every kind) |
+| `invalid-reference` | warning | the field the kind cannot be checked without is missing — `path` (file / directory), `symbol` (symbol), `id` or `command` (command), `id` (registry kinds) |
+| `reference-absolute-path` | warning | a `path` starting with `/` or a drive letter — reference paths are repo-relative (it still resolves leniently) |
+
+The stale-check reports such a reference as **`invalid`** (failure
+`malformed`) — its own outcome, not `unknown` (which stays for a well-formed
+reference it cannot evaluate, like a `url`). The text prints `invalid=N`; a
+malformed reference was declared to be checked and never was, so it is a
+coverage shortfall on the verdict (exit `2`, NOT VERIFIED — never a pass, in
+any mode), and `--fail-on invalid` makes it a failure (`1`). An entry whose
+only references are malformed is UNVERIFIABLE.
+
+### Prefer symbol pins over paths (round 11)
+
+A `file` reference proves only that the file exists; rename the function the
+entry documents and the check still passes. Pin what the entry is ABOUT:
+
+- `symbol:<name>@<path>` — the strong form: a moved symbol is told apart from a
+  deleted one, and a rename inside the file is caught.
+- `symbol:<Owner>.<member>@<path>` — for a method, property, enum member,
+  interface member or object key.
+- Add `contains` / `matches` for a claim about contents, and `count` for a
+  number the entry states (see [knowledge-integrity.md](./knowledge-integrity.md#content-assertions-round-11)).
+
+An entry whose references are all paths while its prose names an exported
+symbol of one of those files gets a `path-only-reference` advisory from
+`shrk knowledge stale-check`, with the symbol reference to add. An entry with
+no reference at all is UNVERIFIABLE — it keeps the stale-check off a clean
+exit until it declares one (or a `--min-referenced` floor accepts it).
 
 ## Lint categories
 

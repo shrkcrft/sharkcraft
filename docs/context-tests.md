@@ -27,8 +27,25 @@ shrk test context --id <id>    # one
 shrk test context --json
 ```
 
+Exit codes: `0` every selected test passed · `1` a test failed · `2` NOT
+VERIFIED — no context tests are configured (`--allow-empty` accepts that
+explicitly) · `3` an `--id` that selects nothing. `--json` always carries
+`exitCode` and `verdict`.
+
 MCP: `list_context_tests`, `run_context_test`. Packs contribute via
 `contextTestFiles`.
+
+## What the fields assert
+
+`mustInclude` / `mustNotInclude` are **ranker-surfaced** assertions: the id is
+(or is not) in the token-budgeted context body the ranker built for THIS task.
+They are order-sensitive, so an unrelated knowledge edit can flip them.
+
+Whether the id exists at all is a separate, stable question. A failing
+`mustInclude` diagnostic answers it — `existsInRegistry`, resolved against the
+shared reference registry (the set `shrk knowledge list` prints), with the
+registry it `consulted` named — so "never registered" (the test can never pass)
+reads differently from "registered, but not ranked for this task".
 
 Use cases:
 

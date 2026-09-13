@@ -172,7 +172,7 @@ const PROBES: IGateProbe[] = [
         errors,
         warnings,
         summary: `errors=${errors} warnings=${warnings}`,
-        nextCommand: 'shrk product check',
+        nextCommand: 'shrk quality',
       };
     },
   },

@@ -40,3 +40,28 @@ export function findSharkcraftDir(projectRoot: string, configuredDir = 'sharkcra
   }
   return null;
 }
+
+/**
+ * The nearest ANCESTOR of `projectRoot` that holds a `<dirName>/` folder,
+ * searched up to the repository top (the first directory carrying `.git`) or
+ * the filesystem root. `null` when there is none, or when `projectRoot` is
+ * itself the repository top.
+ *
+ * Discovery binds to the NEAREST root marker, so a command run inside a nested
+ * workspace member (its own package.json, no sharkcraft/ folder) resolves that
+ * member as the root and loads nothing. Walking up BY DEFAULT would silently
+ * rebind every such member — this repo alone has over a dozen example packages
+ * with their own package.json — to the parent's config, so this is a HINT for
+ * a loud refusal ("rerun with --cwd <ancestor>"), never a rebinding.
+ */
+export function findConfiguredAncestor(projectRoot: string, dirName = 'sharkcraft'): string | null {
+  let current = nodePath.resolve(projectRoot);
+  if (existsSync(nodePath.join(current, '.git'))) return null;
+  while (true) {
+    const parent = nodePath.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+    if (findSharkcraftDir(current, dirName)) return current;
+    if (existsSync(nodePath.join(current, '.git'))) return null;
+  }
+}

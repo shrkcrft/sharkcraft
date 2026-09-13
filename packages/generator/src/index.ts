@@ -9,6 +9,7 @@ export * from './naming-strategy.ts';
 export * from './saved-plan.ts';
 export * from './plan-signing.ts';
 export * from './planned-change.ts';
+export * from './planned-operation-fields.ts';
 export * from './folder-safety.ts';
 export * from './folder-apply.ts';
 export * from './synthetic-plan.ts';

@@ -38,6 +38,9 @@ jobs:
       - name: Typecheck (whole repo)
         run: bun x tsc -p tsconfig.base.json --noEmit
 
+      - name: Typecheck (scripts — excluded from the base config)
+        run: bun x tsc -p tsconfig.scripts.json --noEmit
+
       - name: Per-package typecheck (build script)
         run: bun run build
 
@@ -59,6 +62,14 @@ jobs:
 
       - name: Build dist
         run: bun run build:dist
+
+      # Round 13 (13.2): run the EMITTED dist under node. Every step above runs
+      # through Bun, whose tsconfig-paths resolution of @shrkcrft/* cannot see a
+      # missing workspace link; `node packages/cli/dist/main.js --version` (and
+      # the MCP entry, and both bin bootstraps) can. The same probe
+      # release:preflight requires.
+      - name: Node dist smoke (node packages/cli/dist/main.js --version)
+        run: bun run scripts/node-dist-smoke.ts
 
       - name: Publish dry-run
         run: bun run publish:dry-run

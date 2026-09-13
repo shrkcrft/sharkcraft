@@ -84,6 +84,7 @@ shrk doctor                      # config + entry validation
 shrk context --task "<task>"     # focused context for a task (deterministic)
 shrk task "<task>"               # full task packet (rules + templates + pipelines + commands)
 shrk coverage                    # what's still missing
+shrk knowledge stale-check       # verified / stale / UNVERIFIABLE entries — strict: any unverifiable entry → 2 unless --min-referenced accepts it
 shrk check boundaries            # boundary enforcement (with tsconfig alias support)
 shrk finish                      # composite "safe to finish?" — runs boundaries+wiring+policy+orphans changed-only → one verdict
 shrk check orphans               # after a delete: surviving importers of removed files/exports (alias-resolved)
@@ -91,6 +92,8 @@ shrk wiring chain|unprovided|orphans  # registration/DI graph: declared→provid
 shrk gates check|coverage|list|explain|try|scaffold-selftest  # run every rule plane (one exit code) · what each MATCHED (stale-selector detector) · dry-run a rule · write a rule's selfTest from what it matches today
 shrk quality                     # THE "before you push" gate: every check + every rule plane, exhaustive, each failure with its repro command
 shrk graph importers <module>    # every module importing this one — alias/type-only/re-export aware (what `callers` cannot see)
+shrk reuse "<intent>"            # intent → the construct to reuse: curated reusePrimitives[] + the uncurated public export surface (labelled)
+shrk reuse coverage              # curated index vs the public surface: dead entries, bad importPaths, curation gaps; exit 2 on a stale index
 shrk baseline check|diff|update  # committed-ledger drift, two-way (a LOST entry fails like a gained one)
 shrk generated check|update      # generated files: hand-edit drift (regen→temp→diff) + "do not edit" headers
 shrk policy-lint [explain <id>]  # forbidden content the compiler never sees (inline templates, .scss, JSON)
@@ -105,6 +108,24 @@ shrk dashboard                   # local read-only dashboard (127.0.0.1:4567)
 shrk compress <file|->           # deterministically shrink a blob (JSON→table, log/diff/search→signal); CCR-reversible
 shrk expand <ccr-key>            # retrieve a CCR-cached original (the reverse of compress)
 ```
+
+- **Dispatcher contract** (`docs/command-discovery.md`). A wrong invocation never
+  reads as success: an unknown subcommand or a bare token under a group is
+  refused before any body runs, and so is an unknown flag — outside a declared
+  set, or named by none of the command's documentation (usage, index, the
+  two-way-locked `UNDOCUMENTED_FLAG_READS` ledger) — naming the closest match;
+  `3` on a verdict verb (`usageExitFor` over `GATE_VERB_PATHS`), `2` elsewhere.
+  ONE judgement (`judgeInvocation`) serves the dispatcher and the command-string
+  resolver, so a string the resolver certifies is one the dispatcher runs.
+  `--help` / `-h` anywhere before `--` prints help and never runs a body. Global
+  flags (`dispatch/global-flags.ts`, THE list; one pre-dispatch strip,
+  `stripPreDispatchGlobals`) work leading, in-path or trailing.
+- **Audience gate** (`docs/surface-tiers.md`). Commands that maintain SharkCraft
+  itself (`docs check`, `release readiness`, `self audit`, `commands doctor`, …)
+  are `tool-maintenance`: outside this repo they are hidden from `--help` and
+  exit `78` via the surface gate — never a check failure. `surface.enabled` is
+  the escape hatch; `surface.disabled` (`shrk surface deny`) refuses a command
+  the same way.
 
 ## The gate planes (`docs/gate-rules.md`)
 
@@ -128,11 +149,33 @@ behaviours, each with a reason worth remembering:
 - **A rule matching nothing is a bug in the rule, never a pass.** `gates
   coverage` reports what every rule actually matched and flags every rule
   matching 0. `failOnEmpty` defaults **TRUE** for `error`-severity rules.
+- **An empty result can be the intended one** (`docs/intended-empty.md`):
+  per-unit `{ pattern, expectEmpty: true }` on every markable list, settled by
+  ONE core authority (`settleUnitLiveness` / `settleRuleEmptiness`) into a
+  printed acceptance; a marker whose target appears is reported as went-live.
 - **Exit codes.** `0` clean · `1` violations · `2` ran but proved nothing
-  (empty scope, or ANY rule skipped) · `3` usage error. A skipped rule is never
+  (empty scope, or ANY rule skipped) · `3` usage error · `78` refused by the
+  surface gate · `70` the tool's own install is broken (an unlinked workspace
+  dependency, from the bin bootstrap) (`docs/exit-codes.md`). A skipped rule is never
   masked by a passing sibling, and an ERRORED rule is never `evaluated` — a
   rule that could not run is not a green whatever its severity. Every `--json`
   carries a shared `gate` envelope (`docs/gate-json.md`).
+- **Coverage is a required part of every verdict.** Every envelope rule and the
+  run carry `coverage {unit, expected, examined, capped?, …}` (`@shrkcrft/core`
+  `IVerdictCoverage`); one guard (`settleVerdict`, inside `buildGateEnvelope`)
+  turns a proposed `0` into `2` on any shortfall — a capped scan, an empty
+  scope, or a subset wiring rule whose declared selector never produced a
+  registered token (`partial`). Only an explicit, printed valve accepts a gap
+  (`--allow-empty`, `registeredExtras`). Print a ✓ line only via `verdictLine`;
+  a new verdict verb adds itself to `GATE_VERB_PATHS` or the r75 contract test
+  fails — it holds every gate-envelope emitter AND every `settleVerdict(` call
+  site (a two-way ledger: each file's verbs, or a reasoned exemption).
+- **One reader, one scan scope.** `readMatchingFiles` returns the glob-matched
+  files it did NOT read (over the 1MB cap, or unreadable), and every plane
+  folds them into its rule coverage through `readScopeCoverage`
+  (`examined N of M files, K over the 1MB read cap: <path>`). An unread file
+  is never a pass and never `failOnEmpty`'s 1. Every plane walk, in a verb or
+  an aggregate, prunes the same dirs via `planeScanExcludeDirs`.
 - **`import-edges`** makes the dependency graph a rule input (`emit:
   edge|symbol|from`), so existing planes express adoption ledgers, orphan
   detection, deprecation ratchets and targeted fences. Alias-aware, no persisted
@@ -160,6 +203,15 @@ behaviours, each with a reason worth remembering:
   offsets stay true and EVERY extractor kind is zoned by one code path. One
   vocabulary across the policy plane and the extraction DSL. `json-path` /
   `filenames` reject it loudly rather than ignoring it.
+- **`!` subtracts on every plane, through one parser.** `parseGlobList` (core)
+  decides what `!` is; `globListSelects` (boundaries) is the one scope test — a
+  path is selected iff an inclusion glob matches and no negation of THE SAME
+  list does. Walks are positive-only unions (`readMatchingFiles`); select per
+  list after (`readSelectedFiles` / `readScopeOfLists`), never over a flattened
+  union, or one rule's `!x` hides x from another. A negation is dead only when it
+  excludes nothing (`globListUnits`). On the boundary plane `!` EXEMPTS
+  (suppressed, counted); on the gate planes it EXCLUDES. A bare `!`, `!!x` and a
+  negation-only list are load errors.
 - **Shell-executing planes are local-config-only.** `baselines[].compute.run`
   and `generatedArtifacts[].regen` spawn a shell, so the pack-plane merge seam
   DROPS any pack-contributed element carrying one — mirroring the
@@ -176,16 +228,22 @@ look for the existing authority.
   structured `references[]`, and both self-config doctors read it. Each kind
   reads the same source its `list` verb reads (`template` goes through
   `templateRegistry`, because that is what `shrk templates list` prints).
-  `r73-one-reference-resolver.test.ts` holds `list ≡ resolve` across all 17
-  kinds.
+  `r73-one-reference-resolver.test.ts` holds `list ≡ resolve` across all 18
+  kinds. Every kind is also DECLARABLE: `REFERENCE_KIND_DECLARATIONS` (a
+  `Record<IdReferenceKind, …>`) says how its ids come to exist, and r76 declares
+  an id through every path and proves the resolver lists it. Field → kind
+  bindings live in ONE table (`PROBED_ID_FIELDS`): `profileIds` bound to the
+  wrong vocabulary (migration profiles) sat at NOT VERIFIED forever.
 - **Never cast an inspection to a registry shape it may not have.**
   `(inspection as { fooRegistry?: … }).fooRegistry` type-checks and then answers
   "nothing exists" forever, including for correct ids. Five call sites did this;
   a grep lock now fails the build if it returns. Use the registry accessors.
 - **Warm before you resolve.** `playbook`, `construct`, `policy`, `helper`,
   `convention`, `contract-template`, `migration-profile`, `routing-hint`,
-  `registration-hint` and `scaffold-pattern` ids come from an async-filled
-  cache; the resolver is sync. Call `warmReferenceRegistries(inspection)` first.
+  `registration-hint`, `scaffold-pattern` and TS-declared `decision`
+  (`sharkcraft/decisions.ts`, pack `decisionFiles`) ids come from an
+  async-filled cache; the resolver is sync. Call
+  `warmReferenceRegistries(inspection)` first.
 - **Freshness is divergence, never age.** An index built five days ago with a
   clean tree is *current*; one built a minute ago with a changed file is not.
   `detectGraphFreshness` is the one authority; `graph status`, `code-intel`,
@@ -198,6 +256,16 @@ look for the existing authority.
 - **A test that invents the shape it tests proves nothing.** Two fixtures
   supplied a `playbookRegistry` production never supplies; that fake is why the
   bug shipped. Fixtures load real registries.
+- **A loader never drops an entry silently.** Every contributed-asset loader
+  returns `rejected: IRejectedEntry[]` next to its entries (accepted + rejected
+  = declared, per file), and ONE channel carries them to every surface —
+  `collectContributionRejections` over `collectRegistryOutcomes`
+  (`packages/inspector/src/contribution-load-failures.ts`). A loader's
+  acceptance predicate must cover every field its consumers dereference (an
+  accepted step-less playbook crashed the self-config doctor), and `packs test
+  --load` validates through the SAME predicates (`validateContributionFile`).
+  The r76 census contributes one invalid entry to every loader-backed slot and
+  asserts it on every surface.
 
 ## Token compression (`docs/compression.md`)
 

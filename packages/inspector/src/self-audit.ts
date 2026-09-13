@@ -42,16 +42,40 @@ export interface ISelfAuditReport {
   ok: boolean;
 }
 
+/** The package name of the CLI inside SharkCraft's own repository. */
+const TOOL_CLI_PACKAGE = '@shrkcrft/cli';
+
+/**
+ * THE host authority: is `projectRoot` SharkCraft's OWN repository? Every
+ * "is this the tool repo" decision reads it — `self audit`, `install smoke`,
+ * the MCP self-audit tool, and the surface tier resolver that gates
+ * tool-maintenance commands (round 11 §5.1) everywhere else.
+ *
+ * The tool's identity is its CLI package: `packages/cli/package.json` named
+ * `@shrkcrft/cli`, plus either the root package named `sharkcraft` or the
+ * sibling inspector + mcp-server packages. Directory markers alone would
+ * misfire on any consumer monorepo that happens to have `packages/cli`,
+ * `packages/inspector` and `packages/mcp-server`.
+ */
 export function detectSharkcraftRepo(projectRoot: string): boolean {
   const pkgFile = nodePath.join(projectRoot, 'package.json');
   if (!existsSync(pkgFile)) return false;
   try {
     const pkg = JSON.parse(readFileSync(pkgFile, 'utf8')) as { name?: string; workspaces?: string[] };
+    if (!hasToolCliPackage(projectRoot)) return false;
     if (pkg.name === 'sharkcraft') return true;
-    // Heuristic: monorepo with packages/cli + packages/inspector + packages/mcp-server.
-    const markers = ['packages/cli', 'packages/inspector', 'packages/mcp-server'];
-    if (markers.every((m) => existsSync(nodePath.join(projectRoot, m)))) return true;
+    const markers = ['packages/inspector', 'packages/mcp-server'];
+    return markers.every((m) => existsSync(nodePath.join(projectRoot, m)));
+  } catch {
     return false;
+  }
+}
+
+function hasToolCliPackage(projectRoot: string): boolean {
+  const cliPkg = nodePath.join(projectRoot, 'packages', 'cli', 'package.json');
+  if (!existsSync(cliPkg)) return false;
+  try {
+    return (JSON.parse(readFileSync(cliPkg, 'utf8')) as { name?: string }).name === TOOL_CLI_PACKAGE;
   } catch {
     return false;
   }
@@ -89,8 +113,10 @@ export function buildSelfAudit(projectRoot: string, input: ISelfAuditInput = {})
           id: 'not-sharkcraft-repo',
           title: 'Self audit applies only to the SharkCraft monorepo',
           status: 'skipped',
-          message: 'Run `shrk release readiness` instead for a generic readiness verdict.',
-          nextCommand: 'shrk release readiness',
+          // `release readiness` is itself a tool-maintenance command (gated
+          // outside the tool repo); `quality` is the consumer's own gate.
+          message: 'Run `shrk quality` instead for this repository\'s own pre-push verdict.',
+          nextCommand: 'shrk quality',
         },
       ],
       ok: true,
@@ -161,8 +187,8 @@ export function buildSelfAudit(projectRoot: string, input: ISelfAuditInput = {})
       id: 'mcp-audit',
       title: 'MCP audit — no write tools',
       status: 'skipped',
-      message: 'No verdict supplied — run `shrk mcp audit`.',
-      nextCommand: 'shrk mcp audit',
+      message: 'No verdict supplied — run `shrk safety audit`.',
+      nextCommand: 'shrk safety audit',
     });
   } else if (input.mcpAuditWriteToolCount === 0) {
     findings.push({
@@ -177,7 +203,7 @@ export function buildSelfAudit(projectRoot: string, input: ISelfAuditInput = {})
       title: 'MCP audit — no write tools',
       status: 'fail',
       message: `${input.mcpAuditWriteToolCount} MCP tool(s) report write capability — this breaks the safety contract.`,
-      nextCommand: 'shrk mcp audit',
+      nextCommand: 'shrk safety audit',
     });
   }
   const flag = (id: string, title: string, ok: boolean | null | undefined, nextCommand: string): void => {
@@ -194,7 +220,7 @@ export function buildSelfAudit(projectRoot: string, input: ISelfAuditInput = {})
   flag('runtime-doctor', 'Runtime doctor', input.runtimeDoctorOk ?? null, 'shrk runtime doctor');
   flag('compat-node', 'compat:node', input.compatNodeOk ?? null, 'bun run compat:node');
   flag('packs-doctor', 'Packs doctor', input.packsDoctorOk ?? null, 'shrk packs doctor --release');
-  flag('demo-package-validate', 'Demo package validate', input.demoPackageValidateOk ?? null, 'shrk demo package --validate');
+  flag('demo-package-validate', 'Demo package validate', input.demoPackageValidateOk ?? null, 'shrk release smoke');
   const ok = findings.filter((f) => f.status === 'fail').length === 0;
   return {
     schema: SELF_AUDIT_SCHEMA,

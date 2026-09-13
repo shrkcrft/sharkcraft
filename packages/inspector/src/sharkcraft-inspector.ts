@@ -3,10 +3,33 @@ import * as nodePath from 'node:path';
 import {
   createImportContext,
   DEFAULT_SAFE_IMPORT_TIMEOUT_MS,
+  ERROR_CODES,
+  RejectionCause,
+  type AppError,
   type IImportContext,
+  type IRejectedEntry,
 } from '@shrkcrft/core';
 import { inspectWorkspace, type IWorkspaceSummary } from '@shrkcrft/workspace';
-import { type ISharkCraftConfig, loadProjectConfig } from '@shrkcrft/config';
+import {
+  DEFAULT_DOC_FILES,
+  DEFAULT_KNOWLEDGE_FILES,
+  DEFAULT_PATH_FILES,
+  DEFAULT_RULE_FILES,
+  type ISharkCraftConfig,
+  loadProjectConfig,
+} from '@shrkcrft/config';
+
+/**
+ * The knowledge-bearing files the config loader fills in by DEFAULT. They are
+ * optional by nature — a repo without `rules.ts` never asked for one — so only
+ * a file the config names BEYOND these is recorded `missing` when absent.
+ */
+const OPTIONAL_DEFAULT_KNOWLEDGE_FILES: ReadonlySet<string> = new Set([
+  ...DEFAULT_KNOWLEDGE_FILES,
+  ...DEFAULT_RULE_FILES,
+  ...DEFAULT_PATH_FILES,
+  ...DEFAULT_DOC_FILES,
+]);
 import {
   type IKnowledgeEntry,
   type IKnowledgeValidationIssue,
@@ -23,6 +46,10 @@ import { discoverPacks, type IPackDiscoveryResult } from '@shrkcrft/packs';
 import { BUILTIN_PRESETS, loadPresetsFromFile, PresetRegistry } from '@shrkcrft/presets';
 import { BoundaryRegistry, loadBoundaryRulesFromFile } from '@shrkcrft/boundaries';
 import { DoctorSeverity, type IDoctorCheck, type IDoctorResult } from './doctor-result.ts';
+import {
+  registryLifecycleSkipDirsWarning,
+  resolveRegistryLifecycleSkipDirs,
+} from './registry-lifecycle.ts';
 import { diagnoseActionHints } from './action-hint-diagnostics.ts';
 import {
   buildCodeIntelligenceChecks,
@@ -43,6 +70,18 @@ import {
   type LoaderOrigin,
 } from './loader-diagnostics.ts';
 import { suggestSurfaceProfile } from './surface-profile-detect.ts';
+import {
+  boundaryFileLabel,
+  boundaryLoadIssuesFromFile,
+  classifyLocalBoundaryFiles,
+} from './boundary-configuration-status.ts';
+import type { IBoundaryLoadIssue } from './boundary-load-issue.model.ts';
+import {
+  describePackAssetFreshness,
+  detectPackAssetFreshness,
+  packHasCompiledContributions,
+  type IPackAssetFreshness,
+} from './pack-asset-freshness.ts';
 
 /**
  * Find SharkCraft packs that live IN the repo but are not discovered (i.e.
@@ -119,6 +158,21 @@ export interface ISharkcraftInspection {
   sharkcraftDir: string | null;
   config: ISharkCraftConfig | null;
   configFile: string | null;
+  /**
+   * Set when a config file EXISTS but could not be loaded — a schema violation
+   * (e.g. an unrecognized key), an unresolved `$use`, or an import failure.
+   * `config` / `configFile` are then null and every config-declared setting
+   * and plane is dropped, so `runDoctor` reports it as an ERROR — never as
+   * "no config file".
+   */
+  configLoadError?: {
+    /** Absolute path of the config file that failed, when known. */
+    readonly file: string | null;
+    /** The loader's own message. */
+    readonly message: string;
+    /** One line per schema issue (`<path>: <message>`), or the import error. */
+    readonly issues: readonly string[];
+  };
   knowledgeEntries: IKnowledgeEntry[];
   templates: ITemplateDefinition[];
   pipelines: IPipelineDefinition[];
@@ -138,6 +192,15 @@ export interface ISharkcraftInspection {
   presetSources: ReadonlyMap<string, ISourceInfo>;
   boundaryRegistry: BoundaryRegistry;
   boundarySources: ReadonlyMap<string, ISourceInfo>;
+  /**
+   * Boundary rules / rule files that were configured but could NOT be
+   * evaluated (round 11): an invalid rule, a file that failed to load or
+   * exported no array, a `boundaryFiles` entry that does not exist. They used
+   * to be warning strings no boundary surface rendered — a fence vanished and
+   * `check boundaries` stayed green. Every boundary surface reports each one as
+   * an ERRORED rule. Optional so hand-built inspections keep type-checking.
+   */
+  boundaryLoadIssues?: readonly IBoundaryLoadIssue[];
   /** Per-loader timing + status diagnostics. */
   loaderDiagnostics: readonly ILoaderDiagnostic[];
   /** Total wall-clock ms spent in inspectSharkcraft. */
@@ -146,6 +209,14 @@ export interface ISharkcraftInspection {
   cacheEnabled: boolean;
   /** Directory where the persistent inspector cache lives. */
   cacheDir: string;
+  /**
+   * Freshness of every valid pack that serves COMPILED contributions
+   * (`.js`/`.mjs`/`.cjs`), from THE pack-asset freshness authority — content
+   * digests, never mtimes. Packs whose contributions are all TS sources are
+   * absent (nothing compiled to go stale). Optional: hand-built inspections
+   * omit it.
+   */
+  packAssetFreshness?: readonly IPackAssetFreshness[];
 }
 
 export interface ISourceInfo {
@@ -199,13 +270,44 @@ function recordDiagnostic(
   ctx.onLoaderDiagnostic?.(d);
 }
 
+/**
+ * A boundary rule file's invalid rules as THE rejection channel's records
+ * (round 12, 12.1) — the boundary loader's structured `invalid[]`, one record
+ * per rule with every failing field.
+ */
+function boundaryRejections(
+  file: string,
+  invalid: readonly {
+    readonly index: number;
+    readonly ruleId?: string;
+    readonly exportName?: string;
+    readonly issues: readonly { readonly field: string; readonly message: string }[];
+  }[],
+): IRejectedEntry[] {
+  return invalid.map((inv) => ({
+    file,
+    index: inv.index,
+    // The export the rule array came from — `(default[1])`, one wording with every kind.
+    ...(inv.exportName !== undefined ? { exportName: inv.exportName } : {}),
+    ...(inv.ruleId !== undefined ? { entryId: inv.ruleId } : {}),
+    reasons: inv.issues.map((i) => `${i.field}: ${i.message}`),
+    cause: RejectionCause.Invalid,
+  }));
+}
+
 async function loadAssetTracked(
   ctx: ILoaderTaskContext,
   filePath: string,
   kind: LoaderAssetKind,
   origin: LoaderOrigin,
   packName: string | undefined,
-  performLoad: () => Promise<{ count: number; warnings: string[]; errorMessage?: string }>,
+  performLoad: () => Promise<{
+    count: number;
+    warnings: string[];
+    errorMessage?: string;
+    /** Entries the loader refused (round 12, 12.1) — recorded on the diagnostic. */
+    rejected?: readonly IRejectedEntry[];
+  }>,
 ): Promise<{ count: number; warnings: string[]; errorMessage?: string; skipped: boolean }> {
   const start = Date.now();
   let sizeBytes: number | undefined;
@@ -306,6 +408,7 @@ async function loadAssetTracked(
     elapsedMs,
     status,
     count: loaded.count,
+    ...(loaded.rejected && loaded.rejected.length > 0 ? { rejected: loaded.rejected } : {}),
     warningCount: loaded.warnings.length,
     errorMessage,
     deduped: dedupedBefore,
@@ -347,6 +450,11 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
   const knowledgeEntries: IKnowledgeEntry[] = [];
   const templates: ITemplateDefinition[] = [];
   const pipelines: IPipelineDefinition[] = [];
+  // The file each LOCAL template / pipeline came from, so their sources carry a
+  // `file` like knowledge and pack entries do (the contributions inventory and
+  // the unregistered-export check attribute ids by file).
+  const localTemplateFiles = new Map<string, string>();
+  const localPipelineFiles = new Map<string, string>();
 
   if (cfg) {
     const tsLoader = new TypeScriptKnowledgeLoader({ importContext });
@@ -354,14 +462,34 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
 
     const collectFile = async (relPath: string, kindHint: LoaderAssetKind): Promise<void> => {
       const full = nodePath.join(cfg.sharkcraftDir, relPath);
-      if (!existsSync(full)) return;
+      if (!existsSync(full)) {
+        // A default slot file (`rules.ts`, `docs/overview.md`, …) is optional.
+        if (OPTIONAL_DEFAULT_KNOWLEDGE_FILES.has(relPath.replace(/^\.\//, ''))) return;
+        // The config NAMES this file; loading nothing from it is a fact a
+        // corpus verdict must see (it used to vanish: no diagnostic, no warning).
+        recordDiagnostic(ctx, {
+          filePath: full,
+          kind: kindHint,
+          origin: 'local-config',
+          elapsedMs: 0,
+          status: 'missing',
+          count: 0,
+          warningCount: 0,
+          errorMessage: `declared in ${kindHint === 'rules' ? 'ruleFiles' : kindHint === 'paths' ? 'pathFiles' : `${kindHint}Files`} but the file does not exist`,
+          deduped: false,
+          largeFile: false,
+          slow: false,
+          suggestedNextCommand: suggestNextCommand(kindHint),
+        });
+        return;
+      }
       sourceFiles.push(full);
       if (tsLoader.canLoad(full)) {
         const tracked = await loadAssetTracked(ctx, full, kindHint, 'local-config', undefined, async () => {
           const r = await tsLoader.load(full);
           knowledgeEntries.push(...r.entries);
           warnings.push(...r.warnings);
-          return { count: r.entries.length, warnings: r.warnings };
+          return { count: r.entries.length, warnings: r.warnings, ...(r.rejected ? { rejected: r.rejected } : {}) };
         });
         if (tracked.skipped) warnings.push(...tracked.warnings);
       } else if (mdLoader.canLoad(full)) {
@@ -369,7 +497,7 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
           const r = await mdLoader.load(full);
           knowledgeEntries.push(...r.entries);
           warnings.push(...r.warnings);
-          return { count: r.entries.length, warnings: r.warnings };
+          return { count: r.entries.length, warnings: r.warnings, ...(r.rejected ? { rejected: r.rejected } : {}) };
         });
         if (tracked.skipped) warnings.push(...tracked.warnings);
       }
@@ -397,8 +525,9 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
       const tracked = await loadAssetTracked(ctx, full, 'templates', 'local-config', undefined, async () => {
         const r = await loadTemplatesFromFile(full, { importContext });
         templates.push(...r.templates);
+        for (const t of r.templates) if (!localTemplateFiles.has(t.id)) localTemplateFiles.set(t.id, full);
         warnings.push(...r.warnings);
-        return { count: r.templates.length, warnings: r.warnings };
+        return { count: r.templates.length, warnings: r.warnings, rejected: r.rejected };
       });
       if (tracked.skipped) warnings.push(...tracked.warnings);
     }
@@ -410,8 +539,9 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
       const tracked = await loadAssetTracked(ctx, full, 'pipelines', 'local-config', undefined, async () => {
         const r = await loadPipelinesFromFile(full, { importContext });
         pipelines.push(...r.pipelines);
+        for (const p of r.pipelines) if (!localPipelineFiles.has(p.id)) localPipelineFiles.set(p.id, full);
         warnings.push(...r.warnings);
-        return { count: r.pipelines.length, warnings: r.warnings };
+        return { count: r.pipelines.length, warnings: r.warnings, rejected: r.rejected };
       });
       if (tracked.skipped) warnings.push(...tracked.warnings);
     }
@@ -425,11 +555,13 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
   }
   const templateSources = new Map<string, ISourceInfo>();
   for (const t of templates) {
-    templateSources.set(t.id, { type: 'local' });
+    const file = localTemplateFiles.get(t.id);
+    templateSources.set(t.id, { type: 'local', ...(file ? { file } : {}) });
   }
   const pipelineSources = new Map<string, ISourceInfo>();
   for (const p of pipelines) {
-    pipelineSources.set(p.id, { type: 'local' });
+    const file = localPipelineFiles.get(p.id);
+    pipelineSources.set(p.id, { type: 'local', ...(file ? { file } : {}) });
   }
 
   const packs = await discoverPacks({
@@ -486,7 +618,7 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
             resolved.templates += 1;
           }
           warnings.push(...r.warnings);
-          return { count: r.templates.length, warnings: r.warnings };
+          return { count: r.templates.length, warnings: r.warnings, rejected: r.rejected };
         });
         if (tracked.skipped) warnings.push(...tracked.warnings);
       } else if (kind === 'pipelines') {
@@ -504,7 +636,7 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
             resolved.pipelines += 1;
           }
           warnings.push(...r.warnings);
-          return { count: r.pipelines.length, warnings: r.warnings };
+          return { count: r.pipelines.length, warnings: r.warnings, rejected: r.rejected };
         });
         if (tracked.skipped) warnings.push(...tracked.warnings);
       } else {
@@ -531,7 +663,7 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
           }
           if (kind === 'docs') resolved.docs += 1;
           warnings.push(...r.warnings);
-          return { count: r.entries.length, warnings: r.warnings };
+          return { count: r.entries.length, warnings: r.warnings, ...(r.rejected ? { rejected: r.rejected } : {}) };
         });
         if (tracked.skipped) warnings.push(...tracked.warnings);
       }
@@ -609,7 +741,7 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
           });
           if (pack.resolvedCounts) pack.resolvedCounts.presets += 1;
         }
-        return { count: r.presets.length, warnings: r.warnings };
+        return { count: r.presets.length, warnings: r.warnings, rejected: r.rejected };
       });
       if (tracked.skipped) warnings.push(...tracked.warnings);
     }
@@ -633,24 +765,39 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
         presetRegistry.add(preset);
         presetSources.set(preset.id, { type: 'local', file: full });
       }
-      return { count: r.presets.length, warnings: r.warnings };
+      return { count: r.presets.length, warnings: r.warnings, rejected: r.rejected };
     });
     if (tracked.skipped) warnings.push(...tracked.warnings);
   }
 
   const boundaryRegistry = new BoundaryRegistry();
   const boundarySources = new Map<string, ISourceInfo>();
+  // Round 11: every configured-but-unevaluable boundary rule / file, structured
+  // so each boundary surface reports it as an ERRORED rule (never a warning
+  // string nobody renders).
+  const boundaryLoadIssues: IBoundaryLoadIssue[] = [];
   for (const pack of packs.validPacks) {
     const c = pack.manifest!.contributions as { boundaryFiles?: readonly string[] };
     for (const rel of c.boundaryFiles ?? []) {
       const full = nodePath.resolve(pack.packageRoot, rel);
       if (!existsSync(full)) {
         warnings.push(`pack ${pack.packageName}: missing boundary file ${rel}`);
+        boundaryLoadIssues.push({
+          file: boundaryFileLabel(workspace.projectRoot, full),
+          kind: 'missing-file',
+          origin: 'pack',
+          packageName: pack.packageName,
+          issues: [`pack ${pack.packageName} declares boundary file ${rel}, which does not exist`],
+        });
         continue;
       }
       const tracked = await loadAssetTracked(ctx, full, 'boundaries', 'pack-manifest', pack.packageName, async () => {
-        const r = await loadBoundaryRulesFromFile(full, { importContext });
+        // Round 13 (lane B): the pack's name is stamped on each expectEmpty
+        // marker of its rules — a pack marker that went live is INFO, never a
+        // failure for the consumer, who cannot edit it.
+        const r = await loadBoundaryRulesFromFile(full, { importContext, packageName: pack.packageName });
         warnings.push(...r.warnings);
+        boundaryLoadIssues.push(...boundaryLoadIssuesFromFile(r, workspace.projectRoot, 'pack', pack.packageName));
         for (const rule of r.rules) {
           if (boundaryRegistry.has(rule.id)) {
             warnings.push(
@@ -666,25 +813,66 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
             file: full,
           });
         }
-        return { count: r.rules.length, warnings: r.warnings };
+        return { count: r.rules.length, warnings: r.warnings, rejected: boundaryRejections(full, r.invalid) };
       });
-      if (tracked.skipped) warnings.push(...tracked.warnings);
+      if (tracked.skipped) {
+        warnings.push(...tracked.warnings);
+        boundaryLoadIssues.push({
+          file: boundaryFileLabel(workspace.projectRoot, full),
+          kind: 'load-error',
+          origin: 'pack',
+          packageName: pack.packageName,
+          issues: tracked.warnings.length > 0 ? tracked.warnings : ['the rule file failed to load (cached)'],
+        });
+      }
     }
   }
-  for (const rel of cfgExt?.boundaryFiles ?? []) {
-    if (!cfg) continue;
-    const full = nodePath.join(cfg.sharkcraftDir, rel);
-    if (!existsSync(full)) continue;
+  // Local rule files, through THE classification the configuration status
+  // reads too — a listed-but-missing file and an unlisted
+  // sharkcraft/boundaries.ts are reported identically everywhere (round 11,
+  // L-1). The unlisted default is reported, never auto-loaded: loading it
+  // silently would start enforcing rules nobody opted into.
+  const localBoundaryFiles = cfg
+    ? classifyLocalBoundaryFiles(cfg.sharkcraftDir, cfgExt?.boundaryFiles ?? [])
+    : { listed: [] as { rel: string; abs: string; exists: boolean }[] };
+  for (const listed of localBoundaryFiles.listed) {
+    const full = listed.abs;
+    if (!listed.exists) {
+      warnings.push(
+        `boundaryFiles lists "${listed.rel}" but ${full} does not exist — no boundary rules load from it`,
+      );
+      boundaryLoadIssues.push({
+        file: boundaryFileLabel(workspace.projectRoot, full),
+        kind: 'missing-file',
+        origin: 'local',
+        issues: [`boundaryFiles lists "${listed.rel}", but the file does not exist`],
+      });
+      continue;
+    }
     const tracked = await loadAssetTracked(ctx, full, 'boundaries', 'local-config', undefined, async () => {
       const r = await loadBoundaryRulesFromFile(full, { importContext });
       warnings.push(...r.warnings);
+      boundaryLoadIssues.push(...boundaryLoadIssuesFromFile(r, workspace.projectRoot, 'local'));
       for (const rule of r.rules) {
         boundaryRegistry.add(rule);
         boundarySources.set(rule.id, { type: 'local', file: full });
       }
-      return { count: r.rules.length, warnings: r.warnings };
+      return { count: r.rules.length, warnings: r.warnings, rejected: boundaryRejections(full, r.invalid) };
     });
-    if (tracked.skipped) warnings.push(...tracked.warnings);
+    if (tracked.skipped) {
+      warnings.push(...tracked.warnings);
+      boundaryLoadIssues.push({
+        file: boundaryFileLabel(workspace.projectRoot, full),
+        kind: 'load-error',
+        origin: 'local',
+        issues: tracked.warnings.length > 0 ? tracked.warnings : ['the rule file failed to load (cached)'],
+      });
+    }
+  }
+  if (localBoundaryFiles.unlistedDefault) {
+    warnings.push(
+      `${boundaryFileLabel(workspace.projectRoot, localBoundaryFiles.unlistedDefault)} exists but is not listed in boundaryFiles — its rules are NOT loaded (add \`boundaryFiles: ['boundaries.ts']\` to sharkcraft.config.ts)`,
+    );
   }
 
   const inspection: ISharkcraftInspection = {
@@ -694,6 +882,7 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
     sharkcraftDir: cfg?.sharkcraftDir ?? workspace.sharkcraftPath ?? null,
     config: cfg?.config ?? null,
     configFile: cfg?.configFile ?? null,
+    ...(cfgResult.ok ? {} : describeConfigLoadError(cfgResult.error)),
     knowledgeEntries: cleanEntries,
     templates,
     pipelines,
@@ -708,12 +897,14 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
     presetSources,
     boundaryRegistry,
     boundarySources,
+    boundaryLoadIssues,
     index,
     ruleService,
     pathService,
     templateRegistry,
     pipelineRegistry,
     loaderDiagnostics: diagnostics,
+    packAssetFreshness: compiledPackFreshness(packs),
     inspectionElapsedMs: Date.now() - inspectStart,
     cacheEnabled: cache.enabled,
     cacheDir: cache.dir,
@@ -727,6 +918,58 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
     /* tuning is best-effort */
   }
   return inspection;
+}
+
+/**
+ * Freshness of every valid pack serving compiled contributions — the one
+ * authority, called only where something compiled can go stale (TS-source packs
+ * are skipped without hashing). Never throws: a pack whose files cannot be read
+ * simply reports what it could.
+ */
+function compiledPackFreshness(packs: IPackDiscoveryResult): readonly IPackAssetFreshness[] {
+  const out: IPackAssetFreshness[] = [];
+  for (const pack of packs.validPacks ?? []) {
+    if (!packHasCompiledContributions(pack.manifest)) continue;
+    try {
+      out.push(detectPackAssetFreshness(pack));
+    } catch {
+      /* best-effort */
+    }
+  }
+  return out;
+}
+
+/**
+ * Summarise a config LOAD failure for the inspection. Only CONFIG_INVALID is a
+ * failure of a config file that exists; a missing sharkcraft/ folder has its
+ * own doctor check and is not reported here.
+ */
+function describeConfigLoadError(error: AppError): Pick<ISharkcraftInspection, 'configLoadError'> {
+  if (error.code !== ERROR_CODES.CONFIG_INVALID) return {};
+  const details = error.details ?? {};
+  const fullPath = details['fullPath'];
+  const issues: string[] = [];
+  const rawIssues = details['issues'];
+  if (Array.isArray(rawIssues)) {
+    for (const raw of rawIssues as readonly unknown[]) {
+      const iss = (raw ?? {}) as { path?: readonly PropertyKey[]; message?: unknown };
+      const at = (iss.path ?? []).map(String).join('.') || '<root>';
+      issues.push(`${at}: ${typeof iss.message === 'string' ? iss.message : 'invalid value'}`);
+    }
+  }
+  // An import failure (e.g. a syntax error) carries no schema issues; its
+  // cause is the build/evaluation error.
+  const cause = (error as { cause?: unknown }).cause;
+  if (issues.length === 0 && cause instanceof Error) {
+    issues.push((cause.message.split('\n')[0] ?? cause.message).trim());
+  }
+  return {
+    configLoadError: {
+      file: typeof fullPath === 'string' ? fullPath : null,
+      message: error.message,
+      issues,
+    },
+  };
 }
 
 /** Inputs `runDoctor` cannot compute from this layer. */
@@ -781,7 +1024,25 @@ export function runDoctor(
     });
   }
 
-  if (!inspection.configFile) {
+  if (inspection.configLoadError) {
+    // A config file EXISTS but was rejected. The loader then drops the WHOLE
+    // config — its knowledge/rule/template file lists and every config-declared
+    // plane — so this is an error, and it is never also "no config file".
+    const failure = inspection.configLoadError;
+    const where = failure.file ?? 'sharkcraft/sharkcraft.config.ts';
+    const detail = failure.issues.length > 0 ? failure.issues.join('; ') : failure.message;
+    checks.push({
+      id: 'config',
+      title: 'sharkcraft.config.ts',
+      severity: DoctorSeverity.Error,
+      category: 'config-invalid',
+      code: 'config-invalid',
+      message: `Invalid config ${where} — NOT loaded, every config-declared setting and plane is dropped: ${detail}`,
+      fix: `Fix the listed fields in ${where} (every key is validated against SharkCraftConfigSchema), then re-run \`shrk doctor\`.`,
+      whyThisMatters:
+        'An invalid config is discarded whole: its knowledge/rule/template file lists and every gate plane (wiring rules, registries, policy rules, baselines, …) silently fall back to nothing.',
+    });
+  } else if (!inspection.configFile) {
     checks.push({
       id: 'config',
       title: 'sharkcraft.config.ts',
@@ -796,6 +1057,23 @@ export function runDoctor(
       severity: DoctorSeverity.Ok,
       message: `Loaded from ${inspection.configFile}`,
     });
+  }
+
+  // A replacing `registryLifecycle.skipDirs` that drops node_modules / dist / …
+  // makes the lifecycle scan read vendored and generated code. The one
+  // skip-dir authority decides; this only reports what it dropped.
+  const lifecycleSkip = inspection.config?.registryLifecycle;
+  if (lifecycleSkip?.skipDirs !== undefined) {
+    const { droppedDefaults } = resolveRegistryLifecycleSkipDirs(lifecycleSkip);
+    if (droppedDefaults.length > 0) {
+      checks.push({
+        id: 'registry-lifecycle-skip-dirs',
+        title: 'registryLifecycle.skipDirs',
+        severity: DoctorSeverity.Warning,
+        message: registryLifecycleSkipDirsWarning(droppedDefaults),
+        fix: `Use \`registryLifecycle.skipDirsAdd\` (extends the defaults), or add ${droppedDefaults.join(', ')} back to \`skipDirs\`.`,
+      });
+    }
   }
 
   if (inspection.knowledgeEntries.length === 0) {
@@ -869,6 +1147,24 @@ export function runDoctor(
     }
   }
 
+  // Compiled pack contributions served from an older build (or with no build
+  // record at all). The one freshness authority computed this at inspection;
+  // absent for TS-source packs, so a repo without compiled packs sees nothing.
+  for (const f of inspection.packAssetFreshness ?? []) {
+    if (f.build.state !== 'stale' && f.build.state !== 'unrecorded') continue;
+    const said = describePackAssetFreshness(f).build;
+    if (!said) continue;
+    checks.push({
+      id: `pack-compiled-artifacts-${f.packageName}`,
+      title: 'Pack compiled artifacts',
+      severity: DoctorSeverity.Warning,
+      category: 'pack-compiled-artifacts',
+      code: f.build.state === 'stale' ? 'compiled-artifacts-stale' : 'compiled-artifacts-unrecorded',
+      message: said,
+      ...(f.build.rebuildCommand ? { fix: `(cd ${f.packageRoot} && ${f.build.rebuildCommand})` } : {}),
+    });
+  }
+
   if (inspection.pipelines.length === 0) {
     checks.push({
       id: 'pipelines',
@@ -904,6 +1200,9 @@ export function runDoctor(
   }
 
   for (const w of inspection.warnings) {
+    // The config load failure is already reported above as an error; do not
+    // repeat it as a second, weaker "Loader warning".
+    if (w === inspection.configLoadError?.message) continue;
     checks.push({
       id: `warning-${checks.length}`,
       title: 'Loader warning',
@@ -1002,7 +1301,32 @@ export function runDoctor(
     }
   }
 
-  return { passed: summary.errors === 0, checks, summary };
+  // A compiled pack build with NO build record was never compared with its
+  // source, so the build the pack serves is unverified. The warning check above
+  // names it; this record is what keeps `shrk doctor` from reading "Ready ✓"
+  // over it (settled NOT VERIFIED, 2, like `packs doctor`). A stale build WAS
+  // compared (its finding stays a warning), and a repo with no compiled pack,
+  // or only fresh builds, gets no record at all.
+  const compiledBuilds = (inspection.packAssetFreshness ?? []).filter((f) => f.build.state !== 'not-compiled');
+  const unrecordedBuilds = compiledBuilds
+    .filter((f) => f.build.state === 'unrecorded')
+    .map((f) => f.packageName)
+    .sort();
+  const coverage: NonNullable<IDoctorResult['coverage']> =
+    unrecordedBuilds.length > 0
+      ? [
+          {
+            unit: 'compiled pack builds',
+            expected: compiledBuilds.length,
+            examined: compiledBuilds.length - unrecordedBuilds.length,
+            unexamined: unrecordedBuilds,
+            reason:
+              'no build record, so the compiled artifacts they serve were never compared with their source (rebuild the pack to record one)',
+          },
+        ]
+      : [];
+
+  return { passed: summary.errors === 0, checks, summary, ...(coverage.length > 0 ? { coverage } : {}) };
 }
 
 function actionHintWhyThisMatters(code: string): string {

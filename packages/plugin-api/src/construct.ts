@@ -18,6 +18,15 @@ export interface IConstructFacetValue {
   value: string;
   description?: string;
   source?: string;
+  /**
+   * Opt-in: the reference kinds `value` is an id of (`['boundary-rule']`,
+   * `['rule', 'knowledge']`). Only a value that declares this is resolved by
+   * the cross-reference doctor — a facet is otherwise free-form (an event
+   * topic, a token name) and indistinguishable from an id. Plain strings,
+   * matching the reference kinds `shrk self-config resolve` prints; an unknown
+   * kind name is an error.
+   */
+  resolvesAs?: readonly string[];
 }
 
 export interface IConstructInput {
@@ -58,6 +67,8 @@ export interface IConstructFacetInput {
   value: string;
   description?: string;
   source?: string;
+  /** Opt-in: the reference kinds `value` is an id of — see {@link IConstructFacetValue.resolvesAs}. */
+  resolvesAs?: readonly string[];
 }
 
 export function defineConstructFacet(input: IConstructFacetInput): IConstructFacetInput {

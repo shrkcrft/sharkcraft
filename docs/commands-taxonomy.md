@@ -7,11 +7,13 @@
 _First-time orientation._
 
 - `shrk commands` — List all `shrk` commands with safety labels. _(read-only)_
+- `shrk commands docs-check` — Check SharkCraft's own command docs (command-entrypoints / start-here / overview) and catalog pointers for drift. _(read-only)_
 - `shrk commands doctor` — Check catalog completeness against the live command registry. _(read-only)_
 - `shrk commands legacy` — Show only legacy / replaced commands and their replacedBy targets. _(read-only)_
 - `shrk commands machine` — Show only machine-oriented commands (JSON pipes / agent surfaces). _(read-only)_
 - `shrk commands overlaps` — Show overlapping commands with their preferredCommand pointers (or `(none)` when missing). _(read-only)_
 - **★** `shrk commands primary` — Show the curated primary command list. _(read-only)_
+- `shrk commands retirement-plan` — SharkCraft's own command retirement plan (derived from `commands overlaps`). _(read-only)_
 - `shrk commands surface` — Filter the command catalog by surface (primary | common | advanced | machine | internal | legacy). _(read-only)_
 - `shrk commands ux-check` — Audit catalog UX — descriptions, safety metadata, alias collisions. _(read-only)_
 - **★** `shrk doctor` — Workspace doctor: config + entry validation. _(read-only)_
@@ -97,7 +99,7 @@ _Architecture map / intelligence graph / boundaries / drift / coverage._
 - `shrk boundaries infer` — Infer boundary candidates (dry-run by default). _(read-only)_
 - `shrk boundaries list` — List all boundary rules. _(read-only)_
 - `shrk boundaries suggest` — Suggest fixes for boundary violations. _(read-only)_
-- **★** `shrk check boundaries` — Boundary enforcement against tsconfig aliases + import graph. _(read-only)_
+- **★** `shrk check boundaries` — Boundary enforcement against tsconfig aliases + import graph (imports read from code, not comments). Bare forbidden patterns cover subpaths; exemptFiles / excludeTests / exceptions are marked, never dropped; a rule matching nothing is never "evaluated" (0/1/2/3, gate envelope). [--rule <id>] [--rule-file <path> | --diff-against <path>] [--changed-only …] [--fail-on-dead-units] [--include-comments] [--allow-empty] [--json] _(read-only)_
 - **★** `shrk check boundaries --changed-only` — Boundary check filtered to changes (working tree, --since <ref>, --staged, --files). Read-only. _(read-only)_
 - **★** `shrk check boundaries --polyglot` — Combined TS + polyglot boundary check. Read-only. _(read-only)_
 - `shrk constructs adopt` — Classify construct drafts into safe / review / low / covered / conflict. _(read-only)_
@@ -136,7 +138,7 @@ _Safety audit, compliance, policy, decisions._
 - `shrk policy snapshot --gate` — CI gate for policy snapshots — exits non-zero on drift/missing. _(read-only)_
 - `shrk policy test` — Test policy checks with fixtures or inline input. _(read-only)_
 - `shrk policy test --update-snapshot` — Update the saved snapshot for a policy fixture. _(writes-drafts)_
-- `shrk policy-lint` — Lint template/markup, stylesheet, and AOT-invisible TS surfaces against config-defined policyRules[] — sees `.html` files AND inline `template:` strings that tsc/AOT cannot. Deterministic; no AI. [--surface template|style|ts] [--changed-only] [--only <ids>] [--json] _(read-only)_
+- `shrk policy-lint` — Lint template/markup, stylesheet, and AOT-invisible TS surfaces against config-defined policyRules[] — sees `.html` files AND inline `template:` strings that tsc/AOT cannot. Deterministic; no AI. No rules declared is NOT a pass (exit 2) unless --allow-empty. [--surface template|style|ts] [--changed-only] [--only <ids>] [--allow-empty] [--json] _(read-only)_
 - `shrk policy-lint explain` — Dry-run ONE policyRule and print every hit with file:line — INCLUDING the hits an exemption (exemptFiles / exemptLines) or the lexical scan zone dropped, each labelled with which one applied. The author-loop view of what the gate sees. [--json] _(read-only)_
 - **★** `shrk safety audit` — Audit the SharkCraft safety model (commands, MCP, packs, plan signing). _(read-only)_
 - **★** `shrk safety audit --deep` — Deep safety audit (report-site external JS, demo destructive lines, CI permissions). _(read-only)_
@@ -221,7 +223,7 @@ _release readiness / smoke / install smoke / train / runtime doctor._
 _self audit, diagnostics, upgrade._
 
 - `shrk api-diff` — Compare the current public API surface to a baseline. Reports added / removed / kind-changed / moved symbols with breaking-change severity. _(read-only)_
-- `shrk diagnostics list` — List every known SharkCraft failure diagnostic. _(read-only)_
+- **★** `shrk diagnostics list` — List every known SharkCraft failure diagnostic. _(read-only)_
 - **★** `shrk self audit` — SharkCraft self-dogfood audit. Meaningful inside the SharkCraft repo. _(read-only)_
 - **★** `shrk self audit --run` — Run the bundled checks (commands doctor, runtime doctor, safety audit, packs doctor, demo validate) with timeouts. _(writes-drafts)_
 - **★** `shrk upgrade check` — Check for SharkCraft schema migrations. _(read-only)_

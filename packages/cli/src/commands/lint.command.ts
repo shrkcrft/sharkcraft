@@ -56,6 +56,9 @@ export const lintCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
+    // The knowledge part resolves references — warm first, or a correct
+    // playbook / policy id reads as a stale-reference finding.
+    await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
     const kind = parseKind(flagString(args, 'kind'));
     const strict = flagBool(args, 'strict');
     const fixPreview = flagBool(args, 'fix-preview');

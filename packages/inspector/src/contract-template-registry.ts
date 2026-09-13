@@ -10,7 +10,13 @@ import {
   type IAgentContractTemplate,
 } from './agent-contract-templates.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
-import { importModuleViaLoader } from '@shrkcrft/core';
+import {
+  importModuleViaLoader,
+  readContributionExport,
+  RejectionCause,
+  type IContributionExport,
+  type IRejectedEntry,
+} from '@shrkcrft/core';
 
 export const CONTRACT_TEMPLATE_REGISTRY_SCHEMA = 'sharkcraft.contract-template-registry/v1';
 
@@ -39,19 +45,13 @@ interface ICacheEntry {
   cacheKey: string;
   entries: readonly IContractTemplateEntry[];
   issues: readonly IContractTemplateRegistryIssue[];
+  rejected: readonly IRejectedEntry[];
 }
 
 const CACHE = new Map<string, ICacheEntry>();
 
-async function importDefault<T>(file: string): Promise<readonly T[]> {
-  const mod = (await importModuleViaLoader(file)) as {
-    default?: readonly T[] | T;
-    contractTemplates?: readonly T[];
-  };
-  if (Array.isArray(mod.default)) return mod.default;
-  if (mod.default && typeof mod.default === 'object') return [mod.default as T];
-  if (Array.isArray(mod.contractTemplates)) return mod.contractTemplates;
-  return [];
+async function importTemplates(file: string): Promise<IContributionExport> {
+  return readContributionExport(await importModuleViaLoader(file), { namedKeys: ['contractTemplates'] });
 }
 
 function localFiles(inspection: ISharkcraftInspection): string[] {
@@ -62,22 +62,29 @@ function localFiles(inspection: ISharkcraftInspection): string[] {
     const full = nodePath.join(dir, name);
     if (existsSync(full)) out.push(full);
   }
-  const cfg = inspection.config as { contractTemplateFiles?: readonly string[] } | null;
-  for (const rel of cfg?.contractTemplateFiles ?? []) {
-    out.push(nodePath.isAbsolute(rel) ? rel : nodePath.join(dir, rel));
-  }
+  // More template files come from pack manifests (`contractTemplateFiles`,
+  // loaded below) — there is no local-config key for them; the strict config
+  // schema rejects one, so a local read here could never be reached.
   return out;
 }
 
-function isValidTemplate(raw: unknown): raw is IAgentContractTemplate {
-  if (!raw || typeof raw !== 'object') return false;
+/**
+ * THE contract-template acceptance predicate (round 12, 12.1): one
+ * `<field>: <message>` per failing field — `[]` means accepted. It used to be a
+ * boolean, and a refused template read `Invalid contract template at <file>;
+ * skipped.` with no id and no field.
+ */
+export function contractTemplateRejectionReasons(raw: unknown): readonly string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return ['(entry): must be an object'];
   const o = raw as Record<string, unknown>;
-  return (
-    typeof o.id === 'string' &&
-    typeof o.title === 'string' &&
-    (o.schema === AGENT_CONTRACT_TEMPLATE_SCHEMA || o.schema === undefined) &&
-    Array.isArray(o.defaultForbiddenFilesDetailed)
-  );
+  const out: string[] = [];
+  if (typeof o.id !== 'string') out.push('id: must be a string');
+  if (typeof o.title !== 'string') out.push('title: must be a string');
+  if (!(o.schema === AGENT_CONTRACT_TEMPLATE_SCHEMA || o.schema === undefined)) {
+    out.push(`schema: must be "${AGENT_CONTRACT_TEMPLATE_SCHEMA}" or unset`);
+  }
+  if (!Array.isArray(o.defaultForbiddenFilesDetailed)) out.push('defaultForbiddenFilesDetailed: must be an array');
+  return out;
 }
 
 export async function loadAllContractTemplates(
@@ -85,31 +92,42 @@ export async function loadAllContractTemplates(
 ): Promise<{
   entries: readonly IContractTemplateEntry[];
   issues: readonly IContractTemplateRegistryIssue[];
+  /** Every declared template the loader refused — invalid or a duplicate id (round 12, 12.1). */
+  rejected: readonly IRejectedEntry[];
 }> {
   const cacheKey = `${inspection.projectRoot}:${(inspection.packs.validPacks ?? [])
     .map((p) => p.packageName + '@' + p.packageVersion)
     .join(',')}`;
   const cached = CACHE.get(inspection.projectRoot);
   if (cached && cached.cacheKey === cacheKey) {
-    return { entries: cached.entries, issues: cached.issues };
+    return { entries: cached.entries, issues: cached.issues, rejected: cached.rejected };
   }
   const seen = new Map<string, IContractTemplateEntry>();
   const entries: IContractTemplateEntry[] = [];
   const issues: IContractTemplateRegistryIssue[] = [];
+  const rejected: IRejectedEntry[] = [];
 
   const ingest = (
     raw: unknown,
     source: ContractTemplateSource,
     packageName: string | undefined,
     sourceFile: string | undefined,
+    at?: Pick<IRejectedEntry, 'file' | 'index' | 'exportName'>,
   ): void => {
-    if (!isValidTemplate(raw)) {
+    const rawId = raw && typeof raw === 'object' ? (raw as { id?: unknown }).id : undefined;
+    const id = typeof rawId === 'string' ? rawId : undefined;
+    const reasons = contractTemplateRejectionReasons(raw);
+    if (reasons.length > 0) {
       issues.push({
         severity: 'warning',
         code: 'invalid-template',
-        message: `Invalid contract template at ${sourceFile ?? source}; skipped.`,
+        message: `Invalid contract template${id ? ` "${id}"` : ''} at ${sourceFile ?? source}${
+          at ? ` (${at.exportName ?? 'default'}[${at.index}])` : ''
+        }; skipped — ${reasons.join('; ')}.`,
+        ...(id ? { templateId: id } : {}),
         source: sourceFile,
       });
+      if (at) rejected.push({ ...at, ...(id ? { entryId: id } : {}), reasons, cause: RejectionCause.Invalid });
       return;
     }
     const tpl = raw as IAgentContractTemplate;
@@ -122,6 +140,16 @@ export async function loadAllContractTemplates(
         templateId: tpl.id,
         source: sourceFile,
       });
+      if (at) {
+        rejected.push({
+          ...at,
+          entryId: tpl.id,
+          reasons: [
+            `id: "${tpl.id}" is already declared by ${existing.source}${existing.sourceFile ? ` (${existing.sourceFile})` : ''}`,
+          ],
+          cause: RejectionCause.DuplicateId,
+        });
+      }
       return;
     }
     const entry: IContractTemplateEntry = {
@@ -133,6 +161,21 @@ export async function loadAllContractTemplates(
     seen.set(tpl.id, entry);
     entries.push(entry);
   };
+  const ingestAll = (
+    exp: IContributionExport,
+    file: string,
+    source: ContractTemplateSource,
+    packageName: string | undefined,
+    sourceFile: string,
+  ): void => {
+    exp.items.forEach((raw, i) =>
+      ingest(raw, source, packageName, sourceFile, {
+        file,
+        index: exp.single ? -1 : i,
+        ...(exp.exportName ? { exportName: exp.exportName } : {}),
+      }),
+    );
+  };
 
   for (const t of ALL_CONTRACT_TEMPLATES) {
     ingest(t, ContractTemplateSource.Builtin, undefined, undefined);
@@ -140,9 +183,9 @@ export async function loadAllContractTemplates(
 
   for (const file of localFiles(inspection)) {
     try {
-      const list = await importDefault<unknown>(file);
+      const exp = await importTemplates(file);
       const rel = nodePath.relative(inspection.projectRoot, file) || file;
-      for (const raw of list) ingest(raw, ContractTemplateSource.Local, undefined, rel);
+      ingestAll(exp, file, ContractTemplateSource.Local, undefined, rel);
     } catch (e) {
       issues.push({
         severity: 'warning',
@@ -168,8 +211,7 @@ export async function loadAllContractTemplates(
         continue;
       }
       try {
-        const list = await importDefault<unknown>(file);
-        for (const raw of list) ingest(raw, ContractTemplateSource.Pack, pack.packageName, rel);
+        ingestAll(await importTemplates(file), file, ContractTemplateSource.Pack, pack.packageName, rel);
       } catch (e) {
         issues.push({
           severity: 'warning',
@@ -181,8 +223,8 @@ export async function loadAllContractTemplates(
     }
   }
 
-  CACHE.set(inspection.projectRoot, { cacheKey, entries, issues });
-  return { entries, issues };
+  CACHE.set(inspection.projectRoot, { cacheKey, entries, issues, rejected });
+  return { entries, issues, rejected };
 }
 
 export async function listAllContractTemplates(

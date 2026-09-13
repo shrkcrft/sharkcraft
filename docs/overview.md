@@ -64,4 +64,19 @@ Each file is **structured TypeScript** (typed entries) so retrieval is precise. 
   All six share one [extraction DSL](extraction-dsl.md), and
   [`shrk gates`](gate-rules.md) shows what every rule actually matched — the
   stale-selector detector that keeps the rest honest.
+- **Chain on the exit code** — every gate / verify verb exits `0` verified ·
+  `1` failed · `2` not verified · `3` usage error · `78` refused by the surface
+  gate; the bin exits `70` when the tool's own install is broken (an unlinked
+  workspace dependency). See [`docs/exit-codes.md`](exit-codes.md). Which commands a repo sees is
+  [`docs/surface-tiers.md`](surface-tiers.md) (the profile `shrk init` writes:
+  [`docs/surface-profile-init.md`](surface-profile-init.md)).
+- **Author the assets agents read** — [knowledge](knowledge-system.md),
+  [templates](template-system.md), [constructs](constructs.md),
+  [conventions](conventions.md), [playbooks](playbooks.md),
+  [task routing hints](task-routing-hints.md),
+  [registration hints](registration-hints.md) and [pack helpers](helpers.md);
+  pin their behaviour with [context tests](context-tests.md) and
+  [agent contract tests](agent-contract-tests.md).
+- **Run it in CI** — `shrk ci scaffold` writes a starter workflow; see
+  [`docs/ci-scaffold.md`](ci-scaffold.md).
 - **What changed in this build's commands?** — `shrk changelog`: the command-surface delta of the running build (added/changed/removed verbs & flags); `--since <version>` for the cumulative delta.

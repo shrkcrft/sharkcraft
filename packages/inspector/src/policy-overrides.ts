@@ -36,13 +36,14 @@ export interface IPolicyOverridesReport {
 }
 
 function readOverridesFromConfig(inspection: ISharkcraftInspection): readonly IPolicyOverride[] {
-  const cfg = inspection.config as { policyOverrides?: readonly IPolicyOverride[] } | null;
-  if (!cfg || !Array.isArray(cfg.policyOverrides)) return [];
+  // `policyOverrides` is a declared, schema-validated config key — typed read.
+  const configured = inspection.config?.policyOverrides ?? [];
   const out: IPolicyOverride[] = [];
-  for (const o of cfg.policyOverrides) {
+  for (const o of configured) {
     if (typeof o.policyId !== 'string' || o.policyId.length === 0) continue;
     const override: IPolicyOverride = { policyId: o.policyId };
-    if (o.severity) override.severity = o.severity;
+    // The schema's severity enum is exactly PolicySeverity's value set.
+    if (o.severity) override.severity = o.severity as PolicySeverity;
     if (typeof o.enabled === 'boolean') override.enabled = o.enabled;
     if (typeof o.reason === 'string') override.reason = o.reason;
     out.push(override);

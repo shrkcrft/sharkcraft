@@ -128,8 +128,7 @@ alongside `shrk graph index` so the freshness model matches.
   - Fires `Warning` + `advisory` when `filesUncoveredByRules /
     filesTotal > 50%`. A growing gap usually means the rule registry
     is drifting behind the codebase.
-  - Fix: `shrk rules where applies-to <file>` inspects coverage for
-    a specific file; broaden a rule's `appliesTo` glob or boundary
+  - Fix: broaden a rule's `appliesTo` glob or boundary
     `from` list to extend coverage.
 
 ### `code-intelligence-api-surface`

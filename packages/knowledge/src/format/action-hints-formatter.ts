@@ -182,6 +182,14 @@ export function formatAggregatedHints(
       hints.relatedPathConventions.map((p) => `- \`${p}\``).join('\n'),
     );
   }
+  // Aggregated above but never rendered, so an entry's related knowledge was
+  // invisible in every surface that prints hints.
+  if (hints.relatedKnowledge.length) {
+    section(
+      'Related Knowledge',
+      hints.relatedKnowledge.map((k) => `- \`${k}\``).join('\n'),
+    );
+  }
   if (hints.requiresHumanReview || hints.writePolicy) {
     const parts: string[] = [];
     if (hints.requiresHumanReview) parts.push('Requires human review.');

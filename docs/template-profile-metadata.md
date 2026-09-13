@@ -8,8 +8,11 @@ and `prepare_agent_task` — never by the renderer itself.
 
 - `forbiddenPathFragments?: readonly string[]` — paths the rendered
   template must not produce.
-- `requiredProfileIds?: readonly string[]` — profile ids the template
-  depends on.
+- `requiredProfileIds?: readonly string[]` — WorkspaceProfile ids the
+  template depends on (`has-typescript`, `is-library`, … — `shrk profiles
+  list --kind workspace`). The self-config doctor resolves them against the
+  builtin `workspace-profile` kind (round 12; they used to be checked against
+  migration profiles).
 - `requiredConventionIds?: readonly string[]` — convention ids the
   template's outputs are expected to satisfy.
 - `requiredHelperIds?: readonly string[]` — helper ids that complete

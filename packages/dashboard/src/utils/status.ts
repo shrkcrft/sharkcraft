@@ -40,6 +40,9 @@ export function gateBadge(status: string): { className: string; label: string } 
       return { className: 'badge badge--warning', label: 'warn' };
     case 'fail':
       return { className: 'badge badge--danger', label: 'fail' };
+    case 'not-verified':
+      // Passed over part of its scope, or could not run: never drawn as a pass.
+      return { className: 'badge badge--warning', label: 'not verified' };
     case 'skipped':
       return { className: 'badge', label: 'skipped' };
     default:

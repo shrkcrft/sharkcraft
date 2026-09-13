@@ -1,4 +1,4 @@
-import { detectGraphFreshness, GraphStore } from '@shrkcrft/graph';
+import { detectGraphFreshness, GraphStore, graphFreshnessBehind } from '@shrkcrft/graph';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
 const NEXT = 'shrk graph index';
@@ -33,7 +33,8 @@ export const getGraphStatusTool: IToolDefinition = {
     const verify = store.verifyDigest();
     const snap = store.loadSnapshot();
     const fresh = detectGraphFreshness(ctx.inspection.projectRoot);
-    const behind = fresh.modified.length + fresh.added.length + fresh.deleted.length;
+    // Files AND workspace package entries — the same count `shrk graph status` reads.
+    const behind = graphFreshnessBehind(fresh);
     const state = !verify.ok ? 'corrupt' : behind > 0 ? 'stale' : 'fresh';
     return {
       data: {
@@ -51,7 +52,11 @@ export const getGraphStatusTool: IToolDefinition = {
         modifiedSinceIndex: fresh.modified.length,
         newSinceIndex: fresh.added.length,
         deletedSinceIndex: fresh.deleted.length,
-        ...(behind > 0 ? { nextCommand: 'shrk graph index --changed' } : {}),
+        packagesChangedSinceIndex: fresh.packagesChanged.length,
+        ...(fresh.packagesChanged.length > 0 ? { packagesChanged: fresh.packagesChanged } : {}),
+        ...(behind > 0
+          ? { nextCommand: fresh.packagesChanged.length > 0 ? 'shrk graph index' : 'shrk graph index --changed' }
+          : {}),
         ...(verify.ok ? {} : { expectedDigest: verify.expected, actualDigest: verify.actual }),
       },
     };

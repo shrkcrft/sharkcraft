@@ -268,7 +268,7 @@ export function renderProvenanceMarkdown(report: IProvenanceReport): string {
   lines.push(`Total entries: ${report.total}`);
   lines.push('');
   if (!report.ledgerExists) {
-    lines.push('> No provenance ledger yet. Run any `shrk knowledge author` / `shrk pack author` preview to start one.');
+    lines.push('> No provenance ledger yet. Run any `shrk knowledge add --write-preview` (or update / remove) or `shrk pack author preview --write-preview` to start one.');
     lines.push('');
     return lines.join('\n');
   }

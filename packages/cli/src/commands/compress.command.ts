@@ -15,6 +15,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson } from '../output/format-output.ts';
 import { ccrDir, openCcrStore } from '../output/ccr-store-config.ts';
 
@@ -110,6 +111,9 @@ const COMPRESS_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
 
 export const compressCommand: ICommandHandler = {
   name: 'compress',
+  // positional[0] is the input FILE (`-` / --stdin read stdin); a verb-shaped
+  // non-file is refused before it becomes an ENOENT.
+  positionals: PositionalMode.Path,
   description:
     'Compress a blob (file or stdin) deterministically to cut tokens — JSON→table, logs/search/diffs→signal. Reversible via `shrk expand`. NOTE: `--type code` emits a LOSSY outline (function bodies elided) — good for fitting more code into context, NOT for line-accurate reading; use plain Read (or `--lossless`) to inspect a file.',
   usage:

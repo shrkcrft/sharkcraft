@@ -10,7 +10,7 @@ Each line is a JSON object with schema `sharkcraft.asset-provenance/v1`.
 
 ## What goes in
 
-Authoring commands (`shrk knowledge add/update/remove --write-preview`,
+Authoring commands (`shrk knowledge add --write-preview`, and `update` / `remove` with the same flag,
 later: pack author preview verbs for other kinds) append one entry per
 preview. Fields:
 

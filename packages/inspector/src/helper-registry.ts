@@ -74,6 +74,20 @@ export function renderHelperPlanText(plan: IHelperPlan): string {
   const lines: string[] = [];
   lines.push(`Helper plan: ${String(plan.helperId)}`);
   lines.push(`Ops: ${plan.ops.length}`);
+  for (const op of plan.ops) {
+    const where = op.anchor ? ` (anchor ${JSON.stringify(op.anchor)})` : op.fromPattern ? ` (find ${JSON.stringify(op.fromPattern)})` : '';
+    lines.push(`  • ${op.kind} ${op.targetPath}${where}`);
+    if (op.snippet !== undefined) {
+      for (const l of (op.snippet.length > 0 ? op.snippet : '(empty — removes the match)').split('\n')) {
+        lines.push(`      ${l}`);
+      }
+    }
+  }
+  if (plan.manualSteps.length > 0) {
+    lines.push(`Manual steps: ${plan.manualSteps.length}`);
+    for (const s of plan.manualSteps) lines.push(`  • ${s.description}`);
+  }
   lines.push(`Conflicts: ${plan.conflicts.length}`);
-  return lines.join('\n');
+  for (const c of plan.conflicts) lines.push(`  ! ${c}`);
+  return lines.join('\n') + '\n';
 }

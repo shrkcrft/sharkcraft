@@ -124,7 +124,10 @@ const MATRIX_ENTRIES: ReadonlyArray<IEntrypointMatrixEntry> = [
   {
     id: 'why',
     class: EntrypointClass.DebugExplainability,
-    callShape: 'shrk why <id> | shrk why-not <id>',
+    // The `shrk why <id>` / `shrk why-not <id>` ranker CLI was removed; the
+    // ranker explainers live behind these MCP tools (`shrk why` is now the
+    // per-FILE constraint explainer).
+    callShape: 'MCP get_ranker_explanation | get_ranker_why_not',
     whenToUse:
       'Debug the ranker — why a registry entry was / was not surfaced for a task.',
     safety: 'read-only',

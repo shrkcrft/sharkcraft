@@ -3,12 +3,14 @@ import {
   buildAcknowledgement,
   buildAiReadinessReport,
   buildSuppressionEntry,
+  detectUnregisteredExports,
   doctorSuppressionsFile,
   DoctorSeverity,
   filterDoctorResult,
   inspectSharkcraft,
   loadDoctorSuppressions,
   renderAcknowledgementsText,
+  doctorVerdict,
   runDoctor,
   saveDoctorSuppressions,
   summarizeAcknowledgements,
@@ -29,10 +31,13 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { SemanticIndex, listIndexableFiles } from '@shrkcrft/embeddings';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { maybeRunInWatchMode } from '../output/watch-loop.ts';
 import { doctorHints, renderFailureHints } from '../output/failure-hints.ts';
+import { settleVerdict } from '../gates/settle-verdict.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
 import {
   foldDoctorChecks,
   renderFoldedSummary,
@@ -214,6 +219,41 @@ function augmentWithSemanticIndexCheck<R extends IDoctorResultLike>(result: R, c
   return { ...result, checks, summary } as R;
 }
 
+/**
+ * "Unregistered entry exports" (round 11 §3.1): an entry a group module exports
+ * that the aggregator registering it never lists is silently invisible. Added
+ * only when something is found (an error → exit 1); a clean repo sees no new
+ * line. The check lives in the inspector (`detectUnregisteredExports`) and is
+ * async (it imports the group modules), so it is appended here.
+ */
+async function augmentWithUnregisteredExports<R extends IDoctorResultLike>(
+  result: R,
+  inspection: Awaited<ReturnType<typeof inspectSharkcraft>>,
+): Promise<R> {
+  let found: Awaited<ReturnType<typeof detectUnregisteredExports>> = [];
+  try {
+    found = await detectUnregisteredExports(inspection);
+  } catch {
+    return result;
+  }
+  if (found.length === 0) return result;
+  const shown = found.slice(0, 10).map((u) => `${u.group}${u.line > 0 ? `:${u.line}` : ''} — ${u.message}`);
+  const more = found.length > shown.length ? ` (+${found.length - shown.length} more)` : '';
+  const check = {
+    id: 'unregistered-entry-exports',
+    title: 'Unregistered entry exports',
+    severity: DoctorSeverity.Error,
+    category: 'unregistered-entry-exports',
+    code: 'unregistered-export',
+    message: `${found.length} exported entr${found.length === 1 ? 'y is' : 'ies are'} never registered, so no lookup can see ${found.length === 1 ? 'it' : 'them'}: ${shown.join('; ')}${more}`,
+    fix: "Add each export to its aggregator's array, or re-export the group module with `export * from './<group>'`.",
+  };
+  const summary = { ...result.summary, errors: (result.summary.errors ?? 0) + 1 };
+  // An error check is a failed doctor: `passed` is what the exit code, the
+  // JSON `ready` and the Verdict line all read, so it must flip with it.
+  return { ...result, passed: false, checks: [...result.checks, check], summary } as R;
+}
+
 function renderSemanticIndexCheck(report: ReturnType<typeof SemanticIndex.freshnessReport>): {
   id: string;
   title: string;
@@ -283,6 +323,9 @@ function renderSemanticIndexCheck(report: ReturnType<typeof SemanticIndex.freshn
 
 export const doctorCommand: ICommandHandler = {
   name: 'doctor',
+  // Mixed-mode: suppress / suppressions / acknowledge / acknowledgements are
+  // trie children; a bare token reaching this handler used to run the doctor.
+  positionals: PositionalMode.None,
   description:
     'Validate the local SharkCraft setup (config, knowledge, templates, project). `--focus errors|warnings-new|info`, `--hide <category,...>`, `--quiet-known` filter the headline view using `sharkcraft/doctor.suppressions.json`. `--watch`/`--once`/`--debounce` for live mode. `--explain-quality` shows the per-warning "why this matters" line so warnings stop being permanent yellow noise. `--blockers` shows only must-fix findings (errors + warning-category in {config-invalid, pack-signature-invalid, plan-signature-divergent, asset-load-failed}); exit code is non-zero iff a blocker remains. `--llm-recommendations` layers a local-LLM-derived list of concrete next-steps onto the deterministic output (no-op when no provider is reachable). Subcommands: `suppress`, `suppressions list|check`, `watch`.',
   usage:
@@ -307,9 +350,12 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
       inspectOpts.loaderTimeoutMs = loaderTimeout;
     }
     const inspection = await inspectSharkcraft(inspectOpts);
-    const result = augmentWithSemanticIndexCheck(
-      runDoctor(inspection, { graphDivergence: detectGraphFreshness(cwd) }),
-      cwd,
+    const result = await augmentWithUnregisteredExports(
+      augmentWithSemanticIndexCheck(
+        runDoctor(inspection, { graphDivergence: detectGraphFreshness(cwd) }),
+        cwd,
+      ),
+      inspection,
     );
     const report = buildAiReadinessReport(inspection);
     if (debug) {
@@ -412,7 +458,7 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
     // When --blockers is set, the exit code reflects ONLY the
     // remaining blocker set. This is the agent-friendly contract: 0 means
     // "nothing must-fix", 1 means "at least one blocker remains".
-    const overallExitCode =
+    const proposedExitCode =
       noConfigLenient
         ? 0
         : blockersOnly
@@ -422,6 +468,14 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
           : (result.passed && !strictEval.failed && !minScoreFailed && !ackExpired)
             ? 0
             : 1;
+    // A scope the doctor could not verify (a compiled pack build with no build
+    // record, never compared with its source) settles a clean run to NOT
+    // VERIFIED (2), as `packs doctor` does. It never reads "Ready ✓". The
+    // advisory `--no-config` run and the filtered `--blockers` view keep
+    // their own contracts.
+    const doctorSettled =
+      noConfigLenient || blockersOnly ? undefined : settleVerdict(proposedExitCode, result.coverage ?? []);
+    const overallExitCode = doctorSettled?.exit ?? proposedExitCode;
 
     if (flagBool(args, 'json')) {
       // Also compute the folded view for machine consumers so JSON
@@ -450,7 +504,9 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
       process.stdout.write(
         asJson({
           targetRoot: inspection.projectRoot,
-          ready: result.passed && inspection.knowledgeEntries.length > 0,
+          // THE doctor settlement (`doctorVerdict`), shared with `shrk check`,
+          // the dashboard and MCP: never ready over an unverified scope.
+          ready: doctorVerdict(result).ready && inspection.knowledgeEntries.length > 0,
           strict: strictMode,
           strictCountedWarnings: strictEval.countedWarnings,
           strictExcludedWarnings: strictEval.excludedWarnings,
@@ -458,6 +514,7 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
           strictFailed: strictEval.failed,
           minScoreFailed,
           exitCode: overallExitCode,
+          ...(doctorSettled && doctorSettled.shortfalls.length > 0 ? { shortfalls: doctorSettled.shortfalls } : {}),
           // Blockers preset state. Shape stays stable when --blockers is off.
           blockers: blockersOnly
             ? {
@@ -661,6 +718,9 @@ async function doctorCommandImpl(args: ParsedArgs): Promise<number> {
       process.stdout.write(
         '\nVerdict: --no-config mode — repo has no sharkcraft/ yet (advisory). Detection works regardless.\n',
       );
+    } else if (doctorSettled?.verdict === 'not-verified') {
+      const line = verdictLine(doctorSettled, '', 'Verdict: NOT VERIFIED — part of the setup could not be checked.');
+      if (line) process.stdout.write(`\n${line}\n`);
     } else if (result.passed && hasContent) {
       process.stdout.write('\nVerdict: Ready for AI-agent use. ✓\n');
     } else if (result.passed && !hasContent) {

@@ -1,4 +1,5 @@
 export * from './template-definition.ts';
+export * from './template-remainder.ts';
 export * from './template-variable.ts';
 export * from './template-registry.ts';
 export * from './template-renderer.ts';

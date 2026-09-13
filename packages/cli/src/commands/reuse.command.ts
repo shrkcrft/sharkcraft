@@ -1,6 +1,26 @@
 import { GraphStore, GraphQueryApi } from '@shrkcrft/graph';
-import { resolveProjectConfig } from '@shrkcrft/inspector';
-import type { IReusePrimitive } from '@shrkcrft/core';
+import {
+  curatedDeclarationMap,
+  rankReuseCandidates,
+  resolveCuratedReuse,
+  resolveProjectConfig,
+  reuseImportLine,
+  type IReuseCandidate,
+  type IReuseCuratedResolution,
+  type IReuseRanking,
+  type IReuseSuggestion,
+} from '@shrkcrft/inspector';
+import {
+  MatchConfidenceVerdict,
+  ReuseCandidateSource,
+  ReuseImportStyle,
+  ReuseMatchSource,
+  ReuseNameMatch,
+  UnfollowedReExportKind,
+  type IPublicExportSurface,
+  type IReusePrimitive,
+  type IUnfollowedReExport,
+} from '@shrkcrft/core';
 import {
   flagBool,
   flagNumber,
@@ -8,91 +28,81 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
+import { ExitCode } from '../exit-codes.ts';
+import { graphReuseLookup } from '../graph/graph-reuse-lookup.ts';
+import { indexBehindHint } from '../graph/index-behind-hint.ts';
 import { asJson, header } from '../output/format-output.ts';
 
-const STOP: ReadonlySet<string> = new Set([
-  'the', 'a', 'an', 'to', 'for', 'of', 'and', 'or', 'with', 'in', 'on', 'into', 'my',
-  'add', 'use', 'using', 'create', 'make', 'new', 'build', 'want', 'need', 'how', 'do',
-]);
-
-function tokenize(s: string): string[] {
-  // Min length 3: 2-char tokens (`ui`, `id`) substring-match unrelated text
-  // (`guidance`, `valid`) and produce false-positive primitive matches.
-  return [
-    ...new Set(
-      s
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, ' ')
-        .split(' ')
-        .filter((t) => t.length >= 3 && !STOP.has(t)),
-    ),
-  ];
-}
-
-interface IMatchDetail {
-  /** Raw score: +1 per distinct query token that hits the haystack, +0.5 per role hit. */
-  score: number;
-  /** The distinct query tokens that matched — the evidence behind the score. */
-  matched: string[];
-  /** True when a query token matched the symbol name itself (the strongest signal). */
-  symbolHit: boolean;
-}
-
-function scorePrimitive(p: IReusePrimitive, tokens: readonly string[]): IMatchDetail {
-  // Substring match (so intent "debounce" matches symbol `useDebounce`); the
-  // 3-char minimum above keeps it from over-matching on tiny fragments.
-  const symbolLower = p.symbol.toLowerCase();
-  const hay = [p.symbol, ...(p.roles ?? []), ...(p.keywords ?? []), p.description ?? '']
-    .join(' ')
-    .toLowerCase();
-  let s = 0;
-  const matched: string[] = [];
-  let symbolHit = false;
-  for (const t of tokens) {
-    if (hay.includes(t)) {
-      s += 1;
-      matched.push(t);
-      if (symbolLower.includes(t)) symbolHit = true;
-    }
-  }
-  // A role the intent mentions is a strong signal; re-weight role hits.
-  for (const role of p.roles ?? []) {
-    const rl = role.toLowerCase();
-    if (rl.length >= 3 && tokens.some((t) => rl.includes(t))) s += 0.5;
-  }
-  return { score: s, matched, symbolHit };
-}
-
 /**
- * Confidence floor: a keyword collision is not a match. A hit is only "confident"
- * when it matched the symbol name itself, OR matched ≥2 distinct query tokens, OR
- * the query was a single token and that token hit. A single generic keyword hit on
- * a multi-token intent (the "nearest collision on an unrelated entry" failure mode)
- * is a weak match — surfaced as a did-you-mean, never as a confident answer.
+ * The did-you-mean ranker. The engine lives in `@shrkcrft/inspector` (pure, so
+ * a read-only MCP tool can call it); re-exported here for existing importers.
  */
-function isConfidentMatch(detail: IMatchDetail, queryTokenCount: number): boolean {
-  if (detail.matched.length === 0) return false;
-  if (detail.symbolHit) return true;
-  if (detail.matched.length >= 2) return true;
-  return queryTokenCount <= 1;
-}
+export { rankReuseSuggestions } from '@shrkcrft/inspector';
 
 const INDEX_RE = /(^|\/)index\.[cm]?[jt]sx?$/;
 
+/** Whether the uncurated public export surface was consulted, and how much of it. */
+enum ExportSurfaceStatus {
+  /** Every workspace package root was walked in full. */
+  Searched = 'searched',
+  /**
+   * Searched, but part of the surface could not be walked — a package with no
+   * resolved entry, or a local re-export the index could not follow. `reason`
+   * says which; the unwalked part is listed.
+   */
+  Partial = 'partial',
+  /** Nothing was searched: no graph index, or no package entry to start from. */
+  NotSearched = 'not-searched',
+  /** `--curated-only`. */
+  Disabled = 'disabled',
+}
+
+interface IExportSurfaceInfo {
+  status: ExportSurfaceStatus;
+  reason?: string;
+  roots: number;
+  packagesWithoutEntry: { package: string; reason: string }[];
+  size: number;
+  unresolvedReExports?: number;
+  /** Each re-export not followed: `unresolved` (local — NOT searched) or `external`. */
+  unfollowedReExports?: IUnfollowedReExport[];
+}
+
 interface IReuseResult {
   symbol: string;
+  /** `curated` (a reusePrimitives[] entry) or `export-surface` (uncurated). */
+  source: ReuseCandidateSource;
   score: number;
-  /** Fraction of distinct query tokens that hit this primitive (0..1). */
+  /** Fraction of distinct query tokens that hit this candidate (0..1). */
   confidence: number;
   /** The distinct query tokens that matched — the evidence behind the score. */
   matched: readonly string[];
+  /** Which fields the tokens hit (symbol / role / keyword / description). */
+  matchedVia: readonly ReuseMatchSource[];
+  /** The NAME-level match, by token equality. `none` = matched only through metadata. */
+  nameMatch: ReuseNameMatch;
   description?: string;
   roles: readonly string[];
-  /** Public import specifier — only set from a configured `importPath`. */
+  /** Uncurated only: the workspace package whose root entry exposes it. */
+  package?: string;
+  /** Public import specifier — a configured `importPath`, or (uncurated) the exposing package. */
   importPath?: string;
   importLine?: string;
+  /** How `importLine` binds the symbol — `default` for a module's default export. */
+  importStyle?: ReuseImportStyle;
+  /**
+   * Curated only, when the graph could check it: does `importPath` export the
+   * symbol? `false` = `importLine` would not compile (`shrk reuse coverage`
+   * fails on it).
+   */
+  importPathAgrees?: boolean;
   declaredIn?: string;
   declaredLine?: number;
+  /** Uncurated only: barrel files from the package entry to the declaration. */
+  via?: readonly string[];
+  /** It is its module's DEFAULT export (`importLine` is a default import). */
+  isDefault?: boolean;
   /** A barrel that re-exports the declaring file (a hint when importPath is unset). */
   reExportedVia?: string;
   siblings: string[];
@@ -105,53 +115,35 @@ interface IReuseResult {
   notFound?: boolean;
 }
 
-/** A weak (below-confidence) candidate offered as a did-you-mean, never as an answer. */
-interface IReuseSuggestion {
-  symbol: string;
-  score: number;
-  confidence: number;
-  matched: readonly string[];
-  roles: readonly string[];
-}
+const SOURCE_WORD: Record<ReuseMatchSource, string> = {
+  [ReuseMatchSource.Symbol]: 'name',
+  [ReuseMatchSource.Role]: 'roles',
+  [ReuseMatchSource.Keyword]: 'keywords',
+  [ReuseMatchSource.Description]: 'description',
+};
 
-/**
- * Rank ALL primitives by the matcher's own score (descending; ties broken by
- * symbol name so the order is deterministic), then return the top-`k` as scored
- * did-you-mean suggestions. Pure — no graph, no IO — so it is directly
- * unit-testable. When every candidate scores 0 (a nonsense intent that shares no
- * term) the result is the alphabetically-first `k` primitives, each with
- * `score: 0`; the caller states "no candidate shares any term" in that case
- * rather than dumping the whole catalog.
- */
-export function rankReuseSuggestions(
-  primitives: readonly IReusePrimitive[],
-  tokens: readonly string[],
-  k: number,
-): IReuseSuggestion[] {
-  const cap = Math.max(1, Math.floor(k));
-  return primitives
-    .map((p) => ({ p, detail: scorePrimitive(p, tokens) }))
-    .sort((a, b) => b.detail.score - a.detail.score || a.p.symbol.localeCompare(b.p.symbol))
-    .slice(0, cap)
-    .map(({ p, detail }) => ({
-      symbol: p.symbol,
-      score: detail.score,
-      confidence: tokens.length === 0 ? 0 : detail.matched.length / tokens.length,
-      matched: detail.matched,
-      roles: p.roles,
-    }));
-}
+const NAME_MATCH_WORDS: Record<ReuseNameMatch, string> = {
+  [ReuseNameMatch.Exact]: 'exact name match',
+  [ReuseNameMatch.Covers]: 'name covers the intent',
+  [ReuseNameMatch.Partial]: 'partial name match',
+  [ReuseNameMatch.None]: 'no name match',
+};
 
 export const reuseCommand: ICommandHandler = {
   name: 'reuse',
+  // The positionals are the free-form intent (`coverage` is a trie child).
+  positionals: PositionalMode.Free,
   description:
-    'Intent → the canonical primitive to reuse. Matches your intent against configured reusePrimitives[], then resolves the symbol in the code graph to its declaration, public import path, sibling exports, and real consumer files to copy. Deterministic; no AI.',
-  usage: 'shrk reuse "<what I want to build>" [--limit N] [--all] [--json]',
-  booleanFlags: new Set(['json', 'all']),
+    'Intent → the canonical primitive to reuse. Ranks configured reusePrimitives[] AND (with a code graph) the uncurated public export surface of every workspace package — an exactly-named exported construct outranks a curated entry that names only part of the intent or matched only through its metadata, and is labelled uncurated. Resolves each answer to its declaration, public import path (a default import for a default export), sibling exports and real consumer files. `shrk reuse coverage` measures curation drift. Deterministic; no AI.',
+  usage:
+    'shrk reuse "<what I want to build>" [--limit N] [--all] [--curated-only] [--include-types] [--json]   ·   shrk reuse coverage',
+  booleanFlags: new Set(['json', 'all', 'curated-only', 'include-types']),
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const wantJson = flagBool(args, 'json');
     const wantAll = flagBool(args, 'all');
+    const curatedOnly = flagBool(args, 'curated-only');
+    const includeTypes = flagBool(args, 'include-types');
     // `--limit N` caps both the confident results (historic default 3) and the
     // did-you-mean suggestion list. When omitted, suggestions default to 5 (a
     // couple more than results — the point of a did-you-mean is a short menu).
@@ -160,8 +152,10 @@ export const reuseCommand: ICommandHandler = {
     const suggestK = limitFlag ?? 5;
     const intent = args.positional.join(' ').trim();
     if (!intent) {
-      process.stderr.write('Usage: shrk reuse "<what I want to build>" [--limit N] [--all] [--json]\n');
-      return 2;
+      process.stderr.write(
+        'Usage: shrk reuse "<what I want to build>" [--limit N] [--all] [--curated-only] [--include-types] [--json]\n',
+      );
+      return ExitCode.UsageError;
     }
 
     const loaded = await resolveProjectConfig(cwd);
@@ -184,189 +178,175 @@ export const reuseCommand: ICommandHandler = {
     const writePlaneNotes = (): void => {
       for (const d of planeDiagnostics) process.stdout.write(`  ! ${d}\n`);
     };
-    if (primitives.length === 0) {
-      if (wantJson) {
-        process.stdout.write(asJson({ schema: 'sharkcraft.reuse/v1', intent, results: [], ...planeJson }) + '\n');
-        return 0;
-      }
-      process.stdout.write(header(`Reuse: "${intent}"`));
-      process.stdout.write(
-        '  No reuse primitives configured. Declare `reusePrimitives[]` in sharkcraft.config.ts\n' +
-          '  to map roles/intents to canonical symbols (see docs/reuse.md).\n',
-      );
-      writePlaneNotes();
-      return 0;
-    }
-
-    const tokens = tokenize(intent);
-    const confidenceOf = (matched: number): number =>
-      tokens.length === 0 ? 0 : matched / tokens.length;
-    const scored = primitives
-      .map((p) => ({ p, detail: scorePrimitive(p, tokens) }))
-      .filter((x) => x.detail.score > 0)
-      .sort((a, b) => b.detail.score - a.detail.score || a.p.symbol.localeCompare(b.p.symbol));
-    const confident = scored.filter((x) => isConfidentMatch(x.detail, tokens.length));
-    const ranked = confident.slice(0, Math.max(1, limit));
 
     const store = new GraphStore(cwd);
     const api = store.exists() ? GraphQueryApi.fromStore(cwd) : null;
 
-    // Zero keyword overlap: nothing matched at all. Rather than dump the entire
-    // declared catalog (dozens of lines an agent must re-read), rank ALL
-    // candidates and surface the nearest top-K by name — every score is 0 here,
-    // so this is an alphabetized short menu, stated as such. The full catalog is
-    // available only behind an explicit `--all`.
-    if (scored.length === 0) {
-      const suggestions = rankReuseSuggestions(primitives, tokens, suggestK);
-      const roles = [...new Set(primitives.flatMap((p) => p.roles))].sort();
-      if (wantJson) {
-        process.stdout.write(
-          asJson({
-            schema: 'sharkcraft.reuse/v1',
-            intent,
-            confident: false,
-            results: [],
-            suggestions,
-            ...(wantAll ? { availableRoles: roles } : {}),
-            ...planeJson,
-          }) + '\n',
-        );
-        return 0;
-      }
-      process.stdout.write(header(`Reuse: "${intent}"`));
-      if (wantAll) {
-        process.stdout.write(
-          '  No primitive matched — no candidate shares any term — showing full catalog:\n',
-        );
-        for (const r of roles.slice(0, 40)) process.stdout.write(`    • ${r}\n`);
-      } else {
-        process.stdout.write(
-          '  No strong match — no candidate shares any term with the intent.\n' +
-            '  Nearest primitives (pass --all for the full catalog):\n',
-        );
-        for (const s of suggestions) {
-          process.stdout.write(`    • ${s.symbol}  (score ${s.score}; roles: ${s.roles.join(', ') || '—'})\n`);
-        }
-      }
-      writePlaneNotes();
-      return 0;
-    }
+    // The public surface, whenever a graph exists: the uncurated candidates
+    // (unless --curated-only), AND — always — how a curated `importPath`
+    // exports its symbol, so the printed import line compiles. Lazy + memoized.
+    const fullSurface = api ? api.publicExportSurface() : undefined;
+    const lookup = api ? graphReuseLookup(api) : undefined;
+    // ONE resolution per curated entry — the record `shrk reuse coverage` judges
+    // the entry by: its construct, its import line, whether that compiles.
+    const resolutionList = primitives.map((p) => resolveCuratedReuse(p, fullSurface, lookup));
+    const resolutions = new Map<IReusePrimitive, IReuseCuratedResolution>(
+      primitives.map((p, i) => [p, resolutionList[i]!]),
+    );
 
-    // Weak overlap only (a single generic keyword collision on an unrelated
-    // entry): below the confidence floor. A miss must look like a miss — never
-    // return the nearest collision as a confident answer. Offer did-you-mean.
-    if (ranked.length === 0) {
-      // Rank the weakly-overlapping candidates (score > 0) and cap at K — never
-      // the whole catalog. `suggestions` and the legacy `didYouMean` alias carry
-      // the same scored rows; `--all` additionally dumps every declared role.
-      const suggestions: IReuseSuggestion[] = scored.slice(0, Math.max(1, suggestK)).map((x) => ({
-        symbol: x.p.symbol,
-        score: x.detail.score,
-        confidence: confidenceOf(x.detail.matched.length),
-        matched: x.detail.matched,
-        roles: x.p.roles,
-      }));
-      const roles = [...new Set(primitives.flatMap((p) => p.roles))].sort();
-      if (wantJson) {
-        process.stdout.write(
-          asJson({
-            schema: 'sharkcraft.reuse/v1',
-            intent,
-            confident: false,
-            results: [],
-            suggestions,
-            didYouMean: suggestions,
-            ...(wantAll ? { availableRoles: roles } : {}),
-            ...planeJson,
-          }) + '\n',
-        );
-        return 0;
-      }
-      process.stdout.write(header(`Reuse: "${intent}"`));
-      process.stdout.write(
-        '  No confident match — the intent only weakly overlaps existing primitives.\n' +
-          '  Did you mean (weak, verify before reusing):\n',
-      );
-      for (const s of suggestions) {
-        process.stdout.write(
-          `    • ${s.symbol}  (score ${s.score}, ${Math.round(s.confidence * 100)}% of intent; matched: ${s.matched.join(', ') || '—'})\n`,
-        );
-      }
-      if (wantAll) {
-        process.stdout.write('  Full catalog (all declared roles):\n');
-        for (const r of roles.slice(0, 40)) process.stdout.write(`    • ${r}\n`);
-      }
-      writePlaneNotes();
-      return 0;
-    }
-
-    const results: IReuseResult[] = ranked.map(({ p, detail }) => {
-      const score = detail.score;
-      const r: IReuseResult = {
-        symbol: p.symbol,
-        score,
-        confidence: confidenceOf(detail.matched.length),
-        matched: detail.matched,
-        roles: p.roles,
-        siblings: [],
-        consumers: [],
+    // The uncurated export surface — searched whenever a graph exists and has a
+    // package root, unless the caller asked for the curated index alone. A
+    // skipped (or partial) search is said out loud: "no uncurated match" and
+    // "never looked" must not read alike.
+    let surface: IPublicExportSurface | undefined;
+    let exportSurface: IExportSurfaceInfo;
+    if (curatedOnly) {
+      exportSurface = { status: ExportSurfaceStatus.Disabled, reason: '--curated-only', roots: 0, packagesWithoutEntry: [], size: 0 };
+    } else if (!fullSurface) {
+      exportSurface = {
+        status: ExportSurfaceStatus.NotSearched,
+        reason: 'no graph index — run `shrk graph index`',
+        roots: 0,
+        packagesWithoutEntry: [],
+        size: 0,
       };
-      if (p.description) r.description = p.description;
-      if (p.importPath) r.importPath = p.importPath;
-      if (api) {
-        // Disambiguate same-named declarations deterministically: prefer
-        // exported symbols, then shallowest path; disclose the alternates.
-        const candidates = api
-          .findSymbol(p.symbol, { exact: true })
-          .slice()
-          .sort((a, b) => (a.path ?? '').localeCompare(b.path ?? ''));
-        const exported = candidates.filter((c) => c.data?.['isExported'] === true);
-        const pool = exported.length > 0 ? exported : candidates;
-        const sym = pool[0];
-        if (sym) {
-          if (sym.path) r.declaredIn = sym.path;
-          if (sym.line) r.declaredLine = sym.line;
-          if (sym.path) {
-            const fileNode = api.findFile(sym.path);
-            if (fileNode) {
-              r.siblings = api
-                .symbolsIn(fileNode.id)
-                .filter((s) => s.data?.['isExported'] === true && s.label && s.label !== p.symbol)
-                .map((s) => s.label)
-                .slice(0, 8);
-              // When no public importPath is configured, surface a re-exporting
-              // barrel as a hint (we never fabricate a module specifier from a
-              // deep file path — that would be a broken/unusable import).
-              if (!r.importPath) {
-                const barrel = api.importersOf(fileNode.id).find((n) => n.path && INDEX_RE.test(n.path));
-                if (barrel?.path) r.reExportedVia = barrel.path;
-              }
-            }
-          }
-          const sites = api.referenceSitesOf(sym.id);
-          r.consumerTotal = sites.length;
-          r.consumers = sites
-            .slice(0, 5)
-            .map((s) => ({ path: s.node.path ?? s.node.id, ...(s.line ? { line: s.line } : {}) }));
-          const alts = pool.slice(1).map((c) => c.path).filter((x): x is string => !!x);
-          if (alts.length > 0) r.alternates = alts;
-        } else {
-          r.notFound = true;
-        }
+    } else if (fullSurface.roots.length === 0) {
+      // Zero roots walked is "never looked", never "looked, found nothing".
+      exportSurface = {
+        status: ExportSurfaceStatus.NotSearched,
+        reason:
+          fullSurface.packagesWithoutEntry.length > 0
+            ? 'no package entry resolves to an indexed file'
+            : 'no workspace packages (package.json `workspaces`)',
+        roots: 0,
+        packagesWithoutEntry: fullSurface.packagesWithoutEntry.map((p) => ({ package: p.package, reason: p.reason })),
+        size: 0,
+      };
+    } else {
+      surface = fullSurface;
+      const local = fullSurface.unfollowedReExports.filter((u) => u.kind === UnfollowedReExportKind.Unresolved);
+      const gaps: string[] = [];
+      if (fullSurface.packagesWithoutEntry.length > 0) {
+        const total = fullSurface.roots.length + fullSurface.packagesWithoutEntry.length;
+        gaps.push(`${fullSurface.packagesWithoutEntry.length} of ${total} package(s) have no resolved entry`);
       }
-      // The import line is emitted ONLY from a configured importPath (a clean,
-      // copy-pasteable specifier). Without it we show declaration + barrel hint.
-      if (r.importPath) r.importLine = `import { ${p.symbol} } from '${r.importPath}';`;
-      return r;
+      if (local.length > 0) gaps.push(`${local.length} re-export(s) the index could not follow`);
+      exportSurface = {
+        status: gaps.length > 0 ? ExportSurfaceStatus.Partial : ExportSurfaceStatus.Searched,
+        ...(gaps.length > 0 ? { reason: gaps.join('; ') } : {}),
+        roots: fullSurface.roots.length,
+        packagesWithoutEntry: fullSurface.packagesWithoutEntry.map((p) => ({ package: p.package, reason: p.reason })),
+        size: fullSurface.exports.length,
+        ...(fullSurface.unfollowedReExports.length > 0
+          ? {
+              unresolvedReExports: fullSurface.unfollowedReExports.length,
+              unfollowedReExports: [...fullSurface.unfollowedReExports],
+            }
+          : {}),
+      };
+    }
+
+    // The curated constructs, by resolved declaration — exactly the exclusion
+    // `shrk reuse coverage` applies (a same-named export of a DIFFERENT
+    // construct stays a candidate).
+    const curatedDeclaredIn = api ? curatedDeclarationMap(primitives, resolutionList) : undefined;
+    const ranking = rankReuseCandidates(primitives, surface, intent, {
+      limit,
+      suggestLimit: suggestK,
+      includeTypes,
+      curatedOnly,
+      ...(curatedDeclaredIn ? { curatedDeclaredIn } : {}),
     });
+    const confidenceJson = {
+      confident: ranking.confident,
+      verdict: ranking.verdict,
+      floor: ranking.floor,
+      bestScore: ranking.bestScore,
+    };
+    // The miss path only (nothing matched by NAME): is the index behind? The
+    // freshness walk is not free, so it never runs on a hit.
+    const behind = api && !ranking.nameAnswered ? indexBehindHint(cwd) : null;
+    const surfaceJson = {
+      exportSurface,
+      curationGap: ranking.curationGap,
+      superseded: ranking.superseded,
+      ...(behind ? { indexBehind: behind } : {}),
+    };
+
+    const writeSurfaceNotes = (): void => {
+      if (exportSurface.status === ExportSurfaceStatus.NotSearched) {
+        process.stdout.write(
+          api
+            ? `  ⚠ uncurated export surface NOT searched (${exportSurface.reason ?? 'no package root'})\n`
+            : '  ⚠ uncurated export surface NOT searched (no graph index) — run `shrk graph index`\n',
+        );
+      }
+      const byReason = new Map<string, string[]>();
+      for (const p of exportSurface.packagesWithoutEntry) {
+        const list = byReason.get(p.reason);
+        if (list) list.push(p.package);
+        else byReason.set(p.reason, [p.package]);
+      }
+      for (const [reason, pkgs] of byReason) {
+        const shown = pkgs.slice(0, 4).join(', ') + (pkgs.length > 4 ? `, +${pkgs.length - 4} more` : '');
+        process.stdout.write(`  ⚠ ${pkgs.length} package(s) not searched — ${reason} (${shown})\n`);
+      }
+      const unfollowed = exportSurface.unfollowedReExports ?? [];
+      const local = unfollowed.filter((u) => u.kind === UnfollowedReExportKind.Unresolved);
+      if (local.length > 0) {
+        const shown = local.slice(0, 3).map(formatUnfollowed).join(', ') + (local.length > 3 ? `, +${local.length - 3} more` : '');
+        process.stdout.write(`  ⚠ ${local.length} re-export(s) not followed — part of the surface NOT searched (${shown})\n`);
+      }
+      const external = unfollowed.length - local.length;
+      if (external > 0) {
+        process.stdout.write(`  (${external} re-export(s) of modules outside the workspace not followed)\n`);
+      }
+      for (const s of ranking.superseded) {
+        process.stdout.write(
+          `  (superseded: ${s.symbol} from ${s.package} → use ${s.supersededBy.join(' / ')} — per reusePrimitives[].supersedes)\n`,
+        );
+      }
+      if (behind) process.stdout.write(`  ⚠ ${behind}\n`);
+    };
+
+    if (ranking.results.length === 0) {
+      return writeNoAnswer({
+        intent,
+        ranking,
+        primitivesCount: primitives.length,
+        roles: [...new Set(primitives.flatMap((p) => p.roles))].sort(),
+        wantJson,
+        wantAll,
+        extraJson: { ...confidenceJson, ...surfaceJson, ...planeJson },
+        writeNotes: () => {
+          writePlaneNotes();
+          writeSurfaceNotes();
+        },
+      });
+    }
+
+    const results = ranking.results.map((c) =>
+      enrichResult(c, api, c.primitive ? resolutions.get(c.primitive) : undefined),
+    );
 
     if (wantJson) {
-      process.stdout.write(asJson({ schema: 'sharkcraft.reuse/v1', intent, graphIndexed: !!api, results, ...planeJson }) + '\n');
+      process.stdout.write(
+        asJson({
+          schema: 'sharkcraft.reuse/v1',
+          intent,
+          graphIndexed: !!api,
+          ...confidenceJson,
+          results,
+          ...surfaceJson,
+          ...planeJson,
+        }) + '\n',
+      );
       return 0;
     }
 
     process.stdout.write(header(`Reuse: "${intent}"`));
     writePlaneNotes();
+    writeSurfaceNotes();
     if (!api) {
       process.stdout.write(
         '  (code graph missing — import path/siblings/consumers limited; run `shrk graph index`)\n',
@@ -375,11 +355,9 @@ export const reuseCommand: ICommandHandler = {
     let i = 0;
     for (const r of results) {
       i += 1;
-      process.stdout.write(`\n${i}. ${r.symbol}\n`);
+      process.stdout.write(`\n${i}. ${r.symbol}  [${resultLabel(r)}]\n`);
       if (r.description) process.stdout.write(`   ${r.description}\n`);
-      process.stdout.write(
-        `   match: score ${r.score} (${Math.round(r.confidence * 100)}% of intent; matched: ${r.matched.join(', ') || '—'})\n`,
-      );
+      process.stdout.write(`   match: ${matchLine(r)}\n`);
       if (r.notFound) {
         process.stdout.write(
           '   ⚠ symbol not found in the code graph — verify reusePrimitives[].symbol (typo/rename?) or run `shrk graph index`\n',
@@ -387,6 +365,11 @@ export const reuseCommand: ICommandHandler = {
       }
       if (r.importLine) {
         process.stdout.write(`   import: ${r.importLine}\n`);
+        if (r.importPathAgrees === false) {
+          process.stdout.write(
+            `   ⚠ '${r.importPath}' does not export ${r.symbol} (per the index) — this import would not compile; see \`shrk reuse coverage\`\n`,
+          );
+        }
       } else if (r.reExportedVia) {
         process.stdout.write(
           `   re-exported via: ${r.reExportedVia}  (set reusePrimitives[].importPath for a copy-paste import)\n`,
@@ -395,6 +378,7 @@ export const reuseCommand: ICommandHandler = {
       if (r.declaredIn) {
         process.stdout.write(`   declared in: ${r.declaredIn}${r.declaredLine ? ':' + r.declaredLine : ''}\n`);
       }
+      if (r.via && r.via.length > 0) process.stdout.write(`   reached via: ${r.via.join(' → ')}\n`);
       if (r.alternates && r.alternates.length > 0) {
         process.stdout.write(`   ⚠ name also declared in: ${r.alternates.join(', ')}\n`);
       }
@@ -409,6 +393,221 @@ export const reuseCommand: ICommandHandler = {
         for (const c of r.consumers) process.stdout.write(`     - ${c.path}${c.line ? ':' + c.line : ''}\n`);
       }
     }
+    if (ranking.curationGap) {
+      process.stdout.write(
+        '\n  ⚠ Curation gap: an uncurated export matches this intent by NAME, while the best curated\n' +
+          '    candidate names only part of it, or matched only through its roles/keywords/description.\n' +
+          '    Add the export to reusePrimitives[] — or list it in the curated entry\'s `supersedes` — and\n' +
+          '    run `shrk reuse coverage` to see every such gap.\n',
+      );
+    }
     return 0;
   },
 };
+
+/** No confident answer: a weak did-you-mean, or a plain "nothing shares a term". */
+function writeNoAnswer(o: {
+  intent: string;
+  ranking: IReuseRanking;
+  primitivesCount: number;
+  roles: string[];
+  wantJson: boolean;
+  wantAll: boolean;
+  extraJson: Record<string, unknown>;
+  writeNotes: () => void;
+}): number {
+  const { ranking, wantAll } = o;
+  const suggestions = ranking.suggestions;
+  const weak = ranking.verdict === MatchConfidenceVerdict.NoConfidentMatch;
+  if (o.wantJson) {
+    process.stdout.write(
+      asJson({
+        schema: 'sharkcraft.reuse/v1',
+        intent: o.intent,
+        results: [],
+        suggestions,
+        // The legacy alias, kept on the weak branch where it always lived.
+        ...(weak ? { didYouMean: suggestions } : {}),
+        ...(wantAll ? { availableRoles: o.roles } : {}),
+        ...o.extraJson,
+      }) + '\n',
+    );
+    return 0;
+  }
+  process.stdout.write(header(`Reuse: "${o.intent}"`));
+  if (o.primitivesCount === 0) {
+    process.stdout.write(
+      '  No reuse primitives configured. Declare `reusePrimitives[]` in sharkcraft.config.ts\n' +
+        '  to map roles/intents to canonical symbols (see docs/reuse.md).\n',
+    );
+  }
+  if (weak) {
+    // Weak overlap only (a single generic keyword collision on an unrelated
+    // entry, or an export sharing only part of the name): below the confidence
+    // floor. A miss must look like a miss — never the nearest collision as an answer.
+    process.stdout.write(
+      '  No confident match — the intent only weakly overlaps existing candidates.\n' +
+        '  Did you mean (weak, verify before reusing):\n',
+    );
+    for (const s of suggestions) process.stdout.write(`    • ${suggestionLine(s)}\n`);
+    if (wantAll) {
+      process.stdout.write('  Full catalog (all declared roles):\n');
+      for (const r of o.roles.slice(0, 40)) process.stdout.write(`    • ${r}\n`);
+    }
+  } else if (o.primitivesCount > 0) {
+    // Zero overlap: rather than dump the whole catalog, the alphabetized
+    // nearest top-K (every score is 0 here), stated as such. The full catalog
+    // is available only behind an explicit `--all`.
+    if (wantAll) {
+      process.stdout.write('  No primitive matched — no candidate shares any term — showing full catalog:\n');
+      for (const r of o.roles.slice(0, 40)) process.stdout.write(`    • ${r}\n`);
+    } else {
+      process.stdout.write(
+        '  No strong match — no candidate shares any term with the intent.\n' +
+          '  Nearest primitives (pass --all for the full catalog):\n',
+      );
+      for (const s of suggestions) {
+        process.stdout.write(`    • ${s.symbol}  (score ${s.score}; roles: ${s.roles.join(', ') || '—'})\n`);
+      }
+    }
+  }
+  o.writeNotes();
+  return 0;
+}
+
+/**
+ * Resolve one ranked candidate through the code graph (declaration, import,
+ * siblings, consumers). A curated row is printed from its
+ * `IReuseCuratedResolution` — the SAME record `shrk reuse coverage` judges the
+ * entry by — so the declaration shown and the import line printed are the ones
+ * the coverage verdict checked.
+ */
+function enrichResult(
+  c: IReuseCandidate,
+  api: GraphQueryApi | null,
+  res: IReuseCuratedResolution | undefined,
+): IReuseResult {
+  const r: IReuseResult = {
+    symbol: c.symbol,
+    source: c.source,
+    score: c.score,
+    confidence: c.confidence,
+    matched: c.matched,
+    matchedVia: c.matchedVia,
+    nameMatch: c.nameMatch,
+    roles: c.primitive?.roles ?? [],
+    siblings: [],
+    consumers: [],
+  };
+  const p = c.primitive;
+  if (p) {
+    if (p.description) r.description = p.description;
+    if (p.importPath) {
+      r.importPath = p.importPath;
+      // The import line is emitted ONLY from a real specifier (the configured
+      // importPath), bound the way its module exports the symbol.
+      const style = res?.importStyle ?? ReuseImportStyle.Named;
+      r.importLine = res?.importLine ?? reuseImportLine(p.symbol, p.importPath, style);
+      r.importStyle = style;
+      if (style === ReuseImportStyle.Default) r.isDefault = true;
+    }
+    if (res?.importPathAgrees !== undefined) r.importPathAgrees = res.importPathAgrees;
+    if (api) {
+      const d = res?.declaration;
+      if (d) {
+        r.declaredIn = d.path;
+        if (d.line) r.declaredLine = d.line;
+        const fileNode = api.findFile(d.path);
+        if (fileNode) {
+          r.siblings = exportedSiblings(api, fileNode.id, d.symbolId);
+          // When no public importPath is configured, surface a re-exporting
+          // barrel as a hint (we never fabricate a module specifier from a
+          // deep file path — that would be a broken/unusable import).
+          if (!r.importPath) {
+            const barrel = api.importersOf(fileNode.id).find((n) => n.path && INDEX_RE.test(n.path));
+            if (barrel?.path) r.reExportedVia = barrel.path;
+          }
+        }
+        setConsumers(r, api, d.symbolId);
+        if (res && res.alternates.length > 0) r.alternates = [...res.alternates];
+      } else {
+        r.notFound = true;
+      }
+    }
+  } else if (c.export) {
+    // Uncurated: the package name IS a real, copy-pasteable specifier — the
+    // construct is reachable from that package's root entry, which is exactly
+    // the file `import … from '<pkg>'` resolves to. Nothing is fabricated.
+    const e = c.export;
+    r.package = e.package;
+    r.importPath = e.package;
+    r.declaredIn = e.declaredIn;
+    if (e.line) r.declaredLine = e.line;
+    r.via = e.via;
+    const style = e.isDefault === true ? ReuseImportStyle.Default : ReuseImportStyle.Named;
+    if (e.isDefault) r.isDefault = true;
+    r.importStyle = style;
+    r.importLine = reuseImportLine(c.symbol, e.package, style);
+    if (api) {
+      const fileNode = api.findFile(e.declaredIn);
+      if (fileNode) r.siblings = exportedSiblings(api, fileNode.id, e.symbolId);
+      setConsumers(r, api, e.symbolId);
+    }
+  }
+  return r;
+}
+
+function exportedSiblings(api: GraphQueryApi, fileNodeId: string, selfId: string): string[] {
+  return api
+    .symbolsIn(fileNodeId)
+    .filter((s) => s.data?.['isExported'] === true && s.label && s.id !== selfId)
+    .map((s) => s.label)
+    .slice(0, 8);
+}
+
+function setConsumers(r: IReuseResult, api: GraphQueryApi, symbolId: string): void {
+  const sites = api.referenceSitesOf(symbolId);
+  r.consumerTotal = sites.length;
+  r.consumers = sites
+    .slice(0, 5)
+    .map((s) => ({ path: s.node.path ?? s.node.id, ...(s.line ? { line: s.line } : {}) }));
+}
+
+function formatUnfollowed(u: IUnfollowedReExport): string {
+  return `${u.file} → '${u.specifier}'${u.name === '*' ? '' : ` { ${u.name} }`}`;
+}
+
+/** `[uncurated · exported by @demo/ui · exact name match]` / `[curated · via keywords — not its name]`. */
+function resultLabel(r: IReuseResult): string {
+  if (r.source === ReuseCandidateSource.ExportSurface) {
+    return `uncurated · exported by ${r.package ?? '?'} · ${NAME_MATCH_WORDS[r.nameMatch]}`;
+  }
+  if (r.nameMatch === ReuseNameMatch.None) return `curated · via ${metadataVia(r)} — not its name`;
+  return `curated · ${NAME_MATCH_WORDS[r.nameMatch]}`;
+}
+
+function matchLine(r: IReuseResult): string {
+  const pct = Math.round(r.confidence * 100);
+  const matched = r.matched.join(', ') || '—';
+  if (r.source === ReuseCandidateSource.Curated && r.nameMatch === ReuseNameMatch.None) {
+    // The honesty qualifier: a high percentage earned only through metadata
+    // must not read like a name match.
+    return `score ${r.score} (${pct}% of intent — via ${metadataVia(r)}; not its name; matched: ${matched})`;
+  }
+  return `score ${r.score} (${pct}% of intent; matched: ${matched})`;
+}
+
+function metadataVia(r: { matchedVia: readonly ReuseMatchSource[] }): string {
+  const words = r.matchedVia.filter((v) => v !== ReuseMatchSource.Symbol).map((v) => SOURCE_WORD[v]);
+  return words.length > 0 ? words.join(', ') : 'metadata';
+}
+
+function suggestionLine(s: IReuseSuggestion): string {
+  const pct = Math.round(s.confidence * 100);
+  const matched = s.matched.join(', ') || '—';
+  if (s.source === ReuseCandidateSource.ExportSurface) {
+    return `${s.symbol}  (uncurated · exported by ${s.package ?? '?'} · ${NAME_MATCH_WORDS[s.nameMatch]}; score ${s.score}, ${pct}% of intent; matched: ${matched})`;
+  }
+  const via = s.nameMatch === ReuseNameMatch.None ? ` — via ${metadataVia(s)}, not its name` : '';
+  return `${s.symbol}  (score ${s.score}, ${pct}% of intent; matched: ${matched}${via})`;
+}

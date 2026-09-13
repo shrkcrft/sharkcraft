@@ -17,19 +17,46 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import type { IBaselineRule } from '@shrkcrft/core';
+import type {
+  IBaselineRule,
+  ISettledRuleEmptiness,
+  ISettledUnitLiveness,
+  IUnitLiveness,
+  IUnitStateLists,
+} from '@shrkcrft/core';
+import type { IGlobLivenessRequest } from '@shrkcrft/boundaries';
 import {
-  resolveSourceGlobs, failsWhenEmpty } from '@shrkcrft/core';
+  coverageShortfall,
+  failsWhenEmpty,
+  formatEmptyRuleAdvice,
+  normalizeRuleList,
+  normalizeWiringSource,
+  resolveSourceGlobs,
+  RuleEmptiness,
+  ruleAssertsEmptyOutput,
+  settleRuleEmptiness,
+  unitStateLists,
+  UnitLivenessState,
+} from '@shrkcrft/core';
+import { settleVerdict } from '../gates/settle-verdict.ts';
 import {
   baselineCount,
   baselineFails,
   ceilingValue,
+  clearFileReadCache,
   computeBaselineFromExtractor,
   diffBaseline,
   evaluateCeiling,
-  matchesAny,
+  globListSelects,
+  planeScanExcludeDirs,
+  readGlobListUnits,
+  readScopeCoverage,
+  readScopeHasUnread,
+  settleGlobLists,
+  sourceLivenessRequest,
   type IBaselineDiff,
   type ICeilingVerdict,
+  type IReadScope,
 } from '@shrkcrft/boundaries';
 import { resolveChangedFiles, resolveProjectConfig } from '@shrkcrft/inspector';
 import {
@@ -39,9 +66,18 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { ExitCode } from '../exit-codes.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
-import { buildGateEnvelope } from '../gates/gate-envelope.ts';
+import { buildGateEnvelope, type IGateRuleResult } from '../gates/gate-envelope.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
+import { acceptedEmptyNote } from '../gates/accepted-empty-note.ts';
+import { emptyRuleAdviceLines } from '../gates/empty-rule-advice-lines.ts';
+import { qualifyCleanForUnits } from '../gates/qualify-clean-for-units.ts';
+import { unitStateNotes } from '../gates/unit-state-notes.ts';
+import { planeVerdictForExit } from '../gates/plane-verdict.ts';
+import { seamRejectedRules } from '../gates/seam-rejected-rules.ts';
+import type { IVerdictCoverage } from '@shrkcrft/core';
 
 const SCHEMA = 'sharkcraft.baseline/v1';
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -51,6 +87,8 @@ interface ILoadedBaselines {
   readonly rules: readonly IBaselineRule[];
   readonly planeDiagnostics: readonly string[];
   readonly sharkcraftDirRel: string;
+  /** Pack baselines the merge seam rejected — declared, never computed (round 12 review, R12-X1). */
+  readonly rejected: readonly IGateRuleResult[];
 }
 
 async function loadBaselines(
@@ -58,13 +96,14 @@ async function loadBaselines(
 ): Promise<{ ok: true; value: ILoadedBaselines } | { ok: false; message: string }> {
   const loaded = await resolveProjectConfig(cwd);
   if (!loaded.ok) return { ok: false, message: loaded.error.message };
-  const rel = nodePath.relative(cwd, loaded.value.sharkcraftDir).split(nodePath.sep).join('/');
   return {
     ok: true,
     value: {
       rules: loaded.value.config.baselines ?? [],
       planeDiagnostics: loaded.value.planeDiagnostics,
-      sharkcraftDirRel: rel && !rel.startsWith('..') ? rel : '',
+      rejected: seamRejectedRules(loaded.value, ['baseline']),
+      // THE plane scan scope (one entry, or none).
+      sharkcraftDirRel: planeScanExcludeDirs(cwd, loaded.value.sharkcraftDir)[0] ?? '',
     },
   };
 }
@@ -73,10 +112,12 @@ async function loadBaselines(
 function selectRules(
   rules: readonly IBaselineRule[],
   id: string | undefined,
+  /** Ids that are declared but did not load (merge-seam rejections) — selectable by a verdict verb. */
+  extraKnown: readonly string[] = [],
 ): { ok: true; rules: readonly IBaselineRule[] } | { ok: false; message: string } {
   if (!id) return { ok: true, rules };
   const wanted = id.split(',').map((s) => s.trim()).filter(Boolean);
-  const known = new Set(rules.map((r) => r.id));
+  const known = new Set([...rules.map((r) => r.id), ...extraKnown]);
   const unknown = wanted.filter((w) => !known.has(w));
   if (unknown.length > 0) {
     return {
@@ -92,20 +133,30 @@ interface IComputed {
   readonly text: string;
   readonly error?: string;
   readonly filesScanned?: number;
+  /** Set when the extractor matched a file the reader did not read: the value is incomplete. */
+  readonly readScope?: IReadScope;
+  /**
+   * How many UNITS the compute measured: an extractor's distinct ids (its
+   * serialised text is `[]` when it found none, so text can never answer
+   * "empty?" for it — round 13, P1), or for a command 1 when it printed
+   * anything and 0 when it printed nothing.
+   */
+  readonly unitCount: number;
 }
 
 function computeCurrent(cwd: string, rule: IBaselineRule, excludeDirs: readonly string[]): IComputed {
   if (rule.compute.kind === 'extractor') {
     const source = rule.compute.source;
-    if (!source) return { text: '', error: 'compute.kind "extractor" but no `source` declared' };
+    if (!source) return { text: '', error: 'compute.kind "extractor" but no `source` declared', unitCount: 0 };
     const res = computeBaselineFromExtractor(cwd, source, excludeDirs);
+    const readScope = res.unread.length > 0 ? { readScope: { read: res.filesScanned, unread: res.unread } } : {};
     return res.error
-      ? { text: '', error: res.error, filesScanned: res.filesScanned }
-      : { text: res.text, filesScanned: res.filesScanned };
+      ? { text: '', error: res.error, filesScanned: res.filesScanned, unitCount: 0 }
+      : { text: res.text, filesScanned: res.filesScanned, unitCount: res.ids.length, ...readScope };
   }
   const run = rule.compute.run;
   if (!run || run.trim() === '') {
-    return { text: '', error: 'compute.kind "command" but no `run` declared' };
+    return { text: '', error: 'compute.kind "command" but no `run` declared', unitCount: 0 };
   }
   const child = spawnSync(run, {
     cwd,
@@ -114,15 +165,23 @@ function computeCurrent(cwd: string, rule: IBaselineRule, excludeDirs: readonly 
     timeout: rule.compute.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     maxBuffer: 16 * 1024 * 1024,
   });
-  if (child.error) return { text: '', error: `compute command failed to start: ${child.error.message}` };
+  // The command may rewrite files anywhere: drop every memoised tree read, so
+  // a read-cache window (`withFileReadCache`, e.g. `shrk quality`'s plane
+  // section) never serves a pre-spawn snapshot after it.
+  clearFileReadCache();
+  if (child.error) {
+    return { text: '', error: `compute command failed to start: ${child.error.message}`, unitCount: 0 };
+  }
   if (child.status !== 0) {
     const tail = String(child.stderr ?? '').trim().split('\n').slice(-3).join(' | ');
     return {
       text: '',
       error: `compute command exited ${child.status ?? 'null'}${tail ? ` — ${tail}` : ''}`,
+      unitCount: 0,
     };
   }
-  return { text: String(child.stdout ?? '') };
+  const text = String(child.stdout ?? '');
+  return { text, unitCount: text.trim() === '' ? 0 : 1 };
 }
 
 /**
@@ -148,14 +207,166 @@ export interface IBaselineOutcome {
   readonly missingBaseline?: boolean;
   /** Set for a `mode: 'ceiling'` rule: the measured number against its limit. */
   readonly ceiling?: ICeilingVerdict;
+  /**
+   * Set when the extractor compute matched a file the reader did not read
+   * (over the read cap): the recomputed value is incomplete, so
+   * {@link baselineCoverage} names the file and the rule is never a pass.
+   */
+  readonly readScope?: IReadScope;
+  /**
+   * Set when the rule's EMPTY result is accepted (round 13, `settleRuleEmptiness`):
+   * the fence's asserted empty output (`expectEmpty: true` over live or planned
+   * inputs — never over a dead one), or an intended-empty input (every
+   * inclusion glob of the extractor's `source.files` marked `expectEmpty`, no
+   * file matched). It stands in for the rule's coverage ({@link baselineCoverage}).
+   */
+  readonly emptyCoverage?: IVerdictCoverage;
+  /** Settle record B of the rule's input globs (`compute.source.files` / `to.files`, `watchFiles`). */
+  readonly unitAcceptance?: IVerdictCoverage;
+  /** The rule's dead / intended-empty / went-live input units as printed lines. */
+  readonly units?: IUnitStateLists;
+  /** The rule's non-live input units, for `--fail-on-dead-units` (`selectorUnitFails`). */
+  readonly unitLiveness?: readonly IUnitLiveness[];
+}
+
+/** A ledger whose recompute and committed side are both empty, in its words. */
+const LEDGER_EMPTY = 'the recompute produced no entries (and the committed baseline is empty too)';
+/** A ceiling over a measurement that measured nothing, in its words. */
+const CEILING_EMPTY = 'the compute produced nothing — a ceiling over an empty measurement proves nothing';
+/** A bless (`baseline update`) whose recompute measured nothing, in its words. */
+const UPDATE_EMPTY = 'the recompute produced no entries';
+
+/**
+ * THE glob lists of a baseline's INPUTS (round 13): an extractor compute's
+ * `source` (`compute.source.files`, and `to.files` for an import-edges fence)
+ * and the rule's `watchFiles` — with their `expectEmpty` markers. `baseline
+ * check` settles it (`settleGlobLists`) and `gates coverage` builds the same
+ * request, so the two read one baseline's units alike. `primaryLists` names
+ * the lists whose liveness decides the rule's emptiness — a command compute
+ * has none (its `watchFiles` is a footprint, not an input it reads).
+ */
+export function baselineLivenessRequest(
+  cwd: string,
+  rule: IBaselineRule,
+  excludeDirs: readonly string[],
+): { readonly request: IGlobLivenessRequest; readonly primaryLists: readonly string[] } {
+  const source = rule.compute.kind === 'extractor' ? rule.compute.source : undefined;
+  const sources = sourceLivenessRequest(
+    cwd,
+    source !== undefined ? [{ label: 'compute.source', source }] : [],
+    excludeDirs,
+    rule.id,
+  );
+  const watch = rule.watchFiles ?? [];
+  return {
+    request: {
+      subject: rule.id,
+      lists: [
+        ...sources.lists,
+        ...(watch.length > 0
+          ? [
+              {
+                list: 'watchFiles',
+                ...(sources.lists.length > 0 ? { label: 'watchFiles' } : {}),
+                globs: watch,
+                units: readGlobListUnits(cwd, watch, new Set(excludeDirs)),
+              },
+            ]
+          : []),
+      ],
+      marks: [...sources.marks, ...(rule.expectEmptyUnits ?? [])],
+    },
+    primaryLists: source !== undefined ? ['compute.source.files'] : [],
+  };
+}
+
+/** The unit fields every outcome carries when the rule's inputs were settled. */
+function unitFieldsOf(liveness: ISettledUnitLiveness | undefined): Pick<
+  IBaselineOutcome,
+  'unitAcceptance' | 'units' | 'unitLiveness'
+> {
+  if (liveness === undefined) return {};
+  const nonLive = liveness.units.filter((u) => u.state !== UnitLivenessState.Live);
+  return {
+    ...(liveness.acceptance !== undefined ? { unitAcceptance: liveness.acceptance } : {}),
+    ...(liveness.dead.length + liveness.intendedEmpty.length + liveness.wentLive.length > 0
+      ? { units: unitStateLists(liveness) }
+      : {}),
+    ...(nonLive.length > 0 ? { unitLiveness: nonLive } : {}),
+  };
+}
+
+/**
+ * THE rule-emptiness settle of a baseline whose compute measured nothing
+ * (round 13): the ledger's empty recompute, the ceiling's empty measurement
+ * (P1: decided on the extractor's UNIT count, never its text — an extractor
+ * serialises an empty set as `[]`, so the old text test could never fire for
+ * one) and `baseline update`'s refusal all ask it. A fence (`expectEmpty:
+ * true`) is accepted only over live or intended-empty inputs; over a dead
+ * input it is Stale (it proves nothing).
+ */
+function settleBaselineEmptiness(
+  rule: IBaselineRule,
+  computed: IComputed,
+  liveness: ISettledUnitLiveness,
+  primaryLists: readonly string[],
+  reason: string,
+): ISettledRuleEmptiness {
+  return settleRuleEmptiness({
+    subject: rule.id,
+    unitLabel: 'entries',
+    filesMatched: computed.filesScanned ?? 0,
+    unitsMatched: 0,
+    unread: false,
+    liveness,
+    primaryLists,
+    assertsEmptyOutput: ruleAssertsEmptyOutput(rule),
+    failOnEmpty: failsWhenEmpty(rule),
+    noFilesReason: reason,
+    noUnitsReason: reason,
+  });
+}
+
+/**
+ * The engine entry's idempotent normalisation (round 13): the extractor
+ * source's markable lists and `watchFiles` into plain lists plus their
+ * `expectEmptyUnits`. A malformed marker is an errored rule, never a crash.
+ */
+function normalizeBaselineRule(rule: IBaselineRule): { ok: true; rule: IBaselineRule } | { ok: false; error: string } {
+  const source = rule.compute.source !== undefined ? normalizeWiringSource(rule.compute.source) : undefined;
+  if (source !== undefined && !source.ok) return { ok: false, error: `compute.source ${source.error.message}` };
+  const withSource = source !== undefined ? { ...rule, compute: { ...rule.compute, source: source.value } } : rule;
+  const watch = normalizeRuleList(withSource, 'watchFiles');
+  if (!watch.ok) return { ok: false, error: `watchFiles ${watch.error.message}` };
+  return { ok: true, rule: watch.value };
 }
 
 export function evaluateBaselineRule(
   cwd: string,
-  rule: IBaselineRule,
+  authored: IBaselineRule,
   excludeDirs: readonly string[],
   changedFiles: readonly string[] | undefined,
 ): IBaselineOutcome {
+  const normalized = normalizeBaselineRule(authored);
+  if (!normalized.ok) {
+    return { rule: authored, status: 'error', committedCount: 0, currentCount: 0, error: normalized.error };
+  }
+  const rule = normalized.rule;
+  // The rule's input globs, settled with their markers (round 13) — only when
+  // a unit is marked (its acceptance / went-live line rides on the outcome) or
+  // the compute measured nothing (what the empty rule is decided from).
+  const marked =
+    (rule.expectEmptyUnits?.length ?? 0) > 0 || (rule.compute.source?.expectEmptyUnits?.length ?? 0) > 0;
+  let input: { readonly liveness: ISettledUnitLiveness; readonly primaryLists: readonly string[] } | undefined;
+  const inputOf = (): { readonly liveness: ISettledUnitLiveness; readonly primaryLists: readonly string[] } => {
+    if (input === undefined) {
+      const built = baselineLivenessRequest(cwd, rule, excludeDirs);
+      input = { liveness: settleGlobLists(built.request), primaryLists: built.primaryLists };
+    }
+    return input;
+  };
+  const markedFields = (): Pick<IBaselineOutcome, 'unitAcceptance' | 'units' | 'unitLiveness'> =>
+    marked ? unitFieldsOf(inputOf().liveness) : {};
   // --changed-only is honest about what it CANNOT scope: a command compute with
   // no `watchFiles` has no file footprint, so it is reported as skipped rather
   // than quietly passing.
@@ -175,7 +386,9 @@ export function evaluateBaselineRule(
         skipReason: 'command compute with no `watchFiles` cannot be scoped to a changeset',
       };
     }
-    if (!changedFiles.some((f) => matchesAny(f, globs))) {
+    // One list (watchFiles, else the extractor's files): a changed file the
+    // list EXCLUDES cannot move the value, so it does not select the rule.
+    if (!changedFiles.some((f) => globListSelects(f, globs))) {
       return {
         rule,
         status: 'skipped',
@@ -193,19 +406,41 @@ export function evaluateBaselineRule(
   if (rule.mode === 'ceiling') {
     const computed = computeCurrent(cwd, rule, excludeDirs);
     if (computed.error) {
-      return { rule, status: 'error', committedCount: 0, currentCount: 0, error: computed.error };
+      return { rule, status: 'error', committedCount: 0, currentCount: 0, error: computed.error, ...markedFields() };
     }
     const value = ceilingValue(rule, computed.text);
-    // A compute that produced nothing measured nothing. Reporting `0 ≤ 200` as
-    // a pass is how a broken extractor greens a ratchet forever.
-    if (value === 0 && computed.text.trim() === '') {
+    // A compute that MEASURED nothing measured nothing. Reporting `0 ≤ 200` as
+    // a pass is how a broken extractor greens a ratchet forever. Decided on the
+    // UNIT count (round 13, P1 — an extractor serialises its empty set as `[]`,
+    // so the old `text.trim() === ''` test could never fire for one) through
+    // THE rule-emptiness settle, the one `gates coverage` reads too.
+    if (computed.unitCount === 0 && !readScopeHasUnread(computed.readScope)) {
+      const { liveness, primaryLists } = inputOf();
+      const emptiness = settleBaselineEmptiness(rule, computed, liveness, primaryLists, CEILING_EMPTY);
+      if (emptiness.skipped) {
+        return {
+          rule,
+          status: emptiness.fails ? 'failed' : 'skipped',
+          current: computed.text,
+          committedCount: rule.ceiling ?? 0,
+          currentCount: 0,
+          skipReason: emptiness.skipReason ?? CEILING_EMPTY,
+          ...unitFieldsOf(liveness),
+        };
+      }
+      // Accepted: the rule asserts an empty output (`expectEmpty: true` is
+      // honoured on a ceiling) or every input glob is intended-empty. The
+      // ceiling is still judged — on the measured 0.
+      const judged = evaluateCeiling(rule, value);
       return {
         rule,
-        status: failsWhenEmpty(rule) ? 'failed' : 'skipped',
+        status: judged.failed ? 'failed' : 'passed',
         current: computed.text,
-        committedCount: rule.ceiling ?? 0,
-        currentCount: 0,
-        skipReason: 'the compute produced nothing — a ceiling over an empty measurement proves nothing',
+        committedCount: judged.ceiling,
+        currentCount: judged.value,
+        ceiling: judged,
+        ...(!judged.failed && emptiness.coverage !== undefined ? { emptyCoverage: emptiness.coverage } : {}),
+        ...unitFieldsOf(liveness),
       };
     }
     const verdict = evaluateCeiling(rule, value);
@@ -216,6 +451,10 @@ export function evaluateBaselineRule(
       committedCount: verdict.ceiling,
       currentCount: verdict.value,
       ceiling: verdict,
+      // An unread file makes the measurement a lower bound: over the ceiling
+      // is still a real failure, under it is not verified.
+      ...(computed.readScope ? { readScope: computed.readScope } : {}),
+      ...markedFields(),
     };
   }
 
@@ -263,11 +502,12 @@ export function evaluateBaselineRule(
   // to prevent. But this only holds when the COMMITTED side is empty too: if
   // the baseline has entries and the recompute has none, that is real drift
   // (everything vanished) and must be reported as such, not swallowed as a skip.
+  const readScope = computed.readScope ? { readScope: computed.readScope } : {};
   if (currentCount === 0 && committedCount === 0) {
-    // A fence ASSERTS emptiness, so for it the empty case is the verified pass
-    // rather than "nothing was checked" — otherwise the rule could never be
-    // green and could not gate anything.
-    if (rule.expectEmpty === true) {
+    // An empty recompute over a file the reader could not read is not "matched
+    // nothing": PARTIAL (the coverage names the file), never failOnEmpty's
+    // failure and never a pass.
+    if (readScopeHasUnread(computed.readScope)) {
       return {
         rule,
         status: 'passed',
@@ -275,16 +515,40 @@ export function evaluateBaselineRule(
         current: computed.text,
         committedCount,
         currentCount,
+        ...readScope,
+        ...markedFields(),
+      };
+    }
+    // THE rule-emptiness settle (round 13). A FENCE (`expectEmpty: true`)
+    // asserts the empty OUTPUT, so over live (or intended-empty) inputs its
+    // empty set is the verified pass — otherwise the rule could never be green.
+    // Over a DEAD input it proves nothing: Stale, and failOnEmpty's 1 (V2 f1d:
+    // it used to be accepted). An extractor whose every source glob is marked
+    // `expectEmpty` and matched no file is intended-empty, accepted. Anything
+    // else is the loud skip it always was.
+    const { liveness, primaryLists } = inputOf();
+    const emptiness = settleBaselineEmptiness(rule, computed, liveness, primaryLists, LEDGER_EMPTY);
+    if (!emptiness.skipped) {
+      return {
+        rule,
+        status: 'passed',
+        committed,
+        current: computed.text,
+        committedCount,
+        currentCount,
+        ...(emptiness.coverage !== undefined ? { emptyCoverage: emptiness.coverage } : {}),
+        ...unitFieldsOf(liveness),
       };
     }
     return {
       rule,
-      status: failsWhenEmpty(rule) ? 'failed' : 'skipped',
+      status: emptiness.fails ? 'failed' : 'skipped',
       committed,
       current: computed.text,
       committedCount,
       currentCount,
-      skipReason: 'the recompute produced no entries (and the committed baseline is empty too)',
+      skipReason: emptiness.skipReason ?? LEDGER_EMPTY,
+      ...unitFieldsOf(liveness),
     };
   }
 
@@ -300,7 +564,42 @@ export function evaluateBaselineRule(
     // A total wipe is far more often a broken compute than a real emptying —
     // say so next to the diff so it is not blessed by reflex.
     ...(currentCount === 0 ? { emptyCompute: true } : {}),
+    ...readScope,
+    ...markedFields(),
   };
+}
+
+/**
+ * What one baseline rule examined — shared by `baseline check` and the
+ * aggregate (`gates check`, `quality`), so both report the same scope.
+ *
+ * A ledger examines the union of its committed and recomputed entries; a
+ * ceiling examines one measurement. A fence (`expectEmpty`) over an empty set
+ * is the asserted state, so its empty scope is ACCEPTED by that field — and
+ * printed as accepted, never silent. A skipped or errored rule examined nothing.
+ *
+ * An extractor compute that matched a file the reader did not read folds it
+ * in through `readScopeCoverage`, the one rule every plane uses: the record
+ * becomes `examined N of M files`, naming the unread file.
+ */
+export function baselineCoverage(o: IBaselineOutcome): IVerdictCoverage {
+  return readScopeCoverage(planeBaselineCoverage(o), o.readScope);
+}
+
+function planeBaselineCoverage(o: IBaselineOutcome): IVerdictCoverage {
+  // The accepted empty (round 13): the fence's asserted empty set, or an
+  // intended-empty input — the rule-emptiness settle's own record, one wording
+  // on every surface (`the rule asserts an empty set` / `asserted empty — …`).
+  if (o.emptyCoverage !== undefined) return o.emptyCoverage;
+  if (o.ceiling !== undefined) return { unit: 'measurements', expected: 1, examined: 1 };
+  if (o.skipReason !== undefined) {
+    return { unit: 'entries', expected: 0, examined: 0, reason: o.skipReason };
+  }
+  if (o.status === 'error') {
+    return { unit: 'entries', expected: 0, examined: 0, reason: 'the baseline could not be evaluated' };
+  }
+  const size = Math.max(o.committedCount, o.currentCount);
+  return { unit: 'entries', expected: size, examined: size };
 }
 
 /**
@@ -350,9 +649,19 @@ function writeDiff(o: IBaselineOutcome, cap = 25): void {
 /** Shared prologue: load config, select rules, resolve the changed scope. */
 async function prepare(
   args: ParsedArgs,
-  opts: { changedAware: boolean },
+  opts: { changedAware: boolean; rejectedKnown?: boolean },
 ): Promise<
-  | { ok: true; cwd: string; rules: readonly IBaselineRule[]; all: readonly IBaselineRule[]; excludeDirs: string[]; changedFiles?: readonly string[]; planeDiagnostics: readonly string[] }
+  | {
+      ok: true;
+      cwd: string;
+      rules: readonly IBaselineRule[];
+      all: readonly IBaselineRule[];
+      excludeDirs: string[];
+      changedFiles?: readonly string[];
+      planeDiagnostics: readonly string[];
+      /** Merge-seam-rejected pack baselines, narrowed by `--id` (round 12 review, R12-X1). */
+      rejected: readonly IGateRuleResult[];
+    }
   | { ok: false; code: number }
 > {
   const cwd = resolveCwd(args);
@@ -363,7 +672,13 @@ async function prepare(
     else process.stderr.write(`Could not load config: ${loaded.message}\n  Run \`shrk doctor\` for details.\n`);
     return { ok: false, code: ExitCode.UsageError };
   }
-  const selected = selectRules(loaded.value.rules, flagString(args, 'id') ?? undefined);
+  const idFlag = flagString(args, 'id') ?? undefined;
+  // A verdict verb may select a rejected baseline by id (its errored row); a
+  // verb that acts on a rule (update / diff / explain) cannot — there is none.
+  const rejectedKnown = opts.rejectedKnown === true ? loaded.value.rejected.map((r) => r.id) : [];
+  const selected = selectRules(loaded.value.rules, idFlag, rejectedKnown);
+  const wantedIds = idFlag ? idFlag.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+  const rejected = wantedIds ? loaded.value.rejected.filter((r) => wantedIds.includes(r.id)) : loaded.value.rejected;
   if (!selected.ok) {
     process.stderr.write(selected.message + '\n');
     return { ok: false, code: ExitCode.UsageError };
@@ -387,14 +702,46 @@ async function prepare(
     excludeDirs: loaded.value.sharkcraftDirRel ? [loaded.value.sharkcraftDirRel] : [],
     ...(changedFiles !== undefined ? { changedFiles } : {}),
     planeDiagnostics: loaded.value.planeDiagnostics,
+    rejected,
   };
 }
 
-/** The "no baselines declared" landing, shared by every subverb. */
-function writeNoRules(json: boolean): number {
+/** `  ✗ <id>  REJECTED — <why>` — a pack rule the merge seam refused (declared, never run). */
+function writeRejected(rejected: readonly IGateRuleResult[]): void {
+  for (const r of rejected) process.stdout.write(`  ✗ ${r.id}  REJECTED — ${r.error ?? 'failed validation'}\n`);
+}
+
+/**
+ * The "no baselines declared" landing, shared by every subverb. A VERDICT verb
+ * passes its name so its JSON still carries the settled `gate` envelope —
+ * nothing declared is `2`, never a pass.
+ */
+function writeNoRules(json: boolean, verb?: string): number {
+  // A VERDICT verb settles first and renders second, in text AND JSON: nothing
+  // declared proposes 0 and the run coverage (expected 0) settles it to 2. The
+  // exit comes from the envelope — never a hard-coded code — so text, JSON and
+  // gate.exit cannot disagree. List / explain subverbs stay informational.
+  const gate =
+    verb !== undefined
+      ? buildGateEnvelope(verb, ExitCode.VerifiedPass, [], {
+          unit: 'baselines',
+          expected: 0,
+          examined: 0,
+          reason: 'no baselines[] declared',
+        })
+      : undefined;
+  const exit = gate?.exit ?? ExitCode.NotVerified;
   if (json) {
-    process.stdout.write(asJson({ schema: SCHEMA, results: [], evaluated: 0, verdict: 'not-verified' }) + '\n');
-    return ExitCode.NotVerified;
+    process.stdout.write(
+      asJson({
+        schema: SCHEMA,
+        results: [],
+        evaluated: 0,
+        verdict: gate ? planeVerdictForExit(gate.exit) : 'not-verified',
+        ...(gate ? { exitCode: gate.exit, gate } : {}),
+      }) + '\n',
+    );
+    return exit;
   }
   process.stdout.write(header('Baselines'));
   process.stdout.write(
@@ -402,7 +749,11 @@ function writeNoRules(json: boolean): number {
       '  hand-rolled "committed file + recompute script + drift test" trio with one\n' +
       '  two-way engine (see docs/baseline-drift.md).\n',
   );
-  return ExitCode.NotVerified;
+  if (gate) {
+    const line = verdictLine(gate, 'Nothing declared — accepted.');
+    if (line) process.stdout.write(`\n${line}\n`);
+  }
+  return exit;
 }
 
 export const baselineListCommand: ICommandHandler = {
@@ -414,11 +765,13 @@ export const baselineListCommand: ICommandHandler = {
     const prep = await prepare(args, { changedAware: false });
     if (!prep.ok) return prep.code;
     const json = flagBool(args, 'json');
-    if (prep.all.length === 0) return writeNoRules(json);
+    if (prep.all.length === 0 && prep.rejected.length === 0) return writeNoRules(json);
     if (json) {
       process.stdout.write(
         asJson({
           schema: SCHEMA,
+          // Declared by a pack, refused by the merge seam: never computed.
+          rejected: prep.rejected.map((r) => ({ id: r.id, error: r.error ?? null })),
           baselines: prep.all.map((r) => ({
             id: r.id,
             description: r.description ?? null,
@@ -426,7 +779,9 @@ export const baselineListCommand: ICommandHandler = {
             compute: r.compute.kind,
             direction: r.direction ?? 'two-way',
             keyBy: r.keyBy ?? null,
-            failOnEmpty: r.failOnEmpty === true,
+            // The EFFECTIVE failOnEmpty (round 13) — THE authority, never the
+            // raw field: an error rule fails on empty by default.
+            failOnEmpty: failsWhenEmpty(r),
           })),
           diagnostics: prep.planeDiagnostics,
         }) + '\n',
@@ -439,9 +794,13 @@ export const baselineListCommand: ICommandHandler = {
       process.stdout.write(
         `      compute ${r.compute.kind}${r.compute.kind === 'command' ? ` (${r.compute.run})` : ''}` +
           `  ·  direction ${r.direction ?? 'two-way'}${r.keyBy ? `  ·  keyBy ${r.keyBy}` : ''}` +
-          `${r.failOnEmpty ? '  ·  failOnEmpty' : ''}\n`,
+          `${failsWhenEmpty(r) ? '  ·  failOnEmpty' : ''}\n`,
       );
       if (r.description) process.stdout.write(`      ${r.description}\n`);
+    }
+    if (prep.rejected.length > 0) {
+      process.stdout.write(`\n  rejected at the pack-plane merge seam — never computed (${prep.rejected.length}):\n`);
+      writeRejected(prep.rejected);
     }
     for (const d of prep.planeDiagnostics) process.stdout.write(`  ! ${d}\n`);
     return ExitCode.VerifiedPass;
@@ -455,10 +814,13 @@ export const baselineCheckCommand: ICommandHandler = {
   usage: 'shrk baseline check [--id <ids>] [--changed-only] [--since <ref>] [--json]',
   booleanFlags: new Set(['json', 'changed-only']),
   async run(args: ParsedArgs): Promise<number> {
-    const prep = await prepare(args, { changedAware: true });
+    const prep = await prepare(args, { changedAware: true, rejectedKnown: true });
     if (!prep.ok) return prep.code;
     const json = flagBool(args, 'json');
-    if (prep.rules.length === 0) return writeNoRules(json);
+    // A pack baseline the merge seam rejected is a declared baseline that was
+    // never computed — an errored row, exit 1 (round 12 review, R12-X1).
+    const rejected = prep.rejected;
+    if (prep.rules.length === 0 && rejected.length === 0) return writeNoRules(json, 'baseline check');
 
     const outcomes = prep.rules.map((r) =>
       evaluateBaselineRule(prep.cwd, r, prep.excludeDirs, prep.changedFiles),
@@ -470,52 +832,88 @@ export const baselineCheckCommand: ICommandHandler = {
     // 0 only when a NON-EMPTY scope was actually compared; 2 when nothing was.
     // A skipped baseline is "partially verified", never a green 0.
     const skippedCount = outcomes.filter((o) => o.status === 'skipped').length;
-    const exit =
-      failed.length > 0
+    const proposed =
+      failed.length > 0 || rejected.length > 0
         ? ExitCode.Failure
         : evaluated === 0 || skippedCount > 0
           ? ExitCode.NotVerified
           : ExitCode.VerifiedPass;
+    // Settle first, render second: one envelope for text AND JSON, and the ✓
+    // line is printed only from the settled verdict.
+    const unexamined = [
+      ...outcomes.filter((o) => o.status === 'skipped' || o.status === 'error').map((o) => o.rule.id),
+      ...rejected.map((r) => r.id),
+    ];
+    const env = buildGateEnvelope(
+      'baseline check',
+      proposed,
+      [...outcomes.map((o) => ({
+        id: o.rule.id,
+        type: 'baseline' as const,
+        status: o.status,
+        severity: o.rule.severity ?? 'error',
+        counts: { committed: o.committedCount, current: o.currentCount },
+        violations: [
+          ...(o.diff?.added ?? []).map((id) => ({ id, message: 'added', hint: hintFor(o.rule) })),
+          ...(o.diff?.removed ?? []).map((id) => ({ id, message: 'removed', hint: hintFor(o.rule) })),
+        ],
+        ...(o.skipReason ? { skipReason: o.skipReason } : {}),
+        ...(o.error ? { error: o.error } : {}),
+        coverage: baselineCoverage(o),
+        // The rule's `expectEmpty` acceptance and unit lines (round 13), folded
+        // into the envelope's one settle.
+        ...(o.unitAcceptance !== undefined ? { unitAcceptance: o.unitAcceptance } : {}),
+        ...(o.units !== undefined ? { units: o.units } : {}),
+      })), ...rejected],
+      {
+        unit: 'baselines',
+        expected: outcomes.length + rejected.length,
+        examined: outcomes.length + rejected.length - unexamined.length,
+        ...(unexamined.length > 0 ? { unexamined, reason: 'compared nothing or could not run' } : {}),
+      },
+    );
+    const exit = env.exit;
 
     if (json) {
       process.stdout.write(
         asJson({
           schema: SCHEMA,
           results: outcomes.map(outcomeJson),
+          // Pack baselines the merge seam refused — errored rows in `gate.rules`.
+          rejected: rejected.map((r) => ({ id: r.id, error: r.error ?? null })),
           evaluated,
-          skipped: outcomes.filter((o) => o.status === 'skipped').length,
-          verdict: failed.length > 0 ? 'errors' : evaluated === 0 ? 'not-verified' : 'pass',
+          skipped: skippedCount,
+          verdict: exit === ExitCode.Failure ? 'errors' : exit === ExitCode.VerifiedPass ? 'pass' : 'not-verified',
           diagnostics: prep.planeDiagnostics,
-          gate: buildGateEnvelope(
-            'baseline check',
-            exit,
-            outcomes.map((o) => ({
-              id: o.rule.id,
-              type: 'baseline' as const,
-              status: o.status,
-              severity: o.rule.severity ?? 'error',
-              counts: { committed: o.committedCount, current: o.currentCount },
-              violations: [
-                ...(o.diff?.added ?? []).map((id) => ({ id, message: 'added', hint: hintFor(o.rule) })),
-                ...(o.diff?.removed ?? []).map((id) => ({ id, message: 'removed', hint: hintFor(o.rule) })),
-              ],
-              ...(o.skipReason ? { skipReason: o.skipReason } : {}),
-              ...(o.error ? { error: o.error } : {}),
-            })),
-          ),
+          exitCode: exit,
+          gate: env,
         }) + '\n',
       );
       return exit;
     }
 
     process.stdout.write(header('Baseline drift'));
-    process.stdout.write(kv('evaluated', `${evaluated} of ${prep.rules.length}`) + '\n');
+    // Round 13 (K6): the printed count is the envelope's (`gate.evaluated`), which
+    // never counts a rule accepted as intended-empty — it is named apart.
+    process.stdout.write(
+      kv(
+        'evaluated',
+        `${env.evaluated} of ${prep.rules.length + rejected.length}${acceptedEmptyNote(env.acceptedEmpty)}` +
+          (rejected.length > 0 ? ` (${rejected.length} rejected at the pack-plane merge seam — NOT evaluated)` : ''),
+      ) + '\n',
+    );
+    writeRejected(rejected);
     for (const o of outcomes) {
       if (o.status === 'passed') {
+        // Rendered from the SETTLED rule: a pass over part of its scope is
+        // `partial`, never a ✓ (the keystone emitter pattern, step 5).
+        const settledRule = env.rules.find((x) => x.id === o.rule.id);
         process.stdout.write(
-          o.ceiling
-            ? `  ✓ ${o.rule.id}  (${o.ceiling.value} ${o.ceiling.direction} ${o.ceiling.ceiling} — ${o.ceiling.slack} to spare)\n`
-            : `  ✓ ${o.rule.id}  (${o.currentCount} entries, no drift)\n`,
+          settledRule?.status === 'partial'
+            ? `  ~ ${o.rule.id}  PARTIAL — ${settledRule.shortfall ?? 'part of its scope was not examined'}\n`
+            : o.ceiling
+              ? `  ✓ ${o.rule.id}  (${o.ceiling.value} ${o.ceiling.direction} ${o.ceiling.ceiling} — ${o.ceiling.slack} to spare)\n`
+              : `  ✓ ${o.rule.id}  (${o.currentCount} entries, no drift)\n`,
         );
         continue;
       }
@@ -530,6 +928,17 @@ export const baselineCheckCommand: ICommandHandler = {
             `      the compute currently yields ${o.currentCount} entr${o.currentCount === 1 ? 'y' : 'ies'} — ` +
               `run \`shrk baseline update --id ${o.rule.id}\` to bless them.\n`,
           );
+        }
+        continue;
+      }
+      // A rule that measured nothing and FAILS on it (failOnEmpty, or a fence
+      // over a dead input) has no diff — its reason is the only true line. It is
+      // never rendered as DRIFT with a bless hint (round 13, P1): blessing it
+      // would commit the empty measurement the loud skip refused.
+      if (o.status === 'failed' && o.skipReason !== undefined) {
+        process.stdout.write(`  ✗ ${o.rule.id}  FAILED — ${o.skipReason}\n`);
+        if (!ruleAssertsEmptyOutput(o.rule)) {
+          process.stdout.write(`      → ${formatEmptyRuleAdvice({ fails: true })}\n`);
         }
         continue;
       }
@@ -557,17 +966,39 @@ export const baselineCheckCommand: ICommandHandler = {
       process.stdout.write(`      → ${hintFor(o.rule)}\n`);
     }
     for (const d of prep.planeDiagnostics) process.stdout.write(`  ! ${d}\n`);
-    if (exit === ExitCode.NotVerified) {
-      process.stdout.write(
-        '\nNothing was compared — this is NOT a pass. Every selected baseline was skipped.\n',
-      );
-    } else if (exit === ExitCode.VerifiedPass) {
-      process.stdout.write(
-        outcomes.some((o) => o.ceiling)
-          ? '\nEvery baseline is within its pinned value. ✓\n'
-          : '\nEvery baseline matches its committed artifact. ✓\n',
-      );
+    // THE empty-rule advice (round 13) for a SOFT skip: a failing one is
+    // advised inline (above); a rule that matched nothing and does not fail on
+    // it was told nothing.
+    for (const a of emptyRuleAdviceLines(
+      outcomes.filter((o) => o.status === 'skipped' && o.skipReason !== undefined).map(() => ({ fails: false })),
+    )) {
+      process.stdout.write(`  ${a}.\n`);
     }
+    // THE shared unit-state block (round 13, K2): a dead input glob — a dead
+    // import-edges `to.files` under an accepted fence included — and a LOCAL
+    // expectEmpty marker whose target appeared withhold the ✓ (exit
+    // unchanged); a pack marker is INFO.
+    const unitNotes = unitStateNotes(
+      outcomes.map((o) => ({
+        id: o.rule.id,
+        ...(o.unitLiveness !== undefined ? { unitLiveness: o.unitLiveness } : {}),
+        reportedEmpty: o.status === 'skipped' || o.skipReason !== undefined,
+      })),
+    );
+    process.stdout.write(unitNotes.text);
+    const line = verdictLine(
+      env,
+      qualifyCleanForUnits(
+        outcomes.some((o) => o.ceiling)
+          ? 'Every baseline is within its pinned value. ✓'
+          : 'Every baseline matches its committed artifact. ✓',
+        unitNotes,
+      ),
+      proposed === ExitCode.NotVerified && evaluated === 0
+        ? 'Nothing was compared — this is NOT a pass. Every selected baseline was skipped.'
+        : undefined,
+    );
+    if (line) process.stdout.write(`\n${line}\n`);
     return exit;
   },
 };
@@ -631,13 +1062,64 @@ export const baselineUpdateCommand: ICommandHandler = {
     // bless, without this command growing the ability to rewrite the rules it
     // is enforcing.
     const reblessed: { id: string; from: number; to: number; edit: string }[] = [];
+    // A value recomputed from an incomplete read (a file over the read cap)
+    // misses whatever the unread file holds. Blessing it would commit a number
+    // the loud-skip rule forbids reporting, and the next `baseline check`
+    // would be NOT VERIFIED anyway. So the rule is refused and named, and the
+    // run settles NOT VERIFIED (2), never "wrote … (exit 0)".
+    const unverified: { id: string; shortfall: string; unread: readonly string[] }[] = [];
+    const unverifiedCoverage: IVerdictCoverage[] = [];
+    // Round 13 (K9): ceilings whose measurement is an EMPTY one the settle does
+    // not accept — the loud skip `baseline check` reports, never a proposal.
+    const emptyCeilings: { id: string; reason: string }[] = [];
     for (const rule of prep.rules) {
       const computed = computeCurrent(prep.cwd, rule, prep.excludeDirs);
       if (computed.error) {
         errors.push({ id: rule.id, error: computed.error });
         continue;
       }
+      if (readScopeHasUnread(computed.readScope)) {
+        const record: IVerdictCoverage = {
+          ...readScopeCoverage({ unit: 'baseline entries', expected: 1, examined: 1 }, computed.readScope),
+          subject: rule.id,
+        };
+        unverifiedCoverage.push(record);
+        unverified.push({
+          id: rule.id,
+          shortfall: coverageShortfall(record) ?? '',
+          unread: (computed.readScope?.unread ?? []).map((u) => u.path),
+        });
+        continue;
+      }
       if (rule.mode === 'ceiling') {
+        // K9: never propose `ceiling: <measured>` over an EMPTY measurement.
+        // THE rule-emptiness settle `baseline check` reads decides it (on the
+        // extractor's UNIT count): an accepted empty (a fence, an intended-
+        // empty input) is judged like any value; a stale one is the loud skip
+        // — 2 NOT VERIFIED, or 1 under failOnEmpty — never `ceiling: 0`.
+        if (computed.unitCount === 0) {
+          const input = baselineLivenessRequest(prep.cwd, rule, prep.excludeDirs);
+          const emptiness = settleBaselineEmptiness(
+            rule,
+            computed,
+            settleGlobLists(input.request),
+            input.primaryLists,
+            CEILING_EMPTY,
+          );
+          if (emptiness.skipped) {
+            const reason = emptiness.skipReason ?? CEILING_EMPTY;
+            if (emptiness.fails) {
+              errors.push({
+                id: rule.id,
+                error: `refusing to propose a ceiling from an EMPTY measurement for a \`failOnEmpty\` rule — ${reason} — fix the compute first`,
+              });
+            } else {
+              unverifiedCoverage.push({ unit: 'measurements', expected: 1, examined: 0, subject: rule.id, reason });
+              emptyCeilings.push({ id: rule.id, reason });
+            }
+            continue;
+          }
+        }
         const value = ceilingValue(rule, computed.text);
         reblessed.push({
           id: rule.id,
@@ -647,12 +1129,34 @@ export const baselineUpdateCommand: ICommandHandler = {
         });
         continue;
       }
-      if (computed.text.trim() === '' && failsWhenEmpty(rule)) {
-        errors.push({
-          id: rule.id,
-          error: 'refusing to write an EMPTY baseline for a `failOnEmpty` rule — fix the compute first',
-        });
-        continue;
+      // An EMPTY bless is decided by the compute's UNIT count and THE
+      // rule-emptiness settle `baseline check` reads (round 13, P1) — never by
+      // its text: an extractor serialises its empty set as `[]`, so the old
+      // `text.trim() === ''` test never refused one, and a failOnEmpty ledger
+      // over a dead selector was blessed empty. A fence's asserted-empty output
+      // over live inputs, or an intended-empty input, is blessable; a stale
+      // empty (a dead or unmarked selector, files that yielded nothing) of a
+      // failOnEmpty rule is refused, naming why.
+      if (computed.unitCount === 0) {
+        const input = baselineLivenessRequest(prep.cwd, rule, prep.excludeDirs);
+        const liveness = settleGlobLists(input.request);
+        // Name the dead input the settle found (its own `.dead` lines), so the
+        // refusal says WHICH selector to fix.
+        const deadInputs = liveness.dead.map((u) => `${u.label}: ${u.deadReason ?? 'matched 0 files'}`);
+        const reason =
+          deadInputs.length > 0
+            ? `${UPDATE_EMPTY} — its input selector matched nothing (${deadInputs.join('; ')})`
+            : UPDATE_EMPTY;
+        const emptiness = settleBaselineEmptiness(rule, computed, liveness, input.primaryLists, reason);
+        if (emptiness.skipped && emptiness.fails) {
+          errors.push({
+            id: rule.id,
+            error:
+              'refusing to write an EMPTY baseline for a `failOnEmpty` rule — ' +
+              `${emptiness.skipReason ?? reason} — fix the compute first`,
+          });
+          continue;
+        }
       }
       const abs = nodePath.resolve(prep.cwd, rule.baseline!);
       const previous = existsSync(abs) ? readFileSync(abs, 'utf8') : undefined;
@@ -664,11 +1168,25 @@ export const baselineUpdateCommand: ICommandHandler = {
       written.push({ id: rule.id, path: rule.baseline!, bytes: computed.text.length, changed });
     }
 
+    const settled = settleVerdict(errors.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass, unverifiedCoverage);
+    const exit = settled.exit;
     if (json) {
       process.stdout.write(
-        asJson({ schema: SCHEMA, dryRun, written, reblessed, errors }) + '\n',
+        asJson({
+          schema: SCHEMA,
+          dryRun,
+          written,
+          reblessed,
+          errors,
+          ...(unverified.length > 0 ? { unverified } : {}),
+          // K9: a ceiling over an empty measurement is the loud skip, never a
+          // proposal — named here with the reason `baseline check` prints.
+          ...(emptyCeilings.length > 0 ? { skipped: emptyCeilings } : {}),
+          ...(unverified.length > 0 || emptyCeilings.length > 0 ? { shortfalls: settled.shortfalls } : {}),
+          exitCode: exit,
+        }) + '\n',
       );
-      return errors.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass;
+      return exit;
     }
     process.stdout.write(header(dryRun ? 'Baseline update (dry run)' : 'Baseline update'));
     for (const w of written) {
@@ -682,6 +1200,12 @@ export const baselineUpdateCommand: ICommandHandler = {
       if (r.from !== r.to) process.stdout.write(`             ${r.edit}\n`);
     }
     for (const e of errors) process.stdout.write(`  ! ${e.id}: ${e.error}\n`);
+    for (const u of unverified) {
+      process.stdout.write(`  ! ${u.id}: not written — computed from an incomplete read (${u.unread.join(', ')})\n`);
+    }
+    for (const s of emptyCeilings) {
+      process.stdout.write(`  – ${s.id}: no ceiling proposed — ${s.reason}\n`);
+    }
     if (reblessed.some((r) => r.from !== r.to)) {
       process.stdout.write(
         '\nA ceiling lives in sharkcraft.config.ts — apply the line above by hand so raising it stays a reviewed diff.\n',
@@ -690,7 +1214,17 @@ export const baselineUpdateCommand: ICommandHandler = {
     if (written.some((w) => w.changed) && !dryRun) {
       process.stdout.write('\nReview the diff before committing — this is the bless step.\n');
     }
-    return errors.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass;
+    const line = verdictLine(
+      settled,
+      '',
+      unverified.length > 0
+        ? 'Nothing was blessed for the baseline(s) above: their value came from an incomplete read.'
+        : emptyCeilings.length > 0
+          ? 'No ceiling was proposed for the baseline(s) above: their measurement was empty — fix the compute, or mark a planned input { pattern, expectEmpty: true }.'
+          : undefined,
+    );
+    if (line) process.stdout.write(`\n${line}\n`);
+    return exit;
   },
 };
 
@@ -771,13 +1305,13 @@ export const baselineCommand: ICommandHandler = {
   description:
     'Committed-baseline drift engine: recompute a ledger/digest/allow-list and fail on drift in BOTH directions. Read-only except `update`.',
   usage: 'shrk baseline list | check | diff | update | explain --id <id>',
+  // Every subverb is a registered trie child; any other bare token is refused
+  // by the dispatcher guard (closest match named) before this body runs — the
+  // one unknown-subcommand authority. Only a bare `shrk baseline` lands here.
+  positionals: PositionalMode.None,
   booleanFlags: new Set(['json', 'changed-only', 'dry-run']),
-  async run(args: ParsedArgs): Promise<number> {
-    const sub = args.positional[0];
-    process.stderr.write(
-      (sub ? `Unknown subcommand "${sub}". ` : '') +
-        'Usage: shrk baseline list | check [--id X] | diff | update | explain --id <id>\n',
-    );
+  async run(): Promise<number> {
+    process.stderr.write('Usage: shrk baseline list | check [--id X] | diff | update | explain --id <id>\n');
     return ExitCode.UsageError;
   },
 };

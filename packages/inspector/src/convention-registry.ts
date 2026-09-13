@@ -10,7 +10,13 @@ import {
   type IConvention,
 } from '@shrkcrft/plugin-api';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
-import { importModuleViaLoader } from '@shrkcrft/core';
+import {
+  importModuleViaLoader,
+  readContributionExport,
+  RejectionCause,
+  type IContributionExport,
+  type IRejectedEntry,
+} from '@shrkcrft/core';
 
 export const CONVENTION_REGISTRY_SCHEMA = 'sharkcraft.convention-registry/v1';
 
@@ -35,15 +41,34 @@ export interface IConventionDoctorIssue {
   readonly source?: string;
 }
 
-async function importDefault<T>(file: string): Promise<readonly T[]> {
-  const mod = (await importModuleViaLoader(file)) as {
-    default?: readonly T[] | T;
-    conventions?: readonly T[];
-  };
-  if (Array.isArray(mod.default)) return mod.default;
-  if (mod.default && typeof mod.default === 'object') return [mod.default as T];
-  if (Array.isArray(mod.conventions)) return mod.conventions;
-  return [];
+/** The convention FILES a load discovered, and the ones it could not read — the doctor's coverage. */
+export interface IConventionFileScan {
+  /** Every convention file the load tried (local defaults, `conventionFiles`, pack `conventionFiles`). */
+  readonly discovered: number;
+  /** Discovered but never read (missing, or failed to import) — `file — reason`, project-relative. */
+  readonly unread: readonly string[];
+}
+
+async function importConventions(file: string): Promise<IContributionExport> {
+  return readContributionExport(await importModuleViaLoader(file), { namedKeys: ['conventions'] });
+}
+
+/**
+ * THE convention acceptance predicate (round 12, 12.1): every error of
+ * `validateConvention`, `<field>: <message>` — `[]` means accepted. The
+ * loader and `packs test --load` refuse exactly the same entries.
+ */
+export function conventionRejectionReasons(raw: unknown): readonly string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return ['(entry): must be an object'];
+  const v = validateConvention(raw as IConvention);
+  if (v.valid) return [];
+  return v.issues.length > 0 ? v.issues.map((i) => `${i.field}: ${i.message}`) : ['(entry): failed validation'];
+}
+
+/** A declared entry's string `id`, when it has one. */
+function entryIdOf(raw: unknown): string | undefined {
+  const id = raw && typeof raw === 'object' ? (raw as { id?: unknown }).id : undefined;
+  return typeof id === 'string' ? id : undefined;
 }
 
 function localFiles(inspection: ISharkcraftInspection): string[] {
@@ -54,64 +79,113 @@ function localFiles(inspection: ISharkcraftInspection): string[] {
     const abs = nodePath.join(dir, name);
     if (existsSync(abs)) out.push(abs);
   }
-  const cfg = inspection.config as { conventionFiles?: readonly string[] } | null;
-  for (const rel of cfg?.conventionFiles ?? []) {
+  // `conventionFiles` is a declared config key (typed, schema-validated).
+  for (const rel of inspection.config?.conventionFiles ?? []) {
     out.push(nodePath.isAbsolute(rel) ? rel : nodePath.join(dir, rel));
   }
-  return out;
+  // One scan per DISTINCT file: `conventionFiles: ['conventions.ts']` names the
+  // default file again, and loading it twice listed every doctor issue twice.
+  return [...new Set(out.map((f) => nodePath.resolve(f)))];
 }
 
 export async function loadConventions(
   inspection: ISharkcraftInspection,
-): Promise<{ entries: readonly IConventionEntry[]; issues: readonly IConventionDoctorIssue[] }> {
+): Promise<{
+  entries: readonly IConventionEntry[];
+  issues: readonly IConventionDoctorIssue[];
+  files: IConventionFileScan;
+  /**
+   * Every declared convention the loader refused (round 12, 12.1) — invalid
+   * or a duplicate id — with its position and every reason. The `issues`
+   * above still carry the per-field `invalid-convention` lines `conventions
+   * doctor` prints; this is the record THE rejection channel lifts.
+   */
+  rejected: readonly IRejectedEntry[];
+}> {
   const entries: IConventionEntry[] = [];
   const issues: IConventionDoctorIssue[] = [];
-  const seen = new Set<string>();
+  const rejected: IRejectedEntry[] = [];
+  const seen = new Map<string, string>();
+  let discovered = 0;
+  const unread: string[] = [];
+  const rel = (file: string): string => nodePath.relative(inspection.projectRoot, file) || file;
 
   const ingest = (
-    raw: IConvention,
+    raw: unknown,
     source: ConventionSource,
     packageName: string | undefined,
     sourceFile: string,
+    at: Pick<IRejectedEntry, 'file' | 'index' | 'exportName'>,
   ): void => {
-    const v = validateConvention(raw);
-    if (!v.valid) {
-      for (const i of v.issues) {
+    const id = entryIdOf(raw);
+    // Shape warnings never drop the convention; they are said out loud.
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const w of validateConvention(raw as IConvention).warnings) {
         issues.push({
-          severity: 'error',
-          code: 'invalid-convention',
-          message: `${i.field}: ${i.message}`,
-          conventionId: typeof raw.id === 'string' ? raw.id : undefined,
+          severity: 'warning',
+          code: 'convention-shape',
+          message: `${w.field}: ${w.message}`,
+          conventionId: id,
           source: sourceFile,
         });
       }
+    }
+    const reasons = conventionRejectionReasons(raw);
+    if (reasons.length > 0) {
+      for (const r of reasons) {
+        issues.push({ severity: 'error', code: 'invalid-convention', message: r, conventionId: id, source: sourceFile });
+      }
+      rejected.push({ ...at, ...(id !== undefined ? { entryId: id } : {}), reasons, cause: RejectionCause.Invalid });
       return;
     }
-    if (seen.has(raw.id)) {
+    const conv = raw as IConvention;
+    const prev = seen.get(conv.id);
+    if (prev !== undefined) {
       issues.push({
         severity: 'error',
         code: 'duplicate-id',
-        message: `Convention "${raw.id}" already loaded; skipping ${sourceFile}.`,
-        conventionId: raw.id,
+        message: `Convention "${conv.id}" already loaded; skipping ${sourceFile}.`,
+        conventionId: conv.id,
         source: sourceFile,
+      });
+      rejected.push({
+        ...at,
+        entryId: conv.id,
+        reasons: [`id: "${conv.id}" is already declared in ${prev}`],
+        cause: RejectionCause.DuplicateId,
       });
       return;
     }
-    seen.add(raw.id);
+    seen.set(conv.id, sourceFile);
     entries.push({
-      convention: raw,
+      convention: conv,
       source,
       ...(packageName ? { packageName } : {}),
       sourceFile,
     });
   };
+  const ingestAll = (
+    exp: IContributionExport,
+    file: string,
+    source: ConventionSource,
+    packageName: string | undefined,
+    sourceFile: string,
+  ): void => {
+    exp.items.forEach((c, i) =>
+      ingest(c, source, packageName, sourceFile, {
+        file,
+        index: exp.single ? -1 : i,
+        ...(exp.exportName ? { exportName: exp.exportName } : {}),
+      }),
+    );
+  };
 
   for (const file of localFiles(inspection)) {
+    discovered += 1;
     try {
-      const list = await importDefault<IConvention>(file);
-      const rel = nodePath.relative(inspection.projectRoot, file) || file;
-      for (const c of list) ingest(c, ConventionSource.Local, undefined, rel);
+      ingestAll(await importConventions(file), file, ConventionSource.Local, undefined, rel(file));
     } catch (e) {
+      unread.push(`${rel(file)} — failed to load`);
       issues.push({
         severity: 'warning',
         code: 'load-failed',
@@ -122,31 +196,33 @@ export async function loadConventions(
   }
   for (const pack of inspection.packs.validPacks ?? []) {
     const contributions = (pack.manifest?.contributions ?? {}) as { conventionFiles?: readonly string[] };
-    for (const rel of contributions.conventionFiles ?? []) {
-      const file = nodePath.resolve(pack.packageRoot, rel);
+    for (const packRel of contributions.conventionFiles ?? []) {
+      discovered += 1;
+      const file = nodePath.resolve(pack.packageRoot, packRel);
       if (!existsSync(file)) {
+        unread.push(`${rel(file)} — missing (declared by ${pack.packageName})`);
         issues.push({
           severity: 'warning',
           code: 'missing-file',
-          message: `Pack ${pack.packageName} declares ${rel} but file is missing.`,
+          message: `Pack ${pack.packageName} declares ${packRel} but file is missing.`,
           source: file,
         });
         continue;
       }
       try {
-        const list = await importDefault<IConvention>(file);
-        for (const c of list) ingest(c, ConventionSource.Pack, pack.packageName, rel);
+        ingestAll(await importConventions(file), file, ConventionSource.Pack, pack.packageName, packRel);
       } catch (e) {
+        unread.push(`${rel(file)} — failed to load (${pack.packageName})`);
         issues.push({
           severity: 'warning',
           code: 'load-failed',
-          message: `Pack ${pack.packageName} (${rel}): ${(e as Error).message}`,
+          message: `Pack ${pack.packageName} (${packRel}): ${(e as Error).message}`,
           source: file,
         });
       }
     }
   }
-  return { entries, issues };
+  return { entries, issues, files: { discovered, unread }, rejected };
 }
 
 export async function listConventions(

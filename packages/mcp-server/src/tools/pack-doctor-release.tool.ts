@@ -1,5 +1,5 @@
 import {
-  buildPackDoctorReport,
+  buildPackDoctorReportAsync,
   mergePackReleaseChecks,
   runPackReleaseChecksForReport,
 } from '@shrkcrft/inspector';
@@ -20,7 +20,9 @@ export const getPackDoctorReleaseTool: IToolDefinition = {
   async handler(input, ctx) {
     const strict = input['strict'] === true;
     const requireSignatures = input['requireSignatures'] === true;
-    const report = buildPackDoctorReport(ctx.inspection, { requireSignatures });
+    // THE async doctor (the one `shrk packs doctor` runs) — registry-backed
+    // rejections included (round 12 review, R12-X2).
+    const report = await buildPackDoctorReportAsync(ctx.inspection, { requireSignatures });
     const releaseChecks = await runPackReleaseChecksForReport(ctx.inspection);
     mergePackReleaseChecks(ctx.inspection, report, releaseChecks, { strict });
     return { data: report };

@@ -6,7 +6,7 @@ export const getOwnershipTool: IToolDefinition = {
   description: 'List loaded ownership rules. Read-only.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   async handler(_input, ctx) {
-    const cfg = (ctx.inspection.config as { ownershipFiles?: readonly string[] } | null)?.ownershipFiles;
+    const cfg = ctx.inspection.config?.ownershipFiles;
     const r = await loadOwnershipRules(ctx.cwd, cfg);
     return { data: r };
   },
@@ -24,7 +24,7 @@ export const matchOwnersTool: IToolDefinition = {
   },
   async handler(input, ctx) {
     const files = Array.isArray(input['files']) ? (input['files'] as string[]) : [];
-    const cfg = (ctx.inspection.config as { ownershipFiles?: readonly string[] } | null)?.ownershipFiles;
+    const cfg = ctx.inspection.config?.ownershipFiles;
     const { rules } = await loadOwnershipRules(ctx.cwd, cfg);
     if (files.length === 1) {
       return { data: matchFile(files[0]!, rules) };

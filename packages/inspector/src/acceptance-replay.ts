@@ -139,7 +139,7 @@ const CONDITIONAL_GATES: ReadonlyArray<IGateDefinition> = [
       ),
   },
   {
-    command: 'shrk product check',
+    command: 'shrk quality',
     category: 'gate',
     reason: ReplayReason.Inspector,
     trigger: (r) => r.files.some((f) => f.area === ChangeArea.Inspector),

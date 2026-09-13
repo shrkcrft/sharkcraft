@@ -20,7 +20,9 @@ import {
   gatesTryCommand,
 } from '../commands/gates.command.ts';
 import { ExitCode } from '../exit-codes.ts';
-import type { ParsedArgs } from '../command-registry.ts';
+import { parseArgs, type ParsedArgs } from '../command-registry.ts';
+import { guardInvocation } from '../dispatch/guard-invocation.ts';
+import { buildRegistry } from '../main.ts';
 
 function args(root: string, positional: string[], flags: Record<string, string | boolean> = {}): ParsedArgs {
   return {
@@ -269,12 +271,24 @@ describe('gates check — one command, every plane, one exit code', () => {
     }
   });
 
-  test('a mistyped flag is rejected rather than read as an opt-in at exit 0', async () => {
+  // Round 11 moved the inline per-verb flag guard into the dispatcher: the
+  // handler DECLARES its complete flag set (`flags`, the identical set) and
+  // `guardInvocation` refuses anything else BEFORE `run` — so the refusal is
+  // asserted where it now happens, not by calling the handler directly.
+  test('a mistyped flag is rejected rather than read as an opt-in at exit 0', () => {
     const root = sharedExtractorFixture();
     try {
-      const { code, out } = await run(gatesCheckCommand, args(root, [], { 'chnged-only': true }));
-      expect(code).toBe(ExitCode.UsageError);
-      expect(out).toContain('Unknown flag "--chnged-only"');
+      const rejection = guardInvocation({
+        registry: buildRegistry(),
+        handler: gatesCheckCommand,
+        matchedPath: ['gates', 'check'],
+        trieChildren: [],
+        parsed: parseArgs(['--chnged-only'], { booleanFlags: gatesCheckCommand.booleanFlags }),
+        cwd: root,
+      });
+      expect(rejection?.exitCode).toBe(ExitCode.UsageError);
+      expect(rejection?.message).toContain('--chnged-only is not a flag of this command');
+      expect(rejection?.message).toContain('Did you mean --changed-only?');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

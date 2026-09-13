@@ -127,12 +127,14 @@ export default [
     description:
       'Add an ADR under sharkcraft/decisions/<id>.md. Status proposed → accepted after review.',
     appliesWhen: ['adding-a-decision'],
-    matchPaths: ['sharkcraft/decisions/*.md', 'docs/adr/*.md'],
+    // `docs/adr/*.md` was dropped: the directory does not exist, so the glob
+    // matched nothing (a dead unit the round-11 scaffold doctor reports).
+    matchPaths: ['sharkcraft/decisions/*.md'],
     templateId: 'engine.cli-command',
     confidence: 'high',
     strategy: 'fresh-create',
     notes: [
-      'Use `shrk decisions new <id> --write-draft` for the bootstrap skeleton.',
+      'Copy an existing ADR under sharkcraft/decisions/ as the skeleton (Context / Decision / Consequences); there is no `shrk decisions` verb.',
     ],
   }),
 ];

@@ -19,6 +19,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync, type Dirent } from 'node:fs';
 import * as nodePath from 'node:path';
+import type { IVerdictCoverage } from '@shrkcrft/core';
 
 export const IMPORT_HYGIENE_SCHEMA = 'sharkcraft.import-hygiene/v1';
 
@@ -50,6 +51,18 @@ export interface IImportHygieneReport {
   readonly counts: Readonly<Record<string, number>>;
   readonly verdict: 'ok' | 'warnings' | 'errors';
   readonly nextCommand: string;
+  /**
+   * Source files the check was asked to read — the subject list
+   * (`importHygieneSubjects` for an explicit `files` request, the tree walk
+   * otherwise). Always set by `buildImportHygieneReport`.
+   */
+  readonly filesInScope?: number;
+  /**
+   * In-scope files that could not be read (project-relative). Their imports
+   * were never checked, so a verdict over them is NOT VERIFIED — never "ok".
+   * Always set by `buildImportHygieneReport`.
+   */
+  readonly unread?: readonly string[];
 }
 
 export interface IImportHygieneOptions {
@@ -117,13 +130,21 @@ function loadAllowlist(
   }
 }
 
-function listSourceFiles(root: string): string[] {
+/**
+ * Every `.ts` / `.tsx` source under `root` (absolute paths). A directory the
+ * walk could not LIST (a permission error, not one that vanished) is pushed to
+ * `unlistedDirs`: every source beneath it went unexamined, so the report counts
+ * it as an unread unit of scope — never a directory that held nothing.
+ */
+function listSourceFiles(root: string, unlistedDirs: string[] = []): string[] {
   const out: string[] = [];
   function walk(dir: string): void {
     let entries: Dirent[] = [];
     try {
       entries = readdirSync(dir, { withFileTypes: true }) as unknown as Dirent[];
-    } catch {
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') unlistedDirs.push(dir);
       return;
     }
     for (const e of entries) {
@@ -140,18 +161,23 @@ function listSourceFiles(root: string): string[] {
   return out;
 }
 
+/**
+ * The findings one file holds, or `null` when it could not be READ — a file
+ * whose imports were never seen is unexamined, never "no findings" (the
+ * `[]` this used to return made an unreadable file read as a clean pass).
+ */
 function scanFile(
   projectRoot: string,
   absFile: string,
   allowlist: readonly IAllowlistEntry[],
   strictReasons: boolean = false,
-): IImportHygieneFinding[] {
+): IImportHygieneFinding[] | null {
   const findings: IImportHygieneFinding[] = [];
   let rawContent: string;
   try {
     rawContent = readFileSync(absFile, 'utf8');
   } catch {
-    return findings;
+    return null;
   }
   const relFile = nodePath.relative(projectRoot, absFile);
   const lines = rawContent.split('\n');
@@ -323,6 +349,36 @@ function stripCommentsPreservingOffsets(source: string): string {
  */
 const EXCLUDED_FROM_HYGIENE = /__tests__|\/__fixtures__/;
 
+/**
+ * The files of `files` import hygiene actually READS — existing `.ts`/`.tsx`
+ * sources, no declarations, no test fixtures (absolute paths). THE authority
+ * for "did the hygiene check examine anything?": `buildImportHygieneReport`
+ * scans exactly this list, and finish / diff-check count it, so a changeset of
+ * deleted files, `.js` edits or test fixtures can never read as a hygiene pass
+ * over nothing (round 11).
+ */
+export function importHygieneSubjects(projectRoot: string, files: readonly string[]): string[] {
+  return files
+    .map((f) => (nodePath.isAbsolute(f) ? f : nodePath.join(projectRoot, f)))
+    .filter((f) => presentOrUnknowable(f) && /\.(ts|tsx)$/.test(f) && !/\.d\.ts$/.test(f))
+    .filter((f) => !EXCLUDED_FROM_HYGIENE.test(f));
+}
+
+/**
+ * A changed path that is GONE is out of scope. One whose stat fails for any
+ * other reason (a parent directory that cannot be listed) is kept: its read
+ * then fails and it is reported unread — never dropped as if it were deleted.
+ */
+function presentOrUnknowable(abs: string): boolean {
+  try {
+    statSync(abs);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code !== 'ENOENT' && code !== 'ENOTDIR';
+  }
+}
+
 function defaultRoots(projectRoot: string): string[] {
   const pkgsDir = nodePath.join(projectRoot, 'packages');
   if (!existsSync(pkgsDir)) return [projectRoot];
@@ -343,18 +399,33 @@ export function buildImportHygieneReport(
     : loadAllowlist(projectRoot, options.allowlistFile);
   const roots = options.roots ?? defaultRoots(projectRoot);
   let scanned: string[];
-  if (options.files && options.files.length > 0) {
-    scanned = options.files
-      .map((f) => (nodePath.isAbsolute(f) ? f : nodePath.join(projectRoot, f)))
-      .filter((f) => existsSync(f) && /\.(ts|tsx)$/.test(f) && !/\.d\.ts$/.test(f))
-      .filter((f) => !EXCLUDED_FROM_HYGIENE.test(f));
+  const unlistedDirs: string[] = [];
+  // An explicit `files` list — EVEN AN EMPTY ONE — is the whole request: `[]`
+  // scans nothing (an empty changeset), `undefined` scans the tree. Treating
+  // `[]` as "no filter" made `check imports --changed-only` over an empty
+  // changeset silently widen to the whole tree (round 11 review).
+  if (options.files !== undefined) {
+    scanned = importHygieneSubjects(projectRoot, options.files);
   } else {
-    scanned = roots.flatMap(listSourceFiles).filter((f) => !EXCLUDED_FROM_HYGIENE.test(f));
+    scanned = roots.flatMap((r) => listSourceFiles(r, unlistedDirs)).filter((f) => !EXCLUDED_FROM_HYGIENE.test(f));
   }
   const findings: IImportHygieneFinding[] = [];
+  // A directory the walk could not list is one unexamined unit of scope each
+  // (`src/app/sub/`) — counted in `filesInScope` and named in `unread`, so
+  // `importHygieneCoverage` settles it NOT VERIFIED rather than a clean pass.
+  const unlisted = unlistedDirs
+    .map((d) => {
+      const rel = nodePath.relative(projectRoot, d).split(nodePath.sep).join('/');
+      return rel === '' ? './' : `${rel}/`;
+    })
+    .filter((d) => !EXCLUDED_FROM_HYGIENE.test(d));
+  const unread: string[] = [...unlisted];
   const strictReasons = options.strictAllowlistReasons === true;
-  for (const f of scanned)
-    findings.push(...scanFile(projectRoot, f, allowlist, strictReasons));
+  for (const f of scanned) {
+    const fileFindings = scanFile(projectRoot, f, allowlist, strictReasons);
+    if (fileFindings === null) unread.push(nodePath.relative(projectRoot, f).split(nodePath.sep).join('/'));
+    else findings.push(...fileFindings);
+  }
   const counts: Record<string, number> = { total: findings.length };
   for (const f of findings) {
     counts[f.kind] = (counts[f.kind] ?? 0) + 1;
@@ -377,6 +448,34 @@ export function buildImportHygieneReport(
         : verdict === 'warnings'
           ? 'Review dynamic imports; allowlist legitimate lazy-load boundaries with a reason.'
           : 'shrk check imports --changed-only',
+    filesInScope: scanned.length + unlisted.length,
+    unread,
+  };
+}
+
+/**
+ * What an import-hygiene run examined, as one coverage record: in-scope files
+ * read of in-scope files, naming each unreadable one. THE fold finish,
+ * `diff-check` (CLI + MCP) and `check imports` settle on, so an unreadable
+ * changed file is NOT VERIFIED (2) on every surface — never a clean pass.
+ */
+export function importHygieneCoverage(
+  report: Pick<IImportHygieneReport, 'filesInScope' | 'unread'>,
+  unit: string = 'source files',
+): IVerdictCoverage {
+  const expected = report.filesInScope ?? 0;
+  const unread = report.unread ?? [];
+  return {
+    unit,
+    expected,
+    examined: Math.max(0, expected - unread.length),
+    ...(unread.length > 0
+      ? {
+          unexamined: unread.slice(0, 20),
+          unexaminedTotal: unread.length,
+          reason: 'unreadable, so their imports were never checked',
+        }
+      : {}),
   };
 }
 
@@ -443,9 +542,18 @@ export function emitImportHygieneAllowlistDraft(
   };
 }
 
-export function renderImportHygieneText(report: IImportHygieneReport): string {
+/**
+ * Text rendering. `headline` overrides the header word — the CLI passes the
+ * SETTLED verdict (`NOT VERIFIED`) so a run that examined nothing, or not
+ * everything, never prints `(OK)` above its own NOT VERIFIED line.
+ */
+export function renderImportHygieneText(report: IImportHygieneReport, headline?: string): string {
   const lines: string[] = [];
-  lines.push(`=== Import hygiene (${report.verdict.toUpperCase()}) ===`);
+  lines.push(`=== Import hygiene (${headline ?? report.verdict.toUpperCase()}) ===`);
+  if (report.filesInScope !== undefined) lines.push(`  files in scope  ${report.filesInScope}`);
+  if (report.unread && report.unread.length > 0) {
+    lines.push(`  unreadable      ${report.unread.length} (${report.unread.slice(0, 5).join(', ')}${report.unread.length > 5 ? ', …' : ''})`);
+  }
   lines.push(`  scanned files (with findings)  ${new Set(report.findings.map((f) => f.file)).size}`);
   lines.push(`  errors    ${report.counts['error'] ?? 0}`);
   lines.push(`  warnings  ${report.counts['warning'] ?? 0}`);

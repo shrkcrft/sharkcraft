@@ -50,7 +50,7 @@ export const provenanceListCommand: ICommandHandler = {
     }
     process.stdout.write(header(`Provenance entries (${entries.length})`));
     if (entries.length === 0) {
-      process.stdout.write('  (ledger is empty — run a `shrk knowledge author --write-preview` to start it)\n');
+      process.stdout.write('  (ledger is empty — run a `shrk knowledge add --id <id> --write-preview` to start it)\n');
       return 0;
     }
     for (const e of entries) {

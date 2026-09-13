@@ -33,7 +33,7 @@ export function ArchitecturePage(): JSX.Element {
       <section className="section">
         <h2 className="section__title">Boundary violations</h2>
         {a.boundaries.violations.length === 0 ? (
-          <Card><div className="card__hint">No active violations.</div></Card>
+          <Card><div className="card__hint">{a.boundaries.summary ?? 'No active violations.'}</div></Card>
         ) : (
           <table className="table">
             <thead>

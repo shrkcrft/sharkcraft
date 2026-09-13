@@ -7,6 +7,7 @@ import {
 import { resolvePreset, resolvePresetReferences } from '@shrkcrft/presets';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { inspectionReferenceLookup } from './reference-lookup.ts';
+import { referenceIdExists } from './reference-registry.ts';
 
 export interface ICoverageCategory {
   id: string;
@@ -100,8 +101,6 @@ export function buildCoverageReport(inspection: ISharkcraftInspection): ICoverag
       (e) => e.noAction !== true && !KNOWLEDGE_TYPES_NO_ACTION.has(e.type as KnowledgeType),
     );
     const total = actionable.length;
-    const knowledgeIds = new Set(inspection.knowledgeEntries.map((x) => x.id));
-    const templateIds = new Set(inspection.templates.map((t) => t.id));
     const missing: string[] = [];
     let covered = 0;
     for (const e of actionable) {
@@ -111,11 +110,12 @@ export function buildCoverageReport(inspection: ISharkcraftInspection): ICoverag
       }
       // Reward RESOLVED cross-references: a hint whose related ids actually
       // point at real entries/templates is substantive even without a command.
+      // Resolved through THE reference registry, not private id sets.
       const a = e.actionHints;
       const resolvedXref =
         !!a &&
-        ((a.relatedKnowledge?.some((id) => knowledgeIds.has(id)) ?? false) ||
-          (a.relatedTemplates?.some((id) => templateIds.has(id)) ?? false));
+        ((a.relatedKnowledge?.some((id) => referenceIdExists(inspection, 'knowledge', id)) ?? false) ||
+          (a.relatedTemplates?.some((id) => referenceIdExists(inspection, 'template', id)) ?? false));
       if (resolvedXref) {
         covered += 1;
         continue;
@@ -152,8 +152,8 @@ export function buildCoverageReport(inspection: ISharkcraftInspection): ICoverag
       }
       const allResolve = refs.every(
         (id) =>
-          inspection.templates.some((t) => t.id === id) ||
-          inspection.knowledgeEntries.some((e) => e.id === id),
+          referenceIdExists(inspection, 'template', id) ||
+          referenceIdExists(inspection, 'knowledge', id),
       );
       if (allResolve) covered += 1;
       else missing.push(`${p.id} — some step references unknown ids`);

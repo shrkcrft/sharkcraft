@@ -184,9 +184,11 @@ Apply the overrides at run-time:
 
 ```bash
 shrk policy run --explain-overrides          # show what was promoted/demoted/disabled
-shrk policy overrides                        # list configured overrides
-shrk policy overrides audit                  # read the append-only audit trail
 ```
+
+(The former `shrk policy overrides` / `shrk policy overrides audit` verbs were
+removed: `--explain-overrides` lists every configured override and what it did,
+and the audit trail below is a plain JSON-lines file.)
 
 The audit log lives at `.sharkcraft/policy-override-audit.log` (JSON
 lines). It is **never written automatically**. To record an entry, pass
@@ -197,8 +199,7 @@ sourceConfig, command`).
 
 ```bash
 shrk policy run --record-override-audit         # append entries when overrides apply
-shrk policy overrides audit --format markdown   # render the trail as markdown
-shrk policy overrides audit --json              # JSON for CI
+jq . .sharkcraft/policy-override-audit.log      # read the trail (JSON lines)
 ```
 
 `get_policy_override_audit` exposes the trail to MCP read-only.

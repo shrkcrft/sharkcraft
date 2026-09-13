@@ -7,7 +7,12 @@
  * Read-only. No source mutations. The CLI is the only path that writes
  * previews (and only under `.sharkcraft/fixes/`).
  */
-import { buildFixPreview, FixKind, listFixKinds } from '@shrkcrft/inspector';
+import {
+  buildFixPreview,
+  FixKind,
+  listFixKinds,
+  warmReferenceRegistries,
+} from '@shrkcrft/inspector';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
 export const previewFixTool: IToolDefinition = {
@@ -34,6 +39,9 @@ export const previewFixTool: IToolDefinition = {
       if (k === 'knowledge-stale') kinds.push(FixKind.KnowledgeStale);
       if (k === 'template-drift') kinds.push(FixKind.TemplateDrift);
     }
+    // The knowledge-stale suggestions resolve reference ids — warm first, or a
+    // correct playbook / policy id is suggested as a fix.
+    await warmReferenceRegistries(ctx.inspection);
     const report = buildFixPreview(ctx.inspection, kinds.length > 0 ? { kinds } : {});
     const target = typeof input.target === 'string' ? input.target : undefined;
     const suggestions = target

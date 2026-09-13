@@ -1,5 +1,5 @@
 import type { IWiringRule, IWiringSource } from '@shrkcrft/core';
-import { matchesAny } from '../scan/glob.ts';
+import { globListSelects } from '../scan/glob.ts';
 import { elementToken, escapeRegex, scanBalanced } from '../extract/scan-literals.ts';
 import { extractTokens } from '../extract/extract-tokens.ts';
 import { registeredSources, type IWiringViolation } from './evaluate-wiring.ts';
@@ -295,7 +295,7 @@ export function planWiringFix(
   const anchor = resolveExtractorAnchor(sink);
   if (anchor === undefined) return refuseAll('sink-not-an-array', 'sink declares no anchor');
 
-  const sinkFiles = files.filter((f) => matchesAny(f.path, sink.files ?? []));
+  const sinkFiles = files.filter((f) => globListSelects(f.path, sink.files ?? []));
   if (sinkFiles.length !== 1) {
     return refuseAll(
       'ambiguous-sink-file',

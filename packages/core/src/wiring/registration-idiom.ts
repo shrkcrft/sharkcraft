@@ -43,4 +43,14 @@ export interface IRegistrationIdiom {
    * they were written.
    */
   readonly selfTest?: IRuleSelfTest;
+  /**
+   * Promote "the DECLARED role extracted 0 tokens" from a loud skip (`2`) to a
+   * failure (`1`) in `gates coverage` and `gates check`. Both verbs read the
+   * same per-role measurement, so they agree. The declared role is the idiom's
+   * primary selector, the set its selfTest asserts on. A provided or consumed
+   * role whose globs match no file is not "empty". It is reported as an
+   * unexamined role (`partial`, `2`) whether or not this is set. Default
+   * `false`, as for a registry, because an idiom carries no severity of its own.
+   */
+  readonly failOnEmpty?: boolean;
 }

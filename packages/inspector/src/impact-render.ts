@@ -1,4 +1,20 @@
 import type { IImpactAnalysis } from './impact-analysis.ts';
+import { formatClassificationRate } from './area-map.ts';
+
+/**
+ * `Area attribution: degraded (…)` — printed whenever the area map behind this
+ * impact view classified too little of the repo, or left a target in no area.
+ * Report only: it changes no exit, it says how far the area signals reach.
+ */
+function areaAttributionLine(impact: IImpactAnalysis): string | undefined {
+  const ac = impact.areaCoverage;
+  if (!ac || (!ac.degraded && ac.unclassifiedTargets.length === 0)) return undefined;
+  return (
+    `Area attribution: ${ac.degraded ? 'degraded' : 'partial'} ` +
+    `(${formatClassificationRate(ac.classificationRate)} of repo classified; ` +
+    `${ac.unclassifiedTargets.length}/${impact.normalizedTargets.length} target(s) unclassified)`
+  );
+}
 
 export interface IImpactRenderOptions {
   /** When true, include the ASCII / `<details>` dependency tree. */
@@ -132,6 +148,8 @@ export function renderImpactText(
     lines.push('Reasons:');
     for (const r of impact.riskReasons.slice(0, 6)) lines.push(`  - ${r.code}: ${r.message}`);
   }
+  const areaLine = areaAttributionLine(impact);
+  if (areaLine) lines.push(areaLine);
   lines.push(`Targets (${impact.normalizedTargets.length}):`);
   for (const f of impact.normalizedTargets.slice(0, 12)) lines.push(`  • ${f}`);
   lines.push(`Direct dependents (${impact.directDependents.length}):`);
@@ -211,6 +229,11 @@ export function renderImpactMarkdown(
   lines.push('');
   if (impact.riskReasons.length === 0) lines.push('_None._');
   for (const r of impact.riskReasons) lines.push(`- **${r.code}** — ${r.message}`);
+  const areaLine = areaAttributionLine(impact);
+  if (areaLine) {
+    lines.push('');
+    lines.push(`> ${areaLine}`);
+  }
   lines.push('');
   lines.push(`## Direct dependents (${impact.directDependents.length})`);
   lines.push('');

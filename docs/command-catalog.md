@@ -31,6 +31,24 @@ The dashboard is also read-only: it serves the catalog as `GET /api/commands`
 and renders every entry as a copyable `<CommandBlock>` — no button on the
 dashboard ever executes a command.
 
+## Audience
+
+`intendedAudience` says who a command is for: `human`, `agent`, `ci`,
+`pack-author`, `maintainer`, and (round 11) `tool-maintenance`. The default is
+`human` (+ `agent` when `mcpAvailable`). `shrk surface list` prints it as a
+column and `surface explain` as a line.
+
+`tool-maintenance` is the one value with behaviour: the command's object is
+SharkCraft ITSELF (its docs set, examples, release artifacts, command catalog,
+round snapshots). Outside SharkCraft's own repository (`detectSharkcraftRepo`)
+such a row resolves with tier source `tool-maintenance`: hidden from `--help`
+and refused by the surface gate with exit 78 ("maintains SharkCraft itself and
+does not apply to this repository — this is not a check failure");
+`surface.enabled` is the escape hatch. See
+[surface-tiers.md](./surface-tiers.md#tool-maintenance-commands-round-11).
+`isToolMaintenance(row)` is the predicate; tag a new row that maintains the
+tool itself with `CommandAudience.ToolMaintenance`.
+
 ## MCP
 
 The same catalog is available via the MCP tool `get_command_catalog`:
@@ -56,8 +74,29 @@ Asserts invariants:
 - registered commands are present in the catalog
 - catalog commands map to a registered top-level (or known group)
 - every registered command has a non-empty usage string
+- **`registry-path-not-in-catalog`** (warning, round 11) — every dispatchable
+  path in the command index (`shrk surface list`) has a catalog row, at PATH
+  granularity. The older checks compared top-level handlers only, so 75
+  registered 2-level paths (`knowledge list`, `gates check`, …) with no row —
+  and so no safety metadata — read as "OK ✓". Its count equals
+  `surface list`'s `totals.uncatalogued`.
+- **`undeclared-internal-subverb`** (error, round 11) — a catalog row documents
+  a subverb of a handler that DECLARES its subverbs (`ICommandHandler.subverbs`)
+  but not that one. Handlers that declare nothing are not checked.
 
-Exit code is non-zero if any **error**-severity issue is detected.
+Exit code is non-zero if any **error**-severity issue is detected. The clean
+verdict is settled against the path-level pass's coverage (every registered
+path examined); `--json` carries `coverage`, `exitCode` and `shortfalls`.
+
+## The command index
+
+`packages/cli/src/surface/command-index.ts` (`buildCommandIndex(registry)`) is
+the ONE inventory of what dispatches: every registered handler path, every
+declared or catalog-documented subverb, and the meta flags, joined with this
+catalog by clean path (flag-variant rows fold into `variants`). `surface list`,
+`help`, `commands doctor`, the surface gate and the command-string resolver
+(`resolveCommandString`) all read it; nothing else walks COMMAND_CATALOG to
+answer "does this command exist".
 
 ## Tests
 

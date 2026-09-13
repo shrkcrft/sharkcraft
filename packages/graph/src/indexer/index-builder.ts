@@ -6,7 +6,6 @@ import { EdgeKind } from '../schema/edge-kind.ts';
 import type { IFileFingerprint } from '../schema/file-fingerprint.ts';
 import type { IGraphManifest } from '../schema/manifest.ts';
 import type { INode } from '../schema/node.ts';
-import { NodeKind } from '../schema/node-kind.ts';
 import { fingerprintFile } from '../store/file-fingerprint.ts';
 import { GraphStore } from '../store/graph-store.ts';
 import { summarizeCycles } from '../query/cycle-detection.ts';
@@ -39,32 +38,11 @@ import {
   type IImportResolverContext,
 } from './resolve-imports.ts';
 import { resolveReExportedReferenceEdges } from './resolve-reexports.ts';
-
-const SOURCE_EXTS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
-  // Web component formats — parsed by framework-scanners; the TS-AST
-  // extractor short-circuits on these.
-  '.vue', '.svelte', '.astro',
-  // Non-TS languages — handled by the per-language dispatcher.
-  '.py', '.go', '.java', '.rs', '.kt', '.kts', '.rb', '.cs', '.csx', '.ex', '.exs', '.php',
-  '.dart', '.swift',
-  // Schema-definition formats — File nodes only; framework-scanners
-  // does the SDL parsing.
-  '.graphql', '.gql',
-]);
-const SKIP_DIRS = new Set([
-  'node_modules',
-  'dist',
-  'build',
-  'coverage',
-  '.git',
-  '.sharkcraft',
-  '.next',
-  '.cache',
-  '.tmp-pack',
-  'out',
-  'target',
-]);
+import { buildPackageNode } from './package-node.ts';
+// The ONE list of indexed extensions AND skipped directories (shared with the
+// freshness walk, the incremental updater and the orphan check's coverage) —
+// see graph-source-path.ts.
+import { isGraphSourcePath, isGraphWalkSkipped } from './graph-source-path.ts';
 
 export interface IIndexBuilderOptions {
   projectRoot: string;
@@ -91,7 +69,8 @@ export interface IFullIndexResult {
 export function buildFullIndex(options: IIndexBuilderOptions): IFullIndexResult {
   const start = Date.now();
   const { projectRoot } = options;
-  const ignore = new Set([...SKIP_DIRS, ...(options.extraIgnore ?? [])]);
+  // Extra ignores ADD to the shared GRAPH_SKIP_DIRS (isGraphWalkSkipped applies both).
+  const ignore = new Set(options.extraIgnore ?? []);
 
   const sourceFiles = walkSources(projectRoot, ignore, options.maxFiles ?? 0);
 
@@ -101,8 +80,7 @@ export function buildFullIndex(options: IIndexBuilderOptions): IFullIndexResult 
   const nodes: INode[] = [];
   const edges: IEdge[] = [];
   const fingerprints: IFileFingerprint[] = [];
-  const packageNodes = buildPackageNodes(workspaces);
-  for (const n of packageNodes) nodes.push(n);
+  for (const p of workspaces) nodes.push(buildPackageNode(p, projectRoot));
 
   const fileIdByPath = new Map<string, string>();
   const packageDirIndex = buildPackageDirIndex(workspaces);
@@ -271,8 +249,7 @@ function walkSources(
       continue;
     }
     for (const name of entries) {
-      if (ignore.has(name)) continue;
-      if (name.startsWith('.') && name !== '.') continue;
+      if (isGraphWalkSkipped(name, ignore)) continue;
       const full = nodePath.join(dir, name);
       let st;
       try {
@@ -285,24 +262,12 @@ function walkSources(
         continue;
       }
       if (!st.isFile()) continue;
-      if (!SOURCE_EXTS.has(nodePath.extname(full).toLowerCase())) continue;
+      if (!isGraphSourcePath(full)) continue;
       out.push(full);
       if (maxFiles > 0 && out.length >= maxFiles) break;
     }
   }
   return out.sort();
-}
-
-function buildPackageNodes(packages: readonly IWorkspacePackage[]): readonly INode[] {
-  return packages.map((p) => ({
-    id: `package:${p.name}`,
-    kind: NodeKind.Package,
-    label: p.name,
-    path: p.dir,
-    data: {
-      ...(p.entry ? { entry: p.entry } : {}),
-    },
-  }));
 }
 
 interface IPackageDirIndex {

@@ -5,6 +5,7 @@ import {
   inspectSharkcraft,
   loadAgentContractTests,
   loadContextTests,
+  nearestIds,
   runAgentContractTest,
   runContextTest,
 } from '@shrkcrft/inspector';
@@ -16,29 +17,122 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { agentTestMissingExpectedHints, renderFailureHints } from '../output/failure-hints.ts';
 import { maybeRunInWatchMode } from '../output/watch-loop.ts';
+import { warmCliReferenceRegistries } from '../surface/cli-command-resolver.ts';
+import { ExitCode } from '../exit-codes.ts';
+import { ALLOW_EMPTY_FLAG, allowEmptyValve } from '../gates/allow-empty.ts';
+import { settleVerdict } from '../gates/settle-verdict.ts';
+import type { ISettledVerdict } from '../gates/settled-verdict.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
+
+/**
+ * The `--id` selection. An id that selects NOTHING is a usage error (3) — a
+ * typo'd id used to print "No … tests configured." and exit 0, a green run
+ * over an empty selection.
+ */
+function selectById<T extends { id: string }>(
+  all: readonly T[],
+  args: ParsedArgs,
+  kind: 'agent' | 'context',
+): { tests: readonly T[]; usageError?: string } {
+  const filter = flagString(args, 'id');
+  if (filter === undefined) return { tests: all };
+  const tests = all.filter((t) => t.id === filter);
+  if (tests.length > 0) return { tests };
+  // An unknown DECLARED id — the same `nearestIds` every other id site uses
+  // (`checks --rule`, `checks run`, `self-config resolve`), never the
+  // command-typo scorer.
+  const near = nearestIds(filter, all.map((t) => t.id)).map((n) => n.id);
+  return {
+    tests,
+    usageError: `no ${kind} test with id '${filter}' (${all.length} configured)${
+      near.length > 0 ? ` — did you mean ${near.map((n) => `'${n}'`).join(', ')}?` : ''
+    }`,
+  };
+}
+
+/** Print (or JSON-encode) the `--id` usage error and return 3. */
+function writeUsageError(args: ParsedArgs, message: string): number {
+  if (flagBool(args, 'json')) {
+    process.stdout.write(
+      asJson({ tests: 0, results: [], exitCode: ExitCode.UsageError, verdict: 'usage-error', error: message }) + '\n',
+    );
+  } else {
+    process.stderr.write(`\`shrk test\`: ${message}\n`);
+  }
+  return ExitCode.UsageError;
+}
+
+/**
+ * Zero tests configured examined nothing — NOT VERIFIED (2), the verdict
+ * `shrk quality` gives the same empty gate, unless `--allow-empty` accepts it.
+ */
+function settleEmptySet(args: ParsedArgs, unit: string, reason: string, root: string): ISettledVerdict {
+  return settleVerdict(ExitCode.VerifiedPass, [
+    { unit, expected: 0, examined: 0, root, reason, ...allowEmptyValve(args, 0) },
+  ]);
+}
+
+function writeEmptySet(args: ParsedArgs, title: string, none: string, settled: ISettledVerdict): number {
+  if (flagBool(args, 'json')) {
+    process.stdout.write(
+      asJson({
+        tests: 0,
+        results: [],
+        exitCode: settled.exit,
+        verdict: settled.verdict,
+        shortfalls: settled.shortfalls,
+        accepted: settled.accepted,
+      }) + '\n',
+    );
+    return settled.exit;
+  }
+  process.stdout.write(header(title));
+  process.stdout.write(`${none}\n`);
+  const line = verdictLine(settled, 'Nothing to test — accepted.');
+  if (line) process.stdout.write(line + '\n');
+  if (settled.exit === ExitCode.NotVerified) {
+    process.stdout.write(`Pass --${ALLOW_EMPTY_FLAG} to accept an empty test set explicitly.\n`);
+  }
+  return settled.exit;
+}
 
 async function runContextTests(args: ParsedArgs): Promise<number> {
   const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
+  // Existence answers come from the shared reference registry — warm it.
+  await warmCliReferenceRegistries(inspection);
   const all = await loadContextTests(inspection);
-  const filter = flagString(args, 'id');
-  const tests = filter ? all.filter((t) => t.id === filter) : all;
+  const { tests, usageError } = selectById(all, args, 'context');
+  if (usageError) return writeUsageError(args, usageError);
   if (tests.length === 0) {
-    if (flagBool(args, 'json')) {
-      process.stdout.write(asJson({ tests: 0, results: [] }) + '\n');
-      return 0;
-    }
-    process.stdout.write(header('Context tests'));
-    process.stdout.write('No context tests configured.\n');
-    return 0;
+    const settled = settleEmptySet(
+      args,
+      'context tests',
+      'no context tests configured (sharkcraft/context-tests.ts, or a pack `contextTestFiles` contribution)',
+      inspection.projectRoot,
+    );
+    return writeEmptySet(args, 'Context tests', 'No context tests configured.', settled);
   }
   const results = tests.map((t) => runContextTest(inspection, t));
   const failed = results.filter((r) => !r.passed);
+  const settled = settleVerdict(failed.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass, [
+    { unit: 'context tests', expected: results.length, examined: results.length },
+  ]);
   if (flagBool(args, 'json')) {
-    process.stdout.write(asJson({ total: results.length, failed: failed.length, results }) + '\n');
-    return failed.length > 0 ? 1 : 0;
+    process.stdout.write(
+      asJson({
+        total: results.length,
+        failed: failed.length,
+        exitCode: settled.exit,
+        verdict: settled.verdict,
+        shortfalls: settled.shortfalls,
+        results,
+      }) + '\n',
+    );
+    return settled.exit;
   }
   process.stdout.write(header(`Context tests (${results.length})`));
   for (const r of results) {
@@ -68,38 +162,71 @@ async function runContextTests(args: ParsedArgs): Promise<number> {
     }
   }
   process.stdout.write(`\nSummary: ${results.length - failed.length}/${results.length} passed.\n`);
-  return failed.length > 0 ? 1 : 0;
+  const line = verdictLine(settled, '');
+  if (line) process.stdout.write(line + '\n');
+  return settled.exit;
 }
 
 async function runAgentTests(args: ParsedArgs): Promise<number> {
   const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
   const all = await loadAgentContractTests(inspection);
-  const filter = flagString(args, 'id');
-  const tests = filter ? all.filter((t) => t.id === filter) : all;
+  const { tests, usageError } = selectById(all, args, 'agent');
+  if (usageError) return writeUsageError(args, usageError);
   if (tests.length === 0) {
-    if (flagBool(args, 'json')) {
-      process.stdout.write(asJson({ tests: 0, results: [] }) + '\n');
-      return 0;
-    }
-    process.stdout.write(header('Agent contract tests'));
-    process.stdout.write('No agent contract tests configured.\n');
-    return 0;
+    const settled = settleEmptySet(
+      args,
+      'agent tests',
+      'no agent contract tests configured (sharkcraft/agent-tests.ts, or a pack `agentTestFiles` contribution)',
+      inspection.projectRoot,
+    );
+    return writeEmptySet(args, 'Agent contract tests', 'No agent contract tests configured.', settled);
   }
-  // Pre-load policy / construct / playbook id sets so the runner can
-  // evaluate strict expectations accurately.
-  const { loadAgentContractRegistries } = await import('@shrkcrft/inspector');
-  const registries = await loadAgentContractRegistries(inspection);
-  const results = tests.map((t) => runAgentContractTest(inspection, t, registries));
+  // Warm the shared reference registry WITH the command resolver: existence
+  // expectations read the registry `shrk <kind> list` prints, and
+  // `expectedCommands` resolve against the live command index.
+  await warmCliReferenceRegistries(inspection);
+  const results = tests.map((t) => runAgentContractTest(inspection, t));
   const failed = results.filter((r) => !r.passed);
+  // A test whose every failing expectation could not be evaluated is NOT
+  // VERIFIED — an unexamined unit, never a pass and never a plain failure.
+  const notVerified = results.filter((r) => r.verdict === 'not-verified');
+  const anyFailed = results.some((r) => r.verdict === 'fail');
+  const settled = settleVerdict(anyFailed ? ExitCode.Failure : ExitCode.VerifiedPass, [
+    {
+      unit: 'agent tests',
+      expected: results.length,
+      examined: results.length - notVerified.length,
+      ...(notVerified.length > 0
+        ? {
+            unexamined: notVerified.slice(0, 20).map((r) => r.id),
+            unexaminedTotal: notVerified.length,
+            reason: 'an expectation could not be evaluated',
+          }
+        : {}),
+    },
+  ]);
+  const exit = settled.exit;
   if (flagBool(args, 'json')) {
-    process.stdout.write(asJson({ total: results.length, failed: failed.length, results }) + '\n');
-    return failed.length > 0 ? 1 : 0;
+    process.stdout.write(
+      asJson({
+        total: results.length,
+        failed: failed.length,
+        notVerified: notVerified.length,
+        exitCode: exit,
+        verdict: settled.verdict,
+        shortfalls: settled.shortfalls,
+        results,
+      }) + '\n',
+    );
+    return exit;
   }
   process.stdout.write(header(`Agent contract tests (${results.length})`));
   for (const r of results) {
-    const tag = r.passed ? 'PASS' : 'FAIL';
+    const tag = r.passed ? 'PASS' : r.verdict === 'not-verified' ? 'N/V ' : 'FAIL';
     process.stdout.write(`  ${tag}  ${r.id.padEnd(36)} task: ${r.task}\n`);
     if (!r.passed) {
+      if ((r.unverified ?? []).length)
+        process.stdout.write(`         NOT VERIFIED: ${r.unverified!.join(', ')}\n`);
       if (r.expectedPipeline) {
         process.stdout.write(`         expected pipeline: ${r.expectedPipeline}\n`);
         process.stdout.write(`         actual pipelines:  ${r.actualPipelines?.join(', ') ?? '(none)'}\n`);
@@ -127,9 +254,11 @@ async function runAgentTests(args: ParsedArgs): Promise<number> {
       if ((r.unexpectedlyIncluded ?? []).length)
         process.stdout.write(`         unexpectedly included: ${r.unexpectedlyIncluded!.join(', ')}\n`);
       for (const d of r.diagnostics ?? []) {
-        process.stdout.write(
-          `         · ${d.kind}: ${d.id} (${d.existsInRegistry ? 'exists' : 'missing from registry'}):\n`,
-        );
+        const why = d.code ?? (d.existsInRegistry ? 'exists' : 'missing from registry');
+        const where = d.consulted
+          ? ` — ${d.assertion ?? 'check'} · consulted ${d.consulted.kind} (${d.consulted.listVerb}${d.consulted.kind === 'command' ? '' : `, ${d.consulted.size} ids`})`
+          : '';
+        process.stdout.write(`         · ${d.kind}: ${d.id} (${why})${where}:\n`);
         for (const s of d.suggestions) process.stdout.write(`             - ${s}\n`);
       }
     }
@@ -154,7 +283,13 @@ async function runAgentTests(args: ParsedArgs): Promise<number> {
   if (anyMissingExpected) {
     process.stdout.write(renderFailureHints(agentTestMissingExpectedHints()));
   }
-  return failed.length > 0 ? 1 : 0;
+  const line = verdictLine(
+    settled,
+    '',
+    exit === ExitCode.NotVerified ? 'Some expectations could not be evaluated (see NOT VERIFIED above).' : undefined,
+  );
+  if (line) process.stdout.write(line + '\n');
+  return exit;
 }
 
 async function generateContextTest(args: ParsedArgs): Promise<number> {
@@ -306,10 +441,27 @@ function slug(s: string): string {
 
 export const testCommand: ICommandHandler = {
   name: 'test',
+  positionals: PositionalMode.None,
+  subverbs: [
+    { name: 'context', description: 'Run the context regression tests.', usage: 'shrk test context [--id <id>] [--allow-empty] [--json]' },
+    { name: 'agent', description: 'Run the agent-contract tests.', usage: 'shrk test agent [--id <id>] [--allow-empty] [--watch] [--json]' },
+    {
+      name: 'generate',
+      description: 'Generate a context or agent test from a task.',
+      usage: 'shrk test generate <context|agent> "<task>" [--write]',
+      positionals: PositionalMode.None,
+      subverbs: [
+        { name: 'context', description: 'Generate a context test.', usage: 'shrk test generate context "<task>" [--write]', positionals: PositionalMode.Free },
+        { name: 'agent', description: 'Generate an agent test.', usage: 'shrk test generate agent "<task>" [--write]', positionals: PositionalMode.Free },
+      ],
+    },
+  ],
   description:
     'Run or generate SharkCraft regression tests: `test context` / `test agent`, or `test generate context|agent "<task>"`.',
   usage:
-    'shrk [--cwd <dir>] test <context|agent|generate> [args...] [--id <id>] [--json]',
+    'shrk [--cwd <dir>] test <context|agent|generate> [args...] [--id <id>] [--allow-empty] [--json]',
+  // `--allow-empty` never swallows a following positional.
+  booleanFlags: new Set(['json', ALLOW_EMPTY_FLAG]),
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
     const sliced = { ...args, positional: args.positional.slice(1) };

@@ -16,6 +16,15 @@ import { buildTaskPacket } from './task-packet.ts';
 import { listConventions } from './convention-registry.ts';
 import { listTaskRoutingHints, explainTaskRouting } from './task-routing-hint-registry.ts';
 import { buildUncertaintySummary } from './uncertainty.ts';
+import { matchTerm, prepareTermQuery } from './match-terms.ts';
+import { classifyQueryIntent } from './query-intent.ts';
+import { QueryIntent } from './query-intent-kind.ts';
+import { referenceIdExists, warmReferenceRegistries, type ReferenceKind } from './reference-registry.ts';
+import {
+  ROUTING_RECOMMENDS_CHANNEL_KEYS,
+  ROUTING_RECOMMENDS_CHANNELS,
+} from './routing-recommends-channels.ts';
+import type { ITaskRoutingRecommends } from '@shrkcrft/plugin-api';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
 export const AGENT_TASK_PREP_SCHEMA = 'sharkcraft.agent-task-prep/v1';
@@ -33,9 +42,35 @@ export interface IAgentTaskPrepReport {
   readonly validationCommands: readonly string[];
   readonly relevantProfiles: readonly { id: string; title: string }[];
   readonly relevantConventions: readonly { id: string; title: string }[];
-  readonly routingHints: readonly { id: string; title: string; reasons: readonly string[] }[];
+  /** Matched routing hints, each with the channels it recommends. */
+  readonly routingHints: readonly {
+    id: string;
+    title: string;
+    reasons: readonly string[];
+    recommends: Readonly<Partial<Record<keyof ITaskRoutingRecommends, readonly string[]>>>;
+  }[];
+  /**
+   * Every NON-command asset the matched routing hints recommend (templates,
+   * playbooks, pipelines, rules, path conventions, knowledge, policies, …) that
+   * resolves in its registry, deduped, in hint-score order. Only
+   * `recommends.commands` used to have a consumer; the other channels loaded,
+   * validated, and reached nothing.
+   */
+  readonly recommendedAssets: readonly { kind: ReferenceKind; id: string; hintId: string }[];
   readonly safetyNotes: readonly string[];
   readonly nextSafeAction: string;
+}
+
+/** The channels a hint actually declares, copied — never the hint object itself. */
+function recommendsSummary(
+  recommends: ITaskRoutingRecommends | undefined,
+): Partial<Record<keyof ITaskRoutingRecommends, readonly string[]>> {
+  const out: Partial<Record<keyof ITaskRoutingRecommends, readonly string[]>> = {};
+  for (const channel of ROUTING_RECOMMENDS_CHANNEL_KEYS) {
+    const ids = recommends?.[channel];
+    if (Array.isArray(ids) && ids.length > 0) out[channel] = [...ids];
+  }
+  return out;
 }
 
 export async function prepareAgentTask(
@@ -47,6 +82,25 @@ export async function prepareAgentTask(
   const conventions = await listConventions(inspection);
   const routing = await explainTaskRouting(inspection, task);
   await listTaskRoutingHints(inspection); // warm cache
+  // THE id resolver answers "does this recommended id exist?" — the same one
+  // the self-config doctor probes these channels with.
+  await warmReferenceRegistries(inspection);
+
+  const recommendedAssets: { kind: ReferenceKind; id: string; hintId: string }[] = [];
+  const seenAssets = new Set<string>();
+  for (const match of routing) {
+    for (const channel of ROUTING_RECOMMENDS_CHANNEL_KEYS) {
+      const spec = ROUTING_RECOMMENDS_CHANNELS[channel];
+      if (spec.kind === 'command') continue;
+      for (const id of match.hint.recommends?.[channel] ?? []) {
+        if (typeof id !== 'string' || !referenceIdExists(inspection, spec.kind, id)) continue;
+        const key = `${spec.kind}:${id}`;
+        if (seenAssets.has(key)) continue;
+        seenAssets.add(key);
+        recommendedAssets.push({ kind: spec.kind, id, hintId: match.hint.id });
+      }
+    }
+  }
 
   const inspectionCommands: string[] = [
     `shrk context --task "${task}" --commands-first`,
@@ -66,10 +120,15 @@ export async function prepareAgentTask(
   ];
   const primaryCommands: string[] = routing.flatMap((m) => m.hint.recommends.commands ?? []).slice(0, 5);
 
+  // THE query-intent classifier and THE term matcher — this used to be a
+  // fifth ad-hoc verb-regex set ("add" anywhere meant generate-code, so
+  // "fix the bug the last add introduced" was create work).
+  const queryIntent = classifyQueryIntent(task);
+  const termQuery = prepareTermQuery(task);
   const intentHints: string[] = [];
-  if (/\brename\b/i.test(task)) intentHints.push('refactor');
-  if (/\bremove\b/i.test(task)) intentHints.push('removal');
-  if (/\badd\b|\bcreate\b/i.test(task)) intentHints.push('generate-code');
+  if (queryIntent.intent === QueryIntent.Refactor || matchTerm(termQuery, 'rename')) intentHints.push('refactor');
+  if (matchTerm(termQuery, 'remove') || matchTerm(termQuery, 'delete')) intentHints.push('removal');
+  if (queryIntent.createVerb !== undefined) intentHints.push('generate-code');
 
   return {
     schema: AGENT_TASK_PREP_SCHEMA,
@@ -84,7 +143,13 @@ export async function prepareAgentTask(
     validationCommands,
     relevantProfiles: [],
     relevantConventions: conventions.slice(0, 5).map((e) => ({ id: e.convention.id, title: e.convention.title })),
-    routingHints: routing.slice(0, 5).map((m) => ({ id: m.hint.id, title: m.hint.title, reasons: m.reasons })),
+    routingHints: routing.slice(0, 5).map((m) => ({
+      id: m.hint.id,
+      title: m.hint.title,
+      reasons: m.reasons,
+      recommends: recommendsSummary(m.hint.recommends),
+    })),
+    recommendedAssets,
     safetyNotes: [
       'SharkCraft engine never auto-applies plans. The human runs `shrk apply --verify-signature`.',
       'MCP tools are read-only; every write happens via the CLI.',

@@ -1,15 +1,11 @@
 import {
+  prepareQualityGateRun,
   QualityGateReportStore,
   renderGateReportMarkdown,
   runQualityGates,
+  settleQualityGateReport,
 } from '@shrkcrft/quality-gates';
-import { ArchReportStore, runArchCheck } from '@shrkcrft/architecture-guard';
-import {
-  inspectSharkcraft,
-  resolveChangedFiles,
-  resolveProjectConfig,
-  type ISharkcraftInspection,
-} from '@shrkcrft/inspector';
+import { ArchReportStore, archStoreMissing, runArchCheck } from '@shrkcrft/architecture-guard';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
@@ -20,6 +16,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
 
 /**
  * `shrk gate` — run all code-intelligence quality gates and emit one
@@ -30,8 +27,13 @@ import { asJson, header, kv } from '../output/format-output.ts';
  *   - 0 if overall status is `pass` (no failures, no warnings)
  *   - 0 if overall is `warn` (default — opt-in to fail via --strict)
  *   - 1 if overall is `fail`
+ *   - 2 if nothing failed but a gate examined only PART of what it was asked
+ *     to (e.g. a wiring rule that passed over part of its scope, or a config
+ *     that did not load): its `coverage` settles the proposed 0 to NOT
+ *     VERIFIED through the CLI's one guard (`settleVerdict`) — a `warn` that
+ *     says "this is not a pass" never exits 0.
  *
- * Pass `--strict` to treat `warn` as failure.
+ * Pass `--strict` to treat `warn` as failure (1).
  */
 export const gateCommand: ICommandHandler = {
   name: 'gate',
@@ -94,115 +96,29 @@ export const gateCommand: ICommandHandler = {
     const staged = flagBool(args, 'staged');
     const filesRaw = flagString(args, 'files');
     const fileList = filesRaw ? filesRaw.split(',').map((s) => s.trim()).filter(Boolean) : [];
-    const wantChangedScope = changedOnly || staged || Boolean(sinceRef) || fileList.length > 0;
-    let changedFiles: readonly string[] | undefined;
-    if (wantChangedScope) {
-      const resolved = resolveChangedFiles({
-        projectRoot: cwd,
-        ...(fileList.length > 0 ? { files: fileList } : {}),
-        ...(staged ? { staged: true } : {}),
-        ...(sinceRef ? { since: sinceRef } : {}),
-        ...(changedOnly && !staged && !sinceRef && fileList.length === 0
-          ? { includeWorktree: true }
-          : {}),
-      });
-      changedFiles = resolved.files;
-    }
-    // Wiring + policy rules come from the project config; each gate is skipped
-    // (never red) when none are declared, so they're inert for projects that
-    // don't opt in. An INVALID config is surfaced (warn) rather than silently
-    // disabling the plane.
-    const loadedConfig = await resolveProjectConfig(cwd);
-    const wiringRules = loadedConfig.ok ? loadedConfig.value.config.wiringRules ?? [] : [];
-    const policyRules = loadedConfig.ok ? loadedConfig.value.config.policyRules ?? [] : [];
-    const configError = loadedConfig.ok ? undefined : loadedConfig.error.message;
+    // THE gate-run assembly (`prepareQualityGateRun`, @shrkcrft/quality-gates):
+    // the project's wiring + policy rules (an INVALID config surfaced, never a
+    // silent disable), THE plane scan scope, the knowledge inspection, the
+    // change-scoped arch gate and the advisory impact gate. MCP
+    // `get_quality_gate` calls the same one, so the two run the same gate set
+    // (round 11 review: MCP passed the impact options only and read `pass`
+    // where this verb exited 1).
+    const prepared = await prepareQualityGateRun({
+      cwd,
+      ...(sinceRef ? { sinceRef } : {}),
+      ...(changedOnly ? { changedOnly: true } : {}),
+      ...(staged ? { staged: true } : {}),
+      ...(fileList.length > 0 ? { files: fileList } : {}),
+      ...(failOn ? { failOn } : {}),
+      ...(archAll ? { archAll: true } : {}),
+      ...(disable ? { disable } : {}),
+      ...(apiBaseline ? { apiDiff: { baselinePath: apiBaseline, failOnBreaking: !noFailOnBreaking } } : {}),
+    });
     // Pack-plane merge notes (missing/invalid pack rule files, dropped
     // collisions) go to stderr so they never pollute the JSON/markdown report
     // on stdout that CI consumes.
-    if (loadedConfig.ok) {
-      for (const d of loadedConfig.value.planeDiagnostics) {
-        process.stderr.write(`plane: ${d}\n`);
-      }
-    }
-    const scopeOpts = wantChangedScope
-      ? { changedOnly: true, changedFiles: changedFiles ?? [] }
-      : {};
-    // §3.1 — the architecture gate's "NEW" is ALWAYS change-scoped: a NEW error
-    // means one introduced by the working change (diff vs HEAD), never drift
-    // against a frozen (possibly months-old) baseline in a file the change never
-    // touched. When an explicit scope flag is passed we reuse its resolution;
-    // otherwise we default to the worktree diff vs HEAD — empty in a clean tree,
-    // so pre-existing baseline drift stays informational and can't red the gate
-    // on its own. `--arch-all` (baselineRelative:false) ignores this and fails
-    // on total errors, keeping a clean-tree CI demand expressible.
-    const archChangedFiles: readonly string[] = wantChangedScope
-      ? changedFiles ?? []
-      : resolveChangedFiles({ projectRoot: cwd, includeWorktree: true }).files;
-    // Knowledge symbol-ref integrity needs the loaded knowledge entries. The
-    // inspection is async, so we build it here and inject it; the gate stays
-    // synchronous and resolves the code graph itself. Best-effort — a failed
-    // inspection just skips the gate rather than failing `shrk gate`.
-    let inspection: ISharkcraftInspection | undefined;
-    if (!disable?.includes('knowledge-symbol')) {
-      try {
-        inspection = await inspectSharkcraft({ cwd });
-      } catch {
-        inspection = undefined;
-      }
-    }
-    const report = runQualityGates({
-      projectRoot: cwd,
-      arch: {
-        ...(archAll ? { baselineRelative: false } : {}),
-        changedFiles: archChangedFiles,
-      },
-      wiring: {
-        ...(configError
-          ? { configError }
-          : wiringRules.length > 0
-            ? { rules: wiringRules }
-            : {}),
-        ...scopeOpts,
-      },
-      policy: {
-        ...(configError
-          ? { configError }
-          : policyRules.length > 0
-            ? { rules: policyRules }
-            : {}),
-        ...scopeOpts,
-      },
-      ...(inspection
-        ? {
-            knowledgeSymbol: {
-              inspection,
-              ...(wantChangedScope ? { changedFiles: changedFiles ?? [] } : {}),
-            },
-          }
-        : {}),
-      impact: {
-        ...(sinceRef ? { sinceRef } : {}),
-        // Blast-radius risk is inherently PRE-EXISTING structure (touching a hub
-        // is risky but not a new failure this change introduced), so the composite
-        // gate treats it as ADVISORY by default — `failOn: []` warns instead of
-        // redding, keeping the verdict change-attributable. `--fail-on critical`
-        // opts into a hard fail; `--strict` escalates the advisory warn.
-        failOn: failOn ?? [],
-        // Scope the impact gate to the changeset too: with `--since` we keep the
-        // gitref diff; with `--changed-only` / `--staged` / `--files` (and no
-        // `--since`) we analyze the resolved changed-file set directly.
-        ...(wantChangedScope && !sinceRef ? { files: changedFiles ?? [] } : {}),
-      },
-      ...(apiBaseline
-        ? {
-            apiDiff: {
-              baselinePath: apiBaseline,
-              failOnBreaking: !noFailOnBreaking,
-            },
-          }
-        : {}),
-      ...(disable ? { disable } : {}),
-    });
+    for (const d of prepared.planeDiagnostics) process.stderr.write(`plane: ${d}\n`);
+    const report = runQualityGates(prepared.options);
     // Persist the report so dashboards and follow-up tooling can read
     // it without re-running every gate. Opt out with `--no-persist`.
     if (!flagBool(args, 'no-persist')) {
@@ -213,8 +129,14 @@ export const gateCommand: ICommandHandler = {
         // disk-write error.
       }
     }
+    // Settle first, render second: the proposed exit (from `overall`) is vetoed
+    // by any gate coverage with a shortfall, for text, --json and --markdown alike.
+    // THE settle (`settleQualityGateReport`) MCP `get_quality_gate` returns too.
+    const settled = settleQualityGateReport(report, strict);
+    const exit = settled.exit;
+    const line = verdictLine(settled, '');
     if (wantMarkdown) {
-      const md = renderGateReportMarkdown(report);
+      const md = renderGateReportMarkdown(report) + (line ? `\n${line}\n` : '');
       if (outputPath) {
         const abs = nodePath.isAbsolute(outputPath)
           ? outputPath
@@ -224,11 +146,19 @@ export const gateCommand: ICommandHandler = {
       } else {
         process.stdout.write(md);
       }
-      return exitCode(report.overall, strict);
+      return exit;
     }
     if (wantJson) {
-      process.stdout.write(asJson(report) + '\n');
-      return exitCode(report.overall, strict);
+      process.stdout.write(
+        asJson({
+          ...report,
+          exitCode: exit,
+          verdict: settled.verdict,
+          shortfalls: settled.shortfalls,
+          accepted: settled.accepted,
+        }) + '\n',
+      );
+      return exit;
     }
     process.stdout.write(header(`Quality gates: ${report.overall.toUpperCase()}`));
     process.stdout.write(kv('total duration', `${report.totalDurationMs}ms`) + '\n');
@@ -247,15 +177,10 @@ export const gateCommand: ICommandHandler = {
         for (const c of g.nextCommands) process.stdout.write(`              → ${c}\n`);
       }
     }
-    return exitCode(report.overall, strict);
+    if (line) process.stdout.write(`\n${line}\n`);
+    return exit;
   },
 };
-
-function exitCode(overall: 'pass' | 'fail' | 'warn' | 'skipped', strict: boolean): number {
-  if (overall === 'fail') return 1;
-  if (overall === 'warn' && strict) return 1;
-  return 0;
-}
 
 const GITHUB_WORKFLOW = `name: shrk gate
 
@@ -475,7 +400,7 @@ async function runGateBaseline(args: ParsedArgs): Promise<number> {
     return 2;
   }
   const report = runArchCheck({ projectRoot: cwd });
-  if (report.diagnostics.some((d) => d.includes('code-graph store missing'))) {
+  if (archStoreMissing(report)) {
     process.stderr.write('Cannot refreeze — graph index missing. Run `shrk graph index` first.\n');
     return 2;
   }

@@ -102,15 +102,17 @@ maintained in `packages/mcp-server/src/tools/index.ts` (`ALL_TOOLS`).
 | `list_packs` | Discovered SharkCraft packs (third-party npm packages). Returns id + status + contribution counts. | _none_ |
 | `get_pack` | One pack by package name. Manifest info, contribution counts, validation issues, post-install notes. | `name` |
 | `inspect_packs` | Pack-discovery overview: scanned package count, valid/invalid counts, warnings. | _none_ |
-| `doctor_packs` | Validate pack discovery: invalid manifests, duplicate ids, missing contribution files. | _none_ |
+| `doctor_packs` | Validate pack discovery: invalid manifests, duplicate ids, missing contribution files. Carries the same settled `exitCode` / `verdict` / `shortfalls` as `shrk packs doctor` (`packDoctorVerdict`): zero packs, or a compiled build never compared to its source, is `not-verified` — `passed` is the settled verdict, never `true` over nothing. | _none_ |
 
 ### Quality & safety
 
 | Tool | Intent | Inputs |
 |---|---|---|
-| `get_quality_report` | Same structured report as `shrk quality`, but with `skipShell: true`. Gates that would invoke shell are recorded as `executed: false` and the response carries a `nextCommand` hint pointing to `shrk quality --strict`. | `strict?`, `requireBoundaryClean?`, `requireDriftClean?`, `requireAgentTests?`, `requireContextTests?`, `requirePackSignatures?`, `minReadiness?` |
+| `get_quality_report` | The inspector's quality report (`buildQualityReport`, with `skipShell: true`) — the same gates `shrk quality` runs from the inspector, including THE knowledge stale-check gate. The data-defined gate planes are not run over MCP: a config declaring any plane rule adds a `gate-planes` row with `executed: false`, so `overall` is `not-verified`, never `pass`. The response carries a `nextCommand` hint pointing to `shrk quality --strict`. | `strict?`, `requireBoundaryClean?`, `requireDriftClean?`, `requireAgentTests?`, `requireContextTests?`, `requirePackSignatures?`, `minReadiness?` |
 | `get_safety_audit` | Deterministic safety audit: every CLI command grouped by safety level; MCP tools listed with `canWrite` (always false); verification commands split into trusted/pack/untrusted; pack signature status; plan-signing status; recommendations. | _none_ |
 | `get_command_catalog` | The CLI command catalog with safety labels, side effects, and MCP availability. | `safetyLevel?`, `category?` |
+| `get_self_config_doctor` | The self-config cross-reference doctor — the SAME checks as `shrk self-config doctor` (v1 is a projection of v2). Carries per-unit `coverage` / `deadUnits`; verdict `unverified` when a unit was not verified. Command strings are never verified here (the command index lives in the CLI): one `command-probe-unverified` info says so. | `schema?` (`"v1"` default \| `"v2"`) |
+| `get_scaffold_pattern_doctor` | Scaffold-pattern validation plus the files each `matchPaths` glob matches (`patternCoverage`, `coverage`, `deadUnits`). | _none_ |
 
 `get_quality_report` and `get_safety_audit` are both **read-only**; they
 return data plus a `nextCommand` hint when the corresponding work would
@@ -149,6 +151,7 @@ have to run on the CLI.
 | `list_constructs` / `get_construct` / `trace_construct` / `get_construct_api` / `list_construct_facets` | Generic construct/facet inspection (R11). | `id?`, `type?` |
 | `infer_constructs_preview` | Construct auto-discovery preview (R12). Read-only — drafts only land via `shrk constructs infer --write-drafts`. | `type?`, `minConfidence?`, `limit?` |
 | `list_playbooks` / `get_playbook` / `recommend_playbooks` | Named runbooks (R11). | `id?`, `task?`, `limit?` |
+| `recommend_commands` | ONE ranked command list — matched routing hints, the shared ranker, built-in recipes, diagnostics, planning — the same list `shrk recommend` / `shrk context` render. Rows are attributed (`source`, `sourceId`, `score`, `weak`); branch on `confident` / `verdict` (`no-confident-match` = weak candidates only); suppressed rows stay in `ranked` with `suppressedReason`. See `command-entrypoints.md`. | `query?`, `fromError?`, `role?`, `minScore?` (floor multiplier > 0) |
 | `preview_playbook_script` | Structured plan + bash-style preview + validation for a playbook (R12). | `id`, `task?` |
 
 ### Bundle replay & quality baseline diff (R11/R12)

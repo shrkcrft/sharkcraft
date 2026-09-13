@@ -16,7 +16,7 @@
     }
   },
   "bin": {
-    "shrk": "./dist/main.js"
+    "shrk": "./dist/shrk.js"
   },
   "files": [
     "dist",

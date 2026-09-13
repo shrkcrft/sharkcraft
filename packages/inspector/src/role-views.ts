@@ -93,10 +93,10 @@ const VIEWS: readonly IRoleView[] = Object.freeze([
       'shrk architecture map',
       'shrk check boundaries',
       'shrk drift',
-      'shrk intelligence graph',
+      'shrk graph hubs',
       'shrk constructs list',
     ],
-    relevantReports: ['architecture map', 'drift report', 'boundary report', 'intelligence graph'],
+    relevantReports: ['architecture map', 'drift report', 'boundary report', 'code-intelligence graph'],
     relevantRisks: ['Layer violations', 'Public-API drift', 'Untested constructs'],
     suggestedNextAction: 'shrk architecture map --risk',
   },
@@ -123,12 +123,11 @@ const VIEWS: readonly IRoleView[] = Object.freeze([
     description: 'Safety surface — audit, compliance, policy, MCP no-write.',
     topCommands: [
       'shrk safety audit --deep',
-      'shrk compliance check ai-safe-development',
-      'shrk compliance check signed-pack-workflow',
+      'shrk packs signature-status --release-readiness',
       'shrk policy run --explain-overrides',
       'shrk packs doctor --release --require-signatures',
     ],
-    relevantReports: ['safety audit', 'compliance report', 'policy report'],
+    relevantReports: ['safety audit', 'signature status', 'policy report'],
     relevantRisks: ['MCP write tool introduced', 'Unsigned pack', 'Destructive demo line'],
     suggestedNextAction: 'shrk safety audit --deep',
   },
@@ -139,10 +138,10 @@ const VIEWS: readonly IRoleView[] = Object.freeze([
     description: 'Agent-facing surface — brief, handoff, MCP tools, forbidden actions.',
     topCommands: [
       'shrk brief "<task>"',
-      'shrk handoff "<task>"',
+      'shrk brief "<task>" --mode handoff',
       'shrk orchestrate "<task>"',
       'shrk simulate "<task>"',
-      'shrk intent "<task>"',
+      'shrk risk "<task>"',
     ],
     relevantReports: ['brief', 'handoff', 'orchestration plan', 'workflow simulation'],
     relevantRisks: ['Auto-apply', 'MCP write attempt', 'Untracked pack command'],
@@ -184,7 +183,8 @@ function buildTaskCommands(
 
   // Always start with a task brief
   commands.push(`shrk brief ${t}`);
-  commands.push(`shrk intent ${t}`);
+  // The risk report carries the change intent; there is no separate intent verb.
+  commands.push(`shrk risk ${t}`);
 
   // Per-role + intent
   switch (role) {
@@ -196,7 +196,7 @@ function buildTaskCommands(
         commands.push(`shrk impact --since main`);
         commands.push(`shrk tests missing --since main`);
       }
-      if (intent.kind === ChangeIntentKind.Bugfix) commands.push('shrk diagnostics suggest "<error text>"');
+      if (intent.kind === ChangeIntentKind.Bugfix) commands.push(`shrk recommend ${t} --from-error <stderr-file>`);
       reports.push('brief', 'task risk', 'impact', 'review packet');
       break;
     }
@@ -213,7 +213,7 @@ function buildTaskCommands(
         commands.push(`shrk architecture violations`);
       }
       if (intent.domains.includes('plugin') || intent.kind === ChangeIntentKind.Architecture) {
-        commands.push('shrk api report --all --public-only');
+        commands.push('shrk api-diff .sharkcraft/api-baseline.json --fail-on-breaking');
       }
       reports.push('review packet', 'task risk', 'ownership', 'policy', 'architecture violations');
       break;
@@ -221,12 +221,12 @@ function buildTaskCommands(
     case RoleId.Architect: {
       commands.push('shrk architecture map --risk --signals');
       commands.push('shrk architecture violations');
-      commands.push('shrk intelligence graph --include-imports');
+      commands.push('shrk graph hubs');
       commands.push('shrk drift --json');
       if (intent.kind === ChangeIntentKind.Architecture || intent.domains.includes('boundaries')) {
         commands.push('shrk check boundaries --json');
       }
-      reports.push('architecture map', 'task risk', 'drift report', 'intelligence graph');
+      reports.push('architecture map', 'task risk', 'drift report', 'code-intelligence graph');
       break;
     }
     case RoleId.ReleaseManager: {
@@ -242,16 +242,16 @@ function buildTaskCommands(
     case RoleId.Security: {
       commands.push('shrk safety audit --deep');
       commands.push('shrk policy run --explain-overrides');
-      commands.push('shrk compliance check ai-safe-development');
+      // The compliance verbs were retired; pack signing is checked here.
       if (intent.kind === ChangeIntentKind.Policy || intent.domains.includes('safety')) {
-        commands.push('shrk compliance check signed-pack-workflow');
+        commands.push('shrk packs signature-status --release-readiness');
       }
       if (intent.kind === ChangeIntentKind.Release) commands.push('shrk packs doctor --release --require-signatures');
-      reports.push('safety audit', 'task risk', 'compliance report', 'policy report');
+      reports.push('safety audit', 'task risk', 'signature status', 'policy report');
       break;
     }
     case RoleId.AiAgent: {
-      commands.push(`shrk handoff ${t}`);
+      commands.push(`shrk brief ${t} --mode handoff`);
       commands.push(`shrk orchestrate ${t} --risk-aware`);
       commands.push(`shrk simulate ${t} --mode conservative`);
       commands.push(`shrk recommend ${t}`);

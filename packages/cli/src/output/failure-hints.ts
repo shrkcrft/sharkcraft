@@ -59,8 +59,10 @@ export function fuzzyImpactAmbiguousHints(): IFailureHint[] {
 
 export function agentTestMissingExpectedHints(): IFailureHint[] {
   return [
-    { label: 'explain a missing id', command: 'shrk why <id> --for-task "<task>"' },
-    { label: 'explain why not', command: 'shrk why-not <id> --for-task "<task>"' },
+    // `why <id> --for-task` / `why-not` are gone (`why` explains a FILE now);
+    // the ranking trace for a task lives on `task` and `search`.
+    { label: 'see how each id ranked for the task (or why it was left out)', command: 'shrk task "<task>" --explain-ranking' },
+    { label: 'see what the ranker matched for the query', command: 'shrk search "<task>" --explain' },
   ];
 }
 
@@ -147,25 +149,25 @@ export function errorFooterFor(kind: ErrorFooterKind, context?: { task?: string 
       return {
         next: `shrk recommend "${task}"`,
         why: 'Free-form input routes to the canonical human entrypoint — `shrk recommend` ranks commands for a query without writes.',
-        more: ['shrk commands', 'shrk commands suggest "<partial>"', 'shrk start-here'],
+        more: ['shrk commands', 'shrk commands search "<partial>"', 'shrk start-here'],
       };
     case 'ambiguous-command':
       return {
-        next: 'shrk commands suggest "<partial>"',
+        next: 'shrk commands search "<partial>"',
         why: 'Multiple commands matched the input — narrow it down or pick the canonical entrypoint.',
-        more: ['shrk commands explain <cmd>', 'shrk commands overlaps'],
+        more: ['shrk help <cmd>', 'shrk commands overlaps'],
       };
     case 'apply-rejected':
       return {
         next: 'shrk plan review <plan.json>',
         why: 'The apply gate refused the plan — review the safety report before retrying.',
-        more: ['shrk plan verify <plan.json>', 'shrk safety audit --deep'],
+        more: ['shrk plan simulate <plan.json>', 'shrk safety audit --deep'],
       };
     case 'signature-mismatch':
       return {
-        next: 'shrk plan verify <plan.json>',
-        why: 'The plan signature does not match the source content — re-sign or regenerate before retrying.',
-        more: ['shrk plan sign <plan.json>', 'shrk gen <template> --save-plan <plan.json>'],
+        next: 'shrk plan review <plan.json>',
+        why: 'The plan signature does not match the source content — regenerate the plan (which re-signs it) before retrying.',
+        more: ['shrk gen <template> --save-plan <plan.json>'],
       };
     case 'contract-gate-blocked':
       return {

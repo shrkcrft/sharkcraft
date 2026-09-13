@@ -52,6 +52,13 @@ export interface SignPackManifestOptions {
    * release apply paths reject dev signatures unless explicitly allowed.
    */
   dev?: boolean;
+  /**
+   * Content record to store on the signature (see
+   * {@link ISharkCraftPackSignature.contentDigests}). Computed by the caller
+   * from the pack's files with the ONE digest function pack-asset freshness
+   * compares against (`computePackContentDigests` in `@shrkcrft/inspector`).
+   */
+  contentDigests?: Readonly<Record<string, string>>;
 }
 
 export type SignPackResult =
@@ -83,6 +90,11 @@ export function signPackManifest(
   };
   if (options.keyId !== undefined) signature.keyId = options.keyId;
   if (useDev) signature.dev = true;
+  if (options.contentDigests && Object.keys(options.contentDigests).length > 0) {
+    const sorted: Record<string, string> = {};
+    for (const k of Object.keys(options.contentDigests).sort()) sorted[k] = options.contentDigests[k]!;
+    signature.contentDigests = sorted;
+  }
   return {
     ok: true,
     manifest: { ...manifest, signature },

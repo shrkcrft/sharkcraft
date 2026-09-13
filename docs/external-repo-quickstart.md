@@ -61,12 +61,12 @@ Strict mode warns on missing release notes, limitations, external
 quickstart, and CHANGELOG. Consumers typically run lenient until they
 ship a release.
 
-## 6. (Optional) Build the demo package
+## 6. (Optional) Demo package — retired
 
-```bash
-shrk --cwd ./your-repo demo package --scenario all --output /tmp/demo
-shrk --cwd ./your-repo demo package --scenario all --validate
-```
+The `shrk demo package` namespace was removed. The end-to-end scenarios it
+packaged live as integration scripts under `examples/dogfood-target/` in the
+SharkCraft repository; in your own repository, `shrk quality` is the
+aggregate gate to run before a release.
 
 ## Safety guarantees
 

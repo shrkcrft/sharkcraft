@@ -11,16 +11,17 @@ import { describe, expect, test } from 'bun:test';
 import { makeHelpCommand } from '../commands/help.command.ts';
 import { CommandRegistry } from '../command-registry.ts';
 import { COMMAND_CATALOG } from '../commands/command-catalog.ts';
+import { buildRegistry } from '../main.ts';
 import {
   argvHasNoHints,
   emitPipeExitSignal,
   resetPipeHintLatch,
 } from '../exit-codes.ts';
 
-function helpOutput(tokens: string[]): { code: number; out: string; err: string } {
-  const registry = new CommandRegistry();
-  // Only the PARENT is registered — exactly the real shape for `check wiring`.
-  registry.register({ name: 'check', description: 'checks', usage: 'shrk check', run: () => 0 });
+function helpOutput(
+  tokens: string[],
+  registry: CommandRegistry = parentOnlyRegistry(),
+): { code: number; out: string; err: string } {
   const help = makeHelpCommand(registry);
   let out = '';
   let err = '';
@@ -35,6 +36,13 @@ function helpOutput(tokens: string[]): { code: number; out: string; err: string 
     process.stdout.write = so;
     process.stderr.write = se;
   }
+}
+
+function parentOnlyRegistry(): CommandRegistry {
+  const registry = new CommandRegistry();
+  // Only the PARENT is registered — exactly the real shape for `check wiring`.
+  registry.register({ name: 'check', description: 'checks', usage: 'shrk check', run: () => 0 });
+  return registry;
 }
 
 describe('A1 — help resolves catalog-documented multi-word verbs', () => {
@@ -61,11 +69,16 @@ describe('A1 — help resolves catalog-documented multi-word verbs', () => {
   test('every multi-word catalog command is reachable through help', () => {
     // The regression guard: if a new multi-word verb is catalogued but help
     // cannot render it, that surface is undocumented from the user's side.
+    // Against the REAL dispatch table: since round 11 help reads the command
+    // index (registry ⋈ catalog), so a catalog row is a help topic when
+    // something dispatches it — a parent-only fixture registry dispatches
+    // almost nothing.
+    const full = buildRegistry();
     const multi = COMMAND_CATALOG
       .map((e) => e.command.split(/\s+--/)[0]!.trim())
       .filter((c) => c.split(' ').length === 2)
       .slice(0, 40);
-    const unreachable = multi.filter((c) => helpOutput(c.split(' ')).code !== 0);
+    const unreachable = multi.filter((c) => helpOutput(c.split(' '), full).code !== 0);
     expect(unreachable).toEqual([]);
   });
 });

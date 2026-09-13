@@ -35,7 +35,11 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { CommandResolutionStatus } from '@shrkcrft/inspector';
 import { COMMAND_CATALOG } from '../commands/command-catalog.ts';
+import { buildRegistry } from '../main.ts';
+import { buildCommandIndex } from '../surface/command-index.ts';
+import { resolveCommandString } from '../surface/resolve-command-string.ts';
 
 // packages/cli/src/__tests__ → repo root is four levels up.
 const REPO_ROOT = resolve(import.meta.dir, '../../../..');
@@ -205,6 +209,139 @@ describe('docs ↔ command honesty', () => {
       expect(text.includes('shrk dev start')).toBe(true);
       expect(text.includes('shrk dev diff')).toBe(true);
       expect(text.includes('shrk session')).toBe(false);
+    }
+  });
+});
+
+// ── Round 11 review (CLI-8): the FULL command, not only its first word ────────
+
+/**
+ * A doc line that announces a retirement — the command named on it is quoted
+ * as history ("the former `shrk heal` verb was removed"), never prescribed.
+ */
+const RETIREMENT_NOTE = /\b(?:removed|retired|former)\b/i;
+
+/** A placeholder verb names no command: `shrk …`, `shrk ...`, `shrk <verb>`, `shrk $verb`, `shrk [--cwd <dir>]`. */
+const PLACEHOLDER_VERB = /^shrk\s+(?:…|\.\.\.|<|\$|\[)/;
+
+/**
+ * The documented REFUSALS — strings a doc quotes precisely because the
+ * dispatcher refuses them (the exit-code contract's own examples). Keyed by
+ * file so an exemption cannot widen; each must still be quoted there AND still
+ * be refused, or the test below fails.
+ */
+const REFUSAL_EXAMPLES: Readonly<Record<string, readonly string[]>> = {
+  'docs/exit-codes.md': [
+    'shrk doctor zzbogus',
+    'shrk check rules',
+    'shrk templates lst',
+    'shrk api-diff status',
+    'shrk gates check --chnged-only',
+    'shrk graph cycles --typo',
+    'shrk graph importers x --typo',
+    'shrk check --tag auth',
+    'shrk export claude-md --zz-bogus',
+    'shrk baseline update --dry-rn',
+  ],
+  'docs/command-discovery.md': [
+    'shrk check rules',
+    'shrk templates lst',
+    'shrk api-diff status',
+    'shrk check --tag auth',
+    'shrk baseline update --dry-rn',
+    // Round 13 (K1): a verdict-valve flag only a SIBLING subverb documents is
+    // refused before the run, and the resolver refuses the same string.
+    'shrk check --fail-on-dead-units',
+    'shrk self-config doctor --allow-empty',
+    'shrk registrations list --fail-on-dead-units',
+  ],
+  // A free-form did-you-mean demonstration (routes to `shrk recommend`).
+  'docs/command-entrypoints.md': ['shrk rename a service safely'],
+};
+
+const REFUSED: ReadonlySet<CommandResolutionStatus> = new Set([
+  CommandResolutionStatus.UnknownVerb,
+  CommandResolutionStatus.UnknownSubverb,
+  CommandResolutionStatus.UnknownFlag,
+  CommandResolutionStatus.UnknownScript,
+  CommandResolutionStatus.UnknownTool,
+]);
+
+interface IDocCommand {
+  readonly line: number;
+  readonly cmd: string;
+  readonly source: string;
+}
+
+/**
+ * Every `shrk …` a doc PRESCRIBES: a fenced-block line led by `shrk` (after an
+ * optional `$` / `>` prompt), and every inline code span led by `shrk`. A run
+ * of 2+ spaces or ` # ` ends the command (an aligned column, a comment), a
+ * trailing `\` is a line continuation, and a markdown-escaped `\|` is a pipe.
+ */
+function docCommands(text: string): IDocCommand[] {
+  const out: IDocCommand[] = [];
+  let fenced = false;
+  text.split('\n').forEach((raw, i) => {
+    if (/^\s*```/.test(raw)) {
+      fenced = !fenced;
+      return;
+    }
+    const found: string[] = [];
+    if (fenced) {
+      const m = /^\s*(?:[$>]\s+)?(shrk\s.*)$/.exec(raw);
+      if (m) found.push(m[1]!);
+    } else {
+      for (const m of raw.matchAll(/`(?:\$\s+)?(shrk\s[^`]*)`/g)) found.push(m[1]!);
+    }
+    for (const f of found) {
+      const cmd = f
+        .replace(/\\\|/g, '|')
+        .split(/\s{2,}|\s+#\s/)[0]!
+        .replace(/\s+\\$/, '')
+        .trim();
+      out.push({ line: i + 1, cmd, source: raw });
+    }
+  });
+  return out;
+}
+
+describe('docs ↔ command honesty — every prescribed `shrk …` runs (round 11 review CLI-8)', () => {
+  const index = buildCommandIndex(buildRegistry());
+
+  test('resolved through THE command-string resolver, the dispatcher’s own judgement folded in', () => {
+    // The first-word check above certified `shrk packs quality`, `shrk
+    // pipelines lint`, `shrk policy overrides audit`, `shrk quality baseline
+    // create` — each exits 2 or 3 now that the dispatcher refuses a wrong
+    // invocation instead of printing group help at 0.
+    const dead: string[] = [];
+    let probed = 0;
+    for (const rel of SCANNED_FILES) {
+      for (const { line, cmd, source } of docCommands(read(rel))) {
+        if (PLACEHOLDER_VERB.test(cmd) || RETIREMENT_NOTE.test(source)) continue;
+        if (REFUSAL_EXAMPLES[rel]?.includes(cmd) === true) continue;
+        probed += 1;
+        const r = resolveCommandString(index, cmd);
+        if (REFUSED.has(r.status)) {
+          dead.push(`${rel}:${line}  ${cmd}  (${r.status}${r.closest?.length ? ` — closest: ${r.closest.join(', ')}` : ''})`);
+        }
+      }
+    }
+    expect(probed).toBeGreaterThan(1000);
+    expect(dead).toEqual([]);
+  });
+
+  test('every documented refusal is still quoted, and still refused', () => {
+    for (const [rel, cmds] of Object.entries(REFUSAL_EXAMPLES)) {
+      const quoted = new Set(docCommands(read(rel)).map((c) => c.cmd));
+      for (const cmd of cmds) {
+        expect({ rel, cmd, quoted: quoted.has(cmd) }).toEqual({ rel, cmd, quoted: true });
+        expect({ rel, cmd, refused: REFUSED.has(resolveCommandString(index, cmd).status) }).toEqual({
+          rel,
+          cmd,
+          refused: true,
+        });
+      }
     }
   });
 });

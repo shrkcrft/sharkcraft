@@ -1,6 +1,8 @@
 import { resolveSourceGlobs, type IRegistryDeclaration } from '@shrkcrft/core';
-import { matchesAny } from '../scan/glob.ts';
+import { globListSelects } from '../scan/glob.ts';
 import { readMatchingFiles } from '../util/walk-files.ts';
+import type { IReadScope } from '../util/read-scope.ts';
+import { unreadMatching } from '../util/read-scope-coverage.ts';
 import { collectSourceSites, type IWiringFileEntry } from './evaluate-wiring.ts';
 
 export const REGISTRY_SCHEMA = 'sharkcraft.registry-inventory/v1' as const;
@@ -29,6 +31,13 @@ export interface IRegistryInventory {
   readonly entries: readonly IRegistryEntry[];
   /** Misconfiguration messages (bad regex / no capture group / bad source). */
   readonly diagnostics: readonly string[];
+  /**
+   * The SOURCE side's read scope: declaration files read, and matched ones the
+   * reader did not read (over the read cap, or unreadable). With any unread
+   * the inventory is incomplete: an absent id, "no duplicates" or an empty
+   * inventory proves nothing.
+   */
+  readonly readScope: IReadScope;
 }
 
 export interface IScanRegistryOptions {
@@ -56,17 +65,19 @@ export function scanRegistry(
       ...(decl.consumer ? resolveSourceGlobs(decl.consumer) : []),
     ]),
   ];
-  const cache = readMatchingFiles(projectRoot, globs, new Set(options.excludeDirs ?? []));
-  const entries: IWiringFileEntry[] = [...cache.entries()].map(([path, content]) => ({ path, content }));
+  const matched = readMatchingFiles(projectRoot, globs, new Set(options.excludeDirs ?? []));
+  const entries: IWiringFileEntry[] = [...matched.files.entries()].map(([path, content]) => ({ path, content }));
 
   const diagnostics: string[] = [];
-  const sourceFiles = entries.filter((f) => matchesAny(f.path, resolveSourceGlobs(decl.source)));
+  // The walk above is the POSITIVE union of both sides; each side selects its
+  // own files, so the source's `!` never hides a consumer file (or vice versa).
+  const sourceFiles = entries.filter((f) => globListSelects(f.path, resolveSourceGlobs(decl.source)));
   const declared = collectSourceSites(decl.source, sourceFiles);
   if (declared.error) diagnostics.push(`registry "${decl.name}" source: ${declared.error}`);
 
   const consumerByToken = new Map<string, IRegistrySite[]>();
   if (decl.consumer) {
-    const consumerFiles = entries.filter((f) => matchesAny(f.path, resolveSourceGlobs(decl.consumer!)));
+    const consumerFiles = entries.filter((f) => globListSelects(f.path, resolveSourceGlobs(decl.consumer!)));
     const consumed = collectSourceSites(decl.consumer, consumerFiles);
     if (consumed.error) diagnostics.push(`registry "${decl.name}" consumer: ${consumed.error}`);
     for (const s of consumed.sites) {
@@ -98,6 +109,10 @@ export function scanRegistry(
     ...(decl.description ? { description: decl.description } : {}),
     entries: entriesOut,
     diagnostics,
+    readScope: {
+      read: sourceFiles.length,
+      unread: unreadMatching(matched.unread, resolveSourceGlobs(decl.source)),
+    },
   };
 }
 

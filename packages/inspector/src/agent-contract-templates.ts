@@ -96,7 +96,7 @@ export const PUBLIC_API_CHANGE_TEMPLATE: IAgentContractTemplate = t({
     RULE_ERR('packages/plugin-api/**/internal/**', ContractFileRuleKind.Glob, 'Never touch internal/* from a public-API change.'),
     RULE_ERR('.git/**', ContractFileRuleKind.Glob, 'Never write to git internals.'),
   ],
-  defaultRequiredValidations: ['bun test', 'shrk doctor', 'shrk check boundaries', 'shrk api report --diff'],
+  defaultRequiredValidations: ['bun test', 'shrk doctor', 'shrk check boundaries', 'shrk api-diff .sharkcraft/api-baseline.json --fail-on-breaking'],
   defaultHumanApprovalGates: [
     'API reviewer approves the surface diff before `shrk apply`.',
     'Update CHANGELOG.md with public-API change notes.',
@@ -108,7 +108,7 @@ export const PUBLIC_API_CHANGE_TEMPLATE: IAgentContractTemplate = t({
   ],
   defaultRollbackPlan: [
     'Revert the API change PR.',
-    'Re-run `shrk api report --diff` to confirm clean surface.',
+    'Re-run `shrk api-diff .sharkcraft/api-baseline.json --fail-on-breaking` to confirm clean surface.',
   ],
   appliesWhen: {
     taskKeywords: ['public api', 'plugin-api', 'exported', 'public surface'],
@@ -161,18 +161,18 @@ export const MIGRATION_TASK_TEMPLATE: IAgentContractTemplate = t({
     RULE_ERR('package.json', ContractFileRuleKind.Exact, 'Do not bump dep versions mid-migration.'),
     RULE_ERR('.git/**', ContractFileRuleKind.Glob, 'Never write to git internals.'),
   ],
-  defaultRequiredValidations: ['bun test', 'shrk doctor', 'shrk migration readiness'],
+  defaultRequiredValidations: ['bun test', 'shrk doctor', 'shrk migrate plan <id>'],
   defaultHumanApprovalGates: [
-    'Migration readiness verdict must be "ready" before applying the migration plan.',
+    'The migration plan (`shrk migrate plan <id>`) must be reviewed before applying it.',
   ],
   defaultDefinitionOfDone: [
     'All migration steps reviewed.',
-    'Readiness is ready.',
+    'The migration plan was reviewed.',
     'Tests + boundary check pass after each step.',
   ],
   defaultRollbackPlan: [
     'Revert the migration commit.',
-    'Re-run `shrk migration readiness` to confirm rollback.',
+    'Re-run `shrk migrate plan <id>` to confirm the rollback state.',
   ],
   appliesWhen: {
     taskKeywords: ['migrate', 'migration', 'refactor', 'rename', 'rip out', 'retire'],

@@ -10,10 +10,12 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
   buildUniversalSearch,
-  explainTaskRouting,
-  recommendCommands,
+  rankRecommendationCandidates,
+  recommendationReportFromRanking,
   renderOverviewText,
   buildProjectOverview,
+  type ICommandRecommendationReport,
+  type ITaskRoutingMatchResult,
 } from '@shrkcrft/inspector';
 import {
   flagBool,
@@ -24,6 +26,11 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
+import { catalogCommandSafety } from '../surface/catalog-command-safety.ts';
+import { dropNotApplicable } from '../surface/audience-applicability.ts';
+import { loadSurfaceContext } from '../surface/load-surface-context.ts';
+import { buildSurfaceSummary } from '../surface/surface-summary.ts';
 import { asJson, header } from '../output/format-output.ts';
 import type { IContextResult } from '@shrkcrft/context';
 
@@ -48,7 +55,7 @@ const WIDE_CONTEXT_BUDGET = 100_000;
 function minimalContext(
   task: string,
   result: IContextResult,
-  commands: Awaited<ReturnType<typeof recommendCommands>> | null,
+  commands: ICommandRecommendationReport | null,
 ): Record<string, unknown> {
   return {
     schema: 'sharkcraft.context/v1-compact',
@@ -67,6 +74,22 @@ function minimalContext(
 
 export const contextCommand: ICommandHandler = {
   name: 'context',
+  // The task is `--task "<task>"`; a bare token is no subverb and no task.
+  positionals: PositionalMode.None,
+  subverbs: [
+    { name: 'build', description: 'Build the persisted task context.', usage: 'shrk context build --task "<task>" [--json]' },
+    { name: 'refresh', description: 'Refresh the persisted task context.', usage: 'shrk context refresh [--json]' },
+    { name: 'status', description: 'The persisted task context status.', usage: 'shrk context status [--json]' },
+    {
+      name: 'benchmark',
+      description: 'Score context retrieval against sharkcraft/intent-benchmark.json (`seed` writes a starter).',
+      usage: 'shrk context benchmark [seed] [--no-persist] [--json]',
+      positionals: PositionalMode.None,
+      subverbs: [
+        { name: 'seed', description: 'Write a starter intent benchmark.', usage: 'shrk context benchmark seed [--json]' },
+      ],
+    },
+  ],
   description: 'Build relevant AI-ready context for a task (token-budgeted). Subcommands: build / refresh / status.',
   usage: 'shrk context [build|refresh|status] --task "<task>" [--max-tokens 3000] [--framework x] [--area y] [--json] [--compact] [--full]',
   async run(args: ParsedArgs): Promise<number> {
@@ -138,12 +161,25 @@ export const contextCommand: ICommandHandler = {
     // itself now prints by default (parity with sibling orientation verbs);
     // `--commands-first` keeps the terse commands-only view for action tasks.
     const commandsOnly = flagBool(args, 'commands-first');
-    let commandRecommendations: Awaited<ReturnType<typeof recommendCommands>> | null = null;
-    let routingMatches: Awaited<ReturnType<typeof explainTaskRouting>> = [];
+    let commandRecommendations: ICommandRecommendationReport | null = null;
+    let routingMatches: readonly ITaskRoutingMatchResult[] = [];
     let searchReport: Awaited<ReturnType<typeof buildUniversalSearch>> | null = null;
     try {
-      commandRecommendations = await recommendCommands(inspection, task);
-      routingMatches = await explainTaskRouting(inspection, task);
+      // THE ranked list — the same one `shrk recommend` and MCP
+      // `recommend_commands` render, so a matched routing hint's commands
+      // reach "Top commands" here too, attributed.
+      const ranked = await rankRecommendationCandidates(inspection, task, {
+        safetyOf: (command) => catalogCommandSafety(command),
+      });
+      // THE audience filter `shrk recommend` applies: outside SharkCraft's own
+      // repository a tool-maintenance command (a recipe's `release readiness`)
+      // is no recommendation — it exits 78 there.
+      const { context: surfaceContext } = await loadSurfaceContext({ cwd: inspection.projectRoot, inspection });
+      commandRecommendations = dropNotApplicable(
+        recommendationReportFromRanking(ranked),
+        buildSurfaceSummary(surfaceContext),
+      );
+      routingMatches = ranked.routingMatches;
       searchReport = await buildUniversalSearch(inspection, task, {});
     } catch {
       // ignore — fall back to legacy context only.
@@ -181,9 +217,15 @@ export const contextCommand: ICommandHandler = {
       process.stdout.write(`omitted (budget): ${result.omittedSections.join(', ')}\n`);
     }
     if (commandRecommendations && commandRecommendations.recommendations.length > 0) {
-      process.stdout.write('\nTop commands:\n');
+      const confident = commandRecommendations.confident;
+      process.stdout.write(
+        confident
+          ? '\nTop commands:\n'
+          : '\nTop commands (no confident match — weak candidates, verify before acting):\n',
+      );
       for (const r of commandRecommendations.recommendations.slice(0, 4)) {
-        process.stdout.write(`  $ ${r.command}\n`);
+        const mark = !confident || r.weak === true ? '?' : '$';
+        process.stdout.write(`  ${mark} ${r.command}${r.attribution ? `  — ${r.attribution}` : ''}\n`);
       }
     }
     if (routingMatches.length > 0) {

@@ -37,6 +37,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header } from '../output/format-output.ts';
 import { COMMAND_CATALOG } from './command-catalog.ts';
 
@@ -46,8 +47,47 @@ const VALID_FORMATS: ReadonlySet<Format> = new Set(['text', 'markdown', 'html', 
 
 interface IDispatchArgs extends ParsedArgs {}
 
+/** The render flags every `report` subverb shares (the handler usage's tail). */
+const REPORT_FLAGS =
+  '[--format text|markdown|html|json] [--output <path>] [--collapse-long-sections] [--max-items N] [--json]';
+
 export const reportCommand: ICommandHandler = {
   name: 'report',
+  positionals: PositionalMode.None,
+  subverbs: [
+    { name: 'adoption', description: 'Adoption report.', usage: `shrk report adoption ${REPORT_FLAGS}` },
+    {
+      name: 'session',
+      description: 'Render one dev session.',
+      usage: 'shrk report session <id> [--format html|markdown|json]',
+      positionals: PositionalMode.Free,
+    },
+    { name: 'quality', description: 'Quality-gate report.', usage: `shrk report quality ${REPORT_FLAGS}` },
+    { name: 'safety', description: 'Safety-model report.', usage: `shrk report safety ${REPORT_FLAGS}` },
+    {
+      name: 'review',
+      description: 'Render a saved review packet.',
+      usage: 'shrk report review <packet.json> [--format html|markdown|json]',
+      positionals: PositionalMode.Path,
+    },
+    { name: 'coverage', description: 'Coverage report.', usage: `shrk report coverage ${REPORT_FLAGS}` },
+    { name: 'drift', description: 'Drift report.', usage: `shrk report drift ${REPORT_FLAGS}` },
+    { name: 'graph', description: 'Knowledge-graph report.', usage: `shrk report graph ${REPORT_FLAGS}` },
+    { name: 'site', description: 'Write the static report site (under .sharkcraft/reports/site).', usage: `shrk report site ${REPORT_FLAGS}` },
+    {
+      name: 'impact',
+      description: 'Render a saved impact report.',
+      usage:
+        'shrk report impact <impact-report.json> [--format html|markdown|text|json] [--include-graph [--graph-format mermaid|dot]]',
+      positionals: PositionalMode.Path,
+    },
+    {
+      name: 'language',
+      aliases: ['languages'],
+      description: 'Polyglot language report.',
+      usage: `shrk report language ${REPORT_FLAGS}`,
+    },
+  ],
   description:
     'Render runtime reports in text / markdown / html / json. Subcommands: adoption / session / quality / safety / review / coverage / drift / graph.',
   usage:
@@ -340,8 +380,7 @@ async function reportSession(args: ParsedArgs): Promise<number> {
 async function reportQuality(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const inspection = await inspectSharkcraft({ cwd });
-  const cfgUnknown = inspection.config as unknown as { qualityGates?: IQualityConfig };
-  const cfg = cfgUnknown?.qualityGates ?? {};
+  const cfg: IQualityConfig = inspection.config?.qualityGates ?? {};
   const report = await buildQualityReport({
     inspection,
     config: cfg,

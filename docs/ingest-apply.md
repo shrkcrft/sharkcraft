@@ -1,18 +1,20 @@
-# Ingest adoption apply (R27)
+# Ingest adoption apply (R27) — removed
 
 R26 introduced the ingest adoption *patch* — a reviewable diff under
-`sharkcraft/ingestion/adoption/`. R27 adds a signed apply path so the patch
-can be materialised through the same plan/apply pipeline used by
-`shrk gen`.
+`sharkcraft/ingestion/adoption/`. R27 added a signed apply path for it.
+
+> **Removed.** The signed apply path (the former `ingest adopt plan`,
+> `ingest adopt review` and `ingest adopt apply` subverbs) was removed: each
+> now refuses with exit 2 and points at `shrk onboard adopt`, the canonical
+> adoption surface. `shrk ingest adopt` itself still builds the reviewable
+> adoption patch.
 
 ## Pipeline
 
 ```
 shrk ingest repository           # build the knowledge model (dry-run)
 shrk ingest adopt                # build the adoption patch (dry-run)
-shrk ingest adopt plan           # build the signed apply plan
-shrk ingest adopt review <plan>  # render the plan as markdown (read-only)
-shrk ingest adopt apply <plan> --verify-signature
+shrk onboard adopt               # adopt through the canonical surface
 ```
 
 The apply plan reuses the existing `sharkcraft.plan/v1` shape so any
@@ -26,19 +28,11 @@ The apply path will refuse any change whose `relativePath` is not under
 
 ## Signing
 
-`SHARKCRAFT_PLAN_SECRET` (HMAC-SHA256) signs the plan; same secret is used
-by `shrk gen --sign` and `shrk apply --verify-signature`.
-
-```bash
-export SHARKCRAFT_PLAN_SECRET=$(openssl rand -hex 32)
-shrk ingest adopt plan --output /tmp/ingest.plan.json
-shrk ingest adopt review /tmp/ingest.plan.json
-shrk ingest adopt apply /tmp/ingest.plan.json --verify-signature
-```
-
-Without `SHARKCRAFT_PLAN_SECRET` the plan is unsigned and `apply
---verify-signature` refuses; without `--verify-signature` an unsigned plan
-applies (matching the existing `shrk apply` policy).
+`SHARKCRAFT_PLAN_SECRET` (HMAC-SHA256) signs a plan; the same secret is used
+by `shrk gen --sign` and `shrk apply --verify-signature` — the signing
+contract every plan/apply path still follows. The removed ingest apply path
+used it too: without the secret a plan was unsigned and `apply
+--verify-signature` refused it.
 
 ## Previewing read-only
 

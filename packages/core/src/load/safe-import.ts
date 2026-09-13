@@ -65,15 +65,35 @@ async function getJiti(): Promise<IJitiInstance | null> {
 }
 
 /**
- * Bun-or-jiti-aware dynamic import. Use this anywhere the engine needs to
- * load a user-authored TypeScript file (config, knowledge, boundaries,
- * pipelines, etc.) from an absolute path. Falls back to native `import()`
- * for `.js` / `.mjs` so library consumers without TypeScript files pay
- * nothing.
+ * Process-scoped memory of modules that failed to import — THE one authority
+ * for "this module already failed in this process". Only
+ * {@link importModuleViaLoader} reads or writes it; `safeImport` and every
+ * registry loader inherit it by going through that function.
+ *
+ * The ESM module registry is frozen for the lifetime of a process, and a
+ * second `import()` of a module that failed is never safe:
+ *
+ *   - a module that failed to BUILD (a syntax error) never settles on a second
+ *     import in Bun — the promise stays pending forever, the event loop drains,
+ *     and the process exits 0 with no output (or a long-lived MCP server hangs);
+ *   - a module that threw during EVALUATION can hand back a partially
+ *     initialized namespace whose bindings (e.g. `default`) sit in the temporal
+ *     dead zone — reading them throws `Cannot access 'default' before
+ *     initialization` far away from any try/catch.
+ *
+ * Remembering the original error turns both into a deterministic rejection
+ * that carries the original message.
  */
-export async function importModuleViaLoader<T = Record<string, unknown>>(
-  filePath: string,
-): Promise<T> {
+const moduleEvaluationErrors = new Map<string, Error>();
+
+/**
+ * Imports currently in flight, keyed like {@link moduleEvaluationErrors}. A
+ * CONCURRENT second import of a module that is failing to build never settles
+ * either, so concurrent callers share the first attempt instead of racing it.
+ */
+const inflightImports = new Map<string, Promise<unknown>>();
+
+async function importViaRuntime<T>(filePath: string): Promise<T> {
   if (!isBun && TS_FILE_RE.test(filePath)) {
     const jiti = await getJiti();
     if (jiti) return (await jiti.import<T>(filePath));
@@ -84,16 +104,39 @@ export async function importModuleViaLoader<T = Record<string, unknown>>(
 }
 
 /**
- * Process-scoped memory of modules that threw during evaluation. The ESM
- * module registry is frozen for the lifetime of a process: a module URL that
- * errored on its first evaluation will never re-evaluate, and a second
- * `import()` of it can hand back a *partially-initialized* namespace whose
- * bindings (e.g. `default`) sit in the temporal dead zone — reading them
- * throws `Cannot access 'default' before initialization` synchronously,
- * far away from any try/catch. By remembering the original evaluation error
- * we return it deterministically instead of re-importing into that trap.
+ * Bun-or-jiti-aware dynamic import. Use this anywhere the engine needs to
+ * load a user-authored TypeScript file (config, knowledge, boundaries,
+ * pipelines, etc.) from an absolute path. Falls back to native `import()`
+ * for `.js` / `.mjs` so library consumers without TypeScript files pay
+ * nothing.
+ *
+ * A module that already failed in this process rejects with its ORIGINAL
+ * error — immediately, without touching the module registry again (see
+ * {@link moduleEvaluationErrors}). A failure on a file that does not exist is
+ * not remembered, so a file created later in the same process still loads.
  */
-const moduleEvaluationErrors = new Map<string, Error>();
+export async function importModuleViaLoader<T = Record<string, unknown>>(
+  filePath: string,
+): Promise<T> {
+  const cacheKey = resolve(filePath);
+  const priorError = moduleEvaluationErrors.get(cacheKey);
+  if (priorError) throw priorError;
+
+  const pending = inflightImports.get(cacheKey);
+  if (pending) return (await pending) as T;
+
+  const attempt = importViaRuntime<T>(filePath);
+  inflightImports.set(cacheKey, attempt);
+  try {
+    return await attempt;
+  } catch (e) {
+    const error = e instanceof Error ? e : new Error(String(e));
+    if (existsSync(filePath)) moduleEvaluationErrors.set(cacheKey, error);
+    throw error;
+  } finally {
+    inflightImports.delete(cacheKey);
+  }
+}
 
 export async function safeImport<T = Record<string, unknown>>(
   filePath: string,
@@ -101,17 +144,6 @@ export async function safeImport<T = Record<string, unknown>>(
 ): Promise<SafeImportResult<T>> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_SAFE_IMPORT_TIMEOUT_MS;
   const start = Date.now();
-  const cacheKey = resolve(filePath);
-
-  const priorError = moduleEvaluationErrors.get(cacheKey);
-  if (priorError) {
-    return {
-      ok: false,
-      error: priorError,
-      elapsedMs: Date.now() - start,
-      timedOut: false,
-    };
-  }
 
   if (!options.skipExistsCheck && !existsSync(filePath)) {
     return {
@@ -144,10 +176,10 @@ export async function safeImport<T = Record<string, unknown>>(
       const mod = await importModuleViaLoader<T>(filePath);
       return { ok: true, module: mod, elapsedMs: Date.now() - start };
     } catch (e) {
+      // importModuleViaLoader already remembered the failure (it is the one
+      // authority), so a second import of this file rejects with this same
+      // error instead of hanging or handing back a TDZ namespace.
       const error = e instanceof Error ? e : new Error(String(e));
-      // Remember the evaluation failure so a second import() of the same
-      // (now-frozen) module URL returns this error instead of a TDZ namespace.
-      moduleEvaluationErrors.set(cacheKey, error);
       return {
         ok: false,
         error,

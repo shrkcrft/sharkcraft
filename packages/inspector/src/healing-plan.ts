@@ -49,7 +49,7 @@ interface IBuildContext {
   command?: string;
 }
 
-const GENERIC_NEXT = 'shrk diagnostics suggest "<paste error text here>"';
+const GENERIC_NEXT = 'shrk recommend --from-error <stderr-file>';
 
 function inferFromKeywords(text: string): { causes: string[]; recover: string[]; cmds: string[]; constructs: string[]; docs: string[]; humanApproval: boolean; sourceWrite: boolean } {
   const causes: string[] = [];
@@ -99,8 +99,7 @@ function inferFromKeywords(text: string): { causes: string[]; recover: string[];
   if (lower.includes('migration') && (lower.includes('readiness') || lower.includes('blocker'))) {
     causes.push('Migration readiness gate reported a blocker.');
     recover.push('Resolve each blocker before re-running the gate.');
-    cmds.push('shrk migration readiness --profile <id>');
-    cmds.push('shrk migration profiles');
+    cmds.push('shrk migrate plan <id>');
     docs.push('docs/migration-readiness.md');
   }
 
@@ -257,7 +256,7 @@ function buildPlan(ctx: IBuildContext): IHealingPlan {
   const safeRecoverySteps: string[] = [
     'Re-read the failing command output carefully (do not skip).',
     'Reproduce the failure locally before changing code.',
-    'If unsure, run `shrk doctor` and `shrk diagnostics suggest`.',
+    'If unsure, run `shrk doctor` and `shrk recommend --from-error <stderr-file>`.',
   ];
   for (const r of inferred.recover) safeRecoverySteps.push(r);
 

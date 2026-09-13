@@ -63,7 +63,9 @@ describe('shrk packs test --load', () => {
   test('asset module that throws on import is reported', () => {
     const parent = mkdtempSync(join(tmpdir(), 'shrk-packs-load-throw-'));
     const pack = scaffoldPack(parent, 'generic');
-    writeFileSync(join(pack, 'src/assets/templates.ts'), 'throw new Error("boom");\n');
+    // A DECLARED asset (round 11: `--load` imports what the manifest lists — a
+    // generic scaffold declares no templates file, so it would never load one).
+    writeFileSync(join(pack, 'src/assets/paths.ts'), 'throw new Error("boom");\n');
     const r = shrk(['packs', 'test', pack, '--load', '--json'], parent);
     const out = JSON.parse(r.stdout) as {
       passed: boolean;

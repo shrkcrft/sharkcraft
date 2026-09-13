@@ -23,6 +23,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 interface IScaffoldGithubActionOptions {
@@ -131,8 +132,42 @@ function scaffoldOptionsFromArgs(args: ParsedArgs): IScaffoldGithubActionOptions
   };
 }
 
+/**
+ * Every flag `render-comment` reads, in every packet mode: the v1 renderer
+ * reads the artifact flags (`--boundaries|--coverage|--drift <file>`) through
+ * `readArtifact(args, name)` — undocumented, a v3 packet (which never reads
+ * them) turned `--boundaries b.json` into an "ignored flag" exit 2.
+ */
+const RENDER_COMMENT_USAGE =
+  'shrk review render-comment <packet.json> [--output <file>] [--title <title>] [--format markdown|html|github|gitlab] ' +
+  '[--max-files N] [--max-items N] [--max-rules N] [--include-boundaries] [--include-coverage] [--include-drift] ' +
+  '[--collapse-long-sections] [--boundaries <file>] [--coverage <file>] [--drift <file>]';
+
 export const reviewCommand: ICommandHandler = {
   name: 'review',
+  // positionals are changed FILES (`review a.ts b.ts`) or a verb: a
+  // verb-shaped token that is neither is refused, not reviewed as a file.
+  positionals: PositionalMode.Path,
+  subverbs: [
+    {
+      name: 'scaffold',
+      description: 'Print a PR-review workflow template.',
+      usage:
+        'shrk review scaffold github-action [--with-boundaries] [--with-coverage] [--with-drift] [--artifact-only] [--comment-placeholder]',
+      positionals: PositionalMode.Free,
+    },
+    {
+      name: 'render-comment',
+      description: 'Render a Markdown PR comment from a saved packet.',
+      usage: RENDER_COMMENT_USAGE,
+      positionals: PositionalMode.Path,
+    },
+    {
+      name: 'packet',
+      description: 'Build the review packet.',
+      usage: 'shrk review packet [files... | --files a,b] [--since <ref>] [--staged] [--json]',
+    },
+  ],
   description:
     'Build a PR-review packet: changed files (via git), affected path conventions, relevant rules/templates/pipelines, boundary violations on those files, missing-test heuristic, verification commands. Also: `shrk review scaffold github-action` prints a workflow template with optional `--with-boundaries / --with-coverage / --with-drift / --artifact-only / --comment-placeholder` flags. `shrk review render-comment <packet.json>` renders a Markdown PR comment from a saved packet.',
   usage:
@@ -233,9 +268,7 @@ export const reviewCommand: ICommandHandler = {
 async function runRenderComment(args: ParsedArgs): Promise<number> {
   const inputPath = args.positional[1];
   if (!inputPath) {
-    process.stderr.write(
-      'Usage: shrk review render-comment <packet.json> [--output <file>] [--title <title>]\n',
-    );
+    process.stderr.write(`Usage: ${RENDER_COMMENT_USAGE}\n`);
     return 2;
   }
   const full = nodePath.isAbsolute(inputPath)

@@ -7,7 +7,7 @@
  *   shrk generated list                       # every declared artifact set
  *   shrk generated check [--id X]             # regen → temp dir → diff BOTH ways + headers
  *       [--headers-only]                      #   header contract only; never spawns
- *   shrk generated update [--id X]            # run regen in place (the bless step)
+ *   shrk generated update [--id X]            # regen → temp dir → write the ALIGNED files in place (bless)
  *   shrk generated explain --id X             # what it will run + what it currently sees
  *
  * The build compiles a hand-edited generated file perfectly happily; only
@@ -17,18 +17,39 @@
  * fully useful and never spawns, so packs can still ship it.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
-import { failsWhenEmpty, type IGeneratedArtifactRule } from '@shrkcrft/core';
+import {
+  failsWhenEmpty,
+  formatEmptyRuleAdvice,
+  normalizeRuleList,
+  RuleEmptiness,
+  settleRuleEmptiness,
+  unitStateLists,
+  UnitLivenessState,
+  type IGeneratedArtifactRule,
+  type IUnitLiveness,
+  type IUnitStateLists,
+} from '@shrkcrft/core';
 import {
   checkProvenanceHeaders,
+  clearFileReadCache,
   compareGeneratedTrees,
+  globListSelects,
+  globListWalkGlobs,
+  planeScanExcludeDirs,
+  readGlobListLiveness,
+  readRegenTree,
+  readScopeCoverage,
+  readScopeHasUnread,
   scanGeneratedFiles,
   type IGeneratedFileDiff,
   type IGeneratedScan,
   type IGeneratedTreeDiff,
   type IProvenanceFinding,
+  type IReadScope,
+  type IUnreadFile,
 } from '@shrkcrft/boundaries';
 import { resolveProjectConfig } from '@shrkcrft/inspector';
 import {
@@ -40,17 +61,25 @@ import {
 } from '../command-registry.ts';
 import { ExitCode } from '../exit-codes.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
-import { buildGateEnvelope } from '../gates/gate-envelope.ts';
+import { buildGateEnvelope, type IGateRuleResult } from '../gates/gate-envelope.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
+import { acceptedEmptyNote } from '../gates/accepted-empty-note.ts';
+import { emptyRuleAdviceLines } from '../gates/empty-rule-advice-lines.ts';
+import { qualifyCleanForUnits } from '../gates/qualify-clean-for-units.ts';
+import { unitStateNotes } from '../gates/unit-state-notes.ts';
+import { planeVerdictForExit } from '../gates/plane-verdict.ts';
+import { seamRejectedRules } from '../gates/seam-rejected-rules.ts';
+import type { IVerdictCoverage } from '@shrkcrft/core';
 
 const SCHEMA = 'sharkcraft.generated-drift/v1';
 const DEFAULT_TIMEOUT_MS = 120_000;
-/** Cap on the temp tree read — a runaway regen must not be read into memory whole. */
-const MAX_REGEN_FILE_BYTES = 2_000_000;
 
 interface ILoadedRules {
   readonly rules: readonly IGeneratedArtifactRule[];
   readonly planeDiagnostics: readonly string[];
   readonly excludeDirs: string[];
+  /** Pack rules the merge seam rejected — declared, never checked (round 12 review, R12-X1). */
+  readonly rejected: readonly IGateRuleResult[];
 }
 
 async function loadRules(
@@ -58,44 +87,20 @@ async function loadRules(
 ): Promise<{ ok: true; value: ILoadedRules } | { ok: false; message: string }> {
   const loaded = await resolveProjectConfig(cwd);
   if (!loaded.ok) return { ok: false, message: loaded.error.message };
-  const rel = nodePath.relative(cwd, loaded.value.sharkcraftDir).split(nodePath.sep).join('/');
   return {
     ok: true,
     value: {
       rules: loaded.value.config.generatedArtifacts ?? [],
       planeDiagnostics: loaded.value.planeDiagnostics,
-      excludeDirs: rel && !rel.startsWith('..') ? [rel] : [],
+      excludeDirs: planeScanExcludeDirs(cwd, loaded.value.sharkcraftDir),
+      rejected: seamRejectedRules(loaded.value, ['generated']),
     },
   };
 }
 
-/** Read a regenerated temp tree into path→content, relative to `root`. */
-function readTree(root: string): Map<string, string> {
-  const out = new Map<string, string>();
-  const visit = (abs: string): void => {
-    let entries;
-    try {
-      entries = readdirSync(abs, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const child = nodePath.join(abs, e.name);
-      if (e.isDirectory()) {
-        visit(child);
-        continue;
-      }
-      if (!e.isFile()) continue;
-      try {
-        if (statSync(child).size > MAX_REGEN_FILE_BYTES) continue;
-        out.set(nodePath.relative(root, child).split(nodePath.sep).join('/'), readFileSync(child, 'utf8'));
-      } catch {
-        // unreadable — skip
-      }
-    }
-  };
-  visit(root);
-  return out;
+/** `  ✗ <id>  REJECTED — <why>` — a pack rule the merge seam refused (declared, never run). */
+function writeRejected(rejected: readonly IGateRuleResult[]): void {
+  for (const r of rejected) process.stdout.write(`  ✗ ${r.id}  REJECTED — ${r.error ?? 'failed validation'}\n`);
 }
 
 /** Number of trailing path SEGMENTS `a` and `b` share (0 when none). */
@@ -118,20 +123,21 @@ function sharedSuffixSegments(a: string, b: string): number {
  * files. Ties break lexically so the mapping is deterministic, each committed
  * path is claimed at most once, and anything unmatched keeps its temp-relative
  * key and surfaces as `only-regenerated` rather than disappearing.
+ *
+ * Returns temp path → key, so the outputs the reader read AND the ones it did
+ * not (over the regen cap) key onto the same committed path through ONE
+ * alignment.
  */
-function alignToCommitted(
-  temp: ReadonlyMap<string, string>,
-  committed: ReadonlyMap<string, string>,
-): Map<string, string> {
-  const committedPaths = [...committed.keys()].sort();
+function alignKeys(tempPaths: readonly string[], committedPaths: readonly string[]): Map<string, string> {
+  const targets = [...new Set(committedPaths)].sort();
   const claimed = new Set<string>();
   const out = new Map<string, string>();
   // Best-match first: a temp path with a longer shared suffix has the stronger
   // claim on a committed path, so resolve those before the weaker ones.
-  const scored = [...temp.keys()]
+  const scored = [...tempPaths]
     .map((tempPath) => {
       let best: { path: string; score: number } | undefined;
-      for (const c of committedPaths) {
+      for (const c of targets) {
         const score = sharedSuffixSegments(tempPath, c);
         if (score > 0 && (best === undefined || score > best.score)) best = { path: c, score };
       }
@@ -140,12 +146,11 @@ function alignToCommitted(
     .sort((a, b) => (b.best?.score ?? 0) - (a.best?.score ?? 0) || a.tempPath.localeCompare(b.tempPath));
 
   for (const { tempPath, best } of scored) {
-    const content = temp.get(tempPath)!;
     if (best && !claimed.has(best.path)) {
       claimed.add(best.path);
-      out.set(best.path, content);
+      out.set(tempPath, best.path);
     } else {
-      out.set(tempPath, content);
+      out.set(tempPath, tempPath);
     }
   }
   return out;
@@ -153,6 +158,13 @@ function alignToCommitted(
 
 interface IRegenResult {
   readonly files?: ReadonlyMap<string, string>;
+  /**
+   * Outputs the regen wrote that the reader did NOT read (over the regen cap,
+   * or unreadable), keyed exactly like `files`. Never dropped: the caller
+   * decides whether one is uncomparable (keyed onto a committed file) or
+   * drift its path alone proves (keyed onto nothing committed).
+   */
+  readonly unread?: readonly IUnreadFile[];
   readonly error?: string;
 }
 
@@ -170,6 +182,7 @@ function runOneRegen(
   command: string,
   committed: ReadonlyMap<string, string>,
   timeoutMs: number,
+  unreadCommitted: readonly string[] = [],
 ): IRegenResult {
   const tmp = mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'shrk-generated-'));
   try {
@@ -180,16 +193,29 @@ function runOneRegen(
       timeout: timeoutMs,
       maxBuffer: 16 * 1024 * 1024,
     });
+    // A spawned command may rewrite files anywhere: drop every memoised tree
+    // read, so a read-cache window (`withFileReadCache`, e.g. `shrk quality`'s
+    // plane section) never serves a pre-spawn snapshot after it.
+    clearFileReadCache();
     if (child.error) return { error: `regen failed to start: ${child.error.message}` };
     if (child.status !== 0) {
       const tail = String(child.stderr ?? '').trim().split('\n').slice(-3).join(' | ');
       return { error: `regen exited ${child.status ?? 'null'}${tail ? ` — ${tail}` : ''}` };
     }
-    const tree = readTree(tmp);
-    if (tree.size === 0) {
+    const tree = readRegenTree(tmp);
+    if (tree.files.size === 0 && tree.unread.length === 0) {
       return { error: 'regen wrote no files into {TMP} — the command probably ignores the output path' };
     }
-    return { files: alignToCommitted(tree, committed) };
+    // ONE alignment for the read and the unread outputs, against the committed
+    // slice AND the committed files the reader could not read, so an over-cap
+    // output keys onto the same committed path a read one would.
+    const keys = alignKeys(
+      [...tree.files.keys(), ...tree.unread.map((u) => u.path)],
+      [...committed.keys(), ...unreadCommitted],
+    );
+    const files = new Map<string, string>();
+    for (const [p, content] of tree.files) files.set(keys.get(p) ?? p, content);
+    return { files, unread: tree.unread.map((u) => ({ ...u, path: keys.get(u.path) ?? u.path })) };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -242,6 +268,25 @@ export interface IGeneratedOutcome {
   readonly handMaintained: readonly string[];
   /** Per-writer drift results, for a multi-writer rule. */
   readonly writers: readonly IWriterOutcome[];
+  /**
+   * Set when a file in the rule's scope was not read (over the read cap): it
+   * was never header-checked or byte-compared, so {@link generatedCoverage}
+   * names it and the rule is never a pass.
+   */
+  readonly readScope?: IReadScope;
+  /**
+   * Set only when the rule is INTENDED-empty (round 13): every inclusion glob
+   * of its `generatedGlob` is marked `expectEmpty` and no file matched. It is
+   * the settle's acceptance and stands in for the rule's own coverage record
+   * ({@link generatedCoverage}), so the rule passes with the acceptance printed.
+   */
+  readonly emptyCoverage?: IVerdictCoverage;
+  /** Settle record B of the rule's `generatedGlob` — the acceptance of its intended-empty units. */
+  readonly unitAcceptance?: IVerdictCoverage;
+  /** The rule's dead / intended-empty / went-live `generatedGlob` units as printed lines. */
+  readonly units?: IUnitStateLists;
+  /** The rule's non-live `generatedGlob` units, for `--fail-on-dead-units` (`selectorUnitFails`). */
+  readonly unitLiveness?: readonly IUnitLiveness[];
 }
 
 /** One writer's slice result inside a multi-writer rule. */
@@ -254,24 +299,106 @@ interface IWriterOutcome {
 
 export function evaluateGeneratedRule(
   cwd: string,
-  rule: IGeneratedArtifactRule,
+  authored: IGeneratedArtifactRule,
   excludeDirs: readonly string[],
   headersOnly: boolean,
 ): IGeneratedOutcome {
-  const scan = scanGeneratedFiles(cwd, rule, excludeDirs);
-  const severity = rule.severity ?? 'error';
-
-  if (scan.generated.size === 0) {
-    const failed = failsWhenEmpty(rule);
+  // The engine entry normalises idempotently (round 13): a loaded rule comes
+  // back as the SAME object; a hand-built `{ pattern, expectEmpty }` entry is a
+  // glob plus a marker; a malformed entry is a misconfigured rule, never a crash.
+  const normalized = normalizeRuleList(authored, 'generatedGlob');
+  if (!normalized.ok) {
     return {
-      rule,
-      status: failed ? 'failed' : 'skipped',
+      rule: authored,
+      status: 'error',
       committedCount: 0,
       provenance: [],
       driftChecked: false,
       handMaintained: [],
       writers: [],
-      skipReason: `0 files matched generatedGlob (${rule.generatedGlob.join(', ')})`,
+      error: `generatedGlob ${normalized.error.message}`,
+    };
+  }
+  const rule = normalized.value;
+  const scan = scanGeneratedFiles(cwd, rule, excludeDirs);
+  const severity = rule.severity ?? 'error';
+  // A matched file the reader could not read (over the read cap) was never
+  // header-checked or compared. It rides on every outcome below, so the
+  // coverage names it; it is left out of the drift diff, where its absence
+  // from the committed side would otherwise read as `only-regenerated`.
+  const unreadScope = readScopeHasUnread(scan.readScope) ? { readScope: scan.readScope } : {};
+  const unreadPaths = new Set(scan.readScope.unread.map((u) => u.path));
+  // `generatedGlob` settled with its `expectEmpty` markers (round 13) — needed
+  // when a unit is marked (its acceptance / went-live line rides on the
+  // outcome) or when the rule matched nothing (what the empty rule is decided
+  // from). An unmarked rule that matched files pays nothing extra.
+  const live =
+    (rule.expectEmptyUnits?.length ?? 0) > 0 || scan.generated.size === 0
+      ? readGlobListLiveness(cwd, 'generatedGlob', rule.generatedGlob, rule.expectEmptyUnits ?? [], {
+          subject: rule.id,
+          excludeDirs: new Set(excludeDirs),
+        })
+      : undefined;
+  const nonLive = live?.liveness.units.filter((u) => u.state !== UnitLivenessState.Live) ?? [];
+  const unitFields = {
+    ...(live?.liveness.acceptance !== undefined ? { unitAcceptance: live.liveness.acceptance } : {}),
+    ...(live !== undefined &&
+    live.liveness.dead.length + live.liveness.intendedEmpty.length + live.liveness.wentLive.length > 0
+      ? { units: unitStateLists(live.liveness) }
+      : {}),
+    ...(nonLive.length > 0 ? { unitLiveness: nonLive } : {}),
+  };
+
+  if (scan.generated.size === 0 && unreadPaths.size > 0) {
+    // Every committed file it matched is unread: not "0 files matched", so
+    // PARTIAL, never failOnEmpty's failure and never a pass.
+    return {
+      rule,
+      status: 'passed',
+      committedCount: 0,
+      provenance: [],
+      driftChecked: false,
+      handMaintained: [],
+      writers: [],
+      ...unreadScope,
+      ...unitFields,
+    };
+  }
+
+  if (scan.generated.size === 0 && live !== undefined) {
+    // THE rule-emptiness settle (round 13, `settleRuleEmptiness`): every
+    // inclusion glob of `generatedGlob` marked `expectEmpty` and no file
+    // matched → a generated tree that does not exist yet, accepted and printed.
+    // Anything else is the loud skip (failOnEmpty's 1, else 2).
+    const noFiles = `0 files matched generatedGlob (${rule.generatedGlob.join(', ')})`;
+    const emptiness = settleRuleEmptiness({
+      subject: rule.id,
+      unitLabel: 'generated files',
+      filesMatched: 0,
+      unitsMatched: 0,
+      unread: false,
+      liveness: live.liveness,
+      primaryLists: ['generatedGlob'],
+      failOnEmpty: failsWhenEmpty(rule),
+      noFilesReason: noFiles,
+      noUnitsReason: noFiles,
+    });
+    const empty = {
+      rule,
+      committedCount: 0,
+      provenance: [],
+      driftChecked: false,
+      handMaintained: [],
+      writers: [],
+      ...unitFields,
+    };
+    if (emptiness.state === RuleEmptiness.IntendedEmpty && emptiness.coverage !== undefined) {
+      return { ...empty, status: 'passed', emptyCoverage: emptiness.coverage };
+    }
+    return {
+      ...empty,
+      status: emptiness.fails ? 'failed' : 'skipped',
+      skipReason: emptiness.skipReason ?? noFiles,
     };
   }
 
@@ -291,6 +418,7 @@ export function evaluateGeneratedRule(
       handMaintained: scan.handMaintained,
       writers: [],
       error: headers.error,
+      ...unreadScope,
     };
   }
 
@@ -298,20 +426,38 @@ export function evaluateGeneratedRule(
   const differences: IGeneratedFileDiff[] = [];
   const writers: IWriterOutcome[] = [];
   const errors: string[] = [];
+  // Regen outputs the reader did not read (over the regen cap) that key onto a
+  // COMMITTED file: never byte-compared, so they join the rule's read scope
+  // and its coverage names them. Never dropped.
+  const uncomparable: IUnreadFile[] = [];
   let committedCompared = 0;
   let regeneratedCount = 0;
   for (const unit of units) {
-    const regen = runOneRegen(cwd, unit.command, unit.committed, unit.timeoutMs);
+    const regen = runOneRegen(cwd, unit.command, unit.committed, unit.timeoutMs, [...unreadPaths]);
     if (regen.error) {
       errors.push(units.length > 1 ? `${unit.label}: ${regen.error}` : regen.error);
       writers.push({ label: unit.label, committedCount: unit.committed.size, differences: 0, error: regen.error });
       continue;
     }
+    const regenUnread = regen.unread ?? [];
+    const keyedOnCommitted = (p: string): boolean => unit.committed.has(p) || unreadPaths.has(p);
+    const unitUncomparable = regenUnread.filter((u) => keyedOnCommitted(u.path));
+    uncomparable.push(...unitUncomparable);
+    const skip = new Set([...unreadPaths, ...unitUncomparable.map((u) => u.path)]);
     const diff = compareGeneratedTrees(unit.committed, regen.files!, rule.compare ?? 'bytes');
-    differences.push(...diff.differences);
-    committedCompared += diff.committedCount;
-    regeneratedCount += diff.regeneratedCount;
-    writers.push({ label: unit.label, committedCount: unit.committed.size, differences: diff.differences.length });
+    // A path whose committed or regenerated side was never read cannot be
+    // compared: it is in the coverage gap, not the diff. An unread output
+    // keyed onto NOTHING committed is drift its path alone proves.
+    const compared: IGeneratedFileDiff[] = [
+      ...diff.differences.filter((d) => !skip.has(d.file)),
+      ...regenUnread
+        .filter((u) => !keyedOnCommitted(u.path))
+        .map((u) => ({ file: u.path, kind: 'only-regenerated' as const })),
+    ];
+    differences.push(...compared);
+    committedCompared += diff.committedCount - unitUncomparable.filter((u) => unit.committed.has(u.path)).length;
+    regeneratedCount += diff.regeneratedCount + regenUnread.length;
+    writers.push({ label: unit.label, committedCount: unit.committed.size, differences: compared.length });
   }
 
   const ranAnyWriter = units.length > 0 && errors.length < units.length;
@@ -331,6 +477,15 @@ export function evaluateGeneratedRule(
         ? 'failed'
         : 'passed';
 
+  // The rule's read scope: the committed files the reader could not read, plus
+  // each uncomparable regen output keyed onto a READ committed file (read, but
+  // never compared, so it moves from examined to unexamined).
+  const extra = new Map<string, IUnreadFile>();
+  for (const u of uncomparable) if (!unreadPaths.has(u.path) && !extra.has(u.path)) extra.set(u.path, u);
+  const finalScope: IReadScope = {
+    read: scan.readScope.read - extra.size,
+    unread: [...scan.readScope.unread, ...extra.values()].sort((a, b) => a.path.localeCompare(b.path)),
+  };
   return {
     rule,
     status,
@@ -341,7 +496,53 @@ export function evaluateGeneratedRule(
     driftChecked: units.length > 0 && errors.length === 0,
     handMaintained: scan.handMaintained,
     writers: writers.length > 1 ? writers : [],
+    ...(readScopeHasUnread(finalScope) ? { readScope: finalScope } : {}),
+    // The acceptance of a marked planned glob and the unit lines ride on a
+    // connected rule too (round 13), not only on an empty one.
+    ...unitFields,
   };
+}
+
+/**
+ * What one generated-artifact rule examined — shared by `generated check` and
+ * the aggregate (`gates check`, `quality`), so both report the same scope.
+ *
+ * `driftSkipped` is the aggregate's `--no-spawn` case: headers and
+ * classification ran, the regen diff did not, so no file's CONTENTS were
+ * verified. (`generated check --headers-only` is a narrowing the caller asked
+ * for, not a gap.)
+ */
+export function generatedCoverage(o: IGeneratedOutcome, driftSkipped = false): IVerdictCoverage {
+  // An intended-empty rule (round 13: every `generatedGlob` inclusion glob
+  // marked `expectEmpty`, no file matched) is covered by its acceptance — the
+  // settle's own record, printed at exit 0.
+  if (o.emptyCoverage !== undefined) return o.emptyCoverage;
+  // A file in scope the reader could not read folds in through the one rule
+  // every plane uses (`readScopeCoverage`): `examined N of M files`, named.
+  return readScopeCoverage(planeGeneratedCoverage(o, driftSkipped), o.readScope);
+}
+
+function planeGeneratedCoverage(o: IGeneratedOutcome, driftSkipped: boolean): IVerdictCoverage {
+  if (o.skipReason !== undefined) {
+    return { unit: 'generated files', expected: 0, examined: 0, reason: o.skipReason };
+  }
+  if (o.status === 'error') {
+    return {
+      unit: 'generated files',
+      expected: o.committedCount,
+      examined: 0,
+      reason: 'the rule could not be evaluated',
+    };
+  }
+  if (driftSkipped) {
+    return {
+      unit: 'generated files',
+      expected: o.committedCount,
+      examined: 0,
+      reason: 'regen drift check skipped by --no-spawn',
+    };
+  }
+  return { unit: 'generated files', expected: o.committedCount, examined: o.committedCount };
 }
 
 export function generatedHintFor(rule: IGeneratedArtifactRule): string {
@@ -373,8 +574,19 @@ function outcomeJson(o: IGeneratedOutcome): Record<string, unknown> {
 
 async function prepare(
   args: ParsedArgs,
+  /** `rejectedKnown`: a verdict verb may select a rejected rule by `--id` (its errored row). */
+  opts: { readonly rejectedKnown?: boolean } = {},
 ): Promise<
-  | { ok: true; cwd: string; rules: readonly IGeneratedArtifactRule[]; all: readonly IGeneratedArtifactRule[]; excludeDirs: string[]; planeDiagnostics: readonly string[] }
+  | {
+      ok: true;
+      cwd: string;
+      rules: readonly IGeneratedArtifactRule[];
+      all: readonly IGeneratedArtifactRule[];
+      excludeDirs: string[];
+      planeDiagnostics: readonly string[];
+      /** Merge-seam-rejected pack rules, narrowed by `--id` (round 12 review, R12-X1). */
+      rejected: readonly IGateRuleResult[];
+    }
   | { ok: false; code: number }
 > {
   const cwd = resolveCwd(args);
@@ -387,9 +599,13 @@ async function prepare(
   }
   const id = flagString(args, 'id');
   let rules = loaded.value.rules;
+  let rejected = loaded.value.rejected;
   if (id) {
     const wanted = id.split(',').map((s) => s.trim()).filter(Boolean);
-    const known = new Set(rules.map((r) => r.id));
+    const known = new Set([
+      ...rules.map((r) => r.id),
+      ...(opts.rejectedKnown === true ? rejected.map((r) => r.id) : []),
+    ]);
     const unknown = wanted.filter((w) => !known.has(w));
     if (unknown.length > 0) {
       process.stderr.write(
@@ -398,6 +614,7 @@ async function prepare(
       return { ok: false, code: ExitCode.UsageError };
     }
     rules = rules.filter((r) => wanted.includes(r.id));
+    rejected = rejected.filter((r) => wanted.includes(r.id));
   }
   return {
     ok: true,
@@ -406,13 +623,40 @@ async function prepare(
     all: loaded.value.rules,
     excludeDirs: loaded.value.excludeDirs,
     planeDiagnostics: loaded.value.planeDiagnostics,
+    rejected,
   };
 }
 
-function writeNoRules(json: boolean): number {
+/**
+ * The "no rules declared" landing. A VERDICT verb passes its name so its JSON
+ * still carries the settled `gate` envelope — nothing declared is `2`.
+ */
+function writeNoRules(json: boolean, verb?: string): number {
+  // A VERDICT verb settles first and renders second, in text AND JSON: nothing
+  // declared proposes 0 and the run coverage (expected 0) settles it to 2. The
+  // exit comes from the envelope — never a hard-coded code — so text, JSON and
+  // gate.exit cannot disagree. List / explain subverbs stay informational.
+  const gate =
+    verb !== undefined
+      ? buildGateEnvelope(verb, ExitCode.VerifiedPass, [], {
+          unit: 'generated-artifact rules',
+          expected: 0,
+          examined: 0,
+          reason: 'no generatedArtifacts[] declared',
+        })
+      : undefined;
+  const exit = gate?.exit ?? ExitCode.NotVerified;
   if (json) {
-    process.stdout.write(asJson({ schema: SCHEMA, results: [], evaluated: 0, verdict: 'not-verified' }) + '\n');
-    return ExitCode.NotVerified;
+    process.stdout.write(
+      asJson({
+        schema: SCHEMA,
+        results: [],
+        evaluated: 0,
+        verdict: gate ? planeVerdictForExit(gate.exit) : 'not-verified',
+        ...(gate ? { exitCode: gate.exit, gate } : {}),
+      }) + '\n',
+    );
+    return exit;
   }
   process.stdout.write(header('Generated artifacts'));
   process.stdout.write(
@@ -420,7 +664,11 @@ function writeNoRules(json: boolean): number {
       '  sharkcraft.config.ts to catch hand-edited generated files and missing\n' +
       '  "do not edit" headers (see docs/generated-drift.md).\n',
   );
-  return ExitCode.NotVerified;
+  if (gate) {
+    const line = verdictLine(gate, 'Nothing declared — accepted.');
+    if (line) process.stdout.write(`\n${line}\n`);
+  }
+  return exit;
 }
 
 export const generatedListCommand: ICommandHandler = {
@@ -432,11 +680,13 @@ export const generatedListCommand: ICommandHandler = {
     const prep = await prepare(args);
     if (!prep.ok) return prep.code;
     const json = flagBool(args, 'json');
-    if (prep.all.length === 0) return writeNoRules(json);
+    if (prep.all.length === 0 && prep.rejected.length === 0) return writeNoRules(json);
     if (json) {
       process.stdout.write(
         asJson({
           schema: SCHEMA,
+          // Declared by a pack, refused by the merge seam: never checked.
+          rejected: prep.rejected.map((r) => ({ id: r.id, error: r.error ?? null })),
           rules: prep.all.map((r) => ({
             id: r.id,
             description: r.description ?? null,
@@ -447,7 +697,9 @@ export const generatedListCommand: ICommandHandler = {
             handMaintainedMarker: r.handMaintainedMarker ?? null,
             compare: r.compare ?? 'bytes',
             provenanceHeader: r.provenanceHeader ?? null,
-            failOnEmpty: r.failOnEmpty === true,
+            // The EFFECTIVE failOnEmpty (round 13) — THE authority, never the
+            // raw field: an error rule fails on empty by default.
+            failOnEmpty: failsWhenEmpty(r),
           })),
           diagnostics: prep.planeDiagnostics,
         }) + '\n',
@@ -480,6 +732,10 @@ export const generatedListCommand: ICommandHandler = {
       }
       if (r.description) process.stdout.write(`      ${r.description}\n`);
     }
+    if (prep.rejected.length > 0) {
+      process.stdout.write(`\n  rejected at the pack-plane merge seam — never checked (${prep.rejected.length}):\n`);
+      writeRejected(prep.rejected);
+    }
     for (const d of prep.planeDiagnostics) process.stdout.write(`  ! ${d}\n`);
     return ExitCode.VerifiedPass;
   },
@@ -492,11 +748,14 @@ export const generatedCheckCommand: ICommandHandler = {
   usage: 'shrk generated check [--id <ids>] [--headers-only] [--json]',
   booleanFlags: new Set(['json', 'headers-only']),
   async run(args: ParsedArgs): Promise<number> {
-    const prep = await prepare(args);
+    const prep = await prepare(args, { rejectedKnown: true });
     if (!prep.ok) return prep.code;
     const json = flagBool(args, 'json');
     const headersOnly = flagBool(args, 'headers-only');
-    if (prep.rules.length === 0) return writeNoRules(json);
+    // A pack rule the merge seam rejected is a declared rule that was never
+    // checked — an errored row, exit 1 (round 12 review, R12-X1).
+    const rejected = prep.rejected;
+    if (prep.rules.length === 0 && rejected.length === 0) return writeNoRules(json, 'generated check');
 
     const outcomes = prep.rules.map((r) => evaluateGeneratedRule(prep.cwd, r, prep.excludeDirs, headersOnly));
     const failed = outcomes.filter(
@@ -504,12 +763,62 @@ export const generatedCheckCommand: ICommandHandler = {
     );
     const evaluated = outcomes.filter((o) => o.status !== 'skipped').length;
     const skippedCount = outcomes.length - evaluated;
-    const exit =
-      failed.length > 0
+    const proposed =
+      failed.length > 0 || rejected.length > 0
         ? ExitCode.Failure
         : evaluated === 0 || skippedCount > 0
           ? ExitCode.NotVerified
           : ExitCode.VerifiedPass;
+    // Settle first, render second: one envelope for text AND JSON, and the ✓
+    // line is printed only from the settled verdict. `--headers-only` is a
+    // narrowing the caller asked for, so it is not a coverage gap here.
+    const unexamined = [
+      ...outcomes.filter((o) => o.status === 'skipped' || o.status === 'error').map((o) => o.rule.id),
+      ...rejected.map((r) => r.id),
+    ];
+    const env = buildGateEnvelope(
+      'generated check',
+      proposed,
+      [...outcomes.map((o) => ({
+        id: o.rule.id,
+        type: 'generated' as const,
+        status: o.status,
+        severity: o.rule.severity ?? 'error',
+        counts: {
+          files: o.committedCount,
+          differences: o.treeDiff?.differences.length ?? 0,
+          provenance: o.provenance.length,
+        },
+        violations: [
+          ...(o.treeDiff?.differences ?? []).map((d) => ({
+            id: d.file,
+            file: d.file,
+            message: d.kind,
+            hint: generatedHintFor(o.rule),
+          })),
+          ...o.provenance.map((f) => ({
+            id: f.file,
+            file: f.file,
+            message: f.message,
+            hint: generatedHintFor(o.rule),
+          })),
+        ],
+        ...(o.skipReason ? { skipReason: o.skipReason } : {}),
+        ...(o.error ? { error: o.error } : {}),
+        coverage: generatedCoverage(o),
+        // The rule's `expectEmpty` acceptance and unit lines (round 13), folded
+        // into the envelope's one settle.
+        ...(o.unitAcceptance !== undefined ? { unitAcceptance: o.unitAcceptance } : {}),
+        ...(o.units !== undefined ? { units: o.units } : {}),
+      })), ...rejected],
+      {
+        unit: 'generated-artifact rules',
+        expected: outcomes.length + rejected.length,
+        examined: outcomes.length + rejected.length - unexamined.length,
+        ...(unexamined.length > 0 ? { unexamined, reason: 'checked nothing or could not run' } : {}),
+      },
+    );
+    const exit = env.exit;
 
     if (json) {
       process.stdout.write(
@@ -517,48 +826,30 @@ export const generatedCheckCommand: ICommandHandler = {
           schema: SCHEMA,
           headersOnly,
           results: outcomes.map(outcomeJson),
+          // Pack rules the merge seam refused — errored rows in `gate.rules`.
+          rejected: rejected.map((r) => ({ id: r.id, error: r.error ?? null })),
           evaluated,
           skipped: outcomes.filter((o) => o.status === 'skipped').length,
-          verdict: failed.length > 0 ? 'errors' : evaluated === 0 ? 'not-verified' : 'pass',
+          verdict: exit === ExitCode.Failure ? 'errors' : exit === ExitCode.VerifiedPass ? 'pass' : 'not-verified',
           diagnostics: prep.planeDiagnostics,
-          gate: buildGateEnvelope(
-            'generated check',
-            exit,
-            outcomes.map((o) => ({
-              id: o.rule.id,
-              type: 'generated' as const,
-              status: o.status,
-              severity: o.rule.severity ?? 'error',
-              counts: {
-                files: o.committedCount,
-                differences: o.treeDiff?.differences.length ?? 0,
-                provenance: o.provenance.length,
-              },
-              violations: [
-                ...(o.treeDiff?.differences ?? []).map((d) => ({
-                  id: d.file,
-                  file: d.file,
-                  message: d.kind,
-                  hint: generatedHintFor(o.rule),
-                })),
-                ...o.provenance.map((f) => ({
-                  id: f.file,
-                  file: f.file,
-                  message: f.message,
-                  hint: generatedHintFor(o.rule),
-                })),
-              ],
-              ...(o.skipReason ? { skipReason: o.skipReason } : {}),
-              ...(o.error ? { error: o.error } : {}),
-            })),
-          ),
+          exitCode: exit,
+          gate: env,
         }) + '\n',
       );
       return exit;
     }
 
     process.stdout.write(header('Generated-artifact drift'));
-    process.stdout.write(kv('evaluated', `${evaluated} of ${prep.rules.length}`) + '\n');
+    // Round 13 (K6): the printed count is the envelope's (`gate.evaluated`), which
+    // never counts a rule accepted as intended-empty — it is named apart.
+    process.stdout.write(
+      kv(
+        'evaluated',
+        `${env.evaluated} of ${prep.rules.length + rejected.length}${acceptedEmptyNote(env.acceptedEmpty)}` +
+          (rejected.length > 0 ? ` (${rejected.length} rejected at the pack-plane merge seam — NOT evaluated)` : ''),
+      ) + '\n',
+    );
+    writeRejected(rejected);
     if (headersOnly) process.stdout.write(kv('scope', 'headers only — no regen was run') + '\n');
     for (const o of outcomes) {
       if (o.status === 'skipped') {
@@ -569,8 +860,23 @@ export const generatedCheckCommand: ICommandHandler = {
         process.stdout.write(`  ! ${o.rule.id}  ${o.error}\n`);
         continue;
       }
+      // A rule that matched nothing and FAILS on it (failOnEmpty) produced no
+      // diff and no regen output — its skip reason is the only true line. It is
+      // never rendered as drift with a bless hint (round 13).
+      if (o.status === 'failed' && o.skipReason !== undefined) {
+        process.stdout.write(`  ✗ ${o.rule.id}  FAILED — ${o.skipReason}\n`);
+        process.stdout.write(`      → ${formatEmptyRuleAdvice({ fails: true })}\n`);
+        continue;
+      }
       const diffs = o.treeDiff?.differences ?? [];
-      if (o.status === 'passed') {
+      // Rendered from the SETTLED rule: a pass over part of its scope is
+      // `partial`, never a ✓ (the keystone emitter pattern, step 5).
+      const settledRule = env.rules.find((x) => x.id === o.rule.id);
+      if (o.status === 'passed' && settledRule?.status === 'partial') {
+        process.stdout.write(
+          `  ~ ${o.rule.id}  PARTIAL — ${settledRule.shortfall ?? 'part of its scope was not examined'}\n`,
+        );
+      } else if (o.status === 'passed') {
         const exempt = o.handMaintained.length > 0 ? `, ${o.handMaintained.length} hand-maintained` : '';
         process.stdout.write(
           `  ✓ ${o.rule.id}  (${o.committedCount} files${exempt}` +
@@ -606,19 +912,160 @@ export const generatedCheckCommand: ICommandHandler = {
       if (o.status === 'failed') process.stdout.write(`      → ${generatedHintFor(o.rule)}\n`);
     }
     for (const d of prep.planeDiagnostics) process.stdout.write(`  ! ${d}\n`);
-    if (exit === ExitCode.NotVerified) {
-      process.stdout.write('\nNothing was checked — this is NOT a pass. Every rule matched 0 files.\n');
-    } else if (exit === ExitCode.VerifiedPass) {
-      process.stdout.write('\nEvery generated artifact matches its source. ✓\n');
+    // THE empty-rule advice (round 13) for a SOFT skip: a failing one is
+    // advised inline (above); a rule that matched nothing and does not fail on
+    // it was told nothing.
+    for (const a of emptyRuleAdviceLines(
+      outcomes.filter((o) => o.status === 'skipped' && o.skipReason !== undefined).map(() => ({ fails: false })),
+    )) {
+      process.stdout.write(`  ${a}.\n`);
     }
+    // THE shared unit-state block (round 13, K2): a dead `generatedGlob` of a
+    // rule that still matched, and a LOCAL expectEmpty marker whose target
+    // appeared, withhold the ✓ (exit unchanged); a pack marker is INFO.
+    const unitNotes = unitStateNotes(
+      outcomes.map((o) => ({
+        id: o.rule.id,
+        ...(o.unitLiveness !== undefined ? { unitLiveness: o.unitLiveness } : {}),
+        reportedEmpty: o.status === 'skipped' || o.skipReason !== undefined,
+      })),
+    );
+    process.stdout.write(unitNotes.text);
+    const line = verdictLine(
+      env,
+      qualifyCleanForUnits('Every generated artifact matches its source. ✓', unitNotes),
+      proposed === ExitCode.NotVerified && evaluated === 0
+        ? 'Nothing was checked — this is NOT a pass. Every rule matched 0 files.'
+        : undefined,
+    );
+    if (line) process.stdout.write(`\n${line}\n`);
     return exit;
   },
 };
 
+/** What `generated update` did for one regen unit. */
+interface IUpdateResult {
+  readonly id: string;
+  readonly ran: boolean;
+  readonly error?: string;
+  /** Committed files whose content the regen changed — rewritten in place. */
+  readonly written: readonly string[];
+  readonly unchanged: readonly string[];
+  /** New files the regen produced, placed inside the rule's generatedGlob. */
+  readonly created: readonly string[];
+  /** Regen output that maps to no committed path and cannot be placed inside the glob. */
+  readonly notPlaced: readonly string[];
+  /** Committed files the regen no longer produces — reported, NEVER deleted. */
+  readonly noLongerProduced: readonly string[];
+  /**
+   * Regen outputs the reader did not read (over the regen cap): NOT written,
+   * so the bless is incomplete and the run says so (exit 1), never silently.
+   */
+  readonly unreadOutputs?: readonly string[];
+}
+
+const EMPTY_WRITES = { written: [], unchanged: [], created: [], notPlaced: [], noLongerProduced: [] } as const;
+
+/** The leading literal directory of a glob (`docs/schemas/*.json` → `docs/schemas`). */
+function globStaticDir(glob: string): string | undefined {
+  const out: string[] = [];
+  for (const seg of glob.split('/').slice(0, -1)) {
+    if (/[*?[\]{}]/.test(seg)) break;
+    out.push(seg);
+  }
+  return out.length > 0 ? out.join('/') : undefined;
+}
+
+/**
+ * Where a regen unit's NEW files belong: the single directory its committed
+ * slice lives in, or — for a first generation with nothing committed yet — the
+ * single literal directory its INCLUSION globs name. Ambiguous → undefined,
+ * and the new file is reported instead of guessed.
+ *
+ * Only an inclusion glob says where files live: a negation
+ * (`!gen/**\/*.hand.ts`) names what is carved OUT, and read raw its leading
+ * `!gen` was a second "directory" that made every first generation ambiguous.
+ */
+function sliceTargetDir(
+  committed: ReadonlyMap<string, string>,
+  globs: readonly string[],
+): string | undefined {
+  const dirs = new Set([...committed.keys()].map((p) => nodePath.posix.dirname(p)));
+  if (dirs.size === 1) return [...dirs][0];
+  if (dirs.size > 1) return undefined;
+  const statics = new Set(
+    globListWalkGlobs(globs)
+      .map(globStaticDir)
+      .filter((d): d is string => d !== undefined),
+  );
+  return statics.size === 1 ? [...statics][0] : undefined;
+}
+
+function writeOut(cwd: string, rel: string, content: string): void {
+  const abs = nodePath.join(cwd, rel);
+  mkdirSync(nodePath.dirname(abs), { recursive: true });
+  writeFileSync(abs, content, 'utf8');
+}
+
+/**
+ * Write a regen unit's ALIGNED output over the committed tree.
+ *
+ * The keys come from {@link runOneRegen} — the same alignment `generated check`
+ * diffs against — so "which committed file does this output replace" has one
+ * answer for both verbs. Output that aligns to nothing is a new file: it is
+ * written only where the rule's own glob says generated files live, never at a
+ * bare temp-relative path (which is how a flat regen used to land at the repo
+ * root). A committed file the regen stopped producing is reported, not
+ * deleted: removing tracked files is a decision for a human.
+ */
+function writeAligned(
+  cwd: string,
+  rule: IGeneratedArtifactRule,
+  scan: IGeneratedScan,
+  committed: ReadonlyMap<string, string>,
+  files: ReadonlyMap<string, string>,
+): Omit<IUpdateResult, 'id' | 'ran' | 'error'> {
+  const written: string[] = [];
+  const unchanged: string[] = [];
+  const created: string[] = [];
+  const notPlaced: string[] = [];
+  const blessed = new Set(scan.handMaintained);
+  const targetDir = sliceTargetDir(committed, rule.generatedGlob);
+  for (const [key, content] of files) {
+    if (committed.has(key)) {
+      if (committed.get(key) === content) unchanged.push(key);
+      else {
+        writeOut(cwd, key, content);
+        written.push(key);
+      }
+      continue;
+    }
+    const candidates = [key, ...(targetDir ? [nodePath.posix.join(targetDir, key)] : [])];
+    // A new output is placed only where `generatedGlob` SELECTS it — never on
+    // a path the list excludes, which the next check would not cover.
+    const dest = candidates.find((c) => globListSelects(c, rule.generatedGlob) && !blessed.has(c));
+    if (!dest) {
+      notPlaced.push(key);
+      continue;
+    }
+    writeOut(cwd, dest, content);
+    created.push(dest);
+  }
+  const produced = new Set([...written, ...unchanged]);
+  const noLongerProduced = [...committed.keys()].filter((p) => !produced.has(p)).sort();
+  return {
+    written: written.sort(),
+    unchanged: unchanged.sort(),
+    created: created.sort(),
+    notPlaced: notPlaced.sort(),
+    noLongerProduced,
+  };
+}
+
 export const generatedUpdateCommand: ICommandHandler = {
   name: 'update',
   description:
-    'Run the declared regen command in place — the one-command bless step after an intentional source change. Writes files.',
+    'The bless step after an intentional source change: regenerate into a temp dir with the SAME regen + path alignment `generated check` uses, then write the aligned files over their committed paths. Writes files; never deletes a committed file.',
   usage: 'shrk generated update [--id <ids>] [--json]',
   booleanFlags: new Set(['json']),
   async run(args: ParsedArgs): Promise<number> {
@@ -627,57 +1074,82 @@ export const generatedUpdateCommand: ICommandHandler = {
     const json = flagBool(args, 'json');
     if (prep.rules.length === 0) return writeNoRules(json);
 
-    const results: { id: string; ran: boolean; error?: string }[] = [];
+    const results: IUpdateResult[] = [];
     for (const rule of prep.rules) {
-      // A multi-writer rule blesses by running EVERY writer — regenerating one
-      // slice and calling the artifact updated is how a mixed tree drifts.
-      const commands: { label: string; command: string; timeoutMs: number }[] =
-        rule.sources && rule.sources.length > 0
-          ? rule.sources.map((src, i) => ({
-              label: `${rule.id}/${src.id ?? i}`,
-              command: src.regen,
-              timeoutMs: src.timeoutMs ?? rule.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-            }))
-          : rule.regen
-            ? [{ label: rule.id, command: rule.regen, timeoutMs: rule.timeoutMs ?? DEFAULT_TIMEOUT_MS }]
-            : [];
-      if (commands.length === 0) {
-        results.push({ id: rule.id, ran: false, error: 'header-only rule — nothing to regenerate' });
+      // `{TMP}` means the same thing here as in `check`. Update used to
+      // substitute the project root instead, so a flat regen such as
+      // `schemas emit --out {TMP}` wrote every file at the repo ROOT while
+      // `check` compared against docs/schemas/ — two answers to "where does
+      // the output land". Regenerating through runOneRegen makes it one.
+      // A multi-writer rule blesses EVERY writer's slice, never just one.
+      const scan = scanGeneratedFiles(prep.cwd, rule, prep.excludeDirs);
+      const units = regenUnitsOf(rule, scan);
+      if (units.length === 0) {
+        results.push({ id: rule.id, ran: false, error: 'header-only rule — nothing to regenerate', ...EMPTY_WRITES });
         continue;
       }
-      for (const { label, command, timeoutMs } of commands) {
-        // `{TMP}` is the CHECK contract; `update` writes in place, so it is
-        // substituted with the project root and the regen writes its real output.
-        const child = spawnSync(command.split('{TMP}').join(prep.cwd), {
-          cwd: prep.cwd,
-          shell: true,
-          encoding: 'utf8',
-          timeout: timeoutMs,
-          maxBuffer: 16 * 1024 * 1024,
-          stdio: json ? 'pipe' : 'inherit',
-        });
-        if (child.error) {
-          results.push({ id: label, ran: false, error: child.error.message });
-        } else if (child.status !== 0) {
-          results.push({ id: label, ran: true, error: `exited ${child.status ?? 'null'}` });
-        } else {
-          results.push({ id: label, ran: true });
+      for (const unit of units) {
+        const regen = runOneRegen(prep.cwd, unit.command, unit.committed, unit.timeoutMs);
+        if (regen.error || !regen.files) {
+          results.push({ id: unit.label, ran: true, error: regen.error ?? 'regen produced no files', ...EMPTY_WRITES });
+          continue;
         }
+        // An output the reader did not read (over the regen cap) is never
+        // written: it is listed, and the bless is reported incomplete (1).
+        // Its committed counterpart is not "no longer produced".
+        const unreadKeys = new Set((regen.unread ?? []).map((u) => u.path));
+        const aligned = writeAligned(prep.cwd, rule, scan, unit.committed, regen.files);
+        results.push({
+          id: unit.label,
+          ran: true,
+          ...aligned,
+          noLongerProduced: aligned.noLongerProduced.filter((p) => !unreadKeys.has(p)),
+          ...(unreadKeys.size > 0 ? { unreadOutputs: [...unreadKeys].sort() } : {}),
+        });
       }
     }
     const failed = results.filter((r) => r.error !== undefined);
+    // The bless is incomplete when output could not be placed, a committed
+    // file is no longer produced, or an output was too large to read:
+    // `generated check` would still fail, so exiting 0 here would claim a sync
+    // that did not happen.
+    const outOfSync = results.filter(
+      (r) => r.notPlaced.length > 0 || r.noLongerProduced.length > 0 || (r.unreadOutputs?.length ?? 0) > 0,
+    );
+    const exit = failed.length > 0 || outOfSync.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass;
     if (json) {
-      process.stdout.write(asJson({ schema: SCHEMA, results }) + '\n');
-      return failed.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass;
+      process.stdout.write(
+        asJson({ schema: SCHEMA, inSync: failed.length === 0 && outOfSync.length === 0, results, exitCode: exit }) + '\n',
+      );
+      return exit;
     }
     process.stdout.write(header('Generated update'));
     for (const r of results) {
-      process.stdout.write(`  ${r.error ? '!' : '✓'} ${r.id}${r.error ? ` — ${r.error}` : ''}\n`);
+      if (r.error) {
+        process.stdout.write(`  ! ${r.id} — ${r.error}\n`);
+        continue;
+      }
+      process.stdout.write(
+        `  ✓ ${r.id}  — ${r.written.length} rewritten, ${r.created.length} new, ${r.unchanged.length} unchanged\n`,
+      );
+      for (const f of r.written) process.stdout.write(`      ~ ${f}\n`);
+      for (const f of r.created) process.stdout.write(`      + ${f}\n`);
+      for (const f of r.notPlaced) {
+        process.stdout.write(`      ! not written: ${f} — maps to no committed file and lies outside generatedGlob\n`);
+      }
+      for (const f of r.unreadOutputs ?? []) {
+        process.stdout.write(`      ! not written: ${f} — over the regen read cap, so it was never read\n`);
+      }
+      for (const f of r.noLongerProduced) {
+        process.stdout.write(`      ? no longer produced (left in place — delete it if that is intended): ${f}\n`);
+      }
     }
-    if (failed.length === 0) {
-      process.stdout.write('\nRegenerated. Review `git diff` before committing.\n');
-    }
-    return failed.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass;
+    process.stdout.write(
+      exit === ExitCode.VerifiedPass
+        ? '\nRegenerated. Review `git diff` before committing.\n'
+        : '\nNot fully blessed — `generated check` will still report the files above.\n',
+    );
+    return exit;
   },
 };
 

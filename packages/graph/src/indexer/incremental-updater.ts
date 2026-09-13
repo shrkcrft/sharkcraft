@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import type { IVerdictCoverage } from '@shrkcrft/core';
 import { runGitLines } from '@shrkcrft/shared';
 import type { IEdge } from '../schema/edge.ts';
 import { EdgeKind } from '../schema/edge-kind.ts';
@@ -13,6 +14,9 @@ import { GraphStore } from '../store/graph-store.ts';
 import { summarizeCycles } from '../query/cycle-detection.ts';
 import { summarizeUnresolvedImports } from './unresolved-imports.ts';
 import { resolveReExportedReferenceEdges } from './resolve-reexports.ts';
+import { buildPackageNode } from './package-node.ts';
+import { detectPackageEntryDivergenceDetail } from './package-entry-divergence.ts';
+import type { IPackageEntryDivergence } from './package-entry-divergence-record.ts';
 import {
   detectWorkspacePackages,
   type IWorkspacePackage,
@@ -39,13 +43,9 @@ import {
   ImportResolution,
   resolveImport,
 } from './resolve-imports.ts';
-
-const SOURCE_EXTS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
-  '.vue', '.svelte', '.astro', '.py', '.go', '.java', '.rs', '.kt', '.kts',
-  '.rb', '.cs', '.csx', '.ex', '.exs', '.php', '.dart', '.swift',
-  '.graphql', '.gql',
-]);
+// The ONE list of indexed extensions AND skipped directories — shared with the
+// full index builder and the orphan check's coverage (graph-source-path.ts).
+import { isGraphIndexablePath, isGraphSourcePath, isGraphWalkSkipped } from './graph-source-path.ts';
 
 export interface IIncrementalUpdateOptions {
   projectRoot: string;
@@ -93,20 +93,15 @@ export function updateChanged(
   const resolverCtx = createImportResolverContext(projectRoot, workspaces);
   const packageDirIndex = buildPackageDirIndex(workspaces);
 
-  // Make sure the package nodes match the current workspace state. Adds
-  // new packages; doesn't drop existing ones (rare to lose a package
-  // mid-session).
+  // Make sure the package nodes match the current workspace state. Adds new
+  // packages AND rebuilds every existing one: `entryFile` depends on which
+  // files exist on disk (a `src/index.ts` added later changes what a bare
+  // import resolves to), so a node written by an earlier run can be stale.
+  // Doesn't drop existing ones (rare to lose a package mid-session). Same
+  // builder as the full index, so the two can never write different data.
   for (const p of workspaces) {
-    const id = `package:${p.name}`;
-    if (!nodes.has(id)) {
-      nodes.set(id, {
-        id,
-        kind: NodeKind.Package,
-        label: p.name,
-        path: p.dir,
-        ...(p.entry ? { data: { entry: p.entry } } : {}),
-      });
-    }
+    const node = buildPackageNode(p, projectRoot);
+    nodes.set(node.id, node);
   }
 
   const deleted: string[] = [];
@@ -137,7 +132,9 @@ export function updateChanged(
       }
       continue;
     }
-    if (!SOURCE_EXTS.has(nodePath.extname(rel).toLowerCase())) continue;
+    // Extension AND directory skips: a changed `dist/x.js` (e.g. from
+    // `--since <ref>`) is never indexed here when the full build would skip it.
+    if (!isGraphIndexablePath(rel)) continue;
 
     const newFp = fingerprintFile(abs, projectRoot);
     const oldFp = files.get(newFp.path);
@@ -174,7 +171,7 @@ export function updateChanged(
       if (actuallyChanged.has(rel) || reExtracted.has(rel)) continue;
       const abs = nodePath.resolve(projectRoot, rel);
       if (!existsSync(abs) || !isFile(abs)) continue;
-      if (!SOURCE_EXTS.has(nodePath.extname(rel).toLowerCase())) continue;
+      if (!isGraphIndexablePath(rel)) continue;
       const newFp = fingerprintFile(abs, projectRoot);
       // Intentionally NOT pushed to `updated`: a referrer is an internal
       // re-stitch, not one of the caller's reported `changedFiles`.
@@ -280,6 +277,78 @@ export interface IGraphFreshness {
   added: readonly string[];
   /** Indexed files that no longer exist on disk. */
   deleted: readonly string[];
+  /**
+   * Workspace packages whose indexed record diverged from the working tree: a
+   * package added, removed or moved, or one whose package.json entry now
+   * resolves to a different file. Package entries are an index INPUT (the
+   * public-surface roots, bare-import targets) that no source-file fingerprint
+   * covers, so a package.json-only edit is caught here and nowhere else.
+   * Remedy: a full `shrk graph index` (an incremental update does not
+   * re-resolve the imports of unchanged files).
+   */
+  packagesChanged: readonly string[];
+  /**
+   * What diverged for each of {@link packagesChanged} (same packages, same
+   * order) — `detectPackageEntryDivergenceDetail`, the one derivation. Lets a
+   * consumer tell a divergence its own input explains (the orphan check: the
+   * indexed entry FILE was deleted) from one that leaves the index stale.
+   */
+  packageDivergences?: readonly IPackageEntryDivergence[];
+  /** How many source files the stored index holds (set whenever `hasIndex`). */
+  indexedFiles?: number;
+}
+
+/**
+ * How far an index is behind the working tree — changed source files plus
+ * diverged workspace packages. `0` is current. Every "is the index fresh?"
+ * surface reads this, so none can call an index fresh that another calls stale.
+ */
+export function graphFreshnessBehind(f: IGraphFreshness): number {
+  return f.modified.length + f.added.length + f.deleted.length + f.packagesChanged.length;
+}
+
+/**
+ * The command that brings a behind index current: a full `shrk graph index`
+ * when a workspace package entry diverged (an incremental update does not
+ * re-resolve unchanged files' imports of it), else `--changed`.
+ */
+export function graphFreshnessRemedy(f: IGraphFreshness): string {
+  return !f.hasIndex || f.packagesChanged.length > 0 ? 'shrk graph index' : 'shrk graph index --changed';
+}
+
+/**
+ * THE coverage of a verdict DERIVED from the persisted code-graph index: the
+ * files it indexed of the files it would index now, each changed path named.
+ * `undefined` when the index is current. A clean answer over an index behind
+ * the working tree ("no cycles ✓", "Code-graph index is fresh") is derived from
+ * a stale input — CLAUDE.md's loud-skip rule makes it NOT VERIFIED, never a
+ * pass. `graph cycles` and the quality gates settle on this one record, so no
+ * surface can call an index fresh that `graph status` calls stale.
+ */
+export function graphFreshnessCoverage(f: IGraphFreshness, subject?: string): IVerdictCoverage | undefined {
+  const behind = graphFreshnessBehind(f);
+  if (f.hasIndex && behind === 0) return undefined;
+  const who = subject !== undefined ? { subject } : {};
+  if (!f.hasIndex) {
+    return {
+      unit: 'index freshness checks',
+      expected: 1,
+      examined: 0,
+      reason: `the index could not be measured against the working tree — run \`${graphFreshnessRemedy(f)}\``,
+      ...who,
+    };
+  }
+  const indexed = f.indexedFiles ?? 0;
+  const changed = [...f.modified, ...f.added, ...f.deleted, ...f.packagesChanged.map((p) => `package ${p}`)];
+  return {
+    unit: 'files',
+    expected: indexed + behind,
+    examined: indexed,
+    unexamined: changed.slice(0, 20),
+    unexaminedTotal: behind,
+    reason: `changed since the index was built — run \`${graphFreshnessRemedy(f)}\``,
+    ...who,
+  };
 }
 
 /**
@@ -293,7 +362,7 @@ export interface IGraphFreshness {
 export function detectGraphFreshness(projectRoot: string): IGraphFreshness {
   const store = new GraphStore(projectRoot);
   if (!store.exists()) {
-    return { hasIndex: false, modified: [], added: [], deleted: [] };
+    return { hasIndex: false, modified: [], added: [], deleted: [], packagesChanged: [] };
   }
   // `exists()` only proves `meta.json` is there. A store whose remaining parts
   // are missing or malformed — an interrupted index, a half-deleted directory —
@@ -305,25 +374,12 @@ export function detectGraphFreshness(projectRoot: string): IGraphFreshness {
   try {
     snap = store.loadSnapshot();
   } catch {
-    return { hasIndex: false, modified: [], added: [], deleted: [] };
+    return { hasIndex: false, modified: [], added: [], deleted: [], packagesChanged: [] };
   }
   const seen = new Set<string>();
   const modified: string[] = [];
   const added: string[] = [];
   const fsStack: string[] = [projectRoot];
-  const skip = new Set([
-    'node_modules',
-    'dist',
-    'build',
-    'coverage',
-    '.git',
-    '.sharkcraft',
-    '.next',
-    '.cache',
-    '.tmp-pack',
-    'out',
-    'target',
-  ]);
   while (fsStack.length > 0) {
     const dir = fsStack.pop()!;
     let entries: string[];
@@ -333,8 +389,8 @@ export function detectGraphFreshness(projectRoot: string): IGraphFreshness {
       continue;
     }
     for (const name of entries) {
-      if (skip.has(name)) continue;
-      if (name.startsWith('.') && name !== '.') continue;
+      // The same per-entry rule the index builder's walk applies (one list).
+      if (isGraphWalkSkipped(name)) continue;
       const full = nodePath.join(dir, name);
       let st;
       try {
@@ -347,7 +403,7 @@ export function detectGraphFreshness(projectRoot: string): IGraphFreshness {
         continue;
       }
       if (!st.isFile()) continue;
-      if (!SOURCE_EXTS.has(nodePath.extname(full).toLowerCase())) continue;
+      if (!isGraphSourcePath(full)) continue;
       const rel = nodePath
         .relative(projectRoot, full)
         .split(nodePath.sep)
@@ -373,12 +429,16 @@ export function detectGraphFreshness(projectRoot: string): IGraphFreshness {
   modified.sort((a, b) => a.localeCompare(b));
   added.sort((a, b) => a.localeCompare(b));
   deleted.sort((a, b) => a.localeCompare(b));
+  const packageDivergences = detectPackageEntryDivergenceDetail(projectRoot, snap.nodes.values());
   return {
     hasIndex: true,
     lastIndexedAt: snap.manifest.lastIndexedAt,
     modified,
     added,
     deleted,
+    packagesChanged: packageDivergences.map((d) => d.name),
+    packageDivergences,
+    indexedFiles: snap.files.size,
   };
 }
 

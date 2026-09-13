@@ -224,14 +224,14 @@ MCP is strictly read-only.
 
 ## What R57 does NOT ship
 
-- `shrk spec import <development/feature_N.md>` — converting the
+- A `spec import <development/feature_N.md>` verb — converting the
   existing feature corpus into specs.
 - LLM-assisted spec drafting (the engine never calls a model).
 - Spec composition / parent-child specs.
 - GitHub / Linear issue API integration.
 - Commit-trailer enforcement via a git hook scaffolder.
-- `shrk spec diff <a> <b>` — structured diff between spec versions.
-- `shrk knowledge propose --from-spec <id>`.
+- A `spec diff <a> <b>` verb — structured diff between spec versions.
+- A `knowledge propose --from-spec <id>` flag.
 
 These are R58+ candidates. Document them in the spec's
 `outOfScope` field when they come up so future-you knows they were

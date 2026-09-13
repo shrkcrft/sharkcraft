@@ -214,7 +214,7 @@ execute:
 
 ## Compliance evidence packets (retired by R46)
 
-The R19/R20 `shrk compliance evidence` / `shrk compliance check` CLI and
+The former R19/R20 `shrk compliance evidence` / `shrk compliance check` CLI and
 the matching MCP tools (`list_compliance_profiles`,
 `get_compliance_profile`, `run_compliance_check`,
 `preview_compliance_evidence_packet`) were retired in R46. SharkCraft is

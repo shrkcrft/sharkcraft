@@ -20,6 +20,8 @@ const EMPTY_CONTEXT: ITierResolverContext = {
   spineCommands: new Set(),
   packContributions: new Map(),
   surfaceConfig: undefined,
+  // Round 11: the host is part of the context (the tool repo here).
+  isToolRepo: true,
 };
 
 function findEntry(name: string) {

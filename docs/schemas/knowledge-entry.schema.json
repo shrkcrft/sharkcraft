@@ -53,8 +53,154 @@
     "summary": {
       "type": "string"
     },
+    "related": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "seeAlso": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "supersededBy": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "actionHints": {
       "$ref": "action-hints.json"
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "file",
+              "directory",
+              "symbol",
+              "command",
+              "template",
+              "playbook",
+              "construct",
+              "helper",
+              "policy",
+              "boundary-rule",
+              "path-convention",
+              "package",
+              "url"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          },
+          "contains": {
+            "type": "string",
+            "minLength": 1
+          },
+          "matches": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scan": {
+            "enum": [
+              "all",
+              "code",
+              "strings",
+              "comments",
+              "code-and-templates"
+            ]
+          },
+          "count": {
+            "type": "object",
+            "required": [
+              "source",
+              "expected"
+            ],
+            "properties": {
+              "source": {
+                "type": "object"
+              },
+              "expected": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "measure": {
+                "enum": [
+                  "ids",
+                  "sites"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "anchors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "file",
+              "symbol",
+              "command",
+              "construct",
+              "template",
+              "helper",
+              "playbook",
+              "policy"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "verifiedOn": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
     }
   }
 }

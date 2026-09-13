@@ -97,7 +97,7 @@ const GROUP_DEFS: readonly { id: string; title: string; description: string; mat
     title: 'Diagnostics and troubleshooting',
     description: 'self audit, diagnostics, upgrade.',
     match: /^(self audit|diagnostics|upgrade|api)/,
-    primary: ['self audit', 'diagnostics suggest', 'upgrade check'],
+    primary: ['self audit', 'diagnostics list', 'upgrade check'],
   },
   {
     id: 'advanced',

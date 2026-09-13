@@ -1,15 +1,34 @@
 import {
   failsWhenEmpty,
+  normalizeWiringRule,
+  RuleEmptiness,
+  settleRuleEmptiness,
+  unitStateLists,
+  UnitLivenessState,
   validateWiringSource,
+  type ISettledUnitLiveness,
+  type IUnitLiveness,
+  type IUnitStateLists,
+  type IVerdictCoverage,
   type IWiringRule,
   type IWiringSource,
 } from '@shrkcrft/core';
+import { settleGlobLists } from '../util/settle-glob-lists.ts';
 import {
   extractTokens,
   type IExtractContext,
   type IExtractFileEntry,
   type IExtractedSite,
 } from '../extract/extract-tokens.ts';
+import {
+  describeUnread,
+  mergeReadScopes,
+  readScopeCoverage,
+  readScopeHasUnread,
+} from '../util/read-scope-coverage.ts';
+import type { IUnreadFile } from '../util/unread-file.ts';
+import type { IGlobNegation } from '../util/i-glob-negation.ts';
+import { emptiedByNegationsReason } from '../util/negation-cause.ts';
 
 export const WIRING_SCHEMA = 'sharkcraft.wiring/v1' as const;
 
@@ -95,6 +114,43 @@ export interface IWiringRuleResult {
   readonly sinkHint?: string;
   /** Per-hop breakdown for a `chain` rule. */
   readonly hops?: readonly IWiringHopResult[];
+  /**
+   * Registered sites whose membership key the declared side never produced —
+   * ONE derivation, two renderings. `parity` reports each as a
+   * `registered-missing` violation; `subset` (the default) reports them here,
+   * because a `declared ⊆ registered` rule never examined them: the declared
+   * selector may be narrower than reality, and the rule would pass by
+   * construction. Set for a classic (non-chain) subset/parity rule that ran,
+   * sorted by membership key. `explainWiring` reads this rather than
+   * recomputing it.
+   */
+  readonly registeredOnly?: readonly IWiringTokenSite[];
+  /**
+   * What the rule examined against what it was asked to (see
+   * `IVerdictCoverage`). A subset rule whose registered side holds tokens the
+   * declared selector never produced reports them as unexamined `registered
+   * tokens`, so the gate envelope marks it `partial` and the verdict is not
+   * verified — unless the rule's `registeredExtras` accepts them explicitly.
+   * The engine fills it in; it never decides a verdict from it.
+   */
+  readonly coverage: IVerdictCoverage;
+  /**
+   * Glob-matched files on any side of the rule that the one reader did not
+   * read (over the read cap, or unreadable). Set only when non-empty.
+   * `coverage` names them too: such a rule is never a pass.
+   */
+  readonly unread?: readonly IUnreadFile[];
+  /**
+   * The acceptance of the rule's `expectEmpty` units — settle record B of
+   * every source's glob lists (round 13). Folded into the envelope's ONE
+   * settle beside {@link coverage}; when the rule is intended-empty it IS
+   * {@link coverage}.
+   */
+  readonly unitAcceptance?: IVerdictCoverage;
+  /** The rule's dead / intended-empty / went-live glob units as printed lines (`unitStateLists`). */
+  readonly units?: IUnitStateLists;
+  /** The rule's non-live glob units, for `--fail-on-dead-units` (`selectorUnitFails`). */
+  readonly unitLiveness?: readonly IUnitLiveness[];
 }
 
 export interface IWiringReport {
@@ -106,11 +162,22 @@ export interface IWiringReport {
   /** Rules that checked nothing, reported loudly instead of as a green pass. */
   readonly skipped: readonly IWiringSkip[];
   /**
-   * Count of rules that actually ran a comparison. A rule whose source side
-   * matched 0 files or extracted 0 ids is NOT evaluated (see {@link skipped}).
-   * Misconfigured rules count as evaluated so their error is not swallowed.
+   * Count of rules that settled a verdict: ran a comparison, or were
+   * misconfigured (counted so their error is not swallowed), or were ACCEPTED
+   * as intended-empty (round 13 — every source inclusion glob marked
+   * `expectEmpty`, 0 files matched; counted so the verdict path's
+   * `evaluated === 0` NOT-VERIFIED guard never reads an accepted plan as
+   * "nothing ran"). A rule whose source side matched 0 files or extracted 0 ids
+   * WITHOUT that acceptance is NOT evaluated (see {@link skipped}). The printed
+   * "N evaluated" excludes the accepted ones: N = `evaluated − acceptedEmpty`.
    */
   readonly evaluated: number;
+  /**
+   * Rules accepted as intended-empty (round 13, K6): they examined 0 files, so
+   * a renderer prints them apart — `N evaluated, M accepted as
+   * intended-empty` — never inside the evaluated count.
+   */
+  readonly acceptedEmpty: number;
   readonly verdict: 'pass' | 'errors' | 'warnings';
 }
 
@@ -222,12 +289,97 @@ function renderMessage(
     .replace(/\{rule\}/g, rule.id);
 }
 
+/**
+ * Registered sites whose membership key the declared side never produced,
+ * sorted by key. The ONE derivation behind both parity's `registered-missing`
+ * violations and a subset rule's coverage shortfall — two renderings of one set
+ * difference, so they cannot disagree.
+ */
+function registeredNotDeclared(
+  fromKeys: ReadonlyMap<string, IWiringTokenSite>,
+  unionKeys: ReadonlyMap<string, IWiringTokenSite>,
+): IWiringTokenSite[] {
+  return [...unionKeys.keys()]
+    .sort()
+    .filter((k) => !fromKeys.has(k))
+    .map((k) => unionKeys.get(k)!);
+}
+
+/** At most this many unexamined labels ride on one coverage record. */
+const COVERAGE_LABEL_CAP = 20;
+
+/** How a rule ended, as far as its coverage is concerned. */
+type WiringCoverageOutcome =
+  | { readonly kind: 'error' }
+  | { readonly kind: 'skipped'; readonly reason: string }
+  | {
+      readonly kind: 'ran';
+      readonly declaredCount: number;
+      readonly registeredCount: number;
+      readonly registeredOnly?: readonly IWiringTokenSite[];
+    };
+
+/**
+ * What one wiring rule examined, for the verdict's coverage guard.
+ *
+ * Only a classic SUBSET rule can pass over a scope it never examined: its
+ * relation is `declared ⊆ registered`, so a registered member the declared
+ * selector never produced is never looked at, and the rule weakens silently
+ * every time the tree grows past the selector. For it the unit is `registered
+ * tokens`; `registeredExtras` (literal ids, or `'allow'`) accepts known extras
+ * explicitly. Every other shape examines each declared token it extracted, so
+ * its unit is `declared tokens`. A skipped or misconfigured rule examined
+ * nothing.
+ */
+function wiringCoverage(rule: IWiringRule, outcome: WiringCoverageOutcome): IVerdictCoverage {
+  if (outcome.kind === 'error') {
+    return { unit: 'declared tokens', expected: 0, examined: 0, reason: 'the rule is misconfigured' };
+  }
+  if (outcome.kind === 'skipped') {
+    return { unit: 'declared tokens', expected: 0, examined: 0, reason: outcome.reason };
+  }
+  const only = outcome.registeredOnly;
+  const subset = rule.mode === undefined || rule.mode === 'subset';
+  if (only === undefined || !subset || outcome.registeredCount === 0) {
+    return { unit: 'declared tokens', expected: outcome.declaredCount, examined: outcome.declaredCount };
+  }
+  const extras = rule.registeredExtras;
+  const listed = new Set(extras === 'allow' ? [] : (extras ?? []));
+  const accepted = new Set(only.filter((s) => extras === 'allow' || listed.has(s.token)));
+  const unaccepted = only.filter((s) => !accepted.has(s));
+  const named = unaccepted.length > 0 ? unaccepted : [...accepted];
+  return {
+    unit: 'registered tokens',
+    expected: outcome.registeredCount,
+    examined: outcome.registeredCount - only.length,
+    ...(named.length > 0
+      ? {
+          unexamined: named.slice(0, COVERAGE_LABEL_CAP).map((s) => s.token),
+          unexaminedTotal: named.length,
+          reason:
+            unaccepted.length > 0 && accepted.size > 0
+              ? `registered with no declared site this selector produces (${accepted.size} more accepted by registeredExtras)`
+              : 'registered with no declared site this selector produces',
+        }
+      : {}),
+    ...(unaccepted.length === 0 && accepted.size > 0
+      ? { acceptedBy: extras === 'allow' ? "registeredExtras: 'allow'" : 'registeredExtras' }
+      : {}),
+  };
+}
+
 /** Structural validation of a whole rule (both forms), independent of the tree. */
 export function validateWiringRule(rule: IWiringRule): string | undefined {
   const hasChain = Array.isArray(rule.chain) && rule.chain.length > 0;
   const hasClassic = rule.declared !== undefined || rule.registered !== undefined;
   if (hasChain && hasClassic) {
     return '`chain` is mutually exclusive with `declared`/`registered`';
+  }
+  if (
+    rule.registeredExtras !== undefined &&
+    (hasChain || (rule.mode !== undefined && rule.mode !== 'subset'))
+  ) {
+    return '`registeredExtras` applies only to a classic subset rule (parity reports registered-only tokens as violations; disjoint / chain rules never examine them)';
   }
   if (hasChain) {
     if (rule.chain!.length < 2) return '`chain` needs at least 2 hops';
@@ -264,22 +416,74 @@ export function validateWiringRule(rule: IWiringRule): string | undefined {
  *
  * The `resolve` callback supplies the files for a given rule-side (injected so
  * the engine stays pure / testable — see `runWiring` for the fs-backed wiring).
+ *
+ * `unreadFor` supplies the files a side's globs matched that the one reader
+ * did NOT read. A rule with any in its scope has its coverage replaced by the
+ * file record (`readScopeCoverage`), so it is never a pass. When the unread
+ * file is on the source side and is why the rule compared nothing, the rule is
+ * PARTIAL rather than a (failOnEmpty) skip: it matched a file it could not read.
+ *
+ * `emptiedBy` names the negations that excluded EVERY file a source's
+ * inclusion globs matched (`undefined` when the list was not emptied that
+ * way). A source side emptied by its own `!` entries is skipped with THE
+ * negation-aware reason (`matched nothing after its own negations: …`), never
+ * "0 files matched the source globs" — a file matched, then was excluded.
  */
 export function evaluateWiring(
   rules: readonly IWiringRule[],
   resolve: WiringFileResolver,
   context: IExtractContext = {},
+  unreadFor?: (source: IWiringSource) => readonly IUnreadFile[],
+  emptiedBy?: (source: IWiringSource) => readonly IGlobNegation[] | undefined,
+  /**
+   * Every source's glob units settled with their `expectEmpty` markers
+   * (round 13) — `runWiring` supplies it (`sourceLivenessRequest` over the
+   * engine's side labels, `settleGlobLists`). A rule whose source side matched
+   * nothing is decided from it by THE rule-emptiness settle
+   * (`settleRuleEmptiness`): every inclusion glob of the source side
+   * intended-empty and no file matched → accepted, never a skip. Its
+   * acceptance and non-live units ride on the rule result. Absent: no unit is
+   * marked, so an empty rule is a loud skip exactly as before.
+   */
+  ruleLivenessOf?: (rule: IWiringRule) => ISettledUnitLiveness,
 ): IWiringReport {
   const ruleResults: IWiringRuleResult[] = [];
   const all: IWiringViolation[] = [];
   const diagnostics: string[] = [];
   const skipped: IWiringSkip[] = [];
   let evaluated = 0;
+  let acceptedEmpty = 0;
   let misconfigError = false;
   let misconfigWarn = false;
 
-  for (const rule of rules) {
-    const severity: 'error' | 'warning' = rule.severity ?? 'error';
+  for (const authored of rules) {
+    const severity: 'error' | 'warning' = authored.severity ?? 'error';
+    // The engine entry normalises idempotently (round 13): a loaded rule comes
+    // back equal; a hand-built `{ pattern, expectEmpty }` entry is a glob plus
+    // a marker; a malformed entry is a misconfigured rule — never a crash.
+    const normalized = normalizeWiringRule(authored);
+    if (!normalized.ok) {
+      const msg = `rule "${authored.id}": ${normalized.error.message}`;
+      diagnostics.push(msg);
+      if (severity === 'error') misconfigError = true;
+      else misconfigWarn = true;
+      ruleResults.push({
+        ruleId: authored.id,
+        ...(authored.description ? { description: authored.description } : {}),
+        severity,
+        status: 'error',
+        declaredCount: 0,
+        registeredCount: 0,
+        declaredFiles: 0,
+        registeredFiles: 0,
+        violations: [],
+        error: msg,
+        coverage: wiringCoverage(authored, { kind: 'error' }),
+      });
+      evaluated += 1;
+      continue;
+    }
+    const rule = normalized.value;
     const groupBy = rule.groupBy;
 
     // Validate defensively — a misconfigured rule becomes a diagnostic, never a
@@ -301,6 +505,7 @@ export function evaluateWiring(
         registeredFiles: 0,
         violations: [],
         error: msg,
+        coverage: wiringCoverage(rule, { kind: 'error' }),
       });
       // A misconfigured rule attempted to run — count it so its error isn't
       // swallowed by the gate's `evaluated === 0` skip path.
@@ -308,6 +513,19 @@ export function evaluateWiring(
       continue;
     }
 
+    // The rule's glob units and their `expectEmpty` markers (round 13): the
+    // acceptance, the printed unit lines and the non-live units ride on every
+    // result below, so `check wiring` accepts a planned glob the way `gates
+    // coverage` does.
+    const liveness = ruleLivenessOf?.(rule);
+    const nonLive = liveness?.units.filter((u) => u.state !== UnitLivenessState.Live) ?? [];
+    const unitFields = {
+      ...(liveness?.acceptance !== undefined ? { unitAcceptance: liveness.acceptance } : {}),
+      ...(liveness !== undefined && liveness.dead.length + liveness.intendedEmpty.length + liveness.wentLive.length > 0
+        ? { units: unitStateLists(liveness) }
+        : {}),
+      ...(nonLive.length > 0 ? { unitLiveness: nonLive } : {}),
+    };
     const pairs = hopPairs(rule);
     const violations: IWiringViolation[] = [];
     const hops: IWiringHopResult[] = [];
@@ -317,17 +535,26 @@ export function evaluateWiring(
     let sinkCount = 0;
     let emptySink = false;
     let sinkHint: string | undefined;
+    // Registered sites no declared site produced — classic (one-hop) rules only.
+    let registeredOnly: IWiringTokenSite[] | undefined;
+    // Every file any side READ (for the read scope), and the last hop's sinks'
+    // unread files (to explain an empty sink that was simply never read).
+    const readPaths = new Set<string>();
+    let sinkUnread: readonly IUnreadFile[] = [];
 
     for (const [hopIndex, pair] of pairs.entries()) {
       const fromFiles = resolve(pair.from);
+      for (const f of fromFiles) readPaths.add(f.path);
       const fromSites = extractTokens(pair.from, fromFiles, context).sites;
       const fromKeys = firstSites(fromSites, groupBy);
 
       // Each sink kept separate so `intersection` can require membership in ALL.
       const sinkKeySets: Map<string, IWiringTokenSite>[] = [];
       let hopSinkFiles = 0;
+      sinkUnread = unreadFor ? pair.to.flatMap((s) => unreadFor(s)) : [];
       for (const sink of pair.to) {
         const files = resolve(sink);
+        for (const f of files) readPaths.add(f.path);
         hopSinkFiles += files.length;
         const sinkRes = extractTokens(sink, files, context);
         if (sinkRes.hint && sinkHint === undefined) sinkHint = sinkRes.hint;
@@ -387,11 +614,15 @@ export function evaluateWiring(
             ...(declaredHint ? { hint: declaredHint } : {}),
           });
         }
+        // ONE set difference, two renderings: parity FAILS on each registered
+        // token no declared site produced; subset records them as unexamined
+        // (its coverage shortfall). Only a classic one-hop rule carries the
+        // set — a chain hop keeps the declared-token view.
+        const regOnly = registeredNotDeclared(fromKeys, unionKeys);
+        if (pairs.length === 1) registeredOnly = regOnly;
         if (rule.mode === 'parity') {
           const registeredHint = rule.hintRegisteredMissing ?? rule.hint;
-          for (const k of [...unionKeys.keys()].sort()) {
-            if (fromKeys.has(k)) continue;
-            const site = unionKeys.get(k)!;
+          for (const site of regOnly) {
             violations.push({
               ruleId: rule.id,
               token: site.token,
@@ -408,17 +639,109 @@ export function evaluateWiring(
       hops.push({ index: hopIndex, fromCount: fromKeys.size, toCount: unionKeys.size, missing });
     }
 
+    // What the rule's walk covered: every file any side read, and every file
+    // any side's globs matched that the reader did not read.
+    const scope = unreadFor
+      ? mergeReadScopes(
+          readPaths.size,
+          wiringSourcesOf(rule).map((s) => unreadFor(s)),
+        )
+      : undefined;
+    const unreadField = scope !== undefined && scope.unread.length > 0 ? { unread: scope.unread } : {};
+    // An empty sink whose files were never READ is not a stale glob — say so,
+    // or the reader is sent to fix a selector that is fine.
+    if (emptySink && sinkUnread.length > 0) {
+      sinkHint = `the registered side ${describeUnread(sinkUnread)} was never read, so a token registered there cannot be seen`;
+    }
+
     // Loud skip: the SOURCE side checked nothing. Deliberately NOT triggered by
     // an empty sink — that is a real failure, flagged via `emptySink` instead.
+    // A source its OWN negations emptied is worded as such (round 12 review,
+    // R12-DOC-2), exactly as `gates coverage` and `policy-lint` word it.
+    const firstSource = pairs[0]?.from;
+    const emptiedByOwn = sourceFiles === 0 && firstSource ? emptiedBy?.(firstSource) : undefined;
     const skipReason =
       sourceFiles === 0
-        ? '0 files matched the source globs'
+        ? emptiedByOwn !== undefined && emptiedByOwn.length > 0
+          ? emptiedByNegationsReason(emptiedByOwn)
+          : '0 files matched the source globs'
         : sourceCount === 0
           ? '0 ids extracted from the source side'
           : undefined;
+    const sourceSide = pairs[0]?.from;
+    const sourceUnread = sourceSide && unreadFor ? unreadFor(sourceSide) : [];
+    if (skipReason !== undefined && readScopeHasUnread({ read: sourceFiles, unread: sourceUnread })) {
+      // The source side's zero comes from a file the reader could not read,
+      // not from a stale selector: PARTIAL (its coverage names the file),
+      // never failOnEmpty's failure and never a pass. Nothing was compared,
+      // so no violation derived from the incomplete side is reported.
+      ruleResults.push({
+        ruleId: rule.id,
+        ...(rule.description ? { description: rule.description } : {}),
+        severity,
+        status: 'passed',
+        declaredCount: sourceCount,
+        registeredCount: sinkCount,
+        declaredFiles: sourceFiles,
+        registeredFiles: sinkFiles,
+        violations: [],
+        ...(pairs.length > 1 ? { hops } : {}),
+        ...unreadField,
+        ...unitFields,
+        coverage: readScopeCoverage(wiringCoverage(rule, { kind: 'skipped', reason: skipReason }), scope),
+      });
+      evaluated += 1;
+      continue;
+    }
     if (skipReason !== undefined) {
-      const failed = failsWhenEmpty(rule);
-      skipped.push({ ruleId: rule.id, reason: skipReason, failed, severity });
+      // THE rule-emptiness settle (round 13, `settleRuleEmptiness`): every
+      // inclusion glob of the SOURCE side marked `expectEmpty` and no file
+      // matched → the empty result is the intended one, accepted and printed.
+      // Anything else is the loud skip it always was (failOnEmpty's 1, else 2):
+      // `0 ids extracted` from live files is never assertable.
+      const primaryLabel = (rule.chain?.length ?? 0) > 0 ? 'chain[0]' : 'declared';
+      const emptied = emptiedByOwn !== undefined && emptiedByOwn.length > 0;
+      const emptiness = settleRuleEmptiness({
+        subject: rule.id,
+        unitLabel: 'declared tokens',
+        filesMatched: sourceFiles,
+        unitsMatched: sourceCount,
+        unread: false,
+        emptiedByNegations: emptied,
+        ...(emptied ? { emptiedReason: skipReason } : {}),
+        liveness: liveness ?? settleGlobLists({ subject: rule.id, lists: [], marks: [] }),
+        primaryLists: [`${primaryLabel}.files`],
+        failOnEmpty: failsWhenEmpty(rule),
+        noFilesReason: '0 files matched the source globs',
+        noUnitsReason: '0 ids extracted from the source side',
+      });
+      if (emptiness.state === RuleEmptiness.IntendedEmpty && emptiness.coverage !== undefined) {
+        ruleResults.push({
+          ruleId: rule.id,
+          ...(rule.description ? { description: rule.description } : {}),
+          severity,
+          status: 'passed',
+          declaredCount: sourceCount,
+          registeredCount: sinkCount,
+          declaredFiles: sourceFiles,
+          registeredFiles: sinkFiles,
+          violations: [],
+          ...(pairs.length > 1 ? { hops } : {}),
+          ...unreadField,
+          ...unitFields,
+          // The acceptance IS the rule's coverage (the same record, folded once).
+          coverage: emptiness.coverage,
+        });
+        // Counted in `evaluated` (the verdict path's "nothing ran" guard must
+        // never read an accepted plan as a skip) AND in `acceptedEmpty`, which
+        // a renderer subtracts: `N evaluated, M accepted as intended-empty`.
+        evaluated += 1;
+        acceptedEmpty += 1;
+        continue;
+      }
+      const reason = emptiness.skipReason ?? skipReason;
+      const failed = emptiness.fails;
+      skipped.push({ ruleId: rule.id, reason, failed, severity });
       if (failed) {
         if (severity === 'error') misconfigError = true;
         else misconfigWarn = true;
@@ -434,6 +757,9 @@ export function evaluateWiring(
         registeredFiles: sinkFiles,
         violations: [],
         ...(pairs.length > 1 ? { hops } : {}),
+        ...unreadField,
+        ...unitFields,
+        coverage: readScopeCoverage(wiringCoverage(rule, { kind: 'skipped', reason }), scope),
       });
       continue;
     }
@@ -451,6 +777,18 @@ export function evaluateWiring(
       ...(emptySink ? { emptySink: true } : {}),
       ...(emptySink && sinkHint !== undefined ? { sinkHint } : {}),
       ...(pairs.length > 1 ? { hops } : {}),
+      ...(registeredOnly !== undefined ? { registeredOnly } : {}),
+      ...unreadField,
+      ...unitFields,
+      coverage: readScopeCoverage(
+        wiringCoverage(rule, {
+          kind: 'ran',
+          declaredCount: sourceCount,
+          registeredCount: sinkCount,
+          ...(registeredOnly !== undefined ? { registeredOnly } : {}),
+        }),
+        scope,
+      ),
     });
     all.push(...violations);
     evaluated += 1;
@@ -467,6 +805,7 @@ export function evaluateWiring(
     diagnostics,
     skipped,
     evaluated,
+    acceptedEmpty,
     verdict: hasError ? 'errors' : hasWarn ? 'warnings' : 'pass',
   };
 }

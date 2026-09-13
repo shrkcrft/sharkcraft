@@ -62,7 +62,8 @@ export const suggestCommandsTool: IToolDefinition = {
       ...(category ? { category } : {}),
     });
     return {
-      text: next(`shrk commands suggest "${query}"`),
+      // `commands suggest` was pruned; `commands search` is the CLI verb.
+      text: next(`shrk commands search "${query}"`),
       data: annotateSuggestResult(result),
     };
   },
@@ -136,6 +137,7 @@ export const explainCommandTool: IToolDefinition = {
   async handler(input) {
     const query = String(input.query ?? '');
     const report = explainCommand(COMMAND_CATALOG, query);
-    return { text: next(`shrk commands explain "${query}"`), data: report };
+    // `commands explain` was pruned; `help <cmd>` prints the command's own usage.
+    return { text: next(`shrk help ${query}`), data: report };
   },
 };

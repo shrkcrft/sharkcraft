@@ -207,6 +207,10 @@ export const genCommand: ICommandHandler = {
       process.stdout.write('\nPost-generation notes:\n');
       for (const note of plan.postGenerationNotes) process.stdout.write(`  • ${note}\n`);
     }
+    // The template's declared remainder (notScaffolded / manualSteps).
+    if ((plan.remainderLines ?? []).length > 0) {
+      process.stdout.write('\n' + (plan.remainderLines ?? []).join('\n') + '\n');
+    }
     const updateLike = plan.changes.filter(
       (c) =>
         c.type === FileChangeType.Append ||

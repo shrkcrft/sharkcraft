@@ -14,6 +14,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson } from '../output/format-output.ts';
 import {
   contractApproveCommand,
@@ -43,6 +44,40 @@ function safeSlug(s: string): string {
 
 export const contractCommand: ICommandHandler = {
   name: 'contract',
+  // Free: `contract "<task>"` takes the task as free text.
+  positionals: PositionalMode.Free,
+  subverbs: [
+    { name: 'check', description: 'Check a saved contract against the workspace.', usage: 'shrk contract check <contract.json>', positionals: PositionalMode.Path },
+    {
+      name: 'approve',
+      description: 'Approve a saved contract.',
+      usage: 'shrk contract approve <contract.json> --by <name> --reason "<why>"',
+      positionals: PositionalMode.Path,
+    },
+    { name: 'status', description: 'Inspect a saved contract file.', usage: 'shrk contract status <contract.json>', positionals: PositionalMode.Path },
+    {
+      name: 'template',
+      description: 'Contract templates: list / get / render / recommend.',
+      usage: 'shrk contract template <list|get|render|recommend>',
+      positionals: PositionalMode.None,
+      subverbs: [
+        { name: 'list', description: 'List the contract templates.', usage: 'shrk contract template list [--json]' },
+        { name: 'get', description: 'Show one contract template.', usage: 'shrk contract template get <id>', positionals: PositionalMode.Free },
+        {
+          name: 'render',
+          description: 'Render a contract template for a task.',
+          usage: 'shrk contract template render <id> --task "<task>"',
+          positionals: PositionalMode.Free,
+        },
+        {
+          name: 'recommend',
+          description: 'Recommend a contract template for a task.',
+          usage: 'shrk contract template recommend "<task>"',
+          positionals: PositionalMode.Free,
+        },
+      ],
+    },
+  ],
   description:
     'Build a deterministic agent contract for a task (intent + risk + impact + ownership + boundaries + policies + playbooks). Read-only unless --save (writes only to .sharkcraft/contracts/).',
   usage:

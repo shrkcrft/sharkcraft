@@ -1,9 +1,16 @@
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { scanImports, loadTsconfigPaths } from '@shrkcrft/boundaries';
+import { boundaryRuleSeverity, scanImports, loadTsconfigPaths } from '@shrkcrft/boundaries';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import type { IAreaMap } from './area-map.ts';
-import { AreaKind, buildAreaMap } from './area-map.ts';
+import {
+  AreaKind,
+  areaIdOf,
+  buildAreaMap,
+  createAreaClassifier,
+  formatClassificationRate,
+  type IAreaClassification,
+} from './area-map.ts';
 import { rankAll } from './task-ranker.ts';
 import { loadOwnershipRules, impactFor, type IOwnershipImpact } from './ownership.ts';
 
@@ -56,6 +63,16 @@ export interface IImpactAreaSummary {
   id: string;
   kind: AreaKind;
   fileCount: number;
+}
+
+/** The area map's coverage, carried into the impact view that is built on it. */
+export interface IImpactAreaCoverage {
+  /** Share of the repo the area map classified (0..1). */
+  readonly classificationRate: number;
+  /** The area map's own `degraded` verdict (rate below its configured minimum). */
+  readonly degraded: boolean;
+  /** Normalized targets no area pattern classifies — invisible to area-derived signals. */
+  readonly unclassifiedTargets: readonly string[];
 }
 
 export interface IImpactWorkspaceSummary {
@@ -134,6 +151,12 @@ export interface IImpactAnalysis {
   /** Related rules / templates for the task. */
   relatedRules: readonly { id: string; title: string }[];
   relatedTemplates: readonly { id: string; name: string }[];
+  /**
+   * How far the area attribution above can be trusted. Area-derived signals
+   * (affected areas, boundary risks, `core-area`) are only as complete as the
+   * area map's classification: an unclassified target is invisible to them.
+   */
+  areaCoverage: IImpactAreaCoverage;
   /** Risk classification + reasons. */
   risk: ImpactRisk;
   riskReasons: readonly IImpactReason[];
@@ -153,6 +176,8 @@ interface IBuildContext {
   maxDepth: number;
   limit: number;
   areaMap: IAreaMap;
+  /** THE file → area classifier (the one `buildAreaMap` keys by) — every area question goes through it. */
+  classify: (file: string) => IAreaClassification;
 }
 
 const DEFAULT_MAX_DEPTH = 5;
@@ -381,18 +406,28 @@ function detectWorkspaces(ctx: IBuildContext): IImpactWorkspaceSummary[] {
   return [...out.values()].sort((a, b) => b.fileCount - a.fileCount);
 }
 
+/**
+ * The areas the touched files are IN: each file goes through the one
+ * classifier and is keyed by `areaIdOf`, exactly as `buildAreaMap` keys its
+ * entries, so `boundaryRisks` finds the same entry by id.
+ *
+ * A prefix match on an entry's `paths` answered a different question.
+ * `paths` holds only the top segment, so with a config pattern for
+ * `libs/<group>/core/**` EVERY `libs/…` file hit the core area and earned a
+ * false `core-area` risk, while `areaCoverage` called the same file
+ * unclassified. A touched file whose area has no map entry yet (a planned file
+ * in a new directory) still reports the area it would be in.
+ */
 function affectedAreaSummary(ctx: IBuildContext): IImpactAreaSummary[] {
-  const allTouched = unique([...ctx.files]);
   const out = new Map<string, IImpactAreaSummary>();
-  for (const a of ctx.areaMap.areas) {
-    const hitCount = allTouched.filter((f) =>
-      a.paths.some((p) => f === p || f.startsWith(p + '/') || f.startsWith(p)),
-    ).length;
-    if (hitCount > 0) {
-      out.set(a.id, { id: a.id, kind: a.kind, fileCount: hitCount });
-    }
+  for (const f of unique([...ctx.files])) {
+    const classification = ctx.classify(f);
+    const id = areaIdOf(classification, f);
+    const hit = out.get(id);
+    if (hit) hit.fileCount += 1;
+    else out.set(id, { id, kind: classification.kind, fileCount: 1 });
   }
-  return [...out.values()].sort((a, b) => b.fileCount - a.fileCount);
+  return [...out.values()].sort((a, b) => b.fileCount - a.fileCount || a.id.localeCompare(b.id));
 }
 
 function boundaryRisks(
@@ -413,7 +448,8 @@ function boundaryRisks(
       risks.push({
         ruleId,
         reason: `Affects area ${a.id}; rule ${ruleId} guards that area.`,
-        severity: ((rule as { severity?: 'info' | 'warning' | 'error' }).severity ?? 'warning'),
+        // The ENFORCED severity — an unset one is `error` (one authority).
+        severity: boundaryRuleSeverity(rule),
       });
     }
   }
@@ -536,8 +572,11 @@ async function ownershipImpactFor(
   ctx: IBuildContext,
 ): Promise<IOwnershipImpact | null> {
   try {
-    const cfg = ctx.inspection.config as { ownership?: { sources?: readonly string[] } } | null;
-    const sources = cfg?.ownership?.sources;
+    // The DECLARED ownership-source key — the one `shrk ownership`, `shrk
+    // owners` and the MCP ownership tools read. The old `ownership.sources`
+    // read named a key the strict schema rejects, so impact silently fell back
+    // to the defaults even when `ownershipFiles` was configured.
+    const sources = ctx.inspection.config?.ownershipFiles;
     const { rules } = await loadOwnershipRules(ctx.inspection.projectRoot, sources);
     if (rules.length === 0) return null;
     return impactFor(ctx.files, rules);
@@ -730,6 +769,9 @@ export async function analyzeImpact(
   const files = unique([...explicitFiles, ...planTargets, ...specifierTargets]);
   const task = (input.task ?? '').trim() || files.join(' ') || (input.specifier ?? '');
 
+  // THE classifier — the one buildAreaMap keys its entries by. Affected areas,
+  // `core-area`, boundary risks and `areaCoverage` all answer through it.
+  const classify = createAreaClassifier(inspection.config?.areaMap);
   const ctx: IBuildContext = {
     inspection,
     files,
@@ -739,6 +781,7 @@ export async function analyzeImpact(
     maxDepth,
     limit,
     areaMap,
+    classify,
   };
 
   const { direct, transitive, paths } = closeDependents(reverse, files, maxDepth);
@@ -821,7 +864,7 @@ export async function analyzeImpact(
   const hitsTemplates = templates.length > 0 || pipelines.length > 0;
   const ownershipReview = (ownership?.requiredReviewFiles.length ?? 0) > 0;
 
-  const { risk, reasons: riskReasons } = classifyRisk({
+  const { risk, reasons: classifiedReasons } = classifyRisk({
     directCount: direct.length,
     transitiveCount: transitive.length,
     boundaryCount: boundaryConcerns.length,
@@ -834,6 +877,31 @@ export async function analyzeImpact(
     hitsPolicy,
     hitsTemplates,
   });
+
+  // A derived view inherits its input's coverage and prints it: affected
+  // areas, boundary risks and `core-area` are only as complete as the area
+  // classification. Targets go through the SAME classifier the map uses.
+  const areaCoverage: IImpactAreaCoverage = {
+    classificationRate: areaMap.classificationRate,
+    degraded: areaMap.degraded,
+    unclassifiedTargets: files.filter((f) => classify(f).kind === AreaKind.Unknown),
+  };
+  // It flags, it does not lower the risk: the area-derived signals may be
+  // understated, which is the opposite of reassuring.
+  const riskReasons: IImpactReason[] =
+    areaCoverage.degraded || areaCoverage.unclassifiedTargets.length > 0
+      ? [
+          ...classifiedReasons,
+          {
+            code: 'area-attribution-degraded',
+            message:
+              `Area attribution ${areaCoverage.degraded ? 'degraded' : 'partial'}: ` +
+              `${formatClassificationRate(areaCoverage.classificationRate)} of the repo classified; ` +
+              `${areaCoverage.unclassifiedTargets.length}/${files.length} target(s) in no known area — ` +
+              'core/boundary/area signals may be understated (add areaMap.patterns to sharkcraft.config.ts).',
+          },
+        ]
+      : classifiedReasons;
 
   const truncations: IImpactTruncation[] = [];
   if (direct.length > limit) {
@@ -892,6 +960,7 @@ export async function analyzeImpact(
     suggestedReviewCommands,
     relatedRules,
     relatedTemplates,
+    areaCoverage,
     risk,
     riskReasons,
     explanation,

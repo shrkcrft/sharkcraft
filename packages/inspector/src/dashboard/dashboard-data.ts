@@ -46,9 +46,13 @@ import type {
 import type { ISharkcraftInspection } from '../sharkcraft-inspector.ts';
 import { buildAiReadinessReport } from '../ai-readiness.ts';
 import { runDoctor } from '../sharkcraft-inspector.ts';
+import { doctorVerdict } from '../doctor-verdict.ts';
+import { DoctorVerdictKind } from '../doctor-verdict-kind.ts';
+import { qualityGateStatus } from '../quality-gate-row-status.ts';
 import { DoctorSeverity } from '../doctor-result.ts';
 import { buildCoverageReport } from '../coverage-report.ts';
 import { buildDriftReport } from '../drift.ts';
+import { runBoundaryCheck } from '../run-boundary-check.ts';
 import { buildKnowledgeGraph, findGraphPath, getGraphNode } from '../knowledge-graph.ts';
 import { buildOnboardingPlan } from '../onboarding.ts';
 import {
@@ -177,8 +181,18 @@ export function buildDashboardDoctor(inspection: ISharkcraftInspection): IDashbo
       ...(c.fix ? { fix: c.fix } : {}),
     };
   });
+  // THE doctor settlement (`doctorVerdict`), the one `shrk doctor`, `shrk
+  // check` and MCP read: a setup the doctor could not fully verify (a compiled
+  // pack build with no build record) is `not-verified`, never `ready`.
+  const settled = doctorVerdict(doctor);
   return {
-    verdict: doctor.passed ? 'ready' : 'not-ready',
+    verdict:
+      settled.verdict === DoctorVerdictKind.Ready
+        ? 'ready'
+        : settled.verdict === DoctorVerdictKind.NotVerified
+          ? 'not-verified'
+          : 'not-ready',
+    ...(settled.shortfalls.length > 0 ? { shortfalls: settled.shortfalls } : {}),
     readinessScore: buildAiReadinessReport(inspection).score,
     checks,
     summary: doctor.summary,
@@ -203,7 +217,9 @@ export async function buildDashboardQuality(
     readiness: report.overall,
     gates: report.gates.map((g) => ({
       id: g.id,
-      status: (g.passed ? 'pass' : g.blocking ? 'fail' : 'warn') as 'pass' | 'warn' | 'fail' | 'skipped',
+      // THE row status (`qualityGateStatus`): never `pass` over a gate that
+      // passed over part of its scope, or could not run.
+      status: qualityGateStatus(g) as string as 'pass' | 'warn' | 'fail' | 'skipped' | 'not-verified',
       ...(g.notes && g.notes.length > 0 ? { message: g.notes.join('; ') } : {}),
     })),
     blockers: report.gates.filter((g) => !g.passed && g.blocking).map((g) => g.label),
@@ -404,13 +420,84 @@ export function buildDashboardArchitecture(inspection: ISharkcraftInspection): I
   };
 }
 
+/**
+ * The boundary panel (round 13, V1-U2): THE boundary orchestrator's verdict —
+ * the one `shrk check boundaries` prints. The panel used to return no
+ * violations unconditionally and render "No active violations." over any
+ * state, a failing gate included; `summary` now says what the check found.
+ */
 export function buildDashboardBoundaries(inspection: ISharkcraftInspection): IDashboardBoundaryResponse {
   const rules = inspection.boundaryRegistry.list();
-  return {
-    available: rules.length > 0,
-    violations: [],
-    ruleCount: rules.length,
-  };
+  const loadIssues = inspection.boundaryLoadIssues ?? [];
+  if (rules.length === 0 && loadIssues.length === 0) {
+    return {
+      available: false,
+      violations: [],
+      ruleCount: 0,
+      verdict: 'not-verified',
+      exitCode: 2,
+      summary: 'No boundary rules loaded — nothing was checked.',
+    };
+  }
+  try {
+    const r = runBoundaryCheck(inspection);
+    return {
+      available: true,
+      violations: r.violations.map((v, i) => ({
+        id: `${v.ruleId}:${v.file}:${v.line}:${i}`,
+        from: `${v.file}:${v.line}`,
+        to: v.importSpecifier,
+        rule: v.ruleId,
+        severity: v.severity,
+        message: v.message,
+      })),
+      ruleCount: rules.length,
+      verdict: r.verdict,
+      exitCode: r.exitCode,
+      summary: dashboardBoundarySummary(r),
+      deadUnitCount: r.deadUnits.length,
+      intendedEmptyCount: r.intendedEmpty.length,
+      wentLiveCount: r.wentLive.length,
+    };
+  } catch (e) {
+    return {
+      available: true,
+      violations: [],
+      ruleCount: rules.length,
+      verdict: 'not-verified',
+      exitCode: 2,
+      summary: `Boundary scan failed — nothing was checked: ${(e as Error).message}`,
+    };
+  }
+}
+
+/** One sentence for the boundary panel, from the settled verdict — never "no violations" over a failing or unverified run. */
+function dashboardBoundarySummary(r: ReturnType<typeof runBoundaryCheck>): string {
+  const notes: string[] = [];
+  if (r.deadUnits.length > 0) notes.push(`${r.deadUnits.length} dead selector unit(s)`);
+  if (r.wentLive.length > 0) notes.push(`${r.wentLive.length} expectEmpty marker(s) went live`);
+  // "accepted" only when the settle accepted them — an acceptance exists at exit
+  // 0 alone (`r.accepted`); a failing or unverified run holds the same units as
+  // intended empty, the word finish's boundaries sub-gate uses.
+  if (r.intendedEmpty.length > 0) {
+    notes.push(
+      r.exitCode === 0 && r.accepted.length > 0
+        ? `${r.intendedEmpty.length} expectEmpty unit(s) accepted`
+        : `${r.intendedEmpty.length} expectEmpty unit(s) intended empty`,
+    );
+  }
+  const tail = notes.length > 0 ? ` (${notes.join('; ')})` : '';
+  if (r.exitCode === 0) return `No active violations — ${r.rules.length} rule(s) checked.${tail}`;
+  if (r.exitCode === 1) {
+    const parts: string[] = [];
+    if (r.violations.length > 0) parts.push(`${r.violations.length} violation(s)`);
+    if (r.loadIssues.length > 0) parts.push(`${r.loadIssues.length} errored rule(s)`);
+    if (r.staleExceptions.length > 0) parts.push(`${r.staleExceptions.length} stale exception(s)`);
+    const onEmpty = r.rules.filter((x) => x.failedOnEmpty === true).length;
+    if (onEmpty > 0) parts.push(`${onEmpty} rule(s) matched nothing (failOnEmpty)`);
+    return `Boundary check needs attention — ${parts.join(', ') || 'see `shrk check boundaries`'}.${tail}`;
+  }
+  return `NOT VERIFIED — ${r.shortfalls[0] ?? 'part of the boundary scope was never examined'}.${tail}`;
 }
 
 export function buildDashboardDrift(inspection: ISharkcraftInspection): IDashboardDriftResponse {
@@ -632,7 +719,7 @@ export function buildDashboardReview(
       suggestedChecks: [],
       artifacts: [],
       commandHints: [
-        commandHint('shrk review build --since main', 'Generate a review packet from a diff', 'read-only'),
+        commandHint('shrk review packet --since main', 'Generate a review packet from a diff', 'read-only'),
       ],
     };
   }

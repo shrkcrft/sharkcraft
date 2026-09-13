@@ -1,9 +1,16 @@
 import { z } from 'zod';
 import {
+  AreaKind,
   EXTRACTOR_KINDS,
+  exemptionListProblem,
+  globListProblem,
+  markedListFailOnEmptyConflict,
+  normalizeUnitList,
+  normalizeWiringSource,
   SCAN_ZONES,
+  unitListProblems,
   validateWiringSource,
-  type IWiringSource,
+  type IWiringSourceInput,
 } from '@shrkcrft/core';
 
 /**
@@ -17,8 +24,12 @@ import {
  * malformed recipe fails to LOAD with a clear field path (the richer semantic
  * checks — known grounding id, dangling verification id — live in
  * `validateConfig`, mirroring how `guardrailGlobs` is gated in both places).
+ *
+ * Exported (round 12, 12.1): a PACK-contributed recipe is validated by this
+ * same schema (`delegateRecipeRejectionReasons`, @shrkcrft/inspector), so an
+ * inline recipe and a pack one are refused for the same reasons.
  */
-const DelegateRecipeSchema = z
+export const DelegateRecipeSchema = z
   .object({
     id: z.string(),
     title: z.string().optional(),
@@ -114,6 +125,89 @@ const RuleSelfTestSchema = z
 const ScanZoneSchema = z.enum(SCAN_ZONES as unknown as [string, ...string[]]);
 
 /**
+ * A gate-plane glob list's SHAPE, judged by core's `globListProblem` (the
+ * companion of the one `!` parser): a bare `!`, a `!!x`, or a list of
+ * negations only. Each used to load and select nothing — a rule that could
+ * never enforce anything — so each fails at load, on the field the author has
+ * to change. An empty list is left to the field's own rule.
+ */
+function refineGlobList(
+  ctx: z.RefinementCtx,
+  globs: readonly string[] | undefined,
+  path: (string | number)[],
+): void {
+  if (globs === undefined || globs.length === 0) return;
+  const problem = globListProblem(globs);
+  if (problem !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: problem });
+}
+
+/**
+ * An EXEMPTION list (policy `exemptFiles`, generated `handMaintained`) takes
+ * plain globs: a `!` there would read as "exempt everything else", which no
+ * engine implements and no author means.
+ */
+function refineExemptionList(
+  ctx: z.RefinementCtx,
+  globs: readonly string[] | undefined,
+  path: (string | number)[],
+): void {
+  if (globs === undefined) return;
+  const problem = exemptionListProblem(globs);
+  if (problem !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: problem });
+}
+
+/**
+ * A MARKABLE list (round 13, docs/intended-empty.md): each entry is a glob, or
+ * `{ pattern, expectEmpty: true, reason? }` asserting that the unit's target
+ * does not exist yet. Every entry is judged by core's one parser
+ * (`unitListProblems`), so a malformed marker is refused here — at load, exit
+ * 3 for the local config, an ERRORED row for a pack element — with the same
+ * `<listPath>[i]: …` sentence on every path. The glob SHAPE rules
+ * (`globListProblem`) run on the normalised units, by the field's owner
+ * ({@link markableUnits}), so `{ pattern: '!' }` is refused exactly like `'!'`.
+ */
+function markableList(listPath: string, minLength = 0): z.ZodType<readonly unknown[]> {
+  return z
+    .array(z.unknown())
+    .min(minLength)
+    .superRefine((list, ctx) => {
+      for (const message of unitListProblems(list, listPath)) ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+    });
+}
+
+/**
+ * The plain units of a markable list, or `undefined` when the list is absent
+ * or holds a malformed marker ({@link markableList} already reported it). A
+ * parent refinement runs even when a list's marker check failed (the issue is
+ * continuable), so it must read the list through this — never cast it.
+ */
+function markableUnits(list: unknown): readonly string[] | undefined {
+  if (!Array.isArray(list)) return undefined;
+  const n = normalizeUnitList(list, 'list');
+  return n.ok ? n.value.units : undefined;
+}
+
+/**
+ * THE load-time conflict between a rule's `failOnEmpty: true` and its PRIMARY
+ * list having every inclusion unit marked `expectEmpty`
+ * (`markedListFailOnEmptyConflict`, core): the markers say the empty result is
+ * intended, `failOnEmpty` says it is a failure. Partial marking is legal, and
+ * the DEFAULT failOnEmpty of an error rule is never a conflict.
+ */
+function refineMarkedFailOnEmpty(
+  ctx: z.RefinementCtx,
+  list: unknown,
+  listPath: string,
+  failOnEmpty: boolean | undefined,
+): void {
+  if (failOnEmpty !== true || !Array.isArray(list)) return;
+  const n = normalizeUnitList(list, listPath);
+  if (!n.ok) return;
+  const problem = markedListFailOnEmptyConflict(n.value, listPath, failOnEmpty);
+  if (problem !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['failOnEmpty'], message: problem });
+}
+
+/**
  * One side (declared / registered) of a wiring rule — the extraction DSL.
  *
  * The structural rules (exactly one extraction mode, per-kind required fields,
@@ -128,7 +222,7 @@ const WiringSourceSchema = z
     // omitted (they come from the named definition) and any field spelled here
     // overrides it — see `resolveExtractorRef` in `@shrkcrft/core`.
     $use: z.string().min(1).optional(),
-    files: z.array(z.string()).optional(),
+    files: markableList('files').optional(),
     extract: z.enum(EXTRACTOR_KINDS as unknown as [string, ...string[]]).optional(),
     anchor: z.string().optional(),
     argIndex: z.number().int().min(0).optional(),
@@ -143,7 +237,7 @@ const WiringSourceSchema = z
         module: z.string().optional(),
         modulePattern: z.string().optional(),
         modulePatternFlags: z.string().optional(),
-        files: z.array(z.string()).optional(),
+        files: markableList('to.files').optional(),
         match: z.string().optional(),
         matchFlags: z.string().optional(),
       })
@@ -182,9 +276,27 @@ const WiringSourceSchema = z
           });
         }
       }
+      // A locally spelled glob list REPLACES the extractor's, so its shape can
+      // be judged standalone — here, where a pack element's schema check (the
+      // merge seam, `packs test --load`) sees it too (round 12 review, R12-X3).
+      // Judged on the NORMALISED units (round 13): a marker's pattern is a
+      // unit of its list; a malformed marker was already reported on the list.
+      for (const [path, globs, label] of [
+        [['files'], markableUnits(src.files), '`files`'],
+        [['to', 'files'], markableUnits(src.to?.files), '`to.files`'],
+      ] as const) {
+        if (globs === undefined || globs.length === 0) continue;
+        const problem = globListProblem(globs);
+        if (problem !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [...path], message: `${label} ${problem}` });
+      }
       return;
     }
-    const problem = validateWiringSource(src as IWiringSource);
+    // The structural check runs on the NORMALISED source (round 13): a
+    // marker's pattern is a glob of its list, never an object handed to a glob
+    // reader; a malformed marker was already reported on its list.
+    const normalized = normalizeWiringSource(src as IWiringSourceInput);
+    if (!normalized.ok) return;
+    const problem = validateWiringSource(normalized.value);
     if (problem === undefined) return;
     // Point at the most specific field the message is about, so the loader
     // error lands on the line the author has to change.
@@ -192,6 +304,8 @@ const WiringSourceSchema = z
       ? ['match']
       : problem.startsWith('pathPattern') || problem.includes('`pathPattern`')
         ? ['pathPattern']
+      : problem.startsWith('`to.files`')
+        ? ['to', 'files']
       : problem.startsWith('to.modulePattern')
         ? ['to', 'modulePattern']
       : problem.startsWith('to.match')
@@ -259,11 +373,36 @@ export const WiringRuleSchema = z
     hint: z.string().optional(),
     hintDeclaredMissing: z.string().optional(),
     hintRegisteredMissing: z.string().optional(),
+    // Subset only: registered tokens the declared selector is known NOT to
+    // produce, accepted explicitly (literal ids, or 'allow'). Without it such a
+    // token is a coverage shortfall — the rule reads `partial`, exit 2.
+    registeredExtras: z.union([z.literal('allow'), z.array(z.string())]).optional(),
   })
   .strict()
   .superRefine((rule, ctx) => {
     const hasChain = Array.isArray(rule.chain) && rule.chain.length > 0;
     const hasClassic = rule.declared !== undefined || rule.registered !== undefined;
+    // Round 13: the PRIMARY source (the declared side, or chain[0]) may not
+    // mark every inclusion glob `expectEmpty` while `failOnEmpty: true` asserts
+    // the opposite. A `$use` source's markers arrive with the merge, so its
+    // conflict is judged after resolution (`validateResolvedPlaneSources`).
+    refineMarkedFailOnEmpty(
+      ctx,
+      (hasChain ? rule.chain?.[0] : rule.declared)?.files,
+      hasChain ? 'chain[0].files' : 'declared.files',
+      rule.failOnEmpty,
+    );
+    if (
+      rule.registeredExtras !== undefined &&
+      (hasChain || (rule.mode !== undefined && rule.mode !== 'subset'))
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['registeredExtras'],
+        message:
+          '`registeredExtras` applies only to a classic subset rule — parity reports registered-only tokens as violations, and disjoint / chain rules never examine them',
+      });
+    }
     if (hasChain && hasClassic) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -315,8 +454,14 @@ export const RegistryDeclarationSchema = z
     // Human-noun → canonical-id synonym map for `exists <id> --resolve`.
     aliases: z.record(z.string(), z.string()).optional(),
     selfTest: RuleSelfTestSchema.optional(),
+    // A source matching 0 ids fails (1) instead of reading not-verified (2).
+    failOnEmpty: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  // Round 13: every inclusion glob of the source marked expectEmpty while
+  // failOnEmpty: true asserts the opposite (an inline `files`; a `$use` one is
+  // judged after resolution).
+  .superRefine((decl, ctx) => refineMarkedFailOnEmpty(ctx, decl.source?.files, 'source.files', decl.failOnEmpty));
 
 /**
  * One DI/registration idiom (see `IRegistrationIdiom`) — the three-role shape
@@ -331,8 +476,15 @@ export const RegistrationIdiomSchema = z
     provided: WiringSourceSchema,
     consumed: WiringSourceSchema,
     selfTest: RuleSelfTestSchema.optional(),
+    // A graph matching 0 tokens fails (1) instead of reading not-verified (2).
+    failOnEmpty: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  // Round 13: the declared role (the primary selector) fully marked
+  // expectEmpty contradicts failOnEmpty: true.
+  .superRefine((idiom, ctx) =>
+    refineMarkedFailOnEmpty(ctx, idiom.declared?.files, 'declared.files', idiom.failOnEmpty),
+  );
 
 /** One policy-lint rule (see `IPolicyRule`). Exported for the pack-plane merge seam. */
 export const PolicyRuleSchema = z
@@ -340,7 +492,7 @@ export const PolicyRuleSchema = z
     id: z.string(),
     description: z.string().optional(),
     surface: z.enum(['template', 'style', 'ts']),
-    files: z.array(z.string()).optional(),
+    files: markableList('files').optional(),
     pattern: z.string(),
     flags: z.string().optional(),
     scan: ScanZoneSchema.optional(),
@@ -363,6 +515,12 @@ export const PolicyRuleSchema = z
         message: `invalid regular expression: ${(e as Error).message}`,
       });
     }
+    // `files` `!` EXCLUDES; `exemptFiles` MARKS and takes plain globs. A
+    // negation-only `files` is rejected, never read as "the surface defaults
+    // minus these" — one syntax, one meaning, on every plane.
+    refineGlobList(ctx, markableUnits(src.files), ['files']);
+    refineExemptionList(ctx, src.exemptFiles, ['exemptFiles']);
+    refineMarkedFailOnEmpty(ctx, src.files, 'files', src.failOnEmpty);
   });
 
 /**
@@ -426,7 +584,7 @@ export const BaselineRuleSchema = z
       .enum(['two-way', 'additions-only', 'no-shrink', 'at-most', 'at-least'])
       .optional(),
     keyBy: z.string().optional(),
-    watchFiles: z.array(z.string()).optional(),
+    watchFiles: markableList('watchFiles').optional(),
     failOnEmpty: z.boolean().optional(),
     expectEmpty: z.boolean().optional(),
     selfTest: RuleSelfTestSchema.optional(),
@@ -502,6 +660,17 @@ export const BaselineRuleSchema = z
           'sets both `expectEmpty` and `failOnEmpty` — they assert opposite things about an empty result',
       });
     }
+    refineGlobList(ctx, markableUnits(rule.watchFiles), ['watchFiles']);
+    // Round 13: the rule's primary INPUT list fully marked expectEmpty
+    // contradicts failOnEmpty: true — the extractor compute's `source.files`,
+    // or a command compute's `watchFiles` probe. (`expectEmpty: true` on the
+    // RULE is the output assertion: with `mode: 'ceiling'` it stays legal and
+    // is honoured; with `failOnEmpty: true` it is refused above.)
+    if (rule.compute?.kind === 'extractor') {
+      refineMarkedFailOnEmpty(ctx, rule.compute.source?.files, 'compute.source.files', rule.failOnEmpty);
+    } else {
+      refineMarkedFailOnEmpty(ctx, rule.watchFiles, 'watchFiles', rule.failOnEmpty);
+    }
   });
 
 /**
@@ -513,7 +682,7 @@ export const GeneratedArtifactRuleSchema = z
   .object({
     id: z.string(),
     description: z.string().optional(),
-    generatedGlob: z.array(z.string()).min(1),
+    generatedGlob: markableList('generatedGlob', 1),
     regen: z.string().optional(),
     sources: z
       .array(
@@ -632,6 +801,11 @@ export const GeneratedArtifactRuleSchema = z
     // silently absorb every future file dropped into the directory, converting
     // a reviewed per-file exemption into a blanket opt-out that makes the whole
     // rule pass without checking anything.
+    refineGlobList(ctx, markableUnits(rule.generatedGlob), ['generatedGlob']);
+    refineMarkedFailOnEmpty(ctx, rule.generatedGlob, 'generatedGlob', rule.failOnEmpty);
+    rule.sources?.forEach((src, i) => refineGlobList(ctx, src.glob, ['sources', i, 'glob']));
+    refineGlobList(ctx, rule.provenanceHeader?.outsideGlob, ['provenanceHeader', 'outsideGlob']);
+    refineExemptionList(ctx, rule.handMaintained, ['handMaintained']);
     rule.handMaintained?.forEach((pattern, i) => {
       const base = pattern.split('/').pop() ?? '';
       if (base.includes('*') || base.includes('?')) {
@@ -654,7 +828,7 @@ export const DocReferenceRuleSchema = z
   .object({
     id: z.string(),
     description: z.string().optional(),
-    files: z.array(z.string()).min(1),
+    files: markableList('files', 1),
     tokenPattern: z.string().min(1),
     tokenPatternFlags: z.string().optional(),
     resolvesAs: z
@@ -683,6 +857,8 @@ export const DocReferenceRuleSchema = z
   })
   .strict()
   .superRefine((rule, ctx) => {
+    refineGlobList(ctx, markableUnits(rule.files), ['files']);
+    refineMarkedFailOnEmpty(ctx, rule.files, 'files', rule.failOnEmpty);
     try {
       new RegExp(rule.tokenPattern, rule.tokenPatternFlags ?? '');
     } catch (e) {
@@ -719,6 +895,7 @@ export const ReusePrimitiveSchema = z
     importPath: z.string().optional(),
     description: z.string().optional(),
     keywords: z.array(z.string()).optional(),
+    supersedes: z.array(z.string()).optional(),
   })
   .strict();
 
@@ -747,6 +924,89 @@ export const SharkCraftConfigSchema = z
     boundaryFiles: z.array(z.string()).optional(),
     contextTestFiles: z.array(z.string()).optional(),
     agentTestFiles: z.array(z.string()).optional(),
+    // Local task-routing-hint + playbook registry files, relative to
+    // sharkcraftDir (docs/task-routing-hints.md, docs/playbooks.md). The
+    // loaders always read them; before these keys were declared, using either
+    // one made the strict schema reject — and drop — the WHOLE config.
+    taskRoutingHintFiles: z.array(z.string()).optional(),
+    playbookFiles: z.array(z.string()).optional(),
+    // Local convention files, relative to sharkcraftDir, loaded in addition to
+    // the conventional `conventions.ts` (plugin-api convention.ts: "Packs and
+    // local config contribute conventions via `conventionFiles[]`").
+    conventionFiles: z.array(z.string()).optional(),
+    // Ownership rule files (docs/ownership.md `config.ownershipFiles`).
+    ownershipFiles: z.array(z.string()).optional(),
+    // Release-readiness knowledge stale-check (docs/knowledge-integrity.md).
+    knowledgeCheck: z
+      .object({
+        enabled: z.boolean().optional(),
+        strict: z.boolean().optional(),
+        failOn: z
+          .array(
+            z.enum([
+              'required',
+              'stale',
+              'missing',
+              'all',
+              'unverifiable',
+              'path-missing',
+              'anchor-missing',
+              'content',
+              'count',
+              'aged',
+              'implicit',
+              // A malformed reference fails (1) instead of settling to 2 — the
+              // same vocabulary as `knowledge stale-check --fail-on`.
+              'invalid',
+            ]),
+          )
+          .optional(),
+        // Minimum share of in-scope entries the check can examine (0..1). An
+        // explicit acceptance — `knowledge stale-check` and release readiness
+        // print it — and a ratchet: below it the run fails.
+        minReferenced: z.number().min(0).max(1).optional(),
+        // Every entry must declare a checkable reference (for a finished ratchet).
+        requireReferences: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    // Project-wide quality-gate thresholds for `shrk quality` (docs/quality-gates.md).
+    qualityGates: z
+      .object({
+        minReadiness: z.number().optional(),
+        requireBoundaryClean: z.boolean().optional(),
+        requireDriftClean: z.boolean().optional(),
+        requireAgentTests: z.boolean().optional(),
+        requireContextTests: z.boolean().optional(),
+        requirePackSignatures: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    // Per-policy severity / enable overrides (docs/policy-checks.md).
+    policyOverrides: z
+      .array(
+        z
+          .object({
+            policyId: z.string().min(1),
+            severity: z.enum(['info', 'warning', 'error', 'critical']).optional(),
+            enabled: z.boolean().optional(),
+            reason: z.string().optional(),
+          })
+          .strict(),
+      )
+      .optional(),
+    // Recommender tuning (`shrk recommend`, MCP `recommend_commands`,
+    // `shrk context`; docs/command-entrypoints.md). `minScore` is the confidence
+    // floor multiplier in normalised units (1.0 = each signal source's own
+    // floor); `scaffoldRequiresCreateIntent` (default true) keeps source-writing
+    // scaffolds out of non-create queries.
+    recommend: z
+      .object({
+        minScore: z.number().positive().optional(),
+        scaffoldRequiresCreateIntent: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
     // Named, reusable extraction selectors referenced by `{ $use: "<id>" }`
     // from any plane. One definition, N consumers — the planes describing the
     // same id set cannot drift apart.
@@ -769,12 +1029,39 @@ export const SharkCraftConfigSchema = z
     docReferences: z.array(DocReferenceRuleSchema).optional(),
     // Reuse primitives — role-keyed canonical symbols for `shrk reuse`.
     reusePrimitives: z.array(ReusePrimitiveSchema).optional(),
-    // registry-lifecycle scan tuning. `skipDirs` OVERRIDES the default
-    // source-only skip set so a repo that registers code under tools/ / a
-    // non-standard root isn't silently blinded by a baked-in exclusion.
+    // registry-lifecycle scan tuning. `skipDirsAdd` EXTENDS the default
+    // source-only skip set (the one to reach for); `skipDirs` REPLACES it — a
+    // replacing list that drops node_modules/dist/… is warned about by the
+    // scan and by `shrk doctor`.
     registryLifecycle: z
       .object({
         skipDirs: z.array(z.string()).optional(),
+        skipDirsAdd: z.array(z.string()).optional(),
+      })
+      .strict()
+      .optional(),
+    // Project-declared area patterns for the area map (`shrk repo areas`,
+    // impact, review packets). Evaluated before the built-in table. `kind` is
+    // the core AreaKind enum; `unknown` is an outcome, never a declaration.
+    areaMap: z
+      .object({
+        patterns: z
+          .array(
+            z
+              .object({
+                kind: z
+                  .nativeEnum(AreaKind)
+                  .refine((k) => k !== AreaKind.Unknown, {
+                    message: "an area pattern cannot declare kind 'unknown' — that is what an unmatched file gets",
+                  }),
+                match: z.array(z.string().min(1)).min(1),
+                id: z.string().min(1).optional(),
+              })
+              .strict(),
+          )
+          .optional(),
+        replaceDefaults: z.boolean().optional(),
+        minClassificationRate: z.number().min(0).max(1).optional(),
       })
       .strict()
       .optional(),
@@ -798,6 +1085,9 @@ export const SharkCraftConfigSchema = z
         profile: z.string().optional(),
         enabled: z.array(z.string()).optional(),
         hidden: z.array(z.string()).optional(),
+        // Deny list: exact paths or `<group> *` selectors — not callable
+        // (surface gate, exit 78) and absent from --help.
+        disabled: z.array(z.string()).optional(),
       })
       .strict()
       .optional(),

@@ -50,4 +50,12 @@ export interface IRegistryDeclaration {
    * they were written.
    */
   readonly selfTest?: IRuleSelfTest;
+  /**
+   * Promote "the source selector matched 0 ids" from a loud skip (`2`) to a
+   * failure (`1`) — in `gates coverage`, `gates check`, and every inventory
+   * query (`list` / `exists` / `where` / `duplicates`), none of which can answer
+   * over an empty inventory. Default `false`: a registry carries no severity of
+   * its own, so an empty one is not-verified until the author says otherwise.
+   */
+  readonly failOnEmpty?: boolean;
 }

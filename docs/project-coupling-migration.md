@@ -8,9 +8,9 @@ config.
 ## Commands
 
 ```bash
-shrk migrate project-coupling audit  --token <pat> [--token <pat> ...]
-shrk migrate project-coupling plan   --token <pat> [--token <pat> ...]
-shrk migrate project-coupling report --token <pat> [--token <pat> ...]
+shrk audit project-coupling audit --token <pat> [--token <pat> ...]
+shrk audit project-coupling plan --token <pat> [--token <pat> ...]
+shrk audit project-coupling report --token <pat> [--token <pat> ...]
 ```
 
 - `audit` — print findings to stdout (text by default; `--format

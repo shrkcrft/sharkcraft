@@ -1,56 +1,96 @@
 /**
- * `shrk profiles ...` — unified read-only surface for all pack-/local-
- * contributed profiles (migration, and future kinds).
+ * `shrk profiles ...` — unified read-only surface for every profile kind: the
+ * builtin `workspace` vocabulary (WorkspaceProfile ids, with this repo's
+ * detection) and pack-/local-contributed `migration` profiles.
  */
 import {
+  ContributionKind,
   findProfile,
+  formatReferenceKindDeclaration,
   inspectSharkcraft,
+  isProfileKind,
   listProfileIssues,
   listProfiles,
+  nearestIds,
+  PROFILE_KIND_REFERENCE_KIND,
   ProfileKind,
+  type IProfileEntry,
 } from '@shrkcrft/inspector';
 import {
   flagBool,
-  flagString,
   resolveCwd,
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
+import { usageExitFor } from '../exit-codes.ts';
 import { asJson, header } from '../output/format-output.ts';
+import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
 
-function parseKind(value: string | undefined): ProfileKind | undefined {
-  if (!value) return undefined;
-  const known = Object.values(ProfileKind);
-  if ((known as readonly string[]).includes(value)) return value as ProfileKind;
-  return undefined;
+/** Every profile kind, in enum order — what `--kind` accepts. */
+const KNOWN_KINDS: string = Object.values(ProfileKind).join(', ');
+
+/**
+ * Parse `--kind`. An unknown (or valueless) kind is a usage error naming the
+ * known kinds — it used to be dropped silently, so `--kind bogus` listed every
+ * kind and a typo read as "no filter". Exit per THE usage split
+ * (`usageExitFor`: 2 on this non-verdict verb).
+ */
+function parseKind(args: ParsedArgs, commandPath: string): { kind?: ProfileKind; exit?: number } {
+  if (!args.flags.has('kind')) return {};
+  const raw = args.flags.get('kind');
+  if (typeof raw === 'string' && isProfileKind(raw)) return { kind: raw };
+  process.stderr.write(
+    `unknown --kind ${typeof raw === 'string' ? `"${raw}"` : '(no value)'} — known: ${KNOWN_KINDS}\n`,
+  );
+  return { exit: usageExitFor(commandPath) };
+}
+
+/**
+ * The empty state, from THE declaration table — so it can only name paths
+ * that really fill the kind (it used to say "contribute via packs:
+ * migrationProfileFiles, etc.", where "etc." named nothing and the local path
+ * went unmentioned).
+ */
+function emptyState(kind: ProfileKind | undefined): string {
+  if (!kind) return '  (none)\n';
+  return `  (none — ${kind} profiles are declared via: ${formatReferenceKindDeclaration(PROFILE_KIND_REFERENCE_KIND[kind])})\n`;
+}
+
+function sourceLabel(e: IProfileEntry): string {
+  const src = e.source === 'pack' ? `pack:${e.packageName ?? '?'}` : e.source;
+  return e.detected === true ? `${src} · detected` : src;
 }
 
 export const profilesListCommand: ICommandHandler = {
   name: 'list',
-  description: 'List all registered profiles (migration, ...).',
-  usage: 'shrk profiles list [--kind <kind>] [--json]',
+  description: 'List all registered profiles (workspace, migration).',
+  usage: 'shrk profiles list [--kind workspace|migration] [--json]',
   async run(args: ParsedArgs): Promise<number> {
+    const parsed = parseKind(args, 'profiles list');
+    if (parsed.exit !== undefined) return parsed.exit;
+    const { kind } = parsed;
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
-    const kind = parseKind(flagString(args, 'kind'));
     const entries = await listProfiles(inspection, kind ? { kind } : {});
+    // Only migration profiles are contributed (the workspace kind is builtin):
+    // one its loader refused is named (round 12, 12.1) — it read "Invalid
+    // migration profile at <file>; skipped." with no id, on `profiles doctor` only.
+    const migration = !kind || kind === ProfileKind.Migration;
+    const note = { next: 'shrk profiles doctor' };
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(entries) + '\n');
+      if (migration) {
+        await writeRejectedEntriesNote(inspection, [ContributionKind.MigrationProfile], { ...note, json: true });
+      }
       return 0;
     }
     process.stdout.write(header(`Profiles (${entries.length}${kind ? `, kind=${kind}` : ''})`));
-    if (entries.length === 0) {
-      process.stdout.write(
-        '  (none — contribute via packs: migrationProfileFiles, etc.)\n',
-      );
-      return 0;
-    }
+    if (entries.length === 0) process.stdout.write(emptyState(kind));
     for (const e of entries) {
-      const src = e.source === 'pack' ? `pack:${e.packageName ?? '?'}` : e.source;
-      process.stdout.write(
-        `  • ${e.kind.padEnd(18)} ${e.id.padEnd(24)} ${e.title}  [${src}]\n`,
-      );
+      process.stdout.write(`  • ${e.kind.padEnd(18)} ${e.id.padEnd(24)} ${e.title}  [${sourceLabel(e)}]\n`);
     }
+    if (migration) await writeRejectedEntriesNote(inspection, [ContributionKind.MigrationProfile], note);
     return 0;
   },
 };
@@ -58,19 +98,25 @@ export const profilesListCommand: ICommandHandler = {
 export const profilesGetCommand: ICommandHandler = {
   name: 'get',
   description: 'Show one profile by id (and optional --kind).',
-  usage: 'shrk profiles get <id> [--kind <kind>] [--json]',
+  usage: 'shrk profiles get <id> [--kind workspace|migration] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const id = args.positional[0];
     if (!id) {
       process.stderr.write('Usage: shrk profiles get <id>\n');
       return 2;
     }
+    const parsed = parseKind(args, 'profiles get');
+    if (parsed.exit !== undefined) return parsed.exit;
+    const { kind } = parsed;
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
-    const kind = parseKind(flagString(args, 'kind'));
     const entry = await findProfile(inspection, id, kind);
     if (!entry) {
-      process.stderr.write(`Unknown profile "${id}"${kind ? ` (kind=${kind})` : ''}.\n`);
+      const pool = (await listProfiles(inspection, kind ? { kind } : {})).map((e) => e.id);
+      const near = nearestIds(id, pool, 3).map((n) => n.id);
+      process.stderr.write(
+        `Unknown profile "${id}"${kind ? ` (kind=${kind})` : ''}.${near.length > 0 ? ` Did you mean: ${near.join(', ')}?` : ''}\n`,
+      );
       return 2;
     }
     if (flagBool(args, 'json')) {
@@ -81,6 +127,10 @@ export const profilesGetCommand: ICommandHandler = {
     process.stdout.write(`  title         ${entry.title}\n`);
     if (entry.description) process.stdout.write(`  description   ${entry.description}\n`);
     process.stdout.write(`  source        ${entry.source}${entry.packageName ? ' (' + entry.packageName + ')' : ''}\n`);
+    if (entry.detected !== undefined) {
+      const reason = (entry.payload as { reason?: string } | undefined)?.reason;
+      process.stdout.write(`  detected      ${entry.detected ? `yes${reason ? ` — ${reason}` : ''}` : 'no (not detected in this repo)'}\n`);
+    }
     if (entry.sourceFile) process.stdout.write(`  sourceFile    ${entry.sourceFile}\n`);
     if (entry.tags && entry.tags.length > 0) process.stdout.write(`  tags          ${entry.tags.join(', ')}\n`);
     if (entry.appliesWhen && entry.appliesWhen.length > 0) {
@@ -117,16 +167,18 @@ export const profilesDoctorCommand: ICommandHandler = {
 export const profilesSearchCommand: ICommandHandler = {
   name: 'search',
   description: 'Search registered profiles by free-text token across id / title / tags.',
-  usage: 'shrk profiles search <query> [--kind <kind>] [--json]',
+  usage: 'shrk profiles search <query> [--kind workspace|migration] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const query = args.positional[0];
     if (!query) {
       process.stderr.write('Usage: shrk profiles search <query>\n');
       return 2;
     }
+    const parsed = parseKind(args, 'profiles search');
+    if (parsed.exit !== undefined) return parsed.exit;
+    const { kind } = parsed;
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
-    const kind = parseKind(flagString(args, 'kind'));
     const all = await listProfiles(inspection, kind ? { kind } : {});
     const q = query.toLowerCase();
     const matches = all.filter((e) => {
@@ -149,8 +201,26 @@ export const profilesSearchCommand: ICommandHandler = {
 export const profilesCommand: ICommandHandler = {
   name: 'profiles',
   description:
-    'List / inspect pack-contributed profiles (migration, conventions, …).',
+    'List / inspect profiles: the builtin workspace vocabulary (WorkspaceProfile ids, with detection) and migration profiles.',
   usage: 'shrk profiles list|get|doctor|search ...',
+  booleanFlags: new Set(['json']),
+  positionals: PositionalMode.None,
+  subverbs: [
+    { name: 'list', description: profilesListCommand.description, usage: profilesListCommand.usage },
+    {
+      name: 'get',
+      description: profilesGetCommand.description,
+      usage: profilesGetCommand.usage,
+      positionals: PositionalMode.Free,
+    },
+    { name: 'doctor', description: profilesDoctorCommand.description, usage: profilesDoctorCommand.usage },
+    {
+      name: 'search',
+      description: profilesSearchCommand.description,
+      usage: profilesSearchCommand.usage,
+      positionals: PositionalMode.Free,
+    },
+  ],
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
     args.positional = args.positional.slice(1);

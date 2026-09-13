@@ -1,5 +1,6 @@
 import {
   ArchReportStore,
+  archStoreMissing,
   diffSnapshots,
   runArchCheck,
   snapshotFromReport,
@@ -30,7 +31,7 @@ import type { IGateResult } from '../schema/quality-gate.ts';
 export function archGate(projectRoot: string, options: IArchGateOptions = {}): IGateResult {
   const start = Date.now();
   const report = runArchCheck({ projectRoot });
-  if (report.diagnostics.some((d) => d.includes('code-graph store missing'))) {
+  if (archStoreMissing(report)) {
     return {
       id: 'arch',
       label: 'Architecture',

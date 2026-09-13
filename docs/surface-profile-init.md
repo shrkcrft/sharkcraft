@@ -38,6 +38,18 @@ shrk init --surface-profile monorepo --write
 `--surface-profile` accepts any built-in profile id. Unknown ids exit 2
 with a clear error.
 
+## Profiles may disable (round 11)
+
+A profile carries `disabled` as well as `hidden` / `enabled`: exact command
+paths or `'<group> *'` selectors that are NOT callable here (the surface gate
+exits 78) and never appear in `--help`. The built-in profiles disable nothing;
+a pack-contributed profile (`contributions.surfaceProfiles[].disabled`) may.
+The project config wins: an explicit `surface.enabled` entry overrides a
+profile's deny for that command (`shrk surface enable "<command>" --write`).
+Presets reach this through `surfaceProfile`, so no preset schema change is
+needed. The profile's `hidden` list now reaches `--help` too — see
+[surface-tiers.md](./surface-tiers.md).
+
 ## Drift advisory
 
 `shrk doctor` adds a `surface-profile-drift` advisory check when the

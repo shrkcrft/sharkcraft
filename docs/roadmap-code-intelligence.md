@@ -227,7 +227,7 @@ file/symbol/package nodes; reads from existing asset registries
 `bridge.jsonl` file under `.sharkcraft/graph/edges/`.
 
 **Rounds.** R66 (bridge node + edge schema), R67 (bridge build pass +
-query API), R68 (`shrk rules where applies-to <file>` and MCP).
+query API), R68 (a per-file `rules where applies-to <file>` query and MCP).
 
 **Exit criteria.**
 - `get_rules_for_file` returns the same data as a current
@@ -254,7 +254,7 @@ API exposure, and a risk score. Backs `shrk impact` and the
 - Test mapping: likely tests via co-location, naming convention, and
   bridge edges to test pipelines.
 - Risk score (`low | medium | high | critical`) with explicit reasons.
-- Validation scope: which `shrk check / test / boundaries` commands
+- Validation scope: which `shrk check` / `shrk test` / `shrk check boundaries` commands
   to run before/after the change.
 - Public-API exposure flags: does the change touch an exported symbol
   at a workspace-package boundary?

@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { verdictLine } from '../gates/verdict-line.ts';
 import {
   buildArchitectureArea,
   buildArchitectureMap,
@@ -94,7 +95,9 @@ export const architectureViolationsCommand: ICommandHandler = {
       const report = await buildArchitectureViolations(inspection);
       if (flagBool(args, 'json') || format === 'json') {
         process.stdout.write(asJson(report) + '\n');
-        return report.total === 0 ? 0 : 1;
+        // THE boundary verdict (`runBoundaryCheck`) — 2 over zero rules or an
+        // unexamined scope, never `total 0` at exit 0 (round 11 review R11-GAP-3).
+        return report.exitCode;
       }
       process.stdout.write(`=== Architecture violations ===\n  total ${report.total}\n`);
       if (report.byRule.length > 0) {
@@ -103,7 +106,12 @@ export const architectureViolationsCommand: ICommandHandler = {
       }
       for (const v of report.violations.slice(0, 30))
         process.stdout.write(`  [${v.severity}] ${v.ruleId} ${v.file}:${v.line} → ${v.importSpecifier}\n`);
-      return report.total === 0 ? 0 : 1;
+      const line = verdictLine(
+        { exit: report.exitCode, verdict: report.verdict, shortfalls: report.shortfalls, accepted: report.accepted ?? [] },
+        '',
+      );
+      if (line) process.stdout.write(`${line}\n`);
+      return report.exitCode;
     }
 
     // When --changed-only is set without a more specific scope, pull

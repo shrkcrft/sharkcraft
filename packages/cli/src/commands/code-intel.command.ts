@@ -10,6 +10,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { detectGraphFreshness } from '@shrkcrft/graph';
 import { asJson, header, kv } from '../output/format-output.ts';
 
@@ -30,6 +31,8 @@ import { asJson, header, kv } from '../output/format-output.ts';
  */
 export const codeIntelCommand: ICommandHandler = {
   name: 'code-intel',
+  // Flag-driven: a bare token used to be ignored at exit 0.
+  positionals: PositionalMode.None,
   description:
     'One-shot view of code-intelligence doctor checks (graph, rule-graph, api-surface, quality-gate, migrations, architecture, impact, framework, structural-search, context-planner). Read-only.',
   usage:

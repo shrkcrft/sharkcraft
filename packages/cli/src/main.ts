@@ -2,11 +2,10 @@
 import { loadDotenv } from './env/load-dotenv.ts';
 import {
   CommandRegistry,
-  extractGlobalCompress,
   extractGlobalCwd,
-  extractGlobalExitTrailer,
   parseArgs,
   type ICommandHandler,
+  type ParsedArgs,
 } from './command-registry.ts';
 import {
   argvHasExitTrailer,
@@ -14,6 +13,7 @@ import {
   argvHasStrict,
   emitPipeExitSignal,
   promoteForStrict,
+  VERDICT_PATH_TOKENS,
 } from './exit-codes.ts';
 import { runCommandWithCompression } from './output/output-compression.ts';
 import { initCommand } from './commands/init.command.ts';
@@ -176,6 +176,7 @@ import {
 } from './commands/gates.command.ts';
 import { wiringCommand } from './commands/wiring.command.ts';
 import { reuseCommand } from './commands/reuse.command.ts';
+import { reuseCoverageCommand } from './commands/reuse-coverage.command.ts';
 import { migrateCommand } from './commands/migrate.command.ts';
 import { coverageCommand } from './commands/coverage.command.ts';
 import { statsCommand } from './commands/stats.command.ts';
@@ -408,11 +409,33 @@ import { errorFooterFor, renderErrorFooter } from './output/failure-hints.ts';
 import { renderAbout } from './surface/about.ts';
 import { renderNoArgsLanding } from './surface/no-args-landing.ts';
 import { loadSurfaceContext } from './surface/load-surface-context.ts';
+import { warnStaleCompiledPacks } from './packs/stale-build-warning.ts';
 import { buildSurfaceSummary, findCommandInSummary } from './surface/surface-summary.ts';
+import { commandIndexFor, setActiveCommandRegistry } from './surface/command-index.ts';
+import { editDistance, typoTolerance } from './dispatch/closest-match.ts';
 import {
-  makeSurfaceNotEnabledError,
-  renderSurfaceNotEnabledText,
+  isPathTransparentGlobal,
+  PATH_TRANSPARENCY,
+  stripPreDispatchGlobals,
+  withoutPathGlobals,
+} from './dispatch/global-flags.ts';
+import { judgeInvocation } from './dispatch/judge-invocation.ts';
+import { helpTopicFor, wantsHelp } from './dispatch/help-intercept.ts';
+import {
+  beginFlagReadTracking,
+  flagDocumentation,
+  invocationFlagDocumentation,
+  settleUnreadFlags,
+  siblingsDocumenting,
+  tracksFlagReads,
+} from './dispatch/unread-flags.ts';
+import { isStdoutPipe } from './output/stdout-is-pipe.ts';
+import { walkDeclaredSubverbs } from './dispatch/walk-declared-subverbs.ts';
+import {
   SURFACE_NOT_ENABLED_EXIT_CODE,
+  surfaceRefusalFor,
+  surfaceRefusalOutput,
+  type ISurfaceNotEnabledError,
 } from './surface/not-enabled-error.ts';
 import {
   extractCommandPath,
@@ -504,6 +527,9 @@ export function buildRegistry(): CommandRegistry {
   registry.registerSubcommand('gates', gatesScaffoldSelfTestCommand);
   registry.register(wiringCommand);
   registry.register(reuseCommand);
+  // `shrk reuse coverage` — the trie's greedy descent routes the literal
+  // `coverage` here; any other intent still reaches `reuse` itself.
+  registry.registerSubcommand('reuse', reuseCoverageCommand);
   registry.register(migrateCommand);
   registry.register(coverageCommand);
   registry.register(statsCommand);
@@ -841,21 +867,35 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   // and each command's own `--strict` semantics (e.g. `check --strict`) still
   // apply beneath this (a25 §1.1).
   const strict = argvHasStrict(argv);
-  // Derive the command path from an argv with the global --exit-trailer stripped:
-  // otherwise a LEADING `--exit-trailer` makes extractCommandPath break on the '-'
-  // and return "" — zeroing out both the pipe-exit signal and the usage record.
-  const command = extractCommandPath(extractGlobalExitTrailer(probeArgv).rest);
+  // THE registry this run dispatches from — the verdict path below and the
+  // dispatcher read the same one.
+  const registry = buildRegistry();
+  // Derive the command path from the argv the dispatcher reads: THE pre-dispatch
+  // strip (`--cwd`, `--exit-trailer`, `--compress*` — the one runCliInner uses),
+  // then the global `--no-hints` / `--strict` stepped over by the SAME descent.
+  // Otherwise a LEADING stripped global (`--exit-trailer`, `--compress`) makes
+  // extractCommandPath break on the '-' and return "" — zeroing out the pipe
+  // note, `--exit-trailer` and the usage record — while `doctor --strict
+  // warnings` must stay `doctor`.
+  const commandArgv = withoutPathGlobals(stripPreDispatchGlobals(argv).rest, registry);
+  const command = extractCommandPath(commandArgv);
+  // The verdict-verb check reads one token deeper than the usage record, so a
+  // three-token verdict verb (`docs references check`) is told apart from its
+  // informational siblings (`docs references list` / `explain`).
+  const verdictPath = extractCommandPath(commandArgv, VERDICT_PATH_TOKENS);
   let exitCode = 0;
   try {
-    exitCode = promoteForStrict(await runCliInner(argv), strict);
+    exitCode = promoteForStrict(await runCliInner(argv, registry), strict);
     // Keep the honest 0/1/2 verdict readable through a trailing pipe (the shape
     // an agent reaches for first). A no-op for non-gate verbs. Skipped inside the
     // smart-context worker child and the --compress re-run child, whose stdout is
     // a pipe by construction — a spurious "stdout is piped" note there (the user
     // never piped) would be noise, not signal.
     if (!process.env.SHRK_WORKER_EXITCODE_FILE && !process.env.SHRK_COMPRESS_CHILD) {
-      emitPipeExitSignal(command, exitCode, {
-        piped: !process.stdout.isTTY,
+      emitPipeExitSignal(verdictPath, exitCode, {
+        // A PIPE (or socket) to another process — never a plain file redirect,
+        // which is not a TTY either but has no downstream `$?` (round 13).
+        piped: isStdoutPipe(),
         trailer: argvHasExitTrailer(argv),
         noHints: argvHasNoHints(argv),
       });
@@ -899,17 +939,22 @@ async function isUsageEnabled(cwd: string): Promise<boolean> {
   }
 }
 
-async function runCliInner(argv: readonly string[]): Promise<number> {
-  const registry = buildRegistry();
+async function runCliInner(argv: readonly string[], registry: CommandRegistry): Promise<number> {
+  // The ONE command index (surface list, help, the surface gate, the command
+  // resolver injected into the inspector) reads the registry this run
+  // dispatches from — commands never import main.ts to get it.
+  setActiveCommandRegistry(registry);
 
-  // Pre-parse the global --cwd so it can appear anywhere (incl. before the command).
-  const { cwd: globalCwd, rest: cwdCleanArgv } = extractGlobalCwd(argv);
-  // Strip the global --exit-trailer here so no per-command flag-guard sees it;
-  // runCli reads it off the raw argv to decide whether to print the trailer.
-  const { rest: trailerCleanArgv } = extractGlobalExitTrailer(cwdCleanArgv);
-  // Pre-parse the global --compress / --ccr output-compression flags.
-  const { directive: compressDirective, rest: cleanArgv } = extractGlobalCompress(trailerCleanArgv);
-  const [first] = cleanArgv;
+  // THE pre-dispatch strip — the one runCli derives the verdict path from: the
+  // global --cwd (anywhere, incl. before the command), --exit-trailer (runCli
+  // reads it off the raw argv to decide whether to print the trailer) and the
+  // --compress / --ccr output-compression flags, so no per-command flag guard
+  // ever sees them.
+  const { cwd: globalCwd, compress: compressDirective, rest: cleanArgv } = stripPreDispatchGlobals(argv);
+  // The global `--strict` / `--no-hints` may LEAD the command
+  // (`shrk --no-hints scaffolds list`): the meta checks below read the first
+  // token that is not one of them, and the trie descent steps over them.
+  const first = cleanArgv.find((t) => !isPathTransparentGlobal(t));
 
   // `--compress` / `--ccr` on a real command: re-run it and compress its stdout.
   // (Meta verbs like --help/--version and bare invocations are left untouched.)
@@ -954,11 +999,17 @@ async function runCliInner(argv: readonly string[]): Promise<number> {
     return 0;
   }
 
-  // greedy trie descent. Handles 1-, 2-, and 3-level commands uniformly
+  // Greedy trie descent. Handles 1-, 2-, and 3-level commands uniformly
   // (`shrk doctor`, `shrk packs list`, `shrk pack author status`). The
   // resolver stops when it hits a flag or a token that isn't a child of the
-  // current node, returning the deepest handler + the leftover tokens.
-  let { handler, matchedPath, rest: leftover, node } = registry.resolve(cleanArgv);
+  // current node, returning the deepest handler + the leftover tokens. The
+  // global `--strict` / `--no-hints` are transparent to it while they sit
+  // inside the path — hoisted into the leftover instead of ending the descent
+  // at the first token — and past the path a bare `--strict` keeps the value
+  // after it (`doctor --strict warnings`). THE options: PATH_TRANSPARENCY.
+  const descend = (tokens: readonly string[]): ReturnType<CommandRegistry['resolve']> =>
+    registry.resolve(tokens, PATH_TRANSPARENCY);
+  let { handler, matchedPath, rest: leftover, node } = descend(cleanArgv);
 
   // A multi-word command passed as a SINGLE quoted token (`shrk "graph status"`)
   // arrives as one argv element with internal whitespace. The trie has no atomic
@@ -968,37 +1019,88 @@ async function runCliInner(argv: readonly string[]): Promise<number> {
   // quoted form behaves identically to the unquoted `shrk graph status`.
   // Genuinely unknown tokens leave `handler` undefined and fall through to the
   // existing unknown-command path unchanged.
-  if (!handler && cleanArgv.length === 1 && /\s/.test(cleanArgv[0]!)) {
-    const retry = registry.resolve(cleanArgv[0]!.trim().split(/\s+/));
+  const bareArgv = cleanArgv.filter((t) => !isPathTransparentGlobal(t));
+  if (!handler && bareArgv.length === 1 && /\s/.test(bareArgv[0]!)) {
+    const retry = descend([
+      ...bareArgv[0]!.trim().split(/\s+/),
+      ...cleanArgv.filter(isPathTransparentGlobal),
+    ]);
     if (retry.handler) {
       ({ handler, matchedPath, rest: leftover, node } = retry);
     }
   }
 
-  // `--help` / `-h` immediately after a (sub)group → render help for that
-  // path. This works at any depth.
-  if (leftover[0] === '--help' || leftover[0] === '-h') {
-    return registry.get('help')!.run(parseArgs([matchedPath.join(' ')], { globalCwd }));
+  // `--help` / `-h` ANYWHERE before `--` — after a subverb, a positional or
+  // another flag, at any depth — prints help for the deepest path the command
+  // index knows, and NOTHING else runs: no guard, no surface gate, no
+  // inspection, no command body. (Only a leading `--help` used to be caught:
+  // `report site --help` wrote twelve HTML files, `graph index --help` built
+  // the store.) Tokens after `--` pass through untouched.
+  if (matchedPath.length > 0 && wantsHelp(leftover)) {
+    const topic = helpTopicFor(commandIndexFor(registry), matchedPath, leftover);
+    return registry.get('help')!.run(parseArgs([topic.join(' ')], { globalCwd }));
   }
 
+  const trieChildren = [...node.children.keys()];
   if (handler) {
-    // gate experimental commands. Bootstrap commands and core/extended
-    // tiers pass through; experimental commands return the structured
-    // not-enabled error unless `surface.enabled[]` contains them.
-    const gateReason = await checkSurfaceGate(matchedPath, globalCwd ?? process.cwd());
-    if (gateReason) {
-      const err = makeSurfaceNotEnabledError(gateReason.command, { reason: gateReason.detail });
-      process.stderr.write(renderSurfaceNotEnabledText(err));
+    const parsed = parseArgs(leftover, { globalCwd, booleanFlags: handler.booleanFlags });
+    // THE pre-run judgement (round 11 §5.2, `judgeInvocation` — the function the
+    // command-string resolver calls too): an unknown subcommand, a verb-shaped
+    // token that is neither a subverb nor a file, a flag outside a declared set,
+    // or a flag no documentation of the command names is refused BEFORE
+    // anything runs — cheap, no inspection — instead of a default action that
+    // exits 0 (or a write that happens before the refusal).
+    const rejection = judgeInvocation({
+      registry,
+      handler,
+      matchedPath,
+      trieChildren,
+      parsed,
+      cwd: globalCwd ?? process.cwd(),
+    });
+    if (rejection) {
+      process.stderr.write(rejection.message);
+      return rejection.exitCode;
+    }
+    // The surface gate. Bootstrap commands and core/extended tiers pass
+    // through; an experimental command not in `surface.enabled[]`, a
+    // tool-maintenance command outside SharkCraft's own repository, or a
+    // command `surface.disabled[]` denies returns the structured refusal
+    // (exit 78 — never a check verdict).
+    const refusal = await checkSurfaceGate(
+      handler,
+      matchedPath,
+      parsed.positional,
+      globalCwd ?? process.cwd(),
+    );
+    if (refusal) {
+      // `--json` / `--format json` get the documented machine form on stdout
+      // (`sharkcraft.surface.not-enabled.v1` + `reasonCode`); otherwise the text
+      // on stderr — `surfaceRefusalOutput`, the one writer.
+      const output = surfaceRefusalOutput(refusal, parsed);
+      if (output.stdout) process.stdout.write(output.stdout);
+      if (output.stderr) process.stderr.write(output.stderr);
       return SURFACE_NOT_ENABLED_EXIT_CODE;
     }
-    return await handler.run(
-      parseArgs(leftover, { globalCwd, booleanFlags: handler.booleanFlags }),
-    );
+    return await runWithFlagReadTracking(registry, handler, matchedPath, parsed);
   }
 
-  // No handler at the deepest match. If we landed on a group node (has
-  // children), show that group's help so the user discovers the verbs.
+  // No handler at the deepest match: a command group. A bare token under it
+  // is an unknown subcommand (`templates lst` → did you mean `templates
+  // list`?), never the group's help at exit 0; a bare group lists its verbs.
   if (matchedPath.length > 0 && node.children.size > 0) {
+    const rejection = judgeInvocation({
+      registry,
+      handler: undefined,
+      matchedPath,
+      trieChildren,
+      parsed: parseArgs(leftover, { globalCwd }),
+      cwd: globalCwd ?? process.cwd(),
+    });
+    if (rejection) {
+      process.stderr.write(rejection.message);
+      return rejection.exitCode;
+    }
     return registry.get('help')!.run(parseArgs([matchedPath.join(' ')], { globalCwd }));
   }
 
@@ -1014,6 +1116,47 @@ async function runCliInner(argv: readonly string[]): Promise<number> {
   process.stderr.write(`shrk doesn't have a \`${attempted}\` command.\n`);
   printDidYouMean(attempted);
   return 2;
+}
+
+/**
+ * Run `handler`, then judge the flags it never READ — the universal post-run
+ * detector (`dispatch/unread-flags.ts`). An undocumented non-presentation flag
+ * was already refused before the run (`judgeInvocation`), so this backstop
+ * warns about an undocumented presentation flag and catches a flag name
+ * computed at runtime: a `0` over a dropped input becomes `usageExitFor(path)`. Skipped for a
+ * handler that declares `flags` (the pre-run guard already judged them) or
+ * `forwardsArgv` (a child process re-parses the argv). The declared-subverb
+ * walk is taken BEFORE the run — some handlers consume `args.positional`.
+ */
+async function runWithFlagReadTracking(
+  registry: CommandRegistry,
+  handler: ICommandHandler,
+  matchedPath: readonly string[],
+  parsed: ParsedArgs,
+): Promise<number> {
+  const walk = walkDeclaredSubverbs(handler, matchedPath, parsed.positional);
+  if (!tracksFlagReads(handler, walk)) return await handler.run(parsed);
+  // Captured BEFORE the run — some handlers consume `args.positional`.
+  const positional = [...parsed.positional];
+  const unread = beginFlagReadTracking(parsed);
+  const exit = await handler.run(parsed);
+  // The flag documentation (which builds the command index) is needed only to
+  // judge an unread flag — the common run reads every flag it was given, so it
+  // pays nothing. settleUnreadFlags returns `exit` untouched for no unread flag.
+  // The INVOCATION's documentation, as the pre-run refusal read it (round 13:
+  // per subverb, never a sibling's).
+  const unreadKeys = unread();
+  if (unreadKeys.length === 0) return exit;
+  const index = commandIndexFor(registry);
+  return settleUnreadFlags({
+    unread: unreadKeys,
+    path: walk.path.join(' '),
+    documentation: invocationFlagDocumentation({ handler, matchedPath, positional, index }),
+    groupDocumentation: flagDocumentation(handler, matchedPath, index),
+    documentedOn: (key) => siblingsDocumenting(key, matchedPath, walk.path, index),
+    exit,
+    argv: parsed.argv,
+  });
 }
 
 /**
@@ -1099,10 +1242,16 @@ function printFreeFormTaskHint(task: string): void {
 }
 
 /**
- * Check whether the resolved command path is gated by the
- * surface tier model. Returns `null` if the command is callable
- * (core/extended), or `{ command, detail }` if it is an experimental
- * command not enabled in the current repo's surface config.
+ * Check whether the invoked command is gated by the surface tier model.
+ * Returns `null` if the command is callable (core/extended), or the
+ * structured refusal (`surfaceRefusalFor`) — an experimental command not
+ * enabled, a tool-maintenance command outside SharkCraft's own repository, or
+ * a command a `surface.disabled` selector denies.
+ *
+ * The view is looked up at the deepest DECLARED path first
+ * (`walkDeclaredSubverbs`: `release readiness` and `commands doctor` are
+ * subverbs one handler dispatches, so the trie path alone — `release` — could
+ * never gate them), then at each shorter prefix down to the top-level token.
  *
  * Failure-soft: any error loading the inspection (fresh repo, no
  * config, etc.) lets the command through. The gate must NEVER false-
@@ -1110,22 +1259,28 @@ function printFreeFormTaskHint(task: string): void {
  * spine-derived core commands always pass through cleanly.
  */
 async function checkSurfaceGate(
+  handler: ICommandHandler,
   matchedPath: readonly string[],
+  positional: readonly string[],
   cwd: string,
-): Promise<{ command: string; detail?: string } | null> {
-  const candidate = matchedPath.join(' ');
-  if (candidate.length === 0) return null;
+): Promise<ISurfaceNotEnabledError | null> {
+  if (matchedPath.length === 0) return null;
+  const walk = walkDeclaredSubverbs(handler, matchedPath, positional);
+  const candidates: string[] = [];
+  for (let n = walk.path.length; n >= 1; n -= 1) candidates.push(walk.path.slice(0, n).join(' '));
   try {
-    const { context } = await loadSurfaceContext({ cwd });
+    const { context, inspection } = await loadSurfaceContext({ cwd });
+    // Startup warning: a pack serving compiled contributions built from an
+    // older source (the one pack-asset freshness authority; content, not age).
+    warnStaleCompiledPacks(inspection);
     const summary = buildSurfaceSummary(context);
-    // Try the full path first; fall back to the top-level token. The
-    // catalog uses both shapes ("doctor" and "plan review").
-    const view =
-      findCommandInSummary(summary, candidate) ??
-      findCommandInSummary(summary, matchedPath[0] ?? '');
-    if (!view) return null;
-    if (view.callable) return null;
-    return { command: view.command, detail: view.detail };
+    let view: ReturnType<typeof findCommandInSummary>;
+    for (const candidate of candidates) {
+      view = findCommandInSummary(summary, candidate);
+      if (view) break;
+    }
+    if (!view || view.callable) return null;
+    return surfaceRefusalFor(view);
   } catch {
     return null;
   }
@@ -1158,27 +1313,6 @@ function reorderCandidates<T extends { command: string; score: number }>(
   return ranked;
 }
 
-/** Edit distance (Levenshtein). Used to gate did-you-mean confidence. */
-function editDistance(a: string, b: string): number {
-  const m = a.length;
-  const n = b.length;
-  if (m === 0) return n;
-  if (n === 0) return m;
-  const dp: number[] = new Array(n + 1);
-  for (let j = 0; j <= n; j += 1) dp[j] = j;
-  for (let i = 1; i <= m; i += 1) {
-    let prev = dp[0]!;
-    dp[0] = i;
-    for (let j = 1; j <= n; j += 1) {
-      const tmp = dp[j]!;
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[j] = Math.min(dp[j]! + 1, dp[j - 1]! + 1, prev + cost);
-      prev = tmp;
-    }
-  }
-  return dp[n]!;
-}
-
 /**
  * Suggestion is "confident" when the candidate's top token is close
  * to the attempt in edit-distance terms — `doctorz`→`doctor` (1 edit)
@@ -1194,9 +1328,9 @@ function isConfidentMatch(attempted: string, suggestion: { command: string; scor
   if (suggestion.score < SUGGEST_VISIBLE_SCORE) return false;
   const lower = attempted.toLowerCase();
   const head = (suggestion.command.split(/\s+/)[0] ?? suggestion.command).toLowerCase();
-  const dist = editDistance(lower, head);
-  const tolerance = Math.max(1, Math.floor(lower.length / 4));
-  return dist <= tolerance;
+  // The ONE typo tolerance (dispatch/closest-match.ts) — shared with help's
+  // topic suggestion and the dispatcher guard's closest subcommand / flag.
+  return editDistance(lower, head) <= typoTolerance(lower);
 }
 
 function printDidYouMean(attempted: string): void {
@@ -1284,7 +1418,9 @@ async function redirectStderrToTeardownLog(): Promise<void> {
 // Bun exposes `import.meta.main`; Node does not. When Node runs the
 // compiled `dist/main.js` directly the path-suffix check (`main.js`)
 // catches it. The npm bin shim points at `shrk` so that suffix also
-// triggers it. Source dev under Bun still runs via `main.ts`.
+// triggers it. Source dev under Bun still runs via `main.ts`. The bin target
+// is the round-13 bootstrap `dist/shrk.js` (source `src/shrk.ts`), which
+// imports this module — its suffixes are recognised the same way.
 const isMain =
   typeof import.meta !== 'undefined' && (import.meta as { main?: boolean }).main === true;
 const entryPath = process.argv[1] ?? '';
@@ -1293,6 +1429,7 @@ if (
   entryPath.endsWith('main.ts') ||
   entryPath.endsWith('main.js') ||
   entryPath.endsWith('shrk') ||
+  entryPath.endsWith('shrk.ts') ||
   entryPath.endsWith('shrk.js') ||
   entryPath.endsWith('shrk.cmd')
 ) {

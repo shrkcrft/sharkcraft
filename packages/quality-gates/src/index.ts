@@ -13,5 +13,8 @@ export * from './gates/wiring-gate.ts';
 export * from './gates/policy-lint-gate.ts';
 export * from './gates/knowledge-symbol-gate.ts';
 export * from './runner/run-gates.ts';
+export * from './runner/prepare-gate-run.ts';
+export * from './schema/gate-run-request.ts';
+export * from './schema/prepared-gate-run.ts';
 export * from './runner/report-store.ts';
 export * from './runner/render-markdown.ts';

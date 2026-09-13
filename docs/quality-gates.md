@@ -61,10 +61,22 @@ into `1` for a hard CI gate.
 | context-tests  | `loadContextTests` + `runContextTest` | only with `--strict` or config |
 | agent-tests    | `loadAgentContractTests`              | only with `--strict` or config |
 | packs          | `buildPackDoctorReport`               | only with `--strict` or config |
+| cross-references | `buildDeclaredXrefReport` (the self-config doctor's collector; repro `shrk self-config xrefs` — the verb that prints that same report; round 13: it named `self-config doctor`, which computes a different one) | an error-severity id (dangling `supersededBy`, supersession cycle, unknown facet kind); dangling `related`-style ids only with `--strict`. An id that could not be looked up makes it NOT VERIFIED; `data.coverage` carries the record |
 | every declared rule | the seven planes via `gates check` | per the rule's own `severity` |
+| gates-coverage | `buildGateCoverage` + `settleGateCoverage` (what `gates coverage` concludes) | yes — a broken selfTest, or a `failOnEmpty` rule matching nothing, fails; a stale selector or a partial rule is NOT VERIFIED |
 
 The rule planes run through the **same** evaluator `shrk gates check` uses, so
 the aggregate wired into pre-push can never disagree with the per-plane verb.
+The `gates-coverage` item does the same for `gates coverage`: stale selectors
+and every rule's `selfTest`, settled by the derivation the verb uses (dead globs
+inside connected rules appear as advisory notes, each worded with its reason —
+`advisory: N dead glob(s): <glob> (<reason>)`; a live negation is never one).
+Its repro names the rules:
+`shrk gates coverage --only <ids>`. A rule coverage cannot inspect without a
+side effect (`inspectable: false`, e.g. a `command` baseline with no
+`watchFiles`) is settled on the coverage its plane check reported in the same
+run. That check ran the command, so a healthy rule is not a permanent `2`. A
+selfTest such a rule can never evaluate is still a misconfiguration (`1`).
 
 ## Configuration
 
@@ -109,12 +121,38 @@ keep it from going red on pre-existing structure:
   findings the change *introduced*, hiding pre-existing baseline debt (and
   reporting the hidden count) so a gate run isn't drowned in inherited noise.
 
+Exit codes: `0` pass (an advisory `warn` included), `1` fail (or any `warn`
+under `--strict`), `2` NOT VERIFIED. A gate result may carry `coverage` — what
+it examined against what it was asked to (the wiring and policy gates: one
+record per rule, read from the engine — the same records `check wiring` and
+`policy-lint` settle on). When nothing failed but a record has a shortfall — a
+wiring rule that passed over part of its scope, a rule that examined nothing, a
+config that did not load — the proposed `0` settles to `2` and the run prints
+`NOT VERIFIED: …`, so the banner's "this is not a pass" and `$?` agree.
+`--json` carries the settled `exitCode`, `verdict`, `shortfalls` and
+`accepted` next to `overall`.
+
+The wiring and policy gates are `skipped` only when NO rule is in scope
+(nothing configured, or `--changed-only` selected none — narrowing). A rule
+that was selected but examined nothing (a stale glob) is `warn` with its
+coverage — `2` — or `fail` when `failOnEmpty` makes the empty rule a failure,
+exactly where `check wiring` / `policy-lint` exit `1`. Under `--changed-only`
+the policy engine narrows a rule out when the change put no content in front
+of it (only deleted files, or a `.ts` with no inline template under a template
+rule), so a plain delete is never reported as "matched nothing".
+
 ## MCP
 
-`get_quality_report` returns the same structured report over MCP. It is
-strictly read-only — gates that would normally run a shell command are
-skipped and the response includes a `nextCommand: "shrk quality --strict"`
-hint so the human can run the full thing locally.
+`get_quality_report` returns the inspector's quality report (`buildQualityReport`)
+over MCP — the same report the dashboard and the report site read. Its
+knowledge stale-check row is THE gate `shrk quality` settles
+(`knowledgeStaleQualityGate`), so the two cannot disagree about the corpus.
+It is strictly read-only, so it does NOT run the seven data-defined gate
+planes (baselines and generated artifacts spawn shells): when the config
+declares any plane rule, the report carries a `gate-planes` row with
+`executed: false` and `overall` is `not-verified` — never `pass` over rules
+nobody evaluated. The response includes a `nextCommand: "shrk quality
+--strict"` hint so the human can run the full bundle locally.
 
 ```jsonc
 // input

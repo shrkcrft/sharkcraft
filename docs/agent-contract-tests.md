@@ -29,6 +29,15 @@ shrk test agent --id <id>
 shrk test agent --json
 ```
 
+Exit codes (a verdict verb — `--exit-trailer` carries it through a pipe): `0`
+every selected test passed · `1` a test failed · `2` NOT VERIFIED — a test
+could not be evaluated, or no agent tests are configured (`--allow-empty`
+accepts an empty set explicitly) · `3` an `--id` that selects nothing (the
+message names how many tests are configured and the closest ids). `--json`
+always carries `exitCode`, `verdict` and `shortfalls`. `shrk quality` reports
+the same verdict for its agent-tests gate: a not-verified test is never
+counted as a failure there either.
+
 MCP: `list_agent_tests`, `run_agent_test`. Packs contribute via
 `agentTestFiles`.
 
@@ -36,7 +45,48 @@ These are especially important when shipping a pack that other repos
 rely on — if your pack stops surfacing the expected pipeline/template
 for a task, downstream agents quietly do the wrong thing.
 
+## Two kinds of expectation
+
+| Ranker-surfaced (order-sensitive; may flip on an unrelated content edit) | Registry existence (stable) |
+|---|---|
+| `expectedPipeline`, `expectedTemplates`, `expectedRules`, `expectedForbiddenActions`, `expectedVerificationCommands`, `mustNotInclude` | `expectedHelpers`, `expectedPlaybooks`, `expectedPolicies`, `expectedConstructs`, `expectedKnowledge` |
+
+`expectedCommands` is a hybrid: it passes when the packet recommends the
+command OR the command resolves against the live command index
+(`shrk surface list`). A bare catalog form (`dev start`) is read as
+`shrk dev start` — by the one command-string resolver, the same reading a
+knowledge `command` reference and the self-config doctor get (a bare
+`frobnicate` is an unknown verb everywhere; `git status` stays not-shrk).
+
+Every existence answer comes from the shared reference registry — the set the
+kind's `list` verb prints (`shrk rules list`, `shrk playbooks list`, …) — never
+a private copy. Before round 11 the runner kept its own per-kind sets (pack
+helpers missing), checked `expectedRules` against the KNOWLEDGE entries, and
+checked `expectedCommands` against a property no inspection has (every correct
+command failed).
+
+Gate-rule `selfTest` fields are a third class again: they assert on a rule's
+extracted set — see [gate-rules](gate-rules.md#what-a-selftest-asserts-plane-by-plane).
+
 ## Failure diagnostics
+
+Each diagnostic carries `assertion` (`surfaced` | `exists`), `consulted`
+(`{ kind, listVerb, size }` — the registry that answered) and a `code`:
+
+| code | meaning |
+|---|---|
+| `unknown-id` | not registered at all — this expectation can never pass |
+| `not-surfaced` | registered, but the ranker did not put it in the packet |
+| `unknown-command` | the command string does not resolve (see `closest`) |
+| `unverifiable` | the lookup could not run (registries not warmed; no command index outside the CLI) |
+| `not-aggregated` | no relevant rule contributes this forbidden action / verification command |
+| `surfaced-but-forbidden` | a `mustNotInclude` id was surfaced |
+
+A test whose every failing expectation is `unverifiable` has
+`verdict: 'not-verified'` (and `passed: false`) — `shrk test agent` exits `2`
+for it, `1` for a real failure. MCP `run_agent_test` reads the same registry;
+without a command index an unsurfaced `expectedCommands` entry is reported
+`not-verified`, never a false failure.
 
 When an expectation fails, the result includes per-id `diagnostics` with:
 

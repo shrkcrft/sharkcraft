@@ -4,3 +4,8 @@ export * from './config-loader.ts';
 export * from './config-validator.ts';
 export * from './project-config-resolver.ts';
 export * from './config-schema.ts';
+export * from './gate-plane.ts';
+export * from './gate-plane-config-keys.ts';
+export * from './i-sharkcraft-config-input.ts';
+export * from './normalize-plane-rule.ts';
+export * from './normalize-plane-config.ts';

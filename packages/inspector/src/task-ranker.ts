@@ -3,6 +3,10 @@ import type { ITemplateDefinition } from '@shrkcrft/templates';
 import type { IPipelineDefinition } from '@shrkcrft/pipelines';
 import type { IPreset, IResolvedPreset } from '@shrkcrft/presets';
 import { tuningBoostFor, type ISearchTuningEntry } from './search-tuning-registry.ts';
+import { searchDocumentId, searchKindForPrefix } from './search-document-id.ts';
+import type { SearchDocumentPrefix } from './search-document-prefix.ts';
+import { tuningQueryTokens } from './tuning-query-tokens.ts';
+import { contentTerms, matchedQueryTerms } from './match-terms.ts';
 
 /**
  * Deterministic relevance ranker.
@@ -18,6 +22,14 @@ export interface IRankedItem<T> {
   item: T;
   score: number;
   reasons: string[];
+  /**
+   * The DISTINCT query content terms found in the item's id / name|title /
+   * description / tags (templates and pipelines). `score` counts repeats and
+   * verb-only / cross-link points, so one incidental token can reach double
+   * digits; this is the evidence count a caller gates on (the recommender
+   * needs ≥ 2 before a scaffold may headline). Raw scores are unchanged.
+   */
+  matchedTerms?: readonly string[];
 }
 
 // ── Verb hints (what kind of work) ──────────────────────────────────────
@@ -277,6 +289,7 @@ export function rankTemplates(
   task: string,
 ): IRankedItem<ITemplateDefinition>[] {
   const ctx = deriveContext(task);
+  const queryTerms = contentTerms(task);
   const out: IRankedItem<ITemplateDefinition>[] = [];
   for (const t of templates) {
     const reasons: string[] = [];
@@ -288,7 +301,10 @@ export function rankTemplates(
     s += applyIdDomainBoost(t.id, ctx, reasons);
     const hits = tokenHits(ctx.taskTokens, t.id, t.name, t.description, (t.tags ?? []).join(' '));
     if (hits) s += score(reasons, Math.min(8, hits * 2), `token hits: ${hits}`);
-    if (s > 0) out.push({ item: t, score: s, reasons });
+    if (s > 0) {
+      const matchedTerms = matchedQueryTerms(queryTerms, [t.id, t.name, t.description, ...(t.tags ?? [])]);
+      out.push({ item: t, score: s, reasons, matchedTerms });
+    }
   }
   out.sort((a, b) => b.score - a.score);
   return out;
@@ -308,6 +324,7 @@ export function rankPipelines(
   task: string,
 ): IRankedItem<IPipelineDefinition>[] {
   const ctx = deriveContext(task);
+  const queryTerms = contentTerms(task);
   const out: IRankedItem<IPipelineDefinition>[] = [];
   for (const p of pipelines) {
     const reasons: string[] = [];
@@ -336,7 +353,10 @@ export function rankPipelines(
     if (stepReasons.length) reasons.push(`step hits: ${stepReasons.join(', ')}`);
     const titleHits = tokenHits(ctx.taskTokens, p.title, p.description);
     if (titleHits) s += score(reasons, Math.min(8, titleHits * 2), `title/description hits: ${titleHits}`);
-    if (s > 0) out.push({ item: p, score: s, reasons });
+    if (s > 0) {
+      const matchedTerms = matchedQueryTerms(queryTerms, [p.id, p.title, p.description, ...(p.tags ?? [])]);
+      out.push({ item: p, score: s, reasons, matchedTerms });
+    }
   }
   out.sort((a, b) => b.score - a.score);
   return out;
@@ -398,21 +418,23 @@ export interface IRankAllResult {
  */
 function applyTuningToRanked<T extends { id: string }>(
   ranked: readonly IRankedItem<T>[],
-  kind: string,
-  idPrefix: string,
+  prefix: SearchDocumentPrefix,
   tuningTokens: readonly string[],
   tuning: readonly ISearchTuningEntry[],
 ): IRankedItem<T>[] {
   if (tuning.length === 0) return ranked.slice();
+  // The document id and kind come from THE search-document codec, so a boost
+  // key that fires in `shrk search` fires here — never a hand-written prefix.
+  const kind = searchKindForPrefix(prefix) ?? prefix;
   const out = ranked.map((r) => {
     const tags = (r.item as { tags?: readonly string[] }).tags;
     const boost = tuningBoostFor(
-      { id: `${idPrefix}${r.item.id}`, kind, ...(tags ? { tags } : {}), source: 'local' },
+      { id: searchDocumentId(prefix, r.item.id), kind, ...(tags ? { tags } : {}), source: 'local' },
       tuningTokens,
       tuning,
     );
     if (boost.delta === 0) return r;
-    return { item: r.item, score: r.score + boost.delta, reasons: [...r.reasons, ...boost.reasons] };
+    return { ...r, score: r.score + boost.delta, reasons: [...r.reasons, ...boost.reasons] };
   });
   out.sort((a, b) => b.score - a.score);
   return out;
@@ -478,18 +500,18 @@ export function rankAll(
   const templates = initialTemplates.map((r) => {
     if (!referencedFromTopPipeline.has(r.item.id)) return r;
     return {
-      item: r.item,
+      ...r,
       score: r.score + 3,
       reasons: [...r.reasons, `referenced by top pipeline ${topPipeline?.id}`],
     };
   });
   templates.sort((a, b) => b.score - a.score);
 
-  const tuningTokens = task.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 1);
-  const tunedRules = applyTuningToRanked(rules, 'rule', 'rule:', tuningTokens, tuning);
-  const tunedPaths = applyTuningToRanked(initialPaths, 'path', 'path:', tuningTokens, tuning);
-  const tunedTemplates = applyTuningToRanked(templates, 'template', 'template:', tuningTokens, tuning);
-  const tunedPipelines = applyTuningToRanked(initialPipelines, 'pipeline', 'pipeline:', tuningTokens, tuning);
+  const tuningTokens = tuningQueryTokens(task);
+  const tunedRules = applyTuningToRanked(rules, 'rule', tuningTokens, tuning);
+  const tunedPaths = applyTuningToRanked(initialPaths, 'path', tuningTokens, tuning);
+  const tunedTemplates = applyTuningToRanked(templates, 'template', tuningTokens, tuning);
+  const tunedPipelines = applyTuningToRanked(initialPipelines, 'pipeline', tuningTokens, tuning);
 
   return {
     rules: tunedRules.slice(0, limit),

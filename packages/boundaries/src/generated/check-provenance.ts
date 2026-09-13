@@ -1,4 +1,5 @@
 import type { IGeneratedArtifactRule } from '@shrkcrft/core';
+import { globListWalkGlobs } from '../scan/glob.ts';
 import { safeCompile } from '../util/safe-regex.ts';
 
 /** What a provenance finding is about. */
@@ -35,7 +36,8 @@ function headOf(content: string, withinLines: number): string {
  */
 export function deriveOutsideGlobs(generatedGlob: readonly string[]): string[] {
   const exts = new Set<string>();
-  for (const g of generatedGlob) {
+  // Inclusion globs only: a `!gen/**/*.hand.ts` names no extension to search.
+  for (const g of globListWalkGlobs(generatedGlob)) {
     const m = /\.([A-Za-z0-9]+)$/.exec(g);
     if (m) exts.add(m[1]!);
   }

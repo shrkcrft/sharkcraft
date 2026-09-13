@@ -246,13 +246,13 @@ export default [
     tags: ['agent', 'graph'],
     appliesWhen: ['building-agent-orchestration'],
     summary:
-      '`shrk agent graph <task>` builds a task → intent → risk → contract → constructs → plans → gates → validation graph.',
+      '`buildTaskExecutionGraph` (packages/inspector/src/execution-graph.ts) builds a task → intent → risk → contract → constructs → plans → gates → validation graph. The MCP tool `create_execution_graph` exposes it; no CLI verb does (the old `shrk agent graph` verb is gone).',
     content: [
       'Read-only orchestration plan — no execution.',
     ].join('\n\n'),
     references: [
       { kind: 'file', path: 'packages/inspector/src/execution-graph.ts' },
-      { kind: 'command', command: 'shrk agent graph' },
+      { kind: 'symbol', symbol: 'buildTaskExecutionGraph', path: 'packages/inspector/src/execution-graph.ts' },
     ],
   }),
   defineKnowledgeEntry({
@@ -481,14 +481,14 @@ export default [
     summary:
       '`loadTsDecisions` reads sharkcraft/decisions.ts + pack decisionFiles[]. Markdown ADRs remain primary; TS entries fold in via cache.',
     content: [
-      '`shrk decisions list` warms the TS cache, then lists both sources. Duplicates skip with markdown winning.',
-      '`shrk decisions doctor` validates id uniqueness + presence of Context/Decision/Consequences.',
+      '`listDecisions` merges both sources once `loadTsDecisions` has warmed the TS cache. Duplicates skip with markdown winning.',
+      '`shrk self-config doctor` validates decision cross-references (related rules / policies / files, and every `relatedCommands` string against the live command index). There is no `shrk decisions` verb.',
     ].join('\n\n'),
     references: [
       { kind: 'file', path: 'packages/inspector/src/decision-records.ts', required: true },
       { kind: 'file', path: 'sharkcraft/decisions.ts' },
       { kind: 'symbol', symbol: 'loadTsDecisions', path: 'packages/inspector/src/decision-records.ts' },
-      { kind: 'command', command: 'shrk decisions doctor' },
+      { kind: 'command', command: 'shrk self-config doctor' },
     ],
   }),
   defineKnowledgeEntry({
@@ -540,7 +540,7 @@ export default [
     tags: ['commands', 'discovery', 'did-you-mean'],
     appliesWhen: ['unknown-command', 'find-command'],
     summary:
-      '`shrk commands suggest "<partial>"`, `shrk commands explain "<cmd>"` and unknown-subcommand did-you-mean hints — typo-tolerant matching over the catalog.',
+      'Unknown-command, unknown-subcommand and unknown-flag did-you-mean hints (the CLI `commands suggest` / `commands explain` verbs were folded into these and `shrk explain`), plus `shrk commands search "<query>"` — typo-tolerant matching over the catalog and the command index.',
     content: [
       'Fuzzy matching is deterministic (Levenshtein + token-fragment scoring). Suggestions include safety level and MCP availability. MCP tools: `suggest_commands`, `search_commands`, `explain_command`.',
     ].join('\n\n'),
@@ -548,7 +548,7 @@ export default [
       { kind: 'file', path: 'packages/inspector/src/command-suggester.ts', required: true },
       { kind: 'symbol', symbol: 'suggestCommands', path: 'packages/inspector/src/command-suggester.ts', required: true },
       { kind: 'symbol', symbol: 'suggestDidYouMean', path: 'packages/inspector/src/command-suggester.ts', required: true },
-      { kind: 'command', command: 'shrk commands suggest "knowlege"' },
+      { kind: 'command', command: 'shrk commands search "knowledge"' },
     ],
   }),
   defineKnowledgeEntry({
@@ -618,13 +618,13 @@ export default [
     tags: ['search-tuning', 'explain'],
     appliesWhen: ['debug-tuning'],
     summary:
-      '`shrk search-tuning explain "<query>"` top-level alias; `--kind` / `--source` / `--limit` / `--format` flags on the subcommand form.',
+      '`shrk search tuning explain "<query>"`; `--kind` / `--source` / `--limit` / `--format` flags. (There is no `search-tuning` top-level verb.)',
     content: [
       'Top-level alias keeps the surface short. Underlying `explainSearchTuning` unchanged.',
     ].join('\n\n'),
     references: [
       { kind: 'file', path: 'packages/cli/src/commands/search.command.ts', required: true },
-      { kind: 'command', command: 'shrk search-tuning explain "rename plugin"' },
+      { kind: 'command', command: 'shrk search tuning explain "rename plugin"' },
     ],
   }),
   defineKnowledgeEntry({

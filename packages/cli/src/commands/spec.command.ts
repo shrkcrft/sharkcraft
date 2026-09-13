@@ -78,6 +78,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { collectChangedPaths } from '../diff/collect-changed-paths.ts';
 import { asJson, header } from '../output/format-output.ts';
 // Bonus DX item — `spec implement --apply` now dispatches into
@@ -1145,6 +1146,8 @@ export const specVerifyCommand: ICommandHandler = {
 
 export const specParentCommand: ICommandHandler = {
   name: 'spec',
+  // Mixed-mode: every spec verb is a trie child.
+  positionals: PositionalMode.None,
   description:
     'Spec-driven development. Subcommand required: create | review | implement | verify | list | show | status | lint.',
   usage: 'shrk spec <create|review|implement|verify|list|show|status|lint> [...]',

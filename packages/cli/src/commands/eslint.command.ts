@@ -8,6 +8,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, bullet, header } from '../output/format-output.ts';
 
 /**
@@ -472,6 +473,25 @@ function renderEslintReportText(files: readonly IEslintReportFile[]): string {
 
 export const eslintCommand: ICommandHandler = {
   name: 'eslint',
+  // positional[0] is the bridge verb — `run` refuses anything else. Each spec
+  // reuses its verb handler's usage, so the flags the verb reads (`--force`,
+  // `--output`, `--from`, …) are documented for the post-run flag detector.
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: 'scaffold',
+      aliases: ['config'],
+      description: eslintScaffoldCommand.description,
+      usage: eslintScaffoldCommand.usage,
+    },
+    { name: 'report', description: eslintReportCommand.description, usage: eslintReportCommand.usage },
+    { name: 'rules', description: eslintRulesCommand.description, usage: eslintRulesCommand.usage },
+    {
+      name: 'explain-limitations',
+      description: eslintExplainLimitationsCommand.description,
+      usage: eslintExplainLimitationsCommand.usage,
+    },
+  ],
   description:
     'ESLint bridge. `scaffold` emits a flat-config snippet that ignores SharkCraft generated paths; `report` re-emits boundary violations in the ESLint result format; `rules` inventories what is bridgeable; `explain-limitations` documents what cannot be bridged. `config` is an alias for `scaffold`.',
   usage:

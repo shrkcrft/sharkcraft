@@ -1,3 +1,4 @@
+import type { IRejectedEntry } from '@shrkcrft/core';
 import type { LoaderAssetKind, LoaderAssetStatus } from './inspector-cache.ts';
 
 export type LoaderOrigin = 'local-config' | 'pack-manifest';
@@ -8,9 +9,20 @@ export interface ILoaderDiagnostic {
   origin: LoaderOrigin;
   packName?: string;
   elapsedMs: number;
-  status: LoaderAssetStatus | 'cached-skip';
-  /** Number of items extracted (entries/templates/etc). */
+  /**
+   * `missing` — a file the local config DECLARES (e.g. `knowledgeFiles`) does
+   * not exist, so nothing was loaded from it. Recorded so a corpus check can
+   * refuse to pass over a source it was told about and never read.
+   */
+  status: LoaderAssetStatus | 'cached-skip' | 'missing';
+  /** Number of items extracted (entries/templates/etc) — the loader's ACCEPTED count. */
   count: number;
+  /**
+   * Entries the file declared that the loader refused (round 12, 12.1), so
+   * `count + rejected.length === declared`. Absent when none were refused.
+   * Lifted into THE rejection channel by `collectContributionRejections`.
+   */
+  rejected?: readonly IRejectedEntry[];
   warningCount: number;
   errorMessage?: string;
   /** When status === 'cached-skip', this is the cached pre-existing status. */

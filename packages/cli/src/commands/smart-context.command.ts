@@ -34,6 +34,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import {
   DeclarationKind,
   PLAN_CACHE_SCHEMA,
@@ -116,8 +117,32 @@ const SMART_CONTEXT_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   'tiny-only',
 ]);
 
+/**
+ * THE complete accepted flag set of `smart-context "<task>"` — every flag its
+ * code reads (r75-flag-read-ledger locks it: a forwarding handler's declared
+ * set covers every read). Declared because the handler forwards its argv to a
+ * worker child (and runs `--dry-run` inline with the same exemption), so no
+ * process ever judged a flag after the run: `--budgt 5` ran at exit 0 and the
+ * requested wall-clock cap silently did not apply. The dispatcher guard now
+ * refuses a flag outside this set before anything runs or spawns.
+ */
+const SMART_CONTEXT_FLAGS: ReadonlySet<string> = new Set([
+  'ai-plan', 'budget', 'cache-reference-threshold', 'cache-replay-threshold', 'debug', 'dry-run', 'enhance',
+  'enhance-passes', 'expansion-limit', 'expansion-tokens', 'focused', 'instructions', 'json', 'log-prompt',
+  'max-tokens', 'model', 'no-cache', 'no-enhance', 'no-instructions', 'no-polish', 'no-refresh-index', 'plan',
+  'plus', 'provider', 'refresh', 'save', 'save-conversation', 'seed-tokens', 'since', 'stage1-max-tokens',
+  'stream', 'task', 'task-type', 'tiny-only',
+]);
+
 export const smartContextCommand: ICommandHandler = {
   name: 'smart-context',
+  // The positionals are the free-form task. The brief runs in a child that
+  // re-executes process.argv (runSmartContextInChild), so this process's flag
+  // reads prove nothing — the post-run unknown-flag detector stays out, and
+  // the declared `flags` are judged by the pre-run guard instead.
+  positionals: PositionalMode.Free,
+  forwardsArgv: true,
+  flags: SMART_CONTEXT_FLAGS,
   booleanFlags: SMART_CONTEXT_BOOLEAN_FLAGS,
   description:
     'Build deterministic context and ask an AI provider to synthesise an enriched brief (default), structured plan (--plan), or two-stage development plan (--ai-plan).',
@@ -556,6 +581,9 @@ export const smartContextAuditTemplatesCommand: ICommandHandler = {
     const onlyPlan = flagBool(args, 'only-plan');
 
     const inspection = await inspectSharkcraft({ cwd });
+    // Template `related` ids resolve against EVERY registry — warm first, or a
+    // construct / playbook id reads NOT VERIFIED instead of resolving.
+    await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
     let report = buildTemplateAudit(
       inspection,
       templateId ? { templateId } : {},
@@ -835,6 +863,10 @@ export const smartContextAuditKnowledgeCommand: ICommandHandler = {
     const onlyPlan = flagBool(args, 'only-plan');
 
     const inspection = await inspectSharkcraft({ cwd });
+    // The audit folds in the stale report — warm before it resolves any id.
+    if (!noStaleCheck) {
+      await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
+    }
     let report = buildKnowledgeAudit(inspection, {
       ...(entryId ? { entryId } : {}),
       ...(noStaleCheck ? { skipStaleCheck: true } : {}),
@@ -1441,6 +1473,11 @@ function runEmbeddingsBuildInChild(): Promise<number> {
 
 /** `shrk smart-context embeddings build` — (re)build the semantic index. */
 export const smartContextEmbeddingsBuildCommand: ICommandHandler = {
+  // Re-executes process.argv in an isolated child (runEmbeddingsBuildInChild):
+  // nothing judges a flag after the run, so the complete set is declared and
+  // the pre-run guard refuses anything else.
+  forwardsArgv: true,
+  flags: new Set(['json', 'max-files', 'model', 'rebuild', 'root']),
   name: 'embeddings-build',
   description:
     'Build or incrementally refresh the semantic index. Defaults to incremental updates when an index already exists; pass --rebuild for a full rebuild.',
@@ -1936,14 +1973,14 @@ const FOCUSED_ARCHITECTURE_PREAMBLE = [
   '     "explicitlyNotInScope": [string]                              // what we are NOT building yet',
   '  },',
   '  "firstSpike": {                                                  // small, concrete, runnable',
-  '     "proposedCommand": string | null,                             // e.g. "shrk context-feed start --interval 5s"',
+  '     "proposedCommand": string | null,                             // e.g. "shrk watch <task> --interval 5"',
   '     "proposedFiles": [{ "path": string, "purpose": string }],     // e.g. ".sharkcraft/context-stream/<timestamp>.json"',
   '     "schemaOutline": string,                                      // minimal JSON sketch of any context packet shape',
   '     "successCriteria": [string]                                   // observable pass/fail bullets',
   '  },',
   '  "integrationPoints": [{                                          // where this WOULD touch existing code',
   '     "surface": "cli-command"|"cli-watcher"|"mcp-tool-call"|"mcp-resource-read"|"file-read"|"file-write"|"stdout-stream"|"background-watcher",',
-  '     "name": string,                                                // e.g. "shrk context-feed start", "context-packet/next"',
+  '     "name": string,                                                // e.g. "shrk watch", "smart_context_feed"',
   '     "why": string',
   '  }],',
   '  "concerns": {                                                     // pick the ones that apply to the design',
@@ -2000,7 +2037,7 @@ const FOCUSED_ARCHITECTURE_POLISH_PREAMBLE = [
   '   - Drop any candidate that, after deduplication, has no unique pro or no unique con.',
   '2. Wrong vocabulary in integrationPoints.surface.',
   '   - Replace any HTTP verb / generic surface ("CLI"/"MCP server") with the canonical kebab-case vocabulary: `cli-command`, `cli-watcher`, `mcp-tool-call`, `mcp-resource-read`, `file-read`, `file-write`, `stdout-stream`, `background-watcher`.',
-  '   - Each integrationPoint must name an actual surface (e.g. `shrk context-feed`, `context-packet/next`), not just "GET".',
+  '   - Each integrationPoint must name an actual surface (e.g. `shrk watch`, `smart_context_feed`), not just "GET".',
   '3. No recommendedMvp picked, or `recommendation` field missing.',
   '   - Exactly ONE candidate gets `recommendation: "recommended"`. Others split between `possible-later` and `not-for-mvp`.',
   '   - Populate `recommendedMvp.architectureName` to match. Fill `recommendedMvp.explicitlyNotInScope` with at least 2 items.',

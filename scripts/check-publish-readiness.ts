@@ -68,10 +68,8 @@ function check(short: string): void {
       message: 'files[] should include "dist" (publish mode) or "src" (dev mode)',
     });
   }
-  if (pkg.private === true) {
-    // Private packages can opt out of publishing; that's fine.
-    return;
-  }
+  // (A private package already returned above — every check below is for a
+  // package that publishes.)
   if (!pkg.publishConfig) {
     issues.push({ severity: 'warning', pkg: name, message: 'publishConfig missing (recommend access:"public" for @scope/* packages)' });
   } else if (
@@ -102,7 +100,9 @@ function check(short: string): void {
     }
   }
 
-  // Recommend that the CLI/MCP packages publish dist (bin should point to dist/main.js).
+  // Recommend that the CLI/MCP packages publish dist: a bin must point at emitted
+  // JS — since round 13 the bootstraps dist/shrk.js / dist/shrk-mcp.js, which
+  // load dist/main.js and turn an unlinked workspace dependency into exit 70.
   const bin = pkg.bin;
   if (bin) {
     const binEntries: Record<string, string> = typeof bin === 'string' ? { [name]: bin } : (bin as Record<string, string>);

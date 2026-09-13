@@ -1,7 +1,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
+  ContributionKind,
   getContractTemplate,
+  inspectSharkcraft,
   listContractTemplates,
   recommendContractTemplate,
   renderContractTemplateMarkdown,
@@ -15,6 +17,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson } from '../output/format-output.ts';
+import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
 
 export const contractTemplateListCommand: ICommandHandler = {
   name: 'list',
@@ -22,8 +25,14 @@ export const contractTemplateListCommand: ICommandHandler = {
   usage: 'shrk contract template list [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const list = listContractTemplates();
+    // A contributed contract template its loader refused is named (round 12,
+    // 12.1) — it used to read `Invalid contract template at <file>; skipped.`
+    // on no surface at all.
+    const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
+    const note = { next: 'shrk packs contributions' };
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(list) + '\n');
+      await writeRejectedEntriesNote(inspection, [ContributionKind.ContractTemplate], { ...note, json: true });
       return 0;
     }
     for (const t of list) {
@@ -31,6 +40,7 @@ export const contractTemplateListCommand: ICommandHandler = {
       process.stdout.write(`  role: ${t.role} / mode: ${t.mode}\n`);
       process.stdout.write(`  ${t.description}\n\n`);
     }
+    await writeRejectedEntriesNote(inspection, [ContributionKind.ContractTemplate], note);
     return 0;
   },
 };

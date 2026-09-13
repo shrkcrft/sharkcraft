@@ -127,7 +127,7 @@ const SCHEMA_ENTRIES: ReadonlyArray<ISchemaInventoryEntry> = [
     ],
     currentVersion: 'v1',
     summary: 'Pack manifest envelope (signed). Consumed by `shrk packs *`.',
-    emittedBy: 'shrk packs build',
+    emittedBy: 'shrk packs sign',
     docs: 'docs/security.md',
   },
   {
@@ -218,8 +218,9 @@ const SCHEMA_ENTRIES: ReadonlyArray<ISchemaInventoryEntry> = [
       { version: 'v1', status: SchemaStatus.Current },
     ],
     currentVersion: 'v1',
-    summary: 'Compliance profile + check envelope.',
-    emittedBy: 'shrk compliance check',
+    // Its CLI verb was retired; the envelope is emitted by the inspector
+    // library (compliance-profiles.ts), so no command is named here.
+    summary: 'Compliance profile + check envelope (emitted by the inspector library; its CLI verb was retired).',
   },
   {
     id: 'sharkcraft.review-packet',

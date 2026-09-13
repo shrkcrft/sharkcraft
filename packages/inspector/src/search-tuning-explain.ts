@@ -7,6 +7,7 @@ import {
   type ISearchTuningEntry,
 } from './search-tuning-registry.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { tuningQueryTokens } from './tuning-query-tokens.ts';
 
 export const SEARCH_TUNING_EXPLAIN_SCHEMA = 'sharkcraft.search-tuning-explain/v1';
 
@@ -56,17 +57,14 @@ export interface ISearchTuningExplainReport {
     mergeStrategy?: 'sum' | 'max';
   }[];
   matched: readonly ITuningMatch[];
-  cappedBoosts: readonly { tuningId: string; key: string; original: number; clamped: number }[];
+  /**
+   * Every boost the ±cap changed. A per-boost clamp names its tuning and key;
+   * the global total cap is a row with `key: 'total'` and the `docId` it
+   * discarded tuning on (it used to be applied silently).
+   */
+  cappedBoosts: readonly { tuningId: string; key: string; original: number; clamped: number; docId?: string }[];
   topResults: readonly IPerHitTuningExplain[];
   warnings: readonly { code: string; message: string; tuningId?: string }[];
-}
-
-function tokenize(query: string): string[] {
-  return query
-    .toLowerCase()
-    .split(/[\s,\.;:\/]+/)
-    .map((t) => t.trim())
-    .filter((t) => t.length > 1);
 }
 
 function describeBoost(entry: ISearchTuningEntry, tokens: readonly string[]): ITuningMatch {
@@ -108,19 +106,19 @@ export async function explainSearchTuning(
   await loadSearchTuning(inspection);
   const tuning = listSearchTuning(inspection);
   const issues = listSearchTuningIssues(inspection);
-  const tokens = tokenize(query);
+  // THE trigger tokenizer — the one `searchIndex` hands `tuningBoostFor`.
+  const tokens = tuningQueryTokens(query);
   const matched = tuning.map((t) => describeBoost(t, tokens));
-  const cappedBoosts = issues
-    .filter((i) => i.code === 'boost-clamped')
-    .map((i) => {
-      const parsed = /Boost for "([^"]+)" clamped to (\S+) \(was (\S+)\)/.exec(i.message);
-      return {
-        ...(i.tuningId ? { tuningId: i.tuningId } : { tuningId: '(unknown)' }),
-        key: parsed?.[1] ?? '?',
-        clamped: parsed ? Number(parsed[2]) : 0,
-        original: parsed ? Number(parsed[3]) : 0,
-      };
-    });
+  // Structured fields from the loader, not a regex over the message text.
+  const cappedBoosts: { tuningId: string; key: string; original: number; clamped: number; docId?: string }[] =
+    issues
+      .filter((i) => i.code === 'boost-clamped')
+      .map((i) => ({
+        tuningId: i.tuningId ?? '(unknown)',
+        key: i.key ?? '?',
+        clamped: i.clamped ?? 0,
+        original: i.original ?? 0,
+      }));
   const index = buildSearchIndex(inspection);
   const opts: ISearchOptions = { query, limit: Math.max(5, options.topN ?? 5), explain: true };
   const baseline = searchIndex(index, { ...opts, tuning: [] });
@@ -141,6 +139,15 @@ export async function explainSearchTuning(
       tokens,
       tuning,
     );
+    if (boost.capped) {
+      cappedBoosts.push({
+        tuningId: '(combined)',
+        key: 'total',
+        docId: h.document.id,
+        original: boost.capped.raw,
+        clamped: boost.capped.applied,
+      });
+    }
     topResults.push({
       docId: h.document.id,
       title: h.document.title,

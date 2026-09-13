@@ -2,8 +2,9 @@ import { readFileSync } from 'node:fs';
 import {
   evaluateBoundaries,
   loadTsconfigPaths,
-  scanImports,
 } from '@shrkcrft/boundaries';
+import { ChangedScopeMode } from './boundaries-changed-only.ts';
+import { runBoundaryCheck } from './run-boundary-check.ts';
 import {
   checkFolderOpSafety,
   FolderOpSafety,
@@ -85,6 +86,8 @@ export interface IPlanReviewReport {
    * scanning its imports against the boundary rules.
    */
   planIntroducedBoundaryConcerns: readonly IPlanIntroducedBoundaryConcern[];
+  /** Why `potentialBoundaryConcerns` is not the full answer for the targets (THE boundary verdict's shortfalls). */
+  boundaryShortfalls?: readonly string[];
   /** Verification commands recommended to run after apply. */
   verificationCommands: readonly string[];
   humanApprovalReminder: string;
@@ -179,19 +182,21 @@ export function reviewSavedPlan(
     }
   }
 
-  // Current-state boundary scan on the target paths (existing behavior).
+  // Current-state boundary scan on the target paths — through THE boundary
+  // orchestrator, scoped to the planned paths (round 11 review R11-GAP-3): a
+  // governed target it could not read is named in `boundaryShortfalls`.
   let potentialBoundaryConcerns: IPlanReviewReport['potentialBoundaryConcerns'] = [];
+  let boundaryShortfalls: readonly string[] = [];
   const tsconfigPaths = loadTsconfigPaths(inspection.projectRoot);
   const aliasOpts =
     tsconfigPaths.aliases.size > 0 ? { tsconfigPaths } : {};
   if (inspection.boundaryRegistry.size() > 0 && files.length > 0) {
-    const scan = scanImports({ projectRoot: inspection.projectRoot });
-    const evalResult = evaluateBoundaries(
-      scan,
-      inspection.boundaryRegistry.list(),
-      aliasOpts,
-    );
-    const targetSet = new Set(files.map((f) => f.relativePath));
+    const targets = files.map((f) => f.relativePath);
+    const evalResult = runBoundaryCheck(inspection, { changed: { mode: ChangedScopeMode.Files, files: targets } });
+    if (evalResult.verdict === 'not-verified' && evalResult.selectedRuleIds.length > 0) {
+      boundaryShortfalls = evalResult.shortfalls;
+    }
+    const targetSet = new Set(targets);
     potentialBoundaryConcerns = evalResult.violations
       .filter((v) => targetSet.has(v.file))
       .map((v) => ({
@@ -208,6 +213,9 @@ export function reviewSavedPlan(
   // planned paths.
   const planIntroducedBoundaryConcerns: IPlanIntroducedBoundaryConcern[] = [];
   if (inspection.boundaryRegistry.size() > 0 && liveChanges.length > 0) {
+    // PLANNED contents are not on disk, so the orchestrator cannot scan them:
+    // a sanctioned direct `evaluateBoundaries` over planned edges only (the
+    // r75 one-boundary-authority lock names this call site).
     const plannedEdges = collectPlannedEdges(liveChanges);
     const evalResult = evaluateBoundaries(
       { filesScanned: liveChanges.length, edges: plannedEdges, warnings: [] },
@@ -259,6 +267,7 @@ export function reviewSavedPlan(
     missingTestsHeuristic,
     potentialBoundaryConcerns,
     planIntroducedBoundaryConcerns,
+    ...(boundaryShortfalls.length > 0 ? { boundaryShortfalls } : {}),
     verificationCommands: [
       'shrk doctor',
       'shrk check boundaries',

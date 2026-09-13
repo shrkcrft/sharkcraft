@@ -13,6 +13,7 @@ import {
   type IQueryMatch,
 } from '@shrkcrft/inspector';
 import {
+  describeUnread,
   traceLiteral,
   TraceRole,
   type ITraceReport,
@@ -26,6 +27,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 function describeMatch(m: IQueryMatch): string {
@@ -47,8 +49,16 @@ function renderTraceLiteral(report: ITraceReport, limit: number): void {
   if (report.aliases.length > 0) {
     process.stdout.write(kv('const aliases', report.aliases.join(', ')) + '\n');
   }
+  // A matched file the reader did not read (over the read cap) was never
+  // searched: name it, and never claim "no occurrences" over it.
+  const unread = report.unread ?? [];
+  if (unread.length > 0) process.stdout.write(kv('not read', describeUnread(unread)) + '\n');
   if (report.total === 0) {
-    process.stdout.write('\nNo occurrences of that exact string literal in scope.\n');
+    process.stdout.write(
+      unread.length > 0
+        ? `\nNot verified: ${describeUnread(unread)} were not read, so an occurrence there was never checked.\n`
+        : '\nNo occurrences of that exact string literal in scope.\n',
+    );
     return;
   }
   // Mirror `shrk registry <name> where`'s `<role>  file:line` line idiom so the
@@ -105,6 +115,16 @@ function runTraceLiteral(args: ParsedArgs): number {
 
 export const traceCommand: ICommandHandler = {
   name: 'trace',
+  // The positionals are a free-form query; `literal` is dispatched here.
+  positionals: PositionalMode.Free,
+  subverbs: [
+    {
+      name: 'literal',
+      description: "Trace an exact string literal's declare → register → consume chain across layers (alias-resolved).",
+      usage: 'shrk trace literal "<string>" [--glob <g>] [--no-aliases] [--limit <n>] [--json]',
+      positionals: PositionalMode.Free,
+    },
+  ],
   description:
     'Fuzzy trace — accept any free-form query (file path, construct id, symbol, plugin key, helper id, template id, knowledge id, command). `trace literal "<string>"` traces an exact string literal\'s declare→register→consume chain across layers (alias-resolved). Read-only.',
   usage:
@@ -134,7 +154,7 @@ export const traceCommand: ICommandHandler = {
           }
         }
         process.stdout.write('\nNext commands:\n');
-        process.stdout.write(`  shrk find "${symbol}"\n`);
+        process.stdout.write(`  shrk search "${symbol}"\n`);
         return 1;
       }
       for (const m of symReport.exactMatches) {
@@ -172,9 +192,16 @@ export const traceCommand: ICommandHandler = {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
     const limit = flagNumber(args, 'limit');
+    // Command matches rank against THE command index (injected — it lives
+    // above the inspector). It used to read a property no inspection has.
+    const { buildCommandIndex, getActiveCommandIndex } = await import('../surface/command-index.ts');
+    const commandIndex = getActiveCommandIndex() ?? buildCommandIndex();
     const resolution = resolveQuery(inspection, query, {
       ...(kinds.length > 0 ? { kinds: kinds as QueryMatchKind[] } : {}),
       ...(typeof limit === 'number' ? { limit } : {}),
+      commands: commandIndex.entries
+        .filter((e) => !e.path.startsWith('-'))
+        .map((e) => ({ id: e.path, name: `shrk ${e.path}`, description: e.description })),
     });
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(resolution) + '\n');
@@ -225,7 +252,7 @@ export const traceCommand: ICommandHandler = {
       } else if (best.kind === QueryMatchKind.Policy) {
         process.stdout.write(`  shrk policy get ${best.id}\n`);
       } else if (best.kind === QueryMatchKind.Command) {
-        process.stdout.write(`  shrk commands get ${best.id}\n`);
+        process.stdout.write(`  shrk help ${best.id}\n`);
       }
     }
     return 0;

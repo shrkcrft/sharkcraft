@@ -14,7 +14,7 @@ Run every entry below before tagging `0.1.0-alpha.2`.
 - [ ] `shrk commands doctor` → 0 errors / 0 warnings.
 - [ ] `shrk commands ux-check` → 0 errors.
 - [ ] `shrk safety audit` → no error findings.
-- [ ] `shrk mcp audit` → 0 writable tools.
+- [ ] MCP exposes 0 writable tools (read-only by contract — see `docs/mcp.md`).
 
 ## Surfaces
 

@@ -1,5 +1,21 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { importModuleViaLoader, type IVerdictCoverage } from '@shrkcrft/core';
+import {
+  formatEntryRejection,
+  readPackManifest,
+  rejectedEntryTypecheckHint,
+  typecheckPackAssets,
+  validateContributionFile,
+  type ContributionKind,
+  type ITypecheckFilesResult,
+} from '@shrkcrft/inspector';
+import {
+  CONTRIBUTION_FILE_KEYS,
+  FUTURE_CONTRIBUTION_FILE_KEYS,
+  validatePackManifest,
+  type ISharkCraftPackManifest,
+} from '@shrkcrft/plugin-api';
 import {
   flagBool,
   flagString,
@@ -8,7 +24,9 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
-import { importModuleViaLoader } from '@shrkcrft/core';
+import { settleVerdict } from '../gates/settle-verdict.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
+import { ALLOW_EMPTY_FLAG, allowEmptyValve } from '../gates/allow-empty.ts';
 
 export type PackKind = 'generic' | 'framework' | 'architecture' | 'enterprise';
 
@@ -41,115 +59,324 @@ export interface IScaffoldPackResult {
   packRoot: string;
 }
 
-/** Pure: compute the file set to write. No IO. */
+/** The manifest path the scaffold declares in package.json — a source-loaded pack. */
+const MANIFEST_REL = './src/sharkcraft.plugin.ts';
+
+interface IEntryRow {
+  readonly id: string;
+  readonly title: string;
+  readonly type: string;
+  readonly priority: string;
+  readonly content: string;
+}
+
+/**
+ * Pure: compute the file set to write. No IO.
+ *
+ * The scaffold is a VALID, discoverable, type-clean pack:
+ *   - `package.json` `sharkcraft.manifest` points at `src/sharkcraft.plugin.ts`
+ *     (discovery reads nothing else — without it the pack is INVALID);
+ *   - that file default-exports a real `ISharkCraftPackManifest` (`satisfies`,
+ *     with a TYPE-ONLY import, so there is no runtime plugin-api coupling);
+ *   - every asset it emits is declared in the manifest and non-empty (a file
+ *     the manifest does not list is never loaded — so none is emitted);
+ *   - every asset is annotated with `satisfies` against the SDK types, and
+ *     `tsc -p tsconfig.json` (noEmit) type-checks clean.
+ */
 export function planPackScaffold(input: IScaffoldPackInput): IScaffoldPackResult {
   const fullName = input.scope ? `${input.scope}/${input.name}` : input.name;
+  const withTemplates = input.kind === 'framework' || input.withExamples === true;
+  const withBoundaries = input.kind === 'architecture' || input.withExamples === true;
+  const knowledgeRows = knowledgeRowsFor(input.kind);
+  const contributions: Record<string, readonly string[]> = {
+    knowledgeFiles: ['./src/assets/knowledge.ts'],
+    ruleFiles: ['./src/assets/rules.ts'],
+    pathFiles: ['./src/assets/paths.ts'],
+    ...(withTemplates
+      ? { templateFiles: ['./src/assets/templates.ts'], pipelineFiles: ['./src/assets/pipelines.ts'] }
+      : {}),
+    ...(input.preset ? { presetFiles: ['./src/assets/presets.ts'] } : {}),
+    ...(withBoundaries ? { boundaryFiles: ['./src/assets/boundaries.ts'] } : {}),
+    docsFiles: ['./src/assets/docs/overview.md'],
+  };
   const packageJson: Record<string, unknown> = {
     name: fullName,
     version: '0.0.1',
     description: `SharkCraft pack scaffolded as ${input.kind}.`,
     type: 'module',
-    main: 'dist/sharkcraft.plugin.js',
-    exports: {
-      '.': {
-        types: './dist/sharkcraft.plugin.d.ts',
-        default: './dist/sharkcraft.plugin.js',
-      },
-    },
+    main: MANIFEST_REL,
     sharkcraft: {
       kind: input.kind,
       ...(input.preset ? { preset: input.preset } : {}),
+      manifest: MANIFEST_REL,
     },
     scripts: {
-      build: 'tsc -p tsconfig.json',
-      doctor: 'shrk pack doctor .',
-      test: 'shrk pack test .',
+      typecheck: 'tsc -p tsconfig.json',
+      test: 'shrk packs test . --load --typecheck',
+      'release-check': 'shrk packs release-check . --typecheck',
     },
-    files: ['dist', 'src', 'README.md', 'SECURITY.md', 'package.json'],
+    // Type-only dependencies: the assets `import type` from the SDK, which is
+    // erased at runtime — they are needed only for `npm run typecheck`.
+    devDependencies: {
+      '@shrkcrft/plugin-api': '*',
+      typescript: '^5.6.0',
+    },
+    files: ['src', 'README.md', 'SECURITY.md', 'package.json'],
   };
   const files: IScaffoldFile[] = [];
-  files.push({
-    relativePath: 'package.json',
-    body: JSON.stringify(packageJson, null, 2) + '\n',
-  });
-  files.push({
-    relativePath: 'README.md',
-    body: renderReadme(input, fullName),
-  });
-  files.push({
-    relativePath: 'SECURITY.md',
-    body: renderSecurity(input),
-  });
+  files.push({ relativePath: 'package.json', body: JSON.stringify(packageJson, null, 2) + '\n' });
+  files.push({ relativePath: 'README.md', body: renderReadme(input, fullName, contributions) });
+  files.push({ relativePath: 'SECURITY.md', body: renderSecurity(input) });
   files.push({
     relativePath: 'tsconfig.json',
-    body: JSON.stringify(
-      {
-        compilerOptions: {
-          target: 'ES2022',
-          module: 'ES2022',
-          moduleResolution: 'bundler',
-          strict: true,
-          declaration: true,
-          outDir: 'dist',
+    body:
+      JSON.stringify(
+        {
+          compilerOptions: {
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'bundler',
+            strict: true,
+            noEmit: true,
+            allowImportingTsExtensions: true,
+            skipLibCheck: true,
+          },
+          include: ['src/**/*.ts'],
         },
-        include: ['src/**/*.ts'],
-      },
-      null,
-      2,
-    ) + '\n',
+        null,
+        2,
+      ) + '\n',
   });
-  files.push({
-    relativePath: 'src/sharkcraft.plugin.ts',
-    body: renderPluginEntry(input, fullName),
-  });
+  files.push({ relativePath: 'src/sharkcraft.plugin.ts', body: renderManifest(input, fullName, contributions) });
   files.push({
     relativePath: 'src/assets/knowledge.ts',
-    body: renderKnowledgeAsset(input),
+    body: entriesAsset('Knowledge entries contributed by this pack.', knowledgeRows),
   });
   files.push({
     relativePath: 'src/assets/rules.ts',
-    body: renderRulesAsset(input),
+    body: entriesAsset('Rules contributed by this pack (knowledge entries of type "rule").', rulesRowsFor(input.kind)),
   });
   files.push({
     relativePath: 'src/assets/paths.ts',
-    body: renderPathsAsset(input),
+    body: entriesAsset('Path conventions contributed by this pack (knowledge entries of type "path").', [
+      {
+        id: `${slug(input.name)}.path.source-layout`,
+        title: 'Source layout',
+        type: 'path',
+        priority: 'medium',
+        content: 'Source files live under src/; pack assets live under src/assets/.',
+      },
+    ]),
   });
-  files.push({
-    relativePath: 'src/assets/templates.ts',
-    body: renderTemplatesAsset(input),
-  });
-  files.push({
-    relativePath: 'src/assets/pipelines.ts',
-    body: renderPipelinesAsset(input),
-  });
-  files.push({
-    relativePath: 'src/assets/presets.ts',
-    body: renderPresetsAsset(input),
-  });
-  files.push({
-    relativePath: 'src/assets/docs/overview.md',
-    body: renderDocsOverview(input, fullName),
-  });
-  if (input.kind === 'architecture' || input.withExamples) {
+  if (withTemplates) {
+    files.push({ relativePath: 'src/assets/templates.ts', body: renderTemplatesAsset() });
+    files.push({ relativePath: 'src/assets/pipelines.ts', body: renderPipelinesAsset() });
+  }
+  if (input.preset) {
     files.push({
-      relativePath: 'src/assets/boundaries.ts',
-      body: renderBoundariesAsset(),
+      relativePath: 'src/assets/presets.ts',
+      body: renderPresetsAsset(input.preset, knowledgeRows[0]!.id),
     });
   }
+  if (withBoundaries) {
+    files.push({ relativePath: 'src/assets/boundaries.ts', body: renderBoundariesAsset() });
+  }
+  files.push({ relativePath: 'src/assets/docs/overview.md', body: renderDocsOverview(input, fullName) });
   if (input.kind === 'enterprise') {
-    files.push({
-      relativePath: 'docs/review-workflow.md',
-      body: renderEnterpriseReviewDocs(),
-    });
-    files.push({
-      relativePath: 'docs/security-baseline.md',
-      body: renderEnterpriseSecurityDocs(),
-    });
+    files.push({ relativePath: 'docs/review-workflow.md', body: renderEnterpriseReviewDocs() });
+    files.push({ relativePath: 'docs/security-baseline.md', body: renderEnterpriseSecurityDocs() });
   }
   return { files, packageJson, packRoot: input.outDir };
 }
 
-function renderReadme(input: IScaffoldPackInput, fullName: string): string {
+function slug(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'pack';
+}
+
+function knowledgeRowsFor(kind: PackKind): IEntryRow[] {
+  if (kind === 'enterprise') {
+    return [
+      { id: 'security.baseline', title: 'Security baseline', type: 'security', priority: 'high', content: 'Document the security baseline this pack enforces.' },
+      { id: 'review.workflow', title: 'Code review workflow', type: 'workflow', priority: 'high', content: 'How code review gets done in this organisation.' },
+    ];
+  }
+  if (kind === 'architecture') {
+    return [
+      { id: 'architecture.layering', title: 'Layering rules', type: 'architecture', priority: 'high', content: 'Describe lower -> higher layers that cannot be inverted.' },
+      { id: 'architecture.coverage', title: 'Coverage targets', type: 'architecture', priority: 'medium', content: 'Coverage axes you care about.' },
+    ];
+  }
+  if (kind === 'framework') {
+    return [
+      { id: 'framework.overview', title: 'Framework overview', type: 'technical', priority: 'high', content: 'What this framework is for.' },
+    ];
+  }
+  return [
+    { id: 'pack.overview', title: 'Pack overview', type: 'technical', priority: 'medium', content: 'Short overview of what this pack contributes.' },
+  ];
+}
+
+function rulesRowsFor(kind: PackKind): IEntryRow[] {
+  if (kind === 'enterprise') {
+    return [
+      { id: 'rule.review-required', title: 'All changes require code review', type: 'rule', priority: 'critical', content: 'All changes require code review.' },
+      { id: 'rule.no-secrets-in-source', title: 'Secrets must never be committed', type: 'rule', priority: 'critical', content: 'Secrets must never be committed.' },
+    ];
+  }
+  if (kind === 'architecture') {
+    return [
+      { id: 'rule.boundary-enforcement', title: 'Respect layer boundaries', type: 'rule', priority: 'high', content: 'Respect layer boundaries.' },
+    ];
+  }
+  return [{ id: 'rule.example', title: 'Example rule for this pack', type: 'rule', priority: 'medium', content: 'Example rule for this pack.' }];
+}
+
+/**
+ * A knowledge-shaped asset: `import type` (erased at runtime) + `satisfies`, so
+ * a misspelled field or a missing required one fails `npm run typecheck` where
+ * it is written, while the file still loads against every plugin-api version.
+ */
+function entriesAsset(comment: string, rows: readonly IEntryRow[]): string {
+  const lines: string[] = [];
+  lines.push(`// ${comment}`);
+  lines.push(`// \`import type\` is erased at runtime; \`satisfies\` type-checks every entry where it is written.`);
+  lines.push(`import type { IKnowledgeEntry } from '@shrkcrft/plugin-api';`);
+  lines.push('');
+  lines.push('export default [');
+  for (const r of rows) {
+    lines.push('  {');
+    lines.push(`    id: ${JSON.stringify(r.id)},`);
+    lines.push(`    title: ${JSON.stringify(r.title)},`);
+    lines.push(`    type: ${JSON.stringify(r.type)},`);
+    lines.push(`    priority: ${JSON.stringify(r.priority)},`);
+    lines.push('    scope: [],');
+    lines.push('    tags: [],');
+    lines.push("    appliesWhen: ['onboarding'],");
+    lines.push(`    content: ${JSON.stringify(r.content)},`);
+    lines.push('  },');
+  }
+  lines.push(`] satisfies readonly Omit<IKnowledgeEntry, 'source'>[];`);
+  lines.push('');
+  return lines.join('\n');
+}
+
+function renderManifest(
+  input: IScaffoldPackInput,
+  fullName: string,
+  contributions: Readonly<Record<string, readonly string[]>>,
+): string {
+  const lines: string[] = [];
+  lines.push(`// SharkCraft pack manifest for ${fullName} — scaffolded as kind=${input.kind}.`);
+  lines.push('// package.json `sharkcraft.manifest` points here; discovery reads nothing else.');
+  lines.push('// Every file listed under `contributions` is loaded; a file NOT listed is never loaded.');
+  lines.push('// `import type` is erased at runtime (no plugin-api version coupling);');
+  lines.push('// `satisfies` type-checks the manifest where it is written.');
+  lines.push(`import type { ISharkCraftPackManifest } from '@shrkcrft/plugin-api';`);
+  lines.push('');
+  lines.push('export default {');
+  lines.push(`  schema: 'sharkcraft.pack/v1',`);
+  lines.push('  info: {');
+  lines.push(`    name: ${JSON.stringify(fullName)},`);
+  lines.push(`    version: '0.0.1',`);
+  lines.push(`    description: ${JSON.stringify(`SharkCraft pack scaffolded as ${input.kind}.`)},`);
+  lines.push('  },');
+  lines.push('  contributions: {');
+  for (const [key, rels] of Object.entries(contributions)) {
+    lines.push(`    ${key}: [${rels.map((r) => `'${r}'`).join(', ')}],`);
+  }
+  lines.push('  },');
+  lines.push('} satisfies ISharkCraftPackManifest;');
+  lines.push('');
+  return lines.join('\n');
+}
+
+function renderTemplatesAsset(): string {
+  return [
+    '// Templates contributed by this pack.',
+    '// `satisfies` gives every resolver parameter its type (no implicit any).',
+    `import type { ITemplateDefinition } from '@shrkcrft/plugin-api';`,
+    '',
+    'export default [',
+    '  {',
+    `    id: 'pack.example.service',`,
+    `    name: 'Example service',`,
+    `    description: 'Scaffold an example service for this pack.',`,
+    `    tags: ['service'],`,
+    `    scope: ['ts'],`,
+    `    appliesWhen: ['create-service'],`,
+    `    variables: [{ name: 'name', required: true, description: 'Service name in kebab-case.', examples: ['user-profile'] }],`,
+    `    targetPath: ({ name }) => 'src/services/' + name + '.service.ts',`,
+    `    content: ({ name }) =>`,
+    `      'export class ' +`,
+    `      String(name).split('-').map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join('') +`,
+    `      'Service {}\\n',`,
+    '  },',
+    '] satisfies readonly ITemplateDefinition[];',
+    '',
+  ].join('\n');
+}
+
+function renderPipelinesAsset(): string {
+  return [
+    '// Pipelines contributed by this pack (shape: IPipelineDefinition from @shrkcrft/pipelines).',
+    'export default [',
+    '  {',
+    `    id: 'pack.example.pipeline',`,
+    `    title: 'Example pipeline',`,
+    `    description: 'Reference pipeline for this pack.',`,
+    `    appliesWhen: ['create-service'],`,
+    '    steps: [',
+    `      { id: 'context', type: 'context', description: 'Load the task context.', cliCommands: ['shrk context --task "<task>"'] },`,
+    `      { id: 'plan', type: 'generation-plan', description: 'Plan the change (dry-run).', cliCommands: ['shrk gen pack.example.service --var name=<name> --dry-run'] },`,
+    `      { id: 'apply', type: 'apply-plan', description: 'Apply the reviewed plan.', humanReview: true },`,
+    '    ],',
+    '  },',
+    '];',
+    '',
+  ].join('\n');
+}
+
+function renderPresetsAsset(preset: string, knowledgeId: string): string {
+  return [
+    '// Presets contributed by this pack (shape: IPreset from @shrkcrft/presets).',
+    'export default [',
+    '  {',
+    `    id: ${JSON.stringify(preset)},`,
+    `    title: ${JSON.stringify(preset)},`,
+    `    description: 'Preset for this pack.',`,
+    `    includes: { knowledgeIds: [${JSON.stringify(knowledgeId)}] },`,
+    '  },',
+    '];',
+    '',
+  ].join('\n');
+}
+
+function renderBoundariesAsset(): string {
+  return [
+    '// Architecture boundary rules contributed by this pack (shape: IBoundaryRule',
+    '// from @shrkcrft/boundaries). An empty list is valid; add rules as the pack',
+    '// learns the layering of the projects that adopt it.',
+    'export default [',
+    '  // {',
+    `  //   id: 'boundary.layer.example',`,
+    `  //   title: 'Example layer boundary',`,
+    `  //   severity: 'error',`,
+    `  //   from: ['packages/lower/**/*.ts'],`,
+    `  //   forbiddenImports: ['@my/higher'],`,
+    '  // },',
+    '];',
+    '',
+  ].join('\n');
+}
+
+function renderReadme(
+  input: IScaffoldPackInput,
+  fullName: string,
+  contributions: Readonly<Record<string, readonly string[]>>,
+): string {
+  const assetLines = Object.values(contributions)
+    .flat()
+    .map((rel) => `  ${rel.replace(/^\.\/src\//, '')}`);
   return [
     `# ${fullName}`,
     '',
@@ -162,24 +389,29 @@ function renderReadme(input: IScaffoldPackInput, fullName: string): string {
     '',
     '```',
     'src/',
-    '  sharkcraft.plugin.ts     # entry — registers all assets',
-    '  assets/',
-    '    knowledge.ts',
-    '    rules.ts',
-    '    paths.ts',
-    '    templates.ts',
-    '    pipelines.ts',
-    '    presets.ts',
-    '    docs/overview.md',
+    '  sharkcraft.plugin.ts     # the manifest — package.json `sharkcraft.manifest` points here',
+    ...assetLines,
     '```',
+    '',
+    'Every file listed in the manifest `contributions` is loaded; a file that is',
+    'not listed there is never loaded.',
+    '',
+    '## Group modules',
+    '',
+    'Split a large asset into group modules and re-export them from the listed',
+    'file with `export * from \'./group.ts\'` — the loader collects every',
+    'entry-shaped export, so nothing needs to be named twice. (Listing entries by',
+    'hand in an array works too, but an entry added to a group and not to the',
+    'array is invisible — `shrk doctor` / `shrk packs doctor` report it as',
+    '`unregistered-export`.)',
     '',
     '## Validate this pack',
     '',
     '```bash',
-    'shrk pack doctor .',
-    'shrk pack test .',
-    'shrk pack sign . --secret "$SHARKCRAFT_PACK_SECRET"',
-    'shrk pack verify .',
+    'npm run typecheck                          # tsc — every asset is `satisfies`-annotated',
+    'shrk packs test . --load --typecheck       # manifest + contributions load and type-check',
+    'shrk packs release-check . --typecheck     # the pre-publish gate',
+    'SHARKCRAFT_PACK_SECRET=<secret> shrk packs sign .',
     '```',
     '',
     '## Local development',
@@ -190,6 +422,7 @@ function renderReadme(input: IScaffoldPackInput, fullName: string): string {
     'cd <target-project>',
     'npm install --no-save ../path/to/this-pack',
     'shrk packs list',
+    'shrk packs doctor',
     '```',
     '',
   ].join('\n');
@@ -209,7 +442,7 @@ function renderSecurity(input: IScaffoldPackInput): string {
     'Packs can ship a signed manifest. Sign locally with:',
     '',
     '```bash',
-    'shrk pack sign . --secret "$SHARKCRAFT_PACK_SECRET"',
+    'SHARKCRAFT_PACK_SECRET="<secret>" shrk packs sign .',
     '```',
     '',
     'Adopting projects verify the signature via:',
@@ -222,179 +455,6 @@ function renderSecurity(input: IScaffoldPackInput): string {
     '',
     `Please file security issues privately to the maintainer of \`${input.name}\`.`,
     '',
-  ].join('\n');
-}
-
-function renderPluginEntry(input: IScaffoldPackInput, fullName: string): string {
-  return [
-    `// SharkCraft plugin entry for ${fullName}.`,
-    `// Scaffolded as kind=${input.kind}. Review every asset before publishing.`,
-    `import knowledge from './assets/knowledge.ts';`,
-    `import rules from './assets/rules.ts';`,
-    `import paths from './assets/paths.ts';`,
-    `import templates from './assets/templates.ts';`,
-    `import pipelines from './assets/pipelines.ts';`,
-    `import presets from './assets/presets.ts';`,
-    `export default {`,
-    `  knowledge,`,
-    `  rules,`,
-    `  paths,`,
-    `  templates,`,
-    `  pipelines,`,
-    `  presets,`,
-    `};`,
-    ``,
-  ].join('\n');
-}
-
-function renderKnowledgeAsset(input: IScaffoldPackInput): string {
-  if (input.kind === 'enterprise') {
-    return knowledgeBody([
-      ['security.baseline', 'Security baseline', 'High', 'Document the security baseline this pack enforces.'],
-      ['review.workflow', 'Code review workflow', 'High', 'How code review gets done in this organisation.'],
-    ]);
-  }
-  if (input.kind === 'architecture') {
-    return knowledgeBody([
-      ['architecture.layering', 'Layering rules', 'High', 'Describe lower → higher layers that cannot be inverted.'],
-      ['architecture.coverage', 'Coverage targets', 'Medium', 'Coverage axes you care about.'],
-    ]);
-  }
-  if (input.kind === 'framework') {
-    return knowledgeBody([
-      ['framework.overview', 'Framework overview', 'High', 'What this framework is for.'],
-    ]);
-  }
-  return knowledgeBody([
-    ['pack.overview', 'Pack overview', 'Medium', 'Short overview of what this pack contributes.'],
-  ]);
-}
-
-function knowledgeBody(rows: readonly (readonly [string, string, string, string])[]): string {
-  const lines: string[] = [];
-  lines.push(`// Knowledge entries contributed by this pack.`);
-  lines.push(`export default [`);
-  for (const [id, title, priority, content] of rows) {
-    lines.push(`  { id: '${id}', title: '${title}', type: 'knowledge', priority: '${priority}',`);
-    lines.push(`    summary: '${content}', body: '${content}', tags: [], scope: [] },`);
-  }
-  lines.push(`];`);
-  lines.push('');
-  return lines.join('\n');
-}
-
-function renderRulesAsset(input: IScaffoldPackInput): string {
-  if (input.kind === 'enterprise') {
-    return rulesBody([
-      ['rule.review-required', 'All changes require code review', 'critical'],
-      ['rule.no-secrets-in-source', 'Secrets must never be committed', 'critical'],
-    ]);
-  }
-  if (input.kind === 'architecture') {
-    return rulesBody([
-      ['rule.boundary-enforcement', 'Respect layer boundaries', 'high'],
-    ]);
-  }
-  return rulesBody([
-    ['rule.example', 'Example rule for this pack', 'medium'],
-  ]);
-}
-
-function rulesBody(rows: readonly (readonly [string, string, string])[]): string {
-  const lines: string[] = [];
-  lines.push(`export default [`);
-  for (const [id, title, priority] of rows) {
-    lines.push(`  { id: '${id}', title: '${title}', type: 'rule', priority: '${priority}',`);
-    lines.push(`    summary: '${title}', body: '${title}', tags: [], scope: [] },`);
-  }
-  lines.push(`];`);
-  lines.push('');
-  return lines.join('\n');
-}
-
-function renderPathsAsset(_input: IScaffoldPackInput): string {
-  return [
-    `export default [`,
-    `  // Add path conventions: { id, title, type: 'path', patterns: ['src/**/*.ts'], ... }`,
-    `];`,
-    ``,
-  ].join('\n');
-}
-
-function renderTemplatesAsset(input: IScaffoldPackInput): string {
-  const examples: string[] = [];
-  if (input.kind === 'framework' || input.withExamples) {
-    examples.push(
-      `  {`,
-      `    id: 'pack.example.service',`,
-      `    name: 'Example service',`,
-      `    description: 'Scaffold an example service for this pack.',`,
-      `    tags: ['service'],`,
-      `    scope: ['ts'],`,
-      `    appliesWhen: ['create-service'],`,
-      `    variables: [{ name: 'name', required: true }],`,
-      `    targetPath: ({ name }) => 'src/services/' + name + '.service.ts',`,
-      `    content: ({ name }) => 'export class ' + (name as string).replace(/-(\\w)/g, (_m, c) => c.toUpperCase()) + 'Service {}\\n',`,
-      `  },`,
-    );
-  }
-  return [
-    `export default [`,
-    ...examples,
-    `];`,
-    ``,
-  ].join('\n');
-}
-
-function renderPipelinesAsset(input: IScaffoldPackInput): string {
-  if (input.kind === 'framework' || input.withExamples) {
-    return [
-      `export default [`,
-      `  {`,
-      `    id: 'pack.example.pipeline',`,
-      `    title: 'Example pipeline',`,
-      `    description: 'Reference pipeline for this pack.',`,
-      `    steps: ['plan', 'review', 'apply', 'verify'],`,
-      `    appliesWhen: ['create-service'],`,
-      `  },`,
-      `];`,
-      ``,
-    ].join('\n');
-  }
-  return ['export default [];', ''].join('\n');
-}
-
-function renderPresetsAsset(input: IScaffoldPackInput): string {
-  if (input.preset) {
-    return [
-      `export default [`,
-      `  {`,
-      `    id: '${input.preset}',`,
-      `    title: '${input.preset}',`,
-      `    description: 'Preset for this pack.',`,
-      `    appliesWhen: ['create-service'],`,
-      `    config: {},`,
-      `  },`,
-      `];`,
-      ``,
-    ].join('\n');
-  }
-  return ['export default [];', ''].join('\n');
-}
-
-function renderBoundariesAsset(): string {
-  return [
-    `export default [`,
-    `  // Example architecture boundary:`,
-    `  // {`,
-    `  //   id: 'boundary.layer.example',`,
-    `  //   title: 'Example layer boundary',`,
-    `  //   severity: 'error',`,
-    `  //   from: ['packages/lower/**/*.ts'],`,
-    `  //   forbiddenImports: ['@my/higher'],`,
-    `  // },`,
-    `];`,
-    ``,
   ].join('\n');
 }
 
@@ -429,14 +489,9 @@ function renderDocsOverview(input: IScaffoldPackInput, fullName: string): string
     `Kind: \`${input.kind}\``,
     input.preset ? `Preset: \`${input.preset}\`` : '',
     '',
-    'This pack ships:',
-    '',
-    '- knowledge entries',
-    '- rules',
-    '- path conventions',
-    '- templates',
-    '- pipelines',
-    '- presets',
+    'This pack ships knowledge entries, rules and path conventions' +
+      (input.kind === 'framework' || input.withExamples ? ', templates and pipelines' : '') +
+      '.',
     '',
   ]
     .filter(Boolean)
@@ -448,7 +503,7 @@ function renderDocsOverview(input: IScaffoldPackInput, fullName: string): string
 export const packsNewCommand: ICommandHandler = {
   name: 'new',
   description:
-    'Scaffold a new SharkCraft pack package (rules / paths / templates / pipelines / presets / boundaries). Dry-run by default — pass --write to materialize. No install, no publish, no overwrite without --force.',
+    'Scaffold a new SharkCraft pack package — a valid, discoverable, type-clean pack (package.json sharkcraft.manifest → a `satisfies ISharkCraftPackManifest` manifest; every asset `satisfies`-annotated). Dry-run by default — pass --write to materialize. No install, no publish, no overwrite without --force.',
   usage:
     'shrk [--cwd <dir>] packs new <name> [--scope @org] [--preset <id>] [--kind generic|framework|architecture|enterprise] [--with-examples] [--write] [--force] [--json]',
   async run(args: ParsedArgs): Promise<number> {
@@ -540,14 +595,19 @@ export const packsNewCommand: ICommandHandler = {
     for (const f of result.files) {
       process.stdout.write(`  + ${f.relativePath}\n`);
     }
+    // Install first: --typecheck resolves the scaffold's `import type … from
+    // '@shrkcrft/plugin-api'` against the pack's own devDependencies.
     process.stdout.write(
-      '\nNext: `shrk pack doctor ' + outDir + '`  |  `shrk pack test ' + outDir + '`\n',
+      '\nNext:\n' +
+        `  1. (cd ${outDir} && npm install)   # devDependencies: @shrkcrft/plugin-api + typescript\n` +
+        `  2. shrk packs test ${outDir} --load --typecheck\n` +
+        `  3. shrk packs release-check ${outDir} --typecheck\n`,
     );
     return 0;
   },
 };
 
-// ─── shrk pack test ──────────────────────────────────────────────────────────
+// ─── shrk packs test ─────────────────────────────────────────────────────────
 
 interface IPackTestIssue {
   code: string;
@@ -555,17 +615,63 @@ interface IPackTestIssue {
   severity: 'error' | 'warning' | 'info';
 }
 
+/** A contribution file the manifest declares, with the slot that declared it. */
+interface IDeclaredContribution {
+  readonly key: string;
+  readonly rel: string;
+  readonly abs: string;
+}
+
+/** Slots whose files default-export an array of `{ id }` records. */
+const ARRAY_OF_IDS_SLOTS: Readonly<Record<string, string>> = {
+  knowledgeFiles: 'knowledge',
+  ruleFiles: 'rule',
+  pathFiles: 'path',
+  pathConventionFiles: 'path',
+  templateFiles: 'template',
+  pipelineFiles: 'pipeline',
+  presetFiles: 'preset',
+  boundaryFiles: 'boundary',
+};
+
+const MODULE_FILE = /\.(?:[cm]?[jt]s|tsx)$/;
+
+function declaredContributions(
+  packRoot: string,
+  manifest: ISharkCraftPackManifest | null,
+): IDeclaredContribution[] {
+  const out: IDeclaredContribution[] = [];
+  const contributions = (manifest?.contributions ?? {}) as Record<string, readonly string[] | undefined>;
+  for (const key of [...CONTRIBUTION_FILE_KEYS, ...FUTURE_CONTRIBUTION_FILE_KEYS]) {
+    for (const rel of contributions[key] ?? []) {
+      if (typeof rel !== 'string' || rel.length === 0) continue;
+      out.push({ key, rel, abs: nodePath.resolve(packRoot, rel) });
+    }
+  }
+  return out;
+}
+
 export const packsTestCommand: ICommandHandler = {
   name: 'test',
   description:
-    'Validate a pack at the given path: manifest validation, asset references, signature optional. With --load, import contribution files. With --trusted-load, run template renderers. With --cases, run definePackTest test cases.',
+    'Validate a pack at the given path: the manifest package.json points at (sharkcraft.manifest) and every contribution file it declares. With --load, import each declared contribution module and run the loader (or acceptance predicate) the engine applies to its slot at runtime — every entry it would refuse is an `asset-entry-rejected` error, annotated or not. With --trusted-load, run template renderers. With --typecheck, type-check the manifest + every TS contribution (exit 2 when no TS file could be checked). With --cases, run definePackTest test cases.',
   usage:
-    'shrk [--cwd <dir>] packs test <path> [--load] [--trusted-load] [--require-signature] [--cases] [--case <id>] [--update-snapshots] [--json]',
+    'shrk [--cwd <dir>] packs test <path> [--load] [--trusted-load] [--typecheck] [--require-signature] [--cases] [--case <id>] [--update-snapshots] [--allow-empty] [--json]',
+  booleanFlags: new Set([
+    'load',
+    'trusted-load',
+    'typecheck',
+    'require-signature',
+    'cases',
+    'update-snapshots',
+    'json',
+    ALLOW_EMPTY_FLAG,
+  ]),
   async run(args: ParsedArgs): Promise<number> {
     const target = args.positional[0];
     if (!target) {
       process.stderr.write(
-        'Usage: shrk packs test <path> [--load] [--trusted-load] [--require-signature] [--cases]\n',
+        'Usage: shrk packs test <path> [--load] [--trusted-load] [--typecheck] [--require-signature] [--cases]\n',
       );
       return 2;
     }
@@ -586,12 +692,33 @@ export const packsTestCommand: ICommandHandler = {
         ...(caseId ? { caseId } : {}),
         ...(updateSnapshots ? { updateSnapshots: true } : {}),
       });
+      // Zero cases ran: nothing was tested. 2, unless --allow-empty accepts it.
+      const casesSettled = settleVerdict(report.failed === 0 ? 0 : 1, [
+        {
+          unit: 'pack test cases',
+          expected: report.ran,
+          examined: report.ran,
+          ...(report.ran === 0 ? { reason: report.testsFile ? 'no case ran' : 'no pack-tests file found' } : {}),
+          ...allowEmptyValve(args, report.ran),
+        },
+      ]);
       if (flagBool(args, 'json')) {
-        process.stdout.write(JSON.stringify(report, null, 2) + '\n');
-        return report.failed === 0 ? 0 : 1;
+        process.stdout.write(
+          JSON.stringify(
+            { ...report, exitCode: casesSettled.exit, verdict: casesSettled.verdict, shortfalls: casesSettled.shortfalls },
+            null,
+            2,
+          ) + '\n',
+        );
+        return casesSettled.exit;
       }
       process.stdout.write(renderPackTestReportText(report));
-      return report.failed === 0 ? 0 : 1;
+      const casesLine = verdictLine(casesSettled, '');
+      if (casesLine) process.stdout.write(`\n${casesLine}\n`);
+      if (casesSettled.exit === 2 && report.ran === 0) {
+        process.stdout.write(`Pass --${ALLOW_EMPTY_FLAG} to accept a pack with no test case explicitly.\n`);
+      }
+      return casesSettled.exit;
     }
     const pkgPath = nodePath.join(packRoot, 'package.json');
     if (!existsSync(pkgPath)) {
@@ -613,86 +740,168 @@ export const packsTestCommand: ICommandHandler = {
     if (typeof pkg.version !== 'string') {
       issues.push({ code: 'missing-version', message: 'package.json: version is required', severity: 'error' });
     }
-    const requiredAssets = [
-      'src/sharkcraft.plugin.ts',
-      'src/assets/rules.ts',
-      'src/assets/paths.ts',
-      'src/assets/templates.ts',
-      'src/assets/pipelines.ts',
-      'src/assets/presets.ts',
-      'src/assets/knowledge.ts',
-    ];
-    for (const rel of requiredAssets) {
-      if (!existsSync(nodePath.join(packRoot, rel))) {
-        issues.push({
-          code: 'missing-asset',
-          message: `Pack is missing expected asset file: ${rel}`,
-          severity: 'warning',
-        });
+
+    // The manifest is what discovery reads — from package.json, never a
+    // hard-coded list of asset paths.
+    const read = await readPackManifest(packRoot);
+    if (!read.manifestPath) {
+      issues.push({
+        code: 'no-manifest',
+        message: `package.json does not point at a manifest (${read.error ?? 'sharkcraft.manifest missing'}) — discovery reports this pack INVALID`,
+        severity: 'error',
+      });
+    } else if (!read.manifest) {
+      issues.push({ code: 'manifest-load-failed', message: read.error ?? 'manifest failed to load', severity: 'error' });
+    } else {
+      for (const i of validatePackManifest(read.manifest).issues) {
+        issues.push({ code: 'manifest-invalid', message: `${i.field}: ${i.message}`, severity: 'error' });
       }
     }
-    if (flagBool(args, 'require-signature')) {
-      const distManifest = nodePath.join(packRoot, 'dist', 'manifest.json');
-      if (!existsSync(distManifest)) {
+    const declared = declaredContributions(packRoot, read.manifest);
+    for (const d of declared) {
+      if (!existsSync(d.abs)) {
         issues.push({
-          code: 'missing-signature',
-          message: 'Pack is missing dist/manifest.json — run `shrk pack sign` first',
+          code: 'missing-asset',
+          message: `manifest ${d.key} declares ${d.rel}, but the file is missing`,
           severity: 'error',
         });
       }
     }
-
-    const wantLoad = flagBool(args, 'load') || flagBool(args, 'trusted-load');
-    const trustedLoad = flagBool(args, 'trusted-load');
-    const loadResults: Array<Record<string, unknown>> = [];
-    if (wantLoad) {
-      const r = await runRuntimePackTest({ packRoot, trustedLoad });
-      issues.push(...r.issues);
-      loadResults.push(...r.modules);
+    if (flagBool(args, 'require-signature') && !read.manifest?.signature) {
+      issues.push({
+        code: 'missing-signature',
+        message: 'Pack has no signed manifest — run `shrk packs sign <pack>` first',
+        severity: 'error',
+      });
     }
 
+    const coverage: IVerdictCoverage[] = [];
+    const wantLoad = flagBool(args, 'load') || flagBool(args, 'trusted-load');
+    const trustedLoad = flagBool(args, 'trusted-load');
+    const loadResults: IRuntimePackTestResult['modules'] = [];
+    const rejectedKinds = new Set<ContributionKind>();
+    if (wantLoad) {
+      const r = await runRuntimePackTest({ packRoot, trustedLoad, manifestPath: read.manifestPath, declared });
+      issues.push(...r.issues);
+      loadResults.push(...r.modules);
+      for (const k of r.rejectedKinds) rejectedKinds.add(k);
+      const contributionModules = r.modules.filter((m) => m.kind !== 'plugin-entry');
+      coverage.push({
+        unit: 'contribution modules',
+        expected: contributionModules.length,
+        examined: contributionModules.filter((m) => m.loaded).length,
+        reason: contributionModules.length === 0 ? 'the manifest declares no importable contribution file' : 'failed to import',
+        ...allowEmptyValve(args, contributionModules.length),
+      });
+    }
+    let typecheck: ITypecheckFilesResult | undefined;
+    if (flagBool(args, 'typecheck')) {
+      typecheck = typecheckPackAssets({ packageRoot: packRoot, manifestPath: read.manifestPath, manifest: read.manifest });
+      for (const e of typecheck.errors) {
+        issues.push({
+          code: 'typecheck-error',
+          message: `${nodePath.relative(packRoot, e.file) || e.file}:${e.line}:${e.column} TS${e.code} ${e.message}`,
+          severity: 'error',
+        });
+      }
+      coverage.push({
+        unit: 'TS files',
+        expected: typecheck.checkedFiles.length,
+        examined: typecheck.ran ? typecheck.checkedFiles.length : 0,
+        root: packRoot,
+        ...(typecheck.note ? { reason: typecheck.note } : {}),
+      });
+    }
+
+    // What the default run (no --load / --typecheck) examines: every declared
+    // contribution file's existence. A manifest declaring none examined
+    // nothing: 2, unless --allow-empty accepts it explicitly.
+    coverage.push({
+      unit: 'declared contribution files',
+      expected: declared.length,
+      examined: declared.length,
+      ...(declared.length === 0
+        ? { reason: read.manifest ? 'the manifest declares no contribution file' : 'no manifest to read contributions from' }
+        : {}),
+      ...allowEmptyValve(args, declared.length),
+    });
     const counts = {
-      assets: requiredAssets.filter((rel) => existsSync(nodePath.join(packRoot, rel))).length,
-      total: requiredAssets.length,
+      assets: declared.filter((d) => existsSync(d.abs)).length,
+      total: declared.length,
     };
+    // The runtime validator caught a rejected entry; an annotated asset makes
+    // `--typecheck` catch it at build time (round 12, 12.1f) — say so once per kind.
+    const suggestions =
+      rejectedKinds.size > 0 && !flagBool(args, 'typecheck')
+        ? [...rejectedKinds].sort().map((k) => rejectedEntryTypecheckHint(k, target))
+        : [];
     const errors = issues.filter((i) => i.severity === 'error');
+    const settled = settleVerdict(errors.length === 0 ? 0 : 1, coverage);
     if (flagBool(args, 'json')) {
       process.stdout.write(
         asJson({
           packRoot,
           packageName: pkg.name,
+          manifest: read.manifestPath,
           counts,
           issues,
           loaded: wantLoad,
           trustedLoad,
           modules: loadResults,
-          passed: errors.length === 0,
+          ...(typecheck
+            ? {
+                typecheck: {
+                  ran: typecheck.ran,
+                  checkedFiles: typecheck.checkedFiles.map((f) => nodePath.relative(packRoot, f) || f),
+                  errors: typecheck.errors.length,
+                  ...(typecheck.note ? { note: typecheck.note } : {}),
+                },
+              }
+            : {}),
+          ...(suggestions.length > 0 ? { suggestions } : {}),
+          passed: settled.exit === 0,
+          exitCode: settled.exit,
+          verdict: settled.verdict,
+          shortfalls: settled.shortfalls,
         }) + '\n',
       );
-      return errors.length === 0 ? 0 : 1;
+      return settled.exit;
     }
     process.stdout.write(header(`Pack test: ${pkg.name ?? '(unknown)'}`));
     process.stdout.write(kv('packRoot', packRoot) + '\n');
-    process.stdout.write(kv('assets', `${counts.assets}/${counts.total}`) + '\n');
+    process.stdout.write(kv('manifest', read.manifestPath ?? '(none)') + '\n');
+    process.stdout.write(kv('assets', `${counts.assets}/${counts.total} declared contribution file(s) present`) + '\n');
     if (wantLoad) {
       process.stdout.write(kv('mode', trustedLoad ? 'load (trusted)' : 'load (read-only)') + '\n');
       process.stdout.write(kv('modules', String(loadResults.length)) + '\n');
     }
-    if (issues.length === 0) {
-      process.stdout.write('\nNo issues found.\n');
-      return 0;
+    if (typecheck) {
+      process.stdout.write(
+        kv(
+          'typecheck',
+          `${typecheck.ran ? typecheck.checkedFiles.length : 0} TS file(s) checked, ${typecheck.errors.length} error(s)`,
+        ) + '\n',
+      );
     }
     for (const i of issues) {
       process.stdout.write(`  ${i.severity.toUpperCase().padEnd(8)} ${i.code.padEnd(28)} ${i.message}\n`);
     }
-    process.stdout.write(`\nVerdict: ${errors.length === 0 ? 'OK ✓' : 'pack has issues'}\n`);
-    return errors.length === 0 ? 0 : 1;
+    for (const s of suggestions) process.stdout.write(`  ↳ ${s}\n`);
+    if (settled.exit === 1) process.stdout.write('\nVerdict: pack has issues\n');
+    const line = verdictLine(settled, issues.length === 0 ? '\nNo issues found.' : '\nVerdict: OK ✓');
+    if (line) process.stdout.write(`${settled.exit === 0 ? '' : '\n'}${line}\n`);
+    if (settled.exit === 2 && declared.length === 0) {
+      process.stdout.write(`Pass --${ALLOW_EMPTY_FLAG} to accept a pack that declares no contribution file explicitly.\n`);
+    }
+    return settled.exit;
   },
 };
 
 interface IRuntimePackTestInput {
   packRoot: string;
   trustedLoad: boolean;
+  manifestPath: string | null;
+  declared: readonly IDeclaredContribution[];
 }
 
 interface IRuntimePackTestResult {
@@ -704,7 +913,12 @@ interface IRuntimePackTestResult {
     arrayLength?: number;
     exportShape?: string;
     error?: string;
+    /** Entries the slot's runtime loader accepted / refused (round 12). */
+    accepted?: number;
+    rejected?: number;
   }>;
+  /** Contribution kinds with at least one entry the runtime loader refuses. */
+  rejectedKinds: ContributionKind[];
 }
 
 async function runRuntimePackTest(
@@ -713,7 +927,7 @@ async function runRuntimePackTest(
   const { packRoot, trustedLoad } = input;
   const issues: IPackTestIssue[] = [];
   const modules: IRuntimePackTestResult['modules'] = [];
-  const fs = await import('node:fs');
+  const rejectedKinds = new Set<ContributionKind>();
 
   // We require Bun for TS module evaluation; document the limitation and bail
   // gracefully when running under plain Node.
@@ -722,113 +936,104 @@ async function runRuntimePackTest(
     issues.push({
       code: 'runtime-load-requires-bun',
       message:
-        'pack test --load can only evaluate raw .ts assets under Bun. Run under Bun (`bun run shrk pack test ...`) or pre-build the pack to dist/.',
+        'packs test --load can only evaluate raw .ts assets under Bun. Run under Bun (`bun run shrk packs test ...`) or pre-build the pack to dist/.',
       severity: 'warning',
     });
   }
 
-  // Plugin entry: import to ensure asset wiring resolves.
-  const entry = nodePath.join(packRoot, 'src', 'sharkcraft.plugin.ts');
-  if (existsSync(entry)) {
+  // The manifest module (TS/JS): import it and validate what it exports.
+  const entry = input.manifestPath;
+  if (entry && !entry.endsWith('.json') && existsSync(entry)) {
+    const relativePath = nodePath.relative(packRoot, entry) || entry;
     try {
-      const { pathToFileURL } = await import('node:url');
-      const mod = (await importModuleViaLoader(entry)) as
-        | { default?: unknown }
-        | unknown;
+      const mod = (await importModuleViaLoader(entry)) as { default?: unknown } | unknown;
       const value = (mod as { default?: unknown }).default ?? mod;
-      const shape = describeShape(value);
-      modules.push({
-        relativePath: 'src/sharkcraft.plugin.ts',
-        kind: 'plugin-entry',
-        loaded: true,
-        exportShape: shape,
-      });
-      if (typeof value !== 'object' || value === null) {
+      modules.push({ relativePath, kind: 'plugin-entry', loaded: true, exportShape: describeShape(value) });
+      const v = validatePackManifest(value);
+      if (!v.valid) {
         issues.push({
           code: 'plugin-entry-shape',
-          message: 'src/sharkcraft.plugin.ts default export must be an object',
+          message: `${relativePath} default export is not a valid pack manifest: ${v.issues.map((i) => `${i.field}: ${i.message}`).join('; ')}`,
           severity: 'error',
         });
       }
     } catch (e) {
-      modules.push({
-        relativePath: 'src/sharkcraft.plugin.ts',
-        kind: 'plugin-entry',
-        loaded: false,
-        error: (e as Error).message,
-      });
+      modules.push({ relativePath, kind: 'plugin-entry', loaded: false, error: (e as Error).message });
       issues.push({
         code: 'plugin-entry-throw',
-        message: `failed to import plugin entry: ${(e as Error).message}`,
+        message: `failed to import the manifest ${relativePath}: ${(e as Error).message}`,
         severity: 'error',
       });
     }
   }
 
-  // Asset files: every required asset should export an array.
-  const assetRels: { rel: string; kind: string }[] = [
-    { rel: 'src/assets/knowledge.ts', kind: 'knowledge' },
-    { rel: 'src/assets/rules.ts', kind: 'rule' },
-    { rel: 'src/assets/paths.ts', kind: 'path' },
-    { rel: 'src/assets/templates.ts', kind: 'template' },
-    { rel: 'src/assets/pipelines.ts', kind: 'pipeline' },
-    { rel: 'src/assets/presets.ts', kind: 'preset' },
-    { rel: 'src/assets/boundaries.ts', kind: 'boundary' },
-  ];
-  for (const a of assetRels) {
-    const full = nodePath.join(packRoot, a.rel);
-    if (!existsSync(full)) continue;
+  // Every declared contribution module (docs / markdown are data, not modules).
+  for (const d of input.declared) {
+    if (!MODULE_FILE.test(d.rel) || !existsSync(d.abs)) continue;
+    const kind = ARRAY_OF_IDS_SLOTS[d.key] ?? d.key;
+    const relativePath = nodePath.relative(packRoot, d.abs) || d.rel;
     try {
-      const { pathToFileURL } = await import('node:url');
-      const mod = (await importModuleViaLoader(full)) as {
-        default?: unknown;
-      };
+      const mod = (await importModuleViaLoader(d.abs)) as { default?: unknown };
       const value = mod.default;
       const arr = Array.isArray(value) ? value : null;
+      // THE runtime loader (or acceptance predicate) of this slot (round 12,
+      // 12.1c / 12.1f): an unannotated literal missing a required field is
+      // refused here exactly as at load — the old check saw only `id`.
+      const validation = await validateContributionFile(d.key, d.abs);
+      const rejectedAt = new Set<number>();
+      for (const r of validation.rejected) {
+        if (r.exportName === undefined || r.exportName === 'default') rejectedAt.add(r.index);
+        issues.push({
+          code: 'asset-entry-rejected',
+          message: `${relativePath} ${formatEntryRejection(r)} — the ${validation.kind ?? d.key} loader refuses it, so it would not take effect`,
+          severity: 'error',
+        });
+      }
+      if (validation.rejected.length > 0 && validation.kind) rejectedKinds.add(validation.kind);
       modules.push({
-        relativePath: a.rel,
-        kind: a.kind,
+        relativePath,
+        kind,
         loaded: true,
         ...(arr ? { arrayLength: arr.length } : {}),
         exportShape: describeShape(value),
+        ...(validation.unvalidated ? {} : { accepted: validation.accepted, rejected: validation.rejected.length }),
       });
+      if (!(d.key in ARRAY_OF_IDS_SLOTS)) continue;
       if (value === undefined) {
-        issues.push({
-          code: 'asset-no-default-export',
-          message: `${a.rel} has no default export`,
-          severity: 'error',
-        });
+        issues.push({ code: 'asset-no-default-export', message: `${relativePath} has no default export`, severity: 'error' });
         continue;
       }
       if (!arr) {
         issues.push({
           code: 'asset-not-array',
-          message: `${a.rel} default export must be an array, got ${describeShape(value)}`,
+          message: `${relativePath} default export must be an array, got ${describeShape(value)}`,
           severity: 'error',
         });
         continue;
       }
-      // Validate that each item has an `id` string.
+      // Validate that each item has an `id` string (an entry the runtime
+      // loader already refused above is reported once, as that).
       for (let i = 0; i < arr.length; i += 1) {
+        if (rejectedAt.has(i)) continue;
         const item = arr[i] as Record<string, unknown> | undefined;
         if (!item || typeof item !== 'object' || typeof item.id !== 'string') {
           issues.push({
             code: 'asset-item-missing-id',
-            message: `${a.rel}[${i}] is missing a string \`id\``,
+            message: `${relativePath}[${i}] is missing a string \`id\``,
             severity: 'error',
           });
           break;
         }
       }
-      if (a.kind === 'template' && trustedLoad) {
+      if (kind === 'template' && trustedLoad) {
         // Best-effort: attempt to render each template's targetPath/content with
         // its default/sample variables. Wrapped in try/catch — any throw is an
         // error issue.
         for (const t of arr as Array<Record<string, unknown>>) {
           const id = String(t.id ?? '?');
           const vars: Record<string, unknown> = {};
-          const declared = (t.variables as Array<{ name?: string; default?: unknown }>) ?? [];
-          for (const v of declared) {
+          const declaredVars = (t.variables as Array<{ name?: string; default?: unknown }>) ?? [];
+          for (const v of declaredVars) {
             if (typeof v.name !== 'string') continue;
             vars[v.name] = v.default ?? defaultVar(v.name);
           }
@@ -846,7 +1051,7 @@ async function runRuntimePackTest(
           }
         }
       }
-      if (a.kind === 'pipeline') {
+      if (kind === 'pipeline') {
         for (const p of arr as Array<Record<string, unknown>>) {
           if (!Array.isArray(p.steps) || (p.steps as unknown[]).length === 0) {
             issues.push({
@@ -858,21 +1063,16 @@ async function runRuntimePackTest(
         }
       }
     } catch (e) {
-      modules.push({
-        relativePath: a.rel,
-        kind: a.kind,
-        loaded: false,
-        error: (e as Error).message,
-      });
+      modules.push({ relativePath, kind, loaded: false, error: (e as Error).message });
       issues.push({
         code: 'asset-throw',
-        message: `failed to import ${a.rel}: ${(e as Error).message}`,
+        message: `failed to import ${relativePath}: ${(e as Error).message}`,
         severity: 'error',
       });
     }
   }
 
-  return { issues, modules };
+  return { issues, modules, rejectedKinds: [...rejectedKinds] };
 }
 
 function describeShape(v: unknown): string {

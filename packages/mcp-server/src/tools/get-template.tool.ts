@@ -1,8 +1,10 @@
+import { templateRemainderFields, templateRemainderLines } from '@shrkcrft/templates';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
 export const getTemplateTool: IToolDefinition = {
   name: 'get_template',
-  description: 'Get one template by id, including variables and notes.',
+  description:
+    'Get one template by id, including variables, notes and its declared remainder (notScaffolded / manualSteps — what it deliberately does NOT do).',
   inputSchema: {
     type: 'object',
     properties: { id: { type: 'string' } },
@@ -23,6 +25,10 @@ export const getTemplateTool: IToolDefinition = {
         appliesWhen: t.appliesWhen,
         variables: t.variables,
         postGenerationNotes: t.postGenerationNotes ?? [],
+        // The remainder `templates get --json` carries — the one shape
+        // (`templateRemainderFields`) plus the one printable wording.
+        ...templateRemainderFields(t),
+        remainderLines: templateRemainderLines(t),
         related: t.related ?? [],
       },
     };

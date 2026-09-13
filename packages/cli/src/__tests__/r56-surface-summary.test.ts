@@ -15,6 +15,9 @@ const EMPTY: ITierResolverContext = {
   spineCommands: new Set(),
   packContributions: new Map(),
   surfaceConfig: undefined,
+  // Round 11: the host is part of the context. These locks describe the tool
+  // repo's own default surface (no tool-maintenance gating).
+  isToolRepo: true,
 };
 
 describe('surface summary', () => {

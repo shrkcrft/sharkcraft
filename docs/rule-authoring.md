@@ -36,7 +36,7 @@ never overwrites your existing rules file.
 | `safety` | `safety` | `shrk safety audit --deep` | Critical priority by default. |
 | `style` | `style` | `bun x tsc -p tsconfig.base.json --noEmit` | Examples are required by `shrk rules doctor`. |
 | `governance` | `governance` | `shrk doctor`, `shrk safety audit --deep` | High priority. |
-| `migration` | `migration` | `shrk migrate project-coupling audit --fail-on engine` | Medium priority. |
+| `migration` | `migration` | `shrk audit project-coupling audit --fail-on engine` | Medium priority. |
 | `testing` | `testing` | `bun test` | High priority. |
 | `advisory` | `advisory` | _(none)_ | Sets `metadata.advisory: true` so `shrk rules doctor` does not require `verificationCommands`. |
 

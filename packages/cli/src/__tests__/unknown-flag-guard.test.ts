@@ -8,6 +8,8 @@ import { describe, expect, test } from 'bun:test';
 import { firstUnknownFlag, parseArgs } from '../command-registry.ts';
 import { ExitCode } from '../exit-codes.ts';
 import { graphCommand } from '../commands/graph.command.ts';
+import { guardInvocation } from '../dispatch/guard-invocation.ts';
+import { buildRegistry } from '../main.ts';
 
 describe('firstUnknownFlag', () => {
   const allowed = new Set(['json', 'limit', 'include-type-edges']);
@@ -30,11 +32,38 @@ describe('firstUnknownFlag', () => {
   });
 });
 
-describe('graph code-subverb flag guard', () => {
-  test('a typo’d flag on a code-graph subverb is rejected as NotVerified', async () => {
-    const args = parseArgs(['cycles', '--no-such-flag-xyz']);
-    args.positional = ['cycles'];
-    const code = await graphCommand.run(args);
-    expect(code).toBe(ExitCode.NotVerified);
+describe('graph code-subverb flag guard (declared `flags`, judged by the dispatcher)', () => {
+  // Round 11: the inline guard in `graph.run` became each code subverb's
+  // declared `flags`; the dispatcher refuses an unknown flag BEFORE the subverb
+  // runs, exiting `usageExitFor(path)` — 3 on the verdict verb `graph cycles`,
+  // 2 on `graph importers` (the inline guard returned 2 for every subverb).
+  const registry = buildRegistry();
+  const guard = (argv: string[]) =>
+    guardInvocation({
+      registry,
+      handler: graphCommand,
+      matchedPath: ['graph'],
+      trieChildren: [],
+      parsed: parseArgs(argv),
+      cwd: process.cwd(),
+    });
+
+  test('a typo’d flag on `graph cycles` (a verdict verb) is a usage error: 3', () => {
+    const r = guard(['cycles', '--no-such-flag-xyz']);
+    expect(r?.exitCode).toBe(ExitCode.UsageError);
+    expect(r?.message).toContain('--no-such-flag-xyz');
+  });
+
+  test('…and on `graph importers` (not a verdict verb): 2', () => {
+    expect(guard(['importers', 'x', '--no-such-flag-xyz'])?.exitCode).toBe(ExitCode.NotVerified);
+  });
+
+  test('a real flag and the global flags pass', () => {
+    expect(guard(['cycles', '--include-type-edges', '--json'])).toBeUndefined();
+    expect(guard(['cycles', '--no-hints', '--strict'])).toBeUndefined();
+  });
+
+  test('an asset-graph node id declares no flag set: the guard leaves it to the post-run detector', () => {
+    expect(guard(['some-node', '--whatever'])).toBeUndefined();
   });
 });

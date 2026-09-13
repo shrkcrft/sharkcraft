@@ -12,7 +12,7 @@ compatibility: {
 ```
 
 ```bash
-shrk packs compatibility [<pkg>] [--json]
+shrk packs compat <path-to-pack> [--consumer-root <path>] [--dist-aware] [--json]
 ```
 
 Output for each pack:

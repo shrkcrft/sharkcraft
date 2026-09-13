@@ -161,6 +161,15 @@ function classifyShape(profiles: readonly string[]): IWorkspaceShape {
 }
 
 /**
+ * Readiness wording for a config file that EXISTS but failed to load — one
+ * string for the dimension note and the blocker. The inspection leaves
+ * `configFile` null for both "missing" and "invalid"; `configLoadError` is what
+ * tells them apart, and "create the file" is the wrong fix for a file that is
+ * there.
+ */
+const CONFIG_INVALID_NOTE = 'sharkcraft.config.ts invalid — not loaded (see config-invalid)';
+
+/**
  * Deterministic AI-readiness report.
  *
  * Replaces the original "single 0-100 score" UX with a shape-aware
@@ -213,6 +222,9 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     : 'advisory';
 
   // 1) Config present — always core (this is the "did you opt in?" signal).
+  // An INVALID config (the file exists but failed the schema / import) leaves
+  // `configFile` null too, so `configLoadError` is checked first: telling the
+  // user to "create" a file that exists sends them to the wrong fix.
   dims.push({
     id: 'config',
     title: 'sharkcraft.config.ts present',
@@ -220,10 +232,16 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
     score: inspection.configFile ? 10 : 0,
     note: inspection.configFile
       ? `loaded from ${inspection.configFile}`
-      : 'missing — using defaults',
+      : inspection.configLoadError
+        ? CONFIG_INVALID_NOTE
+        : 'missing — using defaults',
     applies: 'core',
   });
-  if (!inspection.configFile) {
+  if (inspection.configLoadError) {
+    recs.push(
+      `Fix ${inspection.configLoadError.file ?? 'sharkcraft.config.ts'} — it exists but failed to load (run \`shrk doctor\`, check \`config-invalid\`).`,
+    );
+  } else if (!inspection.configFile) {
     recs.push('Create sharkcraft/sharkcraft.config.ts to opt in to project-specific config.');
   }
 
@@ -517,7 +535,8 @@ export function buildAiReadinessReport(inspection: ISharkcraftInspection): IRead
   // Binary verdicts — honest yes/no rather than a fuzzy score.
   const blockers: string[] = [];
   if (!doctor.passed) blockers.push('doctor reports errors');
-  if (!inspection.configFile) blockers.push('sharkcraft.config.ts missing');
+  if (inspection.configLoadError) blockers.push(CONFIG_INVALID_NOTE);
+  else if (!inspection.configFile) blockers.push('sharkcraft.config.ts missing');
   if (!hasDryRunDefault) blockers.push('no cli-only write policy rule');
   if (k === 0) blockers.push('no knowledge entries loaded');
   const readyForAgentWrites = blockers.length === 0;

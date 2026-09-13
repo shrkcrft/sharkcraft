@@ -27,6 +27,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header } from '../output/format-output.ts';
 
 function collectCommandsFromCatalog(): IRoundCommandEntry[] {
@@ -135,6 +136,8 @@ export const roundsShowCommand: ICommandHandler = {
 
 export const diffParentCommand: ICommandHandler = {
   name: 'diff',
+  // Mixed-mode: `rounds` is a trie child.
+  positionals: PositionalMode.None,
   description:
     'Diff two artifacts. Currently supports `diff rounds` for round-to-round snapshot diffs.',
   usage: 'shrk diff rounds --from <id> --to <id> [--json]',
@@ -151,6 +154,8 @@ export const diffParentCommand: ICommandHandler = {
 
 export const roundsParentCommand: ICommandHandler = {
   name: 'rounds',
+  // Mixed-mode: capture / list / show are trie children.
+  positionals: PositionalMode.None,
   description: 'Capture / list / show round snapshots under .sharkcraft/rounds/.',
   usage: 'shrk rounds [capture|list|show] [args]',
   async run(args: ParsedArgs): Promise<number> {

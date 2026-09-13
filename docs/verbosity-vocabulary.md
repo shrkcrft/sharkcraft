@@ -9,7 +9,7 @@ new commands invent ad-hoc flags (`--detailed`, `--long`, `--all`,
 | Flag | Meaning | Example |
 | --- | --- | --- |
 | (no flag) | Shortest human-friendly default. Top 3–5 items + next command + details path. | `shrk recommend "<task>"` |
-| `--compact` | Synonym for the default. Declared when a command wants to be explicit. | `shrk recommend "<task>" --compact` |
+| `--compact` | Synonym for the default. Declared when a command wants to be explicit. | `shrk context --task "<task>" --compact` |
 | `--verbose` | Expanded human output. Still readable in a terminal. | `shrk recommend "<task>" --verbose` |
 | `--full` | Complete human output where the long body exists. | `shrk context --task "<task>" --full` |
 | `--json` / `--machine-json` | Machine output. The JSON shape is the contract. | `shrk task "<task>" --json` |

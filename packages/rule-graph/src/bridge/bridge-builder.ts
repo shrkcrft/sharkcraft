@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import { globToRegex } from '@shrkcrft/boundaries';
+import {
+  boundaryRuleScope,
+  boundaryRuleSeverity,
+  boundaryScopeDecision,
+  globToRegex,
+} from '@shrkcrft/boundaries';
 import {
   EdgeKind,
   GraphStore,
@@ -73,22 +78,25 @@ export async function buildBridge(
   // ── Boundary rules ─────────────────────────────────────────────────
   const boundaries = inspection.boundaryRegistry.list();
   for (const b of boundaries) {
+    const severity = boundaryRuleSeverity(b);
     nodes.push({
       id: `boundary:${b.id}`,
       kind: NodeKind.Boundary,
       label: b.title ?? b.id,
       data: {
-        severity: b.severity ?? 'error',
+        severity,
         ...(b.tags ? { tags: [...b.tags] } : {}),
       },
     });
-    const regexes = b.from.map((p) => globToRegex(p));
+    // THE scope decision the evaluator uses: a rule does not "apply" to a file
+    // it exempts (`exemptFiles`, `excludeTests`, a `!` glob in `from`).
+    const scope = boundaryRuleScope(b);
     for (const f of files) {
-      if (!regexes.some((re) => re.test(f.path!))) continue;
+      if (boundaryScopeDecision(scope, f.path!) !== 'in') continue;
       edges.push(
         edge(f.id, `boundary:${b.id}`, EdgeKind.AppliesRule, {
           source: 'boundary',
-          severity: b.severity ?? 'error',
+          severity,
         }),
       );
       sourceCounts['rule']! += 1;

@@ -20,6 +20,8 @@ import type {
   IKnowledgeEntry,
   IKnowledgeReference,
 } from '@shrkcrft/knowledge';
+import { KNOWLEDGE_BACKED_KINDS, reverseXrefs } from './declared-cross-references.ts';
+import type { IDeclaredXrefReport } from './i-declared-xref-report.ts';
 
 export const KNOWLEDGE_AUTHORING_SCHEMA = 'sharkcraft.knowledge-authoring/v1';
 
@@ -135,8 +137,20 @@ export interface IKnowledgeAuthoringResult {
 }
 
 export interface IReverseReference {
+  /** The referencing asset's id — a knowledge entry unless {@link sourceKind} says otherwise. */
   fromEntryId: string;
-  field: 'related' | 'reference.id' | 'reference.symbol' | 'reference.path' | 'anchor.targetId';
+  /**
+   * The referencing asset's kind (`construct`, `boundary-rule`, `template`).
+   * Absent for a knowledge entry, so knowledge-only results keep their shape.
+   */
+  sourceKind?: string;
+  /**
+   * The field holding the reference: `related`, `reference.id`,
+   * `anchor.targetId`, or any declared cross-reference field
+   * (`seeAlso`, `actionHints.relatedKnowledge`, `relatedKnowledge`,
+   * `facets.<name>`, …).
+   */
+  field: string;
   note?: string;
 }
 
@@ -157,6 +171,14 @@ export interface IKnowledgeAuthoringPatchChange {
 export interface IKnowledgeAuthoringContext {
   /** Currently loaded entries — used for reverse-ref + duplicate detection. */
   entries: readonly IKnowledgeEntry[];
+  /**
+   * Every declared cross-reference in the workspace (`buildDeclaredXrefReport`).
+   * A removal is refused when ANY asset points at the entry — a construct's
+   * `relatedKnowledge`, a boundary rule's `relatedRules`, a template's
+   * `related` — not only another knowledge entry. Without it the check covers
+   * knowledge only, and the preview says so.
+   */
+  declaredXrefs?: IDeclaredXrefReport;
 }
 
 const ID_RE = /^[a-z0-9]+([.\-][a-z0-9]+)*$/;
@@ -204,16 +226,28 @@ function tsObject(value: unknown, indent: string): string {
   );
 }
 
+/**
+ * Everything that points at `targetId`. The structured `references[].id` and
+ * `anchors[].targetId` are scanned here; every DECLARED cross-reference field
+ * (knowledge `related` / `seeAlso` / `supersededBy` / action hints, construct
+ * `related*` + declared facets, boundary `related*`, template `related`) comes
+ * from THE collector when the caller supplied it — this used to be a private
+ * knowledge-only `related` loop, so an entry a construct relied on could be
+ * removed without a word.
+ */
 function findReverseReferences(
   entries: readonly IKnowledgeEntry[],
   targetId: string,
+  declaredXrefs?: IDeclaredXrefReport,
 ): IReverseReference[] {
   const out: IReverseReference[] = [];
   for (const e of entries) {
     if (e.id === targetId) continue;
-    for (const r of e.related ?? []) {
-      if (r === targetId) {
-        out.push({ fromEntryId: e.id, field: 'related' });
+    if (!declaredXrefs) {
+      for (const r of e.related ?? []) {
+        if (r === targetId) {
+          out.push({ fromEntryId: e.id, field: 'related' });
+        }
       }
     }
     for (const ref of e.references ?? []) {
@@ -227,7 +261,25 @@ function findReverseReferences(
       }
     }
   }
+  if (declaredXrefs) {
+    // Only fields that could mean THIS entry: a construct's
+    // `relatedTemplates: ['x']` is not a reference to a knowledge entry `x`.
+    for (const row of reverseXrefs(declaredXrefs, targetId, KNOWLEDGE_BACKED_KINDS)) {
+      if (row.sourceKind === 'knowledge' && row.sourceId === targetId) continue;
+      out.push({
+        fromEntryId: row.sourceId,
+        ...(row.sourceKind !== 'knowledge' ? { sourceKind: row.sourceKind } : {}),
+        field: row.field,
+        ...(row.facetId ? { note: `facet value ${row.facetId}` } : {}),
+      });
+    }
+  }
   return out;
+}
+
+/** `construct:fx-construct` — or the bare id for a knowledge entry (the shape it always had). */
+export function reverseReferenceLabel(rr: IReverseReference): string {
+  return rr.sourceKind && rr.sourceKind !== 'knowledge' ? `${rr.sourceKind}:${rr.fromEntryId}` : rr.fromEntryId;
 }
 
 function buildEntryFromAdd(input: IKnowledgeAuthoringInput): IKnowledgeEntry {
@@ -446,7 +498,7 @@ function buildExplainer(
     lines.push(`## Reverse references`);
     lines.push('');
     for (const rr of result.reverseReferences) {
-      lines.push(`- \`${rr.fromEntryId}\` → \`${rr.field}\`${rr.note ? ` — ${rr.note}` : ''}`);
+      lines.push(`- \`${reverseReferenceLabel(rr)}\` → \`${rr.field}\`${rr.note ? ` — ${rr.note}` : ''}`);
     }
     lines.push('');
   }
@@ -680,15 +732,29 @@ export function buildKnowledgeAuthoringPreview(
         refused.explainer = files.explainer;
         return refused;
       }
-      const reverseReferences = findReverseReferences(context.entries, input.id);
+      const reverseReferences = findReverseReferences(context.entries, input.id, context.declaredXrefs);
+      if (!context.declaredXrefs) {
+        // An unmeasured "no references" must not read as a clean one.
+        warnings.push(
+          'reverse references checked in knowledge only — constructs / boundaries / templates were not consulted (pass declaredXrefs from buildDeclaredXrefReport).',
+        );
+      }
+      const fromOtherKinds = reverseReferences.filter(
+        (r) => r.sourceKind !== undefined && r.sourceKind !== 'knowledge',
+      ).length;
       if (reverseReferences.length > 0 && !input.forcePreview) {
+        const n = reverseReferences.length;
+        const refusal =
+          fromOtherKinds === 0
+            ? `Refused: ${n} other entr${n === 1 ? 'y references' : 'ies reference'} "${input.id}".`
+            : `Refused: ${n} declared reference${n === 1 ? '' : 's'} point${n === 1 ? 's' : ''} at "${input.id}" — ${n - fromOtherKinds} from knowledge, ${fromOtherKinds} from constructs / boundary rules / templates.`;
         const refused: IKnowledgeAuthoringResult = {
           schema: KNOWLEDGE_AUTHORING_SCHEMA,
           generatedAt: nowIso(),
           operation: input.operation,
           entryId: input.id,
           ok: false,
-          refusal: `Refused: ${reverseReferences.length} other entr${reverseReferences.length === 1 ? 'y references' : 'ies reference'} "${input.id}". Pass --force-preview to preview removal anyway, or prefer deprecation via \`shrk knowledge update ${input.id} --mark-deprecated\`.`,
+          refusal: `${refusal} Pass --force-preview to preview removal anyway, or prefer deprecation via \`shrk knowledge update ${input.id} --mark-deprecated\`.`,
           tsDraft: emptyDraftFile(input.id, input.operation, 'typescript'),
           jsonManifest: emptyDraftFile(input.id, input.operation, 'json'),
           explainer: emptyDraftFile(input.id, input.operation, 'markdown'),

@@ -6,19 +6,38 @@
  *   - one row per detected collision — the conflicts
  *
  * Both outputs are deterministic and read-only.
+ *
+ * Honesty contract (round 11): an id the inventory could only SCRAPE is never
+ * reported as a healthy contribution. A file the module loader cannot import is
+ * a load failure — its scraped ids are `validation: 'error'` and the file is an
+ * `invalid-contribution` error conflict. A regex id from a kind whose loader
+ * returned nothing for that file is a `warning`. Every text/markdown render
+ * prints the extraction mode, so a fallback is never invisible.
+ *
+ * Round 12 (12.1e): EVERY loader-backed slot is a kind and is listed
+ * structurally (registration hints, presets, boundaries, scaffold patterns,
+ * constructs + facets, search tuning, decisions, policy checks, feedback rules,
+ * tests, delegate recipes, framework extractors and the gate planes were
+ * scraped by regex, or not listed at all), and an entry its loader REFUSED is
+ * in `rejections` — a scraped id matching one is `error` "rejected by the
+ * loader", never the `ok` a regex id of an unloaded kind used to get.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { CONTRIBUTION_FILE_KEYS } from '@shrkcrft/plugin-api';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
-// Structural loaders used to replace regex-fallback noise per kind.
-import { HELPERS } from './helper-registry.ts';
-import { listConventions } from './convention-registry.ts';
-import { listPackHelpers } from './pack-helper-registry.ts';
-import { listTaskRoutingHints } from './task-routing-hint-registry.ts';
-import { listRegistrationHints } from './registration-hint-registry.ts';
-import { listPlaybooks } from './playbook-registry.ts';
-import { loadAllContractTemplates } from './contract-template-registry.ts';
-import { listMigrationProfilesFromPacks } from './migration-profile-registry.ts';
+import {
+  collectContributionLoadFailures,
+  collectContributionRejections,
+  collectRegistryOutcomes,
+  formatEntryRejection,
+  type IContributionLoadFailure,
+} from './contribution-load-failures.ts';
+import { ContributionKind } from './contribution-kind.ts';
+import type { IContributionEntryRejection } from './i-contribution-entry-rejection.ts';
+import { describePackAssetFreshness, detectPackAssetFreshness } from './pack-asset-freshness.ts';
+
+export { ContributionKind } from './contribution-kind.ts';
 
 export const PACK_CONTRIBUTIONS_INVENTORY_SCHEMA =
   'sharkcraft.pack-contributions-inventory/v1';
@@ -30,37 +49,12 @@ export enum ContributionSource {
   Fixture = 'fixture',
 }
 
-export enum ContributionKind {
-  Knowledge = 'knowledge',
-  Rule = 'rule',
-  Path = 'path',
-  PathConvention = 'path-convention',
-  Template = 'template',
-  Pipeline = 'pipeline',
-  Preset = 'preset',
-  Boundary = 'boundary',
-  ScaffoldPattern = 'scaffold-pattern',
-  Policy = 'policy',
-  Construct = 'construct',
-  Playbook = 'playbook',
-  SearchTuning = 'search-tuning',
-  FeedbackRule = 'feedback-rule',
-  Decision = 'decision',
-  ContractTemplate = 'contract-template',
-  MigrationProfile = 'migration-profile',
-  ContextTest = 'context-test',
-  AgentTest = 'agent-test',
-  Helper = 'helper',
-  TaskRoutingHint = 'task-routing-hint',
-  Convention = 'convention',
-  Docs = 'docs',
-}
-
 /**
  * How the inventory derived this entry's id.
  *   - `structural`     — authoritative ids from the loader for this kind.
  *   - `regex-fallback` — id extracted by regex from the raw source file;
- *                        nested `id:` fields may produce false positives.
+ *                        nested `id:` fields may produce false positives, and
+ *                        nothing proves the id takes effect (unverified).
  *   - `file-only`      — file exists but no id could be extracted; entry
  *                        represents the file itself, not a contribution id.
  */
@@ -123,6 +117,49 @@ export interface IPackContributionsInventory {
     root: string;
     signaturePresent: boolean;
   }[];
+  /**
+   * How every entry's id was derived. `regexFallback` ids are unverified —
+   * nothing proved they take effect; `structural` ones came from the loader.
+   * `rejected` counts the declared entries a loader refused (round 12).
+   */
+  readonly extractionTotals: {
+    readonly structural: number;
+    readonly regexFallback: number;
+    readonly fileOnly: number;
+    readonly rejected: number;
+  };
+  /**
+   * Every contribution file that failed to load, with the ids the regex
+   * scraped from it (which do NOT take effect). Project-relative paths.
+   */
+  readonly loadFailures: readonly {
+    readonly file: string;
+    readonly kind: string;
+    readonly packageName?: string;
+    readonly message: string;
+    readonly scrapedIds: readonly string[];
+  }[];
+  /**
+   * Every declared entry a loader REFUSED (round 12, 12.1) — THE rejection
+   * channel (`collectContributionRejections`), project-relative. None of them
+   * takes effect; a scraped id matching one is `validation: 'error'`.
+   */
+  readonly rejections: readonly {
+    readonly file: string;
+    readonly kind: ContributionKind;
+    readonly packageName?: string;
+    readonly index: number;
+    readonly exportName?: string;
+    readonly entryId?: string;
+    readonly reasons: readonly string[];
+    readonly cause: IContributionEntryRejection['cause'];
+  }[];
+  /**
+   * `async` — built by {@link buildPackContributionsInventoryAsync} (loaders
+   * consulted); `sync` — the regex-only compatibility wrapper, whose regex ids
+   * are marked unverified.
+   */
+  readonly mode: 'async' | 'sync';
 }
 
 interface IContribFileEntry {
@@ -133,7 +170,12 @@ interface IContribFileEntry {
   source: ContributionSource;
 }
 
-const KIND_TO_SLOT: Record<ContributionKind, string> = {
+/**
+ * THE contribution kind → manifest slot table. A `Record` over the enum: a kind
+ * without a slot is a compile error, and the r76 census holds every
+ * loader-backed `CONTRIBUTION_FILE_KEYS` slot to exactly one kind here.
+ */
+export const CONTRIBUTION_KIND_SLOT: Readonly<Record<ContributionKind, string>> = Object.freeze({
   [ContributionKind.Knowledge]: 'knowledgeFiles',
   [ContributionKind.Rule]: 'ruleFiles',
   [ContributionKind.Path]: 'pathFiles',
@@ -145,6 +187,7 @@ const KIND_TO_SLOT: Record<ContributionKind, string> = {
   [ContributionKind.ScaffoldPattern]: 'scaffoldPatternFiles',
   [ContributionKind.Policy]: 'policyCheckFiles',
   [ContributionKind.Construct]: 'constructFiles',
+  [ContributionKind.ConstructFacet]: 'constructFacetFiles',
   [ContributionKind.Playbook]: 'playbookFiles',
   [ContributionKind.SearchTuning]: 'searchTuningFiles',
   [ContributionKind.FeedbackRule]: 'feedbackRuleFiles',
@@ -155,8 +198,35 @@ const KIND_TO_SLOT: Record<ContributionKind, string> = {
   [ContributionKind.AgentTest]: 'agentTestFiles',
   [ContributionKind.Helper]: 'helperFiles',
   [ContributionKind.TaskRoutingHint]: 'taskRoutingHintFiles',
+  [ContributionKind.RegistrationHint]: 'registrationHintFiles',
   [ContributionKind.Convention]: 'conventionFiles',
   [ContributionKind.Docs]: 'docsFiles',
+  [ContributionKind.DelegateRecipe]: 'delegateRecipeFiles',
+  [ContributionKind.FrameworkExtractor]: 'frameworkExtractorFiles',
+  [ContributionKind.WiringRule]: 'wiringRuleFiles',
+  [ContributionKind.Registry]: 'registryFiles',
+  [ContributionKind.RegistrationIdiom]: 'registrationGraphFiles',
+  [ContributionKind.PolicyRule]: 'policyRuleFiles',
+  [ContributionKind.ReusePrimitive]: 'reusePrimitiveFiles',
+  [ContributionKind.Baseline]: 'baselineFiles',
+  [ContributionKind.GeneratedArtifact]: 'generatedArtifactFiles',
+  [ContributionKind.DocReference]: 'docReferenceFiles',
+});
+
+/** The contribution kind a manifest slot's files are loaded as, or `undefined` for a slot no loader reads. */
+export function contributionKindForSlot(slot: string): ContributionKind | undefined {
+  for (const [kind, s] of Object.entries(CONTRIBUTION_KIND_SLOT)) if (s === slot) return kind as ContributionKind;
+  return undefined;
+}
+
+/**
+ * A slot whose files are loaded under a DIFFERENT kind: `pathConventionFiles`
+ * feed the path loader, `docsFiles` the markdown knowledge loader. A file the
+ * other kind handled structurally is handled for this slot too.
+ */
+const ALSO_HANDLED_BY: Partial<Record<ContributionKind, readonly ContributionKind[]>> = {
+  [ContributionKind.PathConvention]: [ContributionKind.Path],
+  [ContributionKind.Docs]: [ContributionKind.Knowledge],
 };
 
 function safeRead(file: string): string | null {
@@ -169,9 +239,9 @@ function safeRead(file: string): string | null {
 
 /**
  * Lightweight static extractor — looks for `id: '...'` and `title: '...'`
- * occurrences inside a contribution file. This works without importing the
- * file (the engine already has dedicated loaders that do this; the inventory
- * is intentionally a fast surface-level reporter that doesn't re-run them).
+ * occurrences inside a contribution file. Used ONLY where no loader answered
+ * for a file; its ids are tagged `regex-fallback` and never reported as a
+ * verified contribution.
  */
 function extractIdsFromFile(content: string): { id: string; title?: string }[] {
   const entries: { id: string; title?: string }[] = [];
@@ -206,21 +276,25 @@ function buildContribFileEntries(inspection: ISharkcraftInspection): IContribFil
       { kind: ContributionKind.Pipeline, relCandidates: ['pipelines.ts'] },
       { kind: ContributionKind.ScaffoldPattern, relCandidates: ['scaffold-patterns.ts'] },
       { kind: ContributionKind.Policy, relCandidates: ['policies.ts'] },
+      { kind: ContributionKind.Construct, relCandidates: ['constructs.ts'] },
+      { kind: ContributionKind.ConstructFacet, relCandidates: ['construct-facets.ts'] },
       { kind: ContributionKind.Playbook, relCandidates: ['playbooks.ts'] },
       { kind: ContributionKind.SearchTuning, relCandidates: ['search-tuning.ts'] },
       { kind: ContributionKind.FeedbackRule, relCandidates: ['feedback-rules.ts'] },
       { kind: ContributionKind.Decision, relCandidates: ['decisions.ts'] },
+      { kind: ContributionKind.ContextTest, relCandidates: ['context-tests.ts'] },
       { kind: ContributionKind.AgentTest, relCandidates: ['agent-tests.ts'] },
       { kind: ContributionKind.ContractTemplate, relCandidates: ['contract-templates.ts'] },
       { kind: ContributionKind.MigrationProfile, relCandidates: ['migration-profiles.ts'] },
       { kind: ContributionKind.Helper, relCandidates: ['helpers.ts'] },
       { kind: ContributionKind.TaskRoutingHint, relCandidates: ['task-routing-hints.ts'] },
+      { kind: ContributionKind.RegistrationHint, relCandidates: ['registration-hints.ts'] },
       { kind: ContributionKind.Convention, relCandidates: ['conventions.ts'] },
     ];
     for (const c of localConventions) {
       const files = c.relCandidates
         .map((rel) => nodePath.join(dir, rel))
-        .filter((abs) => existsSync(abs));
+        .filter((abs) => safeRead(abs) !== null);
       if (files.length > 0) {
         out.push({ kind: c.kind, files, source: ContributionSource.Local });
       }
@@ -231,10 +305,10 @@ function buildContribFileEntries(inspection: ISharkcraftInspection): IContribFil
   for (const pack of inspection.packs.validPacks ?? []) {
     const contributions = (pack.manifest?.contributions ?? {}) as Record<string, readonly string[] | undefined>;
     for (const kind of Object.values(ContributionKind)) {
-      const slot = KIND_TO_SLOT[kind];
+      const slot = CONTRIBUTION_KIND_SLOT[kind];
       const rels = contributions[slot];
       if (!rels || rels.length === 0) continue;
-      const abs = rels.map((rel) => nodePath.resolve(pack.packageRoot, rel)).filter((f) => existsSync(f));
+      const abs = rels.map((rel) => nodePath.resolve(pack.packageRoot, rel)).filter((f) => safeRead(f) !== null);
       out.push({
         kind,
         packageName: pack.packageName,
@@ -275,6 +349,28 @@ interface IStructuralMap {
    * installed copy under `node_modules/...`).
    */
   readonly structuralIds: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Load failures the registry loaders reported while building this map. */
+  readonly loadFailures: readonly IContributionLoadFailure[];
+  /** Entries the registry loaders refused while building this map (round 12). */
+  readonly rejections: readonly IContributionEntryRejection[];
+}
+
+/**
+ * Where a registry `sourceFile` lives, as a project-relative path. Registries
+ * report a PACK-relative path for pack entries and a PROJECT-relative one for
+ * local entries; resolving either against `process.cwd()` (as this used to)
+ * made the inventory cwd-dependent and broke nested-id suppression.
+ */
+function sourceFileResolver(inspection: ISharkcraftInspection): (file: string, packageName?: string) => string {
+  const projectRoot = inspection.projectRoot;
+  const packRoots = new Map<string, string>();
+  for (const p of inspection.packs.validPacks ?? []) packRoots.set(p.packageName, p.packageRoot);
+  return (file, packageName) => {
+    const abs = nodePath.isAbsolute(file)
+      ? file
+      : nodePath.resolve((packageName && packRoots.get(packageName)) || projectRoot, file);
+    return nodePath.relative(projectRoot, abs) || abs;
+  };
 }
 
 async function loadStructuralEntries(
@@ -283,9 +379,7 @@ async function loadStructuralEntries(
   const byKindAndFile = new Map<string, Map<string, IStructuralEntry[]>>();
   const structuralFiles = new Map<string, Set<string>>();
   const structuralIds = new Map<string, Set<string>>();
-  const projectRoot = inspection.projectRoot;
-  const rel = (abs: string | undefined): string | undefined =>
-    abs ? nodePath.relative(projectRoot, abs) || abs : undefined;
+  const toRel = sourceFileResolver(inspection);
 
   const record = (
     kind: ContributionKind,
@@ -293,7 +387,7 @@ async function loadStructuralEntries(
     entry: IStructuralEntry,
   ): void => {
     if (!file) return;
-    const relPath = rel(file)!;
+    const relPath = toRel(file, entry.packageName);
     const kindKey = kind as string;
     let m = byKindAndFile.get(kindKey);
     if (!m) {
@@ -323,12 +417,20 @@ async function loadStructuralEntries(
     idSet.add(`${pkg}:${entry.id}`);
   };
 
+  /** Source attribution for an inspection-backed id (knowledge/rule/path/template/pipeline/preset/boundary). */
+  const attribution = (
+    src: { type: 'local' | 'pack'; packageName?: string } | undefined,
+  ): Pick<IStructuralEntry, 'source' | 'packageName'> =>
+    src?.type === 'pack'
+      ? { source: ContributionSource.Pack, ...(src.packageName ? { packageName: src.packageName } : {}) }
+      : { source: ContributionSource.Local };
+
   // Knowledge / rules / paths / templates / pipelines come from inspection.
   for (const k of inspection.knowledgeEntries) {
     record(ContributionKind.Knowledge, k.source?.origin, {
       id: k.id,
       ...(k.title ? { title: k.title } : {}),
-      source: ContributionSource.Local,
+      ...attribution(inspection.entrySources.get(k.id)),
     });
   }
   try {
@@ -337,7 +439,7 @@ async function loadStructuralEntries(
       record(ContributionKind.Rule, r.source?.origin, {
         id: r.id,
         ...(r.title ? { title: r.title } : {}),
-        source: ContributionSource.Local,
+        ...attribution(inspection.entrySources.get(r.id)),
       });
     }
   } catch {
@@ -349,7 +451,7 @@ async function loadStructuralEntries(
       record(ContributionKind.Path, p.source?.origin, {
         id: p.id,
         ...(p.title ? { title: p.title } : {}),
-        source: ContributionSource.Local,
+        ...attribution(inspection.entrySources.get(p.id)),
       });
     }
   } catch {
@@ -357,11 +459,12 @@ async function loadStructuralEntries(
   }
   try {
     const templates = inspection.templateRegistry?.list?.() ?? [];
-    for (const t of templates as readonly { id: string; description?: string; source?: { origin?: string } }[]) {
-      record(ContributionKind.Template, t.source?.origin, {
+    for (const t of templates as readonly { id: string; description?: string }[]) {
+      const src = inspection.templateSources.get(t.id);
+      record(ContributionKind.Template, src?.file, {
         id: t.id,
         ...(t.description ? { title: t.description } : {}),
-        source: ContributionSource.Local,
+        ...attribution(src),
       });
     }
   } catch {
@@ -370,152 +473,68 @@ async function loadStructuralEntries(
   try {
     const pipelines = inspection.pipelineRegistry?.list?.() ?? [];
     for (const p of pipelines as readonly { id: string; title?: string; source?: { origin?: string } }[]) {
-      record(ContributionKind.Pipeline, p.source?.origin, {
+      const src = inspection.pipelineSources.get(p.id);
+      record(ContributionKind.Pipeline, src?.file ?? p.source?.origin, {
         id: p.id,
         ...(p.title ? { title: p.title } : {}),
-        source: ContributionSource.Local,
+        ...attribution(src),
       });
+    }
+  } catch {
+    // ignore
+  }
+  // Presets and boundary rules: inspection-time registries with a source map.
+  // A built-in preset is not a contribution (its source file reads `builtin`).
+  try {
+    for (const p of inspection.presetRegistry?.list?.() ?? []) {
+      const src = inspection.presetSources.get(p.id);
+      if (!src?.file || src.file === 'builtin') continue;
+      record(ContributionKind.Preset, src.file, { id: p.id, ...(p.title ? { title: p.title } : {}), ...attribution(src) });
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    for (const r of inspection.boundaryRegistry?.list?.() ?? []) {
+      const src = inspection.boundarySources.get(r.id);
+      if (!src?.file) continue;
+      record(ContributionKind.Boundary, src.file, { id: r.id, ...(r.title ? { title: r.title } : {}), ...attribution(src) });
     }
   } catch {
     // ignore
   }
 
-  // Playbooks — these were a major source of nested step.id false positives.
-  try {
-    const playbooks = await listPlaybooks(inspection);
-    for (const p of playbooks as readonly {
-      id: string;
-      title?: string;
-      source?: 'local' | 'pack';
-      packageName?: string;
-      sourceFile?: string;
-    }[]) {
-      record(ContributionKind.Playbook, p.sourceFile, {
-        id: p.id,
-        ...(p.title ? { title: p.title } : {}),
-        source: p.source === 'pack' ? ContributionSource.Pack : ContributionSource.Local,
-        ...(p.packageName ? { packageName: p.packageName } : {}),
-      });
-    }
-  } catch {
-    // ignore
-  }
-
-  // Conventions, helpers, routing hints, registration hints, contract templates,
-  // migration profiles — all loader-backed today.
-  try {
-    const entries = await listConventions(inspection);
-    for (const e of entries) {
-      record(ContributionKind.Convention, e.sourceFile, {
-        id: e.convention.id,
-        ...((e.convention as { title?: string }).title
-          ? { title: (e.convention as { title?: string }).title }
-          : {}),
-        source:
-          (e as { source?: string }).source === 'pack'
-            ? ContributionSource.Pack
-            : ContributionSource.Local,
-        ...(e.packageName ? { packageName: e.packageName } : {}),
-      });
-    }
-  } catch {
-    // ignore
-  }
-  try {
-    const builtIns = HELPERS;
-    for (const h of builtIns) {
-      // Built-in helpers don't have a file; skip the structural mapping.
-      void h;
-    }
-    const packHelpers = await listPackHelpers(inspection);
-    for (const e of packHelpers) {
-      record(ContributionKind.Helper, e.sourceFile, {
-        id: e.helper.id,
-        ...((e.helper as { description?: string }).description
-          ? { title: (e.helper as { description?: string }).description }
-          : {}),
-        source: ContributionSource.Pack,
-        ...(e.packageName ? { packageName: e.packageName } : {}),
-      });
-    }
-  } catch {
-    // ignore
-  }
-  try {
-    const entries = await listTaskRoutingHints(inspection);
-    for (const e of entries) {
-      record(ContributionKind.TaskRoutingHint, e.sourceFile, {
-        id: e.hint.id,
-        ...((e.hint as { title?: string }).title ? { title: (e.hint as { title?: string }).title } : {}),
-        source:
-          (e as { source?: string }).source === 'pack'
-            ? ContributionSource.Pack
-            : ContributionSource.Local,
-        ...(e.packageName ? { packageName: e.packageName } : {}),
-      });
-    }
-  } catch {
-    // ignore
-  }
-  // Registration hints don't have a dedicated `ContributionKind` today — they
-  // ship through templates' metadata + the registration-hint registry — so
-  // we deliberately skip them in the structural map. The self-config doctor
-  // surfaces broken registration-hint refs via its own check.
-  await Promise.resolve();
-  void listRegistrationHints;
-  try {
-    const pair = await loadAllContractTemplates(inspection);
-    for (const e of pair.entries) {
-      record(ContributionKind.ContractTemplate, e.sourceFile, {
-        id: e.template.id,
-        ...((e.template as { title?: string }).title
-          ? { title: (e.template as { title?: string }).title }
-          : {}),
-        source:
-          (e as { source?: string }).source === 'pack'
-            ? ContributionSource.Pack
-            : ContributionSource.Local,
-        ...(e.packageName ? { packageName: e.packageName } : {}),
-      });
-    }
-  } catch {
-    // ignore
-  }
-  try {
-    const profiles = await listMigrationProfilesFromPacks(inspection);
-    for (const p of profiles as readonly {
-      id: string;
-      title?: string;
-      sourceFile?: string;
-      packageName?: string;
-    }[]) {
-      record(ContributionKind.MigrationProfile, p.sourceFile, {
-        id: p.id,
-        ...(p.title ? { title: p.title } : {}),
-        source: ContributionSource.Pack,
-        ...(p.packageName ? { packageName: p.packageName } : {}),
-      });
-    }
-  } catch {
-    // ignore
+  // Every REGISTRY kind — helpers, conventions, routing / registration hints,
+  // contract templates, migration profiles, scaffold patterns, playbooks,
+  // constructs + facets, search tuning, decisions, policy checks, feedback
+  // rules, tests, delegate recipes, framework extractors, the gate planes — in
+  // ONE run of THE registry-outcome table, which also reports what each loader
+  // refused and which files failed to load.
+  const outcomes = await collectRegistryOutcomes(inspection);
+  for (const a of outcomes.accepted) {
+    record(a.kind, a.file, {
+      id: a.id,
+      ...(a.title ? { title: a.title } : {}),
+      source: a.packageName ? ContributionSource.Pack : ContributionSource.Local,
+      ...(a.packageName ? { packageName: a.packageName } : {}),
+    });
   }
 
   return {
     byKindAndFile: byKindAndFile as IStructuralMap['byKindAndFile'],
     structuralFiles: structuralFiles as IStructuralMap['structuralFiles'],
     structuralIds: structuralIds as IStructuralMap['structuralIds'],
+    loadFailures: outcomes.loadFailures,
+    rejections: outcomes.rejections,
   };
 }
 
 /**
- * Build the inventory. Read-only. Never imports pack code beyond the
- * registry loaders that already do.
- *
- * Structural-first extraction. For kinds with a dedicated loader, the
- * inventory uses the loader's authoritative ids and **suppresses the
- * regex fallback** for those same source files. This eliminates the
- * nested-step-id false positives that previously produced duplicate /
- * conflict noise.
+ * Build the inventory WITHOUT consulting the structural loaders — a regex-only
+ * compatibility wrapper. Every regex id is marked `warning`
+ * ("unverified: loader not consulted") unless the inspection-time loader
+ * already imported that file cleanly; known load failures are still `error`.
+ * Prefer {@link buildPackContributionsInventoryAsync}.
  */
 export function buildPackContributionsInventory(
   inspection: ISharkcraftInspection,
@@ -524,11 +543,8 @@ export function buildPackContributionsInventory(
 }
 
 /**
- * Async variant that loads structural per-kind entries first.
- *
- * Production callers should prefer this over the sync wrapper since it
- * provides the noise-free output. The sync wrapper exists for backward
- * compatibility with callers that haven't been awaited yet.
+ * The inventory with structural per-kind entries loaded first — the
+ * noise-free, honest variant every surface should use.
  */
 export async function buildPackContributionsInventoryAsync(
   inspection: ISharkcraftInspection,
@@ -543,14 +559,54 @@ function buildPackContributionsInventorySync(
 ): IPackContributionsInventory {
   const entriesByKind: Record<string, IContributionEntry[]> = {};
   const entries: IContributionEntry[] = [];
+  const conflicts: IContributionConflict[] = [];
   const fileGroups = buildContribFileEntries(inspection);
+  const failures = collectContributionLoadFailures(inspection, structural?.loadFailures ?? []);
+  // THE rejection channel: inspection-time loaders ∪ registry loaders.
+  const rejections = collectContributionRejections(inspection, structural?.rejections ?? []);
+  const rejectedIdsByFile = new Map<string, Map<string, IContributionEntryRejection>>();
+  for (const r of rejections) {
+    if (r.entryId === undefined) continue;
+    const m = rejectedIdsByFile.get(r.file) ?? new Map<string, IContributionEntryRejection>();
+    if (!m.has(r.entryId)) m.set(r.entryId, r);
+    rejectedIdsByFile.set(r.file, m);
+  }
+  // THE files a loader READ, per kind (async only): every file it accepted an
+  // entry from AND every file it refused an entry of. The regex never runs on
+  // a file its loader already judged — a file whose every entry was rejected
+  // used to be scraped, its refused ids counted as contributions (`By kind`,
+  // `totals`, the header) and grouped across packs into a false error-level
+  // duplicate (round 12 review, A-2).
+  const judgedFiles = new Map<string, Set<string>>();
+  if (structural) {
+    for (const [kindKey, files] of structural.structuralFiles) judgedFiles.set(kindKey, new Set(files));
+    for (const r of rejections) {
+      const rel = nodePath.relative(inspection.projectRoot, r.file) || r.file;
+      const set = judgedFiles.get(r.kind) ?? new Set<string>();
+      set.add(rel);
+      judgedFiles.set(r.kind, set);
+    }
+  }
+  const scrapedByFile = new Map<string, string[]>();
+  const failedFilesReported = new Set<string>();
+  // Files the inspection-time loaders imported cleanly (used by the sync wrapper).
+  const loadedOk = new Set(
+    (inspection.loaderDiagnostics ?? [])
+      .filter((d) => d.status === 'ok')
+      .map((d) => nodePath.resolve(d.filePath)),
+  );
+
+  const push = (entry: IContributionEntry): void => {
+    (entriesByKind[entry.kind] ??= []).push(entry);
+    entries.push(entry);
+  };
 
   // First, emit structural entries (authoritative ids).
   if (structural) {
     for (const [kindKey, files] of structural.byKindAndFile) {
       for (const [relPath, list] of files) {
         for (const s of list) {
-          const entry: IContributionEntry = {
+          push({
             kind: kindKey as ContributionKind,
             id: s.id,
             ...(s.title ? { title: s.title } : {}),
@@ -560,51 +616,69 @@ function buildPackContributionsInventorySync(
             validation: 'ok',
             extractionMode: 'structural',
             confidence: 'high',
-          };
-          (entriesByKind[kindKey] ??= []).push(entry);
-          entries.push(entry);
+          });
         }
       }
     }
   }
 
   const ingestFile = (group: IContribFileEntry, file: string): void => {
-    const rel = nodePath.relative(inspection.projectRoot, file) || file;
-    // Skip regex extraction when the structural loader already covered
-    // this (kind, file) pair. Otherwise nested step.id / anchor.id / sub-object
-    // ids re-appear as top-level contribution ids, producing duplicate noise.
-    const handled = structural?.structuralFiles.get(group.kind as string)?.has(rel);
-    if (handled) return;
+    const abs = nodePath.resolve(file);
+    const rel = nodePath.relative(inspection.projectRoot, abs) || abs;
+    // Skip regex extraction when a loader already READ this (kind, file) pair
+    // — accepted or refused an entry of it. Otherwise nested step.id /
+    // anchor.id / sub-object ids re-appear as top-level contribution ids, and a
+    // fully-rejected file's refused ids read as contributions.
+    const handledKinds = [group.kind, ...(ALSO_HANDLED_BY[group.kind] ?? [])];
+    if (handledKinds.some((k) => judgedFiles.get(k as string)?.has(rel))) return;
+
+    const failure = failures.get(abs);
+    const src = {
+      source: group.source,
+      ...(group.packageName ? { packageName: group.packageName } : {}),
+      sourceFile: rel,
+    };
+    if (failure && !failedFilesReported.has(abs)) {
+      failedFilesReported.add(abs);
+      conflicts.push({
+        kind: ConflictKind.InvalidContribution,
+        contributionKind: group.kind,
+        id: rel,
+        sources: [src],
+        severity: 'error',
+        message: `${rel} failed to load (${failure.message}) — nothing in it takes effect; any id listed for it was scraped by regex.`,
+        nextCommand: group.packageRoot
+          ? `shrk packs release-check ${nodePath.relative(inspection.projectRoot, group.packageRoot) || '.'}`
+          : 'shrk doctor',
+      });
+    }
     const content = safeRead(file);
     if (content === null) {
-      const entry: IContributionEntry = {
+      push({
         kind: group.kind,
         id: rel,
-        source: group.source,
-        ...(group.packageName ? { packageName: group.packageName } : {}),
-        sourceFile: rel,
+        ...src,
         validation: 'error',
         validationMessage: 'file unreadable',
-      };
-      (entriesByKind[group.kind] ??= []).push(entry);
-      entries.push(entry);
+      });
       return;
     }
     const extracted = extractIdsFromFile(content);
+    const rejectedHere = rejectedIdsByFile.get(abs);
     if (extracted.length === 0) {
-      const entry: IContributionEntry = {
+      push({
         kind: group.kind,
         id: rel,
-        source: group.source,
-        ...(group.packageName ? { packageName: group.packageName } : {}),
-        sourceFile: rel,
-        validation: 'warning',
-        validationMessage: 'no `id:` extracted; loader may still see entries',
+        ...src,
+        validation: failure || rejectedHere ? 'error' : 'warning',
+        validationMessage: failure
+          ? `file failed to load (${failure.message})`
+          : rejectedHere
+            ? 'every entry the file declares was rejected by its loader (see rejections)'
+            : 'no `id:` extracted; loader may still see entries',
         extractionMode: 'file-only',
         confidence: 'low',
-      };
-      (entriesByKind[group.kind] ??= []).push(entry);
-      entries.push(entry);
+      });
       return;
     }
     // Skip regex entries whose (kind, packageName||local, id) triple
@@ -615,24 +689,44 @@ function buildPackContributionsInventorySync(
     const groupPkg = group.packageName ?? '__local__';
     for (const ex of extracted) {
       if (idsHandled && idsHandled.has(`${groupPkg}:${ex.id}`)) continue;
-      const entry: IContributionEntry = {
+      const rejection = rejectedHere?.get(ex.id);
+      let validation: IContributionEntry['validation'];
+      let validationMessage: string | undefined;
+      if (failure) {
+        validation = 'error';
+        validationMessage = `file failed to load (${failure.message}); id scraped by regex — this contribution does NOT take effect`;
+        (scrapedByFile.get(abs) ?? scrapedByFile.set(abs, []).get(abs)!).push(ex.id);
+      } else if (rejection) {
+        // The loader read this entry and REFUSED it — never `ok`, never merely
+        // unverified. With the loaders consulted it is in `rejections`, and a
+        // refused id is no contribution row at all (round 12 review, A-2).
+        if (structural) continue;
+        validation = 'error';
+        validationMessage = `rejected by the ${rejection.kind} loader — ${rejection.reasons.join('; ')}; this contribution does NOT take effect`;
+      } else if (!structural) {
+        validation = loadedOk.has(abs) ? 'ok' : 'warning';
+        validationMessage = loadedOk.has(abs)
+          ? undefined
+          : 'unverified: loader not consulted (use the async inventory)';
+      } else {
+        // Every kind is loader-backed (round 12): a regex id means the loader
+        // returned no entry for it — unverified, never `ok`.
+        validation = 'warning';
+        validationMessage = 'regex-derived; the loader returned no entries for this file';
+      }
+      push({
         kind: group.kind,
         id: ex.id,
         ...(ex.title ? { title: ex.title } : {}),
-        source: group.source,
-        ...(group.packageName ? { packageName: group.packageName } : {}),
-        sourceFile: rel,
-        validation: 'ok',
+        ...src,
+        validation,
+        ...(validationMessage ? { validationMessage } : {}),
         // Regex-based id extraction can pick up nested step.id / anchor.id /
         // ref.id values. Tag these entries clearly so the conflict detector
-        // downgrades same-file collisions to info. The structural loader is
-        // preferred where available; this fallback fires only for kinds
-        // without a dedicated registry.
+        // downgrades same-file collisions to info.
         extractionMode: 'regex-fallback',
-        confidence: 'medium',
-      };
-      (entriesByKind[group.kind] ??= []).push(entry);
-      entries.push(entry);
+        confidence: failure ? 'low' : 'medium',
+      });
     }
   };
 
@@ -643,10 +737,13 @@ function buildPackContributionsInventorySync(
   const totals: Record<string, number> = {};
   for (const [kind, list] of Object.entries(entriesByKind)) totals[kind] = list.length;
 
-  const conflicts: IContributionConflict[] = [];
   for (const [kind, list] of Object.entries(entriesByKind)) {
     const byId = new Map<string, IContributionEntry[]>();
     for (const e of list) {
+      // An id that does not take effect — scraped from a file that failed to
+      // load, or refused by its loader — cannot collide at runtime: its own
+      // load failure / rejection is already the error (round 12 review, A-2).
+      if (e.validation === 'error') continue;
       const arr = byId.get(e.id) ?? [];
       arr.push(e);
       byId.set(e.id, arr);
@@ -662,33 +759,24 @@ function buildPackContributionsInventorySync(
       // (informational; the loader behavior is documented per-kind).
       const hasLocal = arr.some((e) => e.source === ContributionSource.Local);
       const hasPack = arr.some((e) => e.source === ContributionSource.Pack);
+      const sources = arr.map((e) => {
+        const s: { source: ContributionSource; packageName?: string; sourceFile?: string } = {
+          source: e.source,
+        };
+        if (e.packageName) s.packageName = e.packageName;
+        if (e.sourceFile) s.sourceFile = e.sourceFile;
+        return s;
+      });
       if (hasLocal && hasPack) {
         conflicts.push({
           kind: ConflictKind.ShadowedPackConfig,
           contributionKind: kind as ContributionKind,
           id,
-          sources: arr.map((e) => {
-            const src: { source: ContributionSource; packageName?: string; sourceFile?: string } = {
-              source: e.source,
-            };
-            if (e.packageName) src.packageName = e.packageName;
-            if (e.sourceFile) src.sourceFile = e.sourceFile;
-            return src;
-          }),
+          sources,
           severity: 'info',
           message: `Local "${kind}" "${id}" shadows pack contribution. Local entries win on duplicate ids.`,
         });
       } else {
-        // Downgrade conflicts that come from a single source file
-        // when ALL participating entries are regex-fallback extractions.
-        // These are almost certainly nested `id:` fields (e.g.
-        // playbook.steps[].id, pipeline.steps[].id) masquerading as
-        // separate top-level contribution ids.
-        const allRegexFallback = arr.every(
-          (e) => e.extractionMode === 'regex-fallback',
-        );
-        const sourceFiles = new Set(arr.map((e) => e.sourceFile).filter((s): s is string => Boolean(s)));
-        const singleSourceFile = sourceFiles.size === 1;
         // Self-acknowledged false positive: when ALL participating entries come
         // from a SINGLE source file via regex fallback, the "duplicate" is
         // almost certainly nested `id:` fields (playbook.steps[].id /
@@ -696,19 +784,14 @@ function buildPackContributionsInventorySync(
         // contribution ids. Don't emit noise for it — a genuine duplicate would
         // span multiple files or include a non-regex-fallback entry and still
         // surface as an error below.
-        if (allRegexFallback && singleSourceFile) continue;
+        const allRegexFallback = arr.every((e) => e.extractionMode === 'regex-fallback');
+        const sourceFiles = new Set(arr.map((e) => e.sourceFile).filter((s): s is string => Boolean(s)));
+        if (allRegexFallback && sourceFiles.size === 1) continue;
         conflicts.push({
           kind: conflictKind,
           contributionKind: kind as ContributionKind,
           id,
-          sources: arr.map((e) => {
-            const src: { source: ContributionSource; packageName?: string; sourceFile?: string } = {
-              source: e.source,
-            };
-            if (e.packageName) src.packageName = e.packageName;
-            if (e.sourceFile) src.sourceFile = e.sourceFile;
-            return src;
-          }),
+          sources,
           severity: 'error',
           message: `Duplicate "${kind}" id "${id}" loaded from ${arr.length} sources.`,
           nextCommand: `shrk packs contributions --json | jq '.entries[] | select(.id=="${id}" and .kind=="${kind}")'`,
@@ -717,54 +800,40 @@ function buildPackContributionsInventorySync(
     }
   }
 
-  // Stale-signature warning: surfaced as a conflict so a single doctor view
-  // can highlight unsigned-by-secret manifests.
+  // Stale-signature: read from THE pack-asset freshness authority (content
+  // digests recorded at sign time), never from mtimes. Dev-signed packs are
+  // re-staled by every local build and load fine locally, so their divergence
+  // is not a conflict (mirrors pack-signature-status's dev downgrade).
   for (const pack of inspection.packs.validPacks ?? []) {
-    const sig = pack.manifest?.signature;
-    if (!sig) continue;
-    // Dev-signed packs are re-staled by every local build and load fine
-    // locally, so suppress the stale-signature conflict for them (mirrors the
-    // dev-aware downgrade in pack-signature-status.ts). Production signed packs
-    // still surface as stale.
-    if (sig.dev === true) continue;
-    // The loader already validates HMAC strictly; we only surface stale
-    // when the manifest content has obviously been edited without re-signing.
-    // Heuristic: signature timestamp older than any contribution file mtime.
-    let staleSummary: string | null = null;
-    try {
-      const sigMs = new Date(sig.signedAt).getTime();
-      const contributions = pack.manifest?.contributions ?? {};
-      for (const slot of Object.values(KIND_TO_SLOT)) {
-        const rels = (contributions as Record<string, readonly string[] | undefined>)[slot] ?? [];
-        for (const rel of rels) {
-          const abs = nodePath.resolve(pack.packageRoot, rel);
-          try {
-            const stat = statSync(abs);
-            if (stat.mtimeMs > sigMs + 1000) {
-              staleSummary = `${rel} (mtime ${new Date(stat.mtimeMs).toISOString()}) is newer than signature (${sig.signedAt})`;
-              break;
-            }
-          } catch {
-            continue;
-          }
-        }
-        if (staleSummary) break;
-      }
-    } catch {
-      // ignore
-    }
-    if (staleSummary) {
-      conflicts.push({
-        kind: ConflictKind.StaleSignature,
-        contributionKind: ContributionKind.Docs,
-        id: pack.packageName,
-        sources: [{ source: ContributionSource.Pack, packageName: pack.packageName, sourceFile: pack.packageRoot }],
-        severity: 'warning',
-        message: `Pack ${pack.packageName} signature is stale: ${staleSummary}`,
-        nextCommand: `SHARKCRAFT_PACK_SECRET=<secret> shrk packs sign ${nodePath.relative(inspection.projectRoot, pack.packageRoot)}`,
-      });
-    }
+    if (!pack.manifest?.signature) continue;
+    const freshness = detectPackAssetFreshness(pack);
+    if (freshness.signature.state !== 'diverged' || freshness.signature.dev) continue;
+    conflicts.push({
+      kind: ConflictKind.StaleSignature,
+      contributionKind: ContributionKind.Docs,
+      id: pack.packageName,
+      sources: [{ source: ContributionSource.Pack, packageName: pack.packageName, sourceFile: pack.packageRoot }],
+      severity: 'warning',
+      message: describePackAssetFreshness(freshness).signature ?? `Pack ${pack.packageName} signature is stale.`,
+      nextCommand: `SHARKCRAFT_PACK_SECRET=<secret> shrk packs sign ${nodePath.relative(inspection.projectRoot, pack.packageRoot)}`,
+    });
   }
+
+  const extractionTotals = {
+    structural: entries.filter((e) => e.extractionMode === 'structural').length,
+    regexFallback: entries.filter((e) => e.extractionMode === 'regex-fallback').length,
+    fileOnly: entries.filter((e) => e.extractionMode === 'file-only').length,
+    rejected: rejections.length,
+  };
+  const loadFailures = [...failures.values()]
+    .map((f) => ({
+      file: nodePath.relative(inspection.projectRoot, f.file) || f.file,
+      kind: f.kind,
+      ...(f.packageName ? { packageName: f.packageName } : {}),
+      message: f.message,
+      scrapedIds: [...(scrapedByFile.get(f.file) ?? [])],
+    }))
+    .sort((a, b) => a.file.localeCompare(b.file));
 
   return {
     schema: PACK_CONTRIBUTIONS_INVENTORY_SCHEMA,
@@ -780,19 +849,93 @@ function buildPackContributionsInventorySync(
       root: p.packageRoot,
       signaturePresent: Boolean(p.manifest?.signature),
     })),
+    extractionTotals,
+    loadFailures,
+    rejections: rejections.map((r) => ({
+      file: nodePath.relative(inspection.projectRoot, r.file) || r.file,
+      kind: r.kind,
+      ...(r.packageName ? { packageName: r.packageName } : {}),
+      index: r.index,
+      ...(r.exportName ? { exportName: r.exportName } : {}),
+      ...(r.entryId !== undefined ? { entryId: r.entryId } : {}),
+      reasons: r.reasons,
+      cause: r.cause,
+    })),
+    mode: structural ? 'async' : 'sync',
   };
+}
+
+/** Per-kind extraction-mode counts over `entries` (so a filtered view renders its own numbers). */
+function modeCountsByKind(
+  entries: readonly IContributionEntry[],
+): Map<string, { total: number; structural: number; regexFallback: number; fileOnly: number }> {
+  const out = new Map<string, { total: number; structural: number; regexFallback: number; fileOnly: number }>();
+  for (const e of entries) {
+    const c = out.get(e.kind) ?? { total: 0, structural: 0, regexFallback: 0, fileOnly: 0 };
+    c.total += 1;
+    if (e.extractionMode === 'structural') c.structural += 1;
+    else if (e.extractionMode === 'regex-fallback') c.regexFallback += 1;
+    else if (e.extractionMode === 'file-only') c.fileOnly += 1;
+    out.set(e.kind, c);
+  }
+  return out;
+}
+
+function modeClause(c: { structural: number; regexFallback: number; fileOnly: number }): string {
+  const parts: string[] = [];
+  if (c.structural > 0) parts.push(`structural ${c.structural}`);
+  if (c.regexFallback > 0) parts.push(`regex-fallback ${c.regexFallback}`);
+  if (c.fileOnly > 0) parts.push(`file-only ${c.fileOnly}`);
+  return parts.length > 0 ? `(${parts.join(' · ')})` : '';
+}
+
+function extractionLine(entries: readonly IContributionEntry[], rejected: number): string {
+  const s = entries.filter((e) => e.extractionMode === 'structural').length;
+  const r = entries.filter((e) => e.extractionMode === 'regex-fallback').length;
+  const f = entries.filter((e) => e.extractionMode === 'file-only').length;
+  return `${s} structural · ${r} regex-fallback (unverified) · ${f} file-only${rejected > 0 ? ` · ${rejected} REJECTED` : ''}`;
 }
 
 export function renderInventoryText(inv: IPackContributionsInventory): string {
   const lines: string[] = [];
+  const rejections = inv.rejections ?? [];
   lines.push(`=== Pack contributions inventory (${inv.entries.length} entries) ===`);
   lines.push(`  generatedAt   ${inv.generatedAt}`);
   lines.push(`  packs         ${inv.packs.length}`);
   for (const p of inv.packs) lines.push(`    • ${p.name}@${p.version} (sig: ${p.signaturePresent ? 'present' : 'absent'})`);
+  lines.push(`  extraction    ${extractionLine(inv.entries, rejections.length)}`);
+  if (inv.mode === 'sync') lines.push('  mode          sync — loaders NOT consulted; regex ids are unverified');
   lines.push('');
   lines.push(`By kind:`);
-  for (const [k, n] of Object.entries(inv.totals).sort()) lines.push(`  ${k.padEnd(28)} ${n}`);
+  const byKind = modeCountsByKind(inv.entries);
+  for (const k of [...byKind.keys()].sort()) {
+    const c = byKind.get(k)!;
+    lines.push(`  ${k.padEnd(28)} ${String(c.total).padStart(4)}  ${modeClause(c)}`.trimEnd());
+  }
   lines.push('');
+  const failures = inv.loadFailures ?? [];
+  if (failures.length > 0) {
+    lines.push(`Load failures (${failures.length}):`);
+    for (const f of failures) {
+      lines.push(`  ✗ ${f.file}  [${f.kind}${f.packageName ? `, ${f.packageName}` : ''}] — ${f.message}`);
+      lines.push(
+        `      regex-scraped ids NOT loaded: ${f.scrapedIds.length > 0 ? f.scrapedIds.join(', ') : '(none)'}`,
+      );
+    }
+    lines.push('');
+  }
+  if (rejections.length > 0) {
+    lines.push(`Rejected entries (${rejections.length}) — refused by their loader, NOT in effect:`);
+    let lastFile = '';
+    for (const r of rejections) {
+      if (r.file !== lastFile) {
+        lines.push(`  ✗ ${r.file}  [${r.kind}${r.packageName ? `, ${r.packageName}` : ''}]`);
+        lastFile = r.file;
+      }
+      lines.push(`      ${formatEntryRejection(r)}`);
+    }
+    lines.push('');
+  }
   if (inv.conflicts.length > 0) {
     lines.push(`Conflicts (${inv.conflicts.length}):`);
     for (const c of inv.conflicts.slice(0, 50)) {
@@ -807,6 +950,7 @@ export function renderInventoryText(inv: IPackContributionsInventory): string {
 
 export function renderInventoryMarkdown(inv: IPackContributionsInventory): string {
   const lines: string[] = [];
+  const rejections = inv.rejections ?? [];
   lines.push('# Pack contributions inventory');
   lines.push('');
   lines.push(`- generatedAt: ${inv.generatedAt}`);
@@ -814,11 +958,44 @@ export function renderInventoryMarkdown(inv: IPackContributionsInventory): strin
   for (const p of inv.packs) {
     lines.push(`  - **${p.name}** \`${p.version}\` (signature ${p.signaturePresent ? 'present' : 'absent'})`);
   }
+  lines.push(`- extraction: ${extractionLine(inv.entries, rejections.length)}`);
+  if (inv.mode === 'sync') lines.push('- mode: sync — loaders NOT consulted; regex ids are unverified');
   lines.push('');
   lines.push('## By kind');
-  lines.push('| Kind | Count |');
-  lines.push('| --- | --- |');
-  for (const [k, n] of Object.entries(inv.totals).sort()) lines.push(`| \`${k}\` | ${n} |`);
+  lines.push('| Kind | Count | Structural | Regex-fallback | File-only |');
+  lines.push('| --- | --- | --- | --- | --- |');
+  const byKind = modeCountsByKind(inv.entries);
+  for (const k of [...byKind.keys()].sort()) {
+    const c = byKind.get(k)!;
+    lines.push(`| \`${k}\` | ${c.total} | ${c.structural} | ${c.regexFallback} | ${c.fileOnly} |`);
+  }
+  lines.push('');
+  lines.push('## Load failures');
+  const failures = inv.loadFailures ?? [];
+  if (failures.length === 0) {
+    lines.push('None.');
+  } else {
+    lines.push('| File | Kind | Pack | Error | Regex-scraped ids NOT loaded |');
+    lines.push('| --- | --- | --- | --- | --- |');
+    for (const f of failures) {
+      lines.push(
+        `| \`${f.file}\` | ${f.kind} | ${f.packageName ?? ''} | ${f.message} | ${f.scrapedIds.join(', ')} |`,
+      );
+    }
+  }
+  lines.push('');
+  lines.push('## Rejected entries');
+  if (rejections.length === 0) {
+    lines.push('None.');
+  } else {
+    lines.push('| File | Kind | Pack | Entry | Reasons |');
+    lines.push('| --- | --- | --- | --- | --- |');
+    for (const r of rejections) {
+      lines.push(
+        `| \`${r.file}\` | ${r.kind} | ${r.packageName ?? ''} | ${r.entryId !== undefined ? `\`${r.entryId}\`` : '(no id)'} ${r.exportName ?? ''}[${r.index}] | ${r.reasons.join('; ')} |`,
+      );
+    }
+  }
   lines.push('');
   lines.push('## Conflicts');
   if (inv.conflicts.length === 0) {
@@ -837,4 +1014,35 @@ export function selectConflicts(
   inv: IPackContributionsInventory,
 ): readonly IContributionConflict[] {
   return inv.conflicts;
+}
+
+/**
+ * Per contribution kind, a pack's declared FILES, ACCEPTED entries and
+ * REJECTED entries — THE projection of this inventory that `packs list`,
+ * `packs get` and MCP `list_packs` / `get_pack` print (round 12, 12.1b), so
+ * a partially-loaded file never looks like a fully-loaded one and every
+ * surface counts what `packs contributions` counts. A kind with nothing
+ * declared, accepted or rejected is absent.
+ */
+export function packEntryCounts(
+  inv: IPackContributionsInventory | null,
+  pack: { readonly packageName: string; readonly contributionCounts: Readonly<Record<string, number | undefined>> },
+): Record<string, { files: number; accepted: number; rejected: number }> {
+  const out: Record<string, { files: number; accepted: number; rejected: number }> = {};
+  const row = (kind: string): { files: number; accepted: number; rejected: number } =>
+    (out[kind] ??= { files: 0, accepted: 0, rejected: 0 });
+  for (const slot of CONTRIBUTION_FILE_KEYS) {
+    const n = pack.contributionCounts[slot] ?? 0;
+    if (n === 0) continue;
+    row(contributionKindForSlot(slot) ?? slot).files += n;
+  }
+  for (const e of inv?.entries ?? []) {
+    if (e.packageName !== pack.packageName || e.extractionMode !== 'structural') continue;
+    row(e.kind).accepted += 1;
+  }
+  for (const r of inv?.rejections ?? []) {
+    if (r.packageName !== pack.packageName) continue;
+    row(r.kind).rejected += 1;
+  }
+  return out;
 }

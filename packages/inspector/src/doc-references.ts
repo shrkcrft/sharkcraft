@@ -1,5 +1,22 @@
-import type { IDocReferenceRule } from '@shrkcrft/core';
-import { dotDirsNamedBy, matchesAny, readMatchingFiles, safeCompile } from '@shrkcrft/boundaries';
+import {
+  failsWhenEmpty,
+  normalizeRuleList,
+  RuleEmptiness,
+  settleRuleEmptiness,
+  unitStateLists,
+  UnitLivenessState,
+  type IDocReferenceRule,
+  type IUnitLiveness,
+  type IUnitStateLists,
+  type IVerdictCoverage,
+} from '@shrkcrft/core';
+import {
+  dotDirsNamedBy,
+  readGlobListLiveness,
+  readSelectedFiles,
+  safeCompile,
+  type IReadScope,
+} from '@shrkcrft/boundaries';
 import { nearestIds } from './nearest-id.ts';
 import {
   emptyReferenceKinds,
@@ -66,6 +83,26 @@ export interface IDocReferenceResult {
   readonly tokens: readonly IDocReferenceToken[];
   readonly skipReason?: string;
   readonly error?: string;
+  /**
+   * Set only when a document the globs matched was NOT read (over the read
+   * cap, or unreadable): the documents read, and the unread ones. A reference
+   * in an unread document was never checked, so the rule's coverage names it
+   * (`readScopeCoverage`) and it is never a pass.
+   */
+  readonly readScope?: IReadScope;
+  /**
+   * Set only when the rule is INTENDED-empty (round 13): every inclusion glob
+   * of its `files` is marked `expectEmpty` and no document matched. It is the
+   * settle's acceptance and stands in for the rule's own coverage record
+   * (`docReferenceCoverage`), so the rule passes with the acceptance printed.
+   */
+  readonly emptyCoverage?: IVerdictCoverage;
+  /** Settle record B of the rule's `files` — the acceptance of its intended-empty units. */
+  readonly unitAcceptance?: IVerdictCoverage;
+  /** The rule's dead / intended-empty / went-live `files` units as printed lines (`unitStateLists`). */
+  readonly units?: IUnitStateLists;
+  /** The rule's non-live `files` units, for `--fail-on-dead-units` (`selectorUnitFails`). */
+  readonly unitLiveness?: readonly IUnitLiveness[];
 }
 
 /** Matches `<!-- marker -->`, with or without a trailing `: reason`. */
@@ -120,16 +157,49 @@ function passesContext(
 /** Evaluate one doc-reference rule against the tree. */
 export function checkDocReferences(
   projectRoot: string,
-  rule: IDocReferenceRule,
+  authored: IDocReferenceRule,
   inspection: ISharkcraftInspection,
   excludeDirs: readonly string[] = [],
 ): IDocReferenceResult {
-  const severity = rule.severity ?? 'error';
+  const severity = authored.severity ?? 'error';
   const base = {
-    ruleId: rule.id,
-    ...(rule.description ? { description: rule.description } : {}),
+    ruleId: authored.id,
+    ...(authored.description ? { description: authored.description } : {}),
     severity,
   } as const;
+  // The engine entry normalises idempotently (round 13): a loaded rule comes
+  // back as the SAME object; a hand-built `{ pattern, expectEmpty }` entry is a
+  // glob plus a marker; a malformed entry is a misconfigured rule, never a crash.
+  const normalized = normalizeRuleList(authored, 'files');
+  if (!normalized.ok) {
+    return {
+      ...base,
+      status: 'error',
+      filesScanned: 0,
+      tokensChecked: 0,
+      tokensSkipped: 0,
+      findings: [],
+      tokens: [],
+      error: `files ${normalized.error.message}`,
+    };
+  }
+  const rule = normalized.value;
+  // The rule's `files` judged per unit off the walk the check reads (its
+  // dot-dirs included) and settled with its `expectEmpty` markers — what an
+  // empty rule is decided from, and what rides on the result.
+  const live = readGlobListLiveness(projectRoot, 'files', rule.files, rule.expectEmptyUnits ?? [], {
+    subject: rule.id,
+    excludeDirs: new Set(excludeDirs),
+    allowDotDirs: dotDirsNamedBy(rule.files),
+  });
+  const nonLive = live.liveness.units.filter((u) => u.state !== UnitLivenessState.Live);
+  const unitFields = {
+    ...(live.liveness.acceptance !== undefined ? { unitAcceptance: live.liveness.acceptance } : {}),
+    ...(live.liveness.dead.length + live.liveness.intendedEmpty.length + live.liveness.wentLive.length > 0
+      ? { units: unitStateLists(live.liveness) }
+      : {}),
+    ...(nonLive.length > 0 ? { unitLiveness: nonLive } : {}),
+  };
 
   const compiled = safeCompile(rule.tokenPattern, `${rule.tokenPatternFlags ?? ''}g`);
   if (compiled.error || !compiled.re) {
@@ -175,15 +245,16 @@ export function checkDocReferences(
   // Prose lives in places the code walkers deliberately avoid — an agent skill
   // file sits in `.claude/skills`. The rule's own globs say which dot-dirs it
   // means, and it gets exactly those.
-  const cache = readMatchingFiles(
+  // The files the rule's list SELECTS: a `!docs/drafts/**` entry excludes.
+  const matched = readSelectedFiles(
     projectRoot,
     rule.files,
     new Set(excludeDirs),
     dotDirsNamedBy(rule.files),
   );
-  const docs = [...cache.entries()]
-    .filter(([path]) => matchesAny(path, rule.files))
-    .sort(([a], [b]) => a.localeCompare(b));
+  const docs = [...matched.files.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const unread = matched.unread;
+  const readScope: IReadScope | undefined = unread.length > 0 ? { read: docs.length, unread } : undefined;
 
   const pool = referenceIdPool(inspection, kinds);
   const exempt = new Set(rule.exempt ?? []);
@@ -249,25 +320,68 @@ export function checkDocReferences(
   const tokensChecked = tokens.filter((t) => t.skipped === undefined).length;
   const tokensSkipped = tokens.length - tokensChecked;
 
-  // A rule that CHECKED nothing enforced nothing. Which of "0 docs" or "0
-  // tokens" happened matters to whoever has to fix it, so the reason says.
-  if (tokensChecked === 0) {
-    const failed = rule.failOnEmpty ?? severity === 'error';
+  // Its globs matched a document the reader could not read: its zero is not
+  // "matched nothing". It ran over everything readable and is PARTIAL (its
+  // coverage names the unread document), never failOnEmpty's 1 and never a pass.
+  if (tokensChecked === 0 && readScope !== undefined) {
     return {
       ...base,
-      status: failed ? 'failed' : 'skipped',
+      status: 'passed',
       filesScanned: docs.length,
       tokensChecked,
       tokensSkipped,
       findings: [],
       tokens,
-      skipReason:
-        docs.length === 0
-          ? `0 documents matched (${rule.files.join(', ')})`
-          : `${docs.length} document(s) scanned but no token counted as a reference` +
-            (tokensSkipped > 0
-              ? ` (${tokensSkipped} matched and were skipped — check \`requireContext\`)`
-              : ''),
+      readScope,
+      ...unitFields,
+    };
+  }
+
+  // A rule that CHECKED nothing enforced nothing. Which of "0 docs" or "0
+  // tokens" happened matters to whoever has to fix it, so the reason says.
+  if (tokensChecked === 0) {
+    // THE rule-emptiness settle (round 13, `settleRuleEmptiness`), with THE
+    // failOnEmpty authority (`failsWhenEmpty`) — never re-derived inline. Every
+    // inclusion glob of `files` marked `expectEmpty` and no document matched →
+    // the intended empty, accepted and printed. Documents that cite no token
+    // are the stale-extractor loud skip — never assertable.
+    const emptiness = settleRuleEmptiness({
+      subject: rule.id,
+      unitLabel: 'references',
+      filesMatched: docs.length,
+      unitsMatched: 0,
+      unread: false,
+      liveness: live.liveness,
+      primaryLists: ['files'],
+      failOnEmpty: failsWhenEmpty(rule),
+      noFilesReason: `0 documents matched (${rule.files.join(', ')})`,
+      noUnitsReason:
+        `${docs.length} document(s) scanned but no token counted as a reference` +
+        (tokensSkipped > 0 ? ` (${tokensSkipped} matched and were skipped — check \`requireContext\`)` : ''),
+    });
+    if (emptiness.state === RuleEmptiness.IntendedEmpty && emptiness.coverage !== undefined) {
+      return {
+        ...base,
+        status: 'passed',
+        filesScanned: docs.length,
+        tokensChecked,
+        tokensSkipped,
+        findings: [],
+        tokens,
+        ...unitFields,
+        emptyCoverage: emptiness.coverage,
+      };
+    }
+    return {
+      ...base,
+      status: emptiness.fails ? 'failed' : 'skipped',
+      filesScanned: docs.length,
+      tokensChecked,
+      tokensSkipped,
+      findings: [],
+      tokens,
+      ...unitFields,
+      ...(emptiness.skipReason !== undefined ? { skipReason: emptiness.skipReason } : {}),
     };
   }
 
@@ -279,5 +393,7 @@ export function checkDocReferences(
     tokensSkipped,
     findings,
     tokens,
+    ...(readScope !== undefined ? { readScope } : {}),
+    ...unitFields,
   };
 }

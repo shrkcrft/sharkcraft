@@ -1,11 +1,12 @@
-# Pack quality score
+# Pack quality score — retired
 
-```bash
-shrk packs score [<pkg>] [--json]
-shrk packs quality <path> [--strict] [--json]
-```
+> **Retired.** The `shrk packs score`, `shrk packs quality` and
+> `shrk packs quality-diff` verbs were removed. Pack health is gated by
+> `shrk packs doctor` (add `--release` to fold in the release checks) and
+> `shrk packs release-check`. The notes below describe what the removed
+> score measured, for reference.
 
-Returns a 0–100 score per pack across weighted dimensions:
+The removed score was 0–100 per pack across weighted dimensions:
 
 - Manifest validity
 - Signature status
@@ -18,22 +19,10 @@ Returns a 0–100 score per pack across weighted dimensions:
 `shrk packs doctor` continues to enforce manifest validity / signatures; the
 score is informational guidance for pack maintainers.
 
-## Quality delta (R20)
+## Quality delta (R20) — removed with the score
 
-Capture and compare quality snapshots so regressions show up in CI:
-
-```bash
-# Capture
-shrk packs quality <path> --write-snapshot pack-quality-old.json
-
-# Diff against a captured snapshot
-shrk packs quality <path> --snapshot pack-quality-old.json
-
-# Or diff two stand-alone snapshots
-shrk packs quality-diff pack-quality-old.json pack-quality-new.json
-```
-
-Output (`sharkcraft.pack-quality-diff/v1`):
+The snapshot capture / compare verbs were removed with the score. Their
+output shape (`sharkcraft.pack-quality-diff/v1`) was:
 
 - `delta` — overall score delta (signed integer)
 - `dimensionDeltas[]` — per-dimension `{ id, oldScore, newScore, delta }`

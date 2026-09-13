@@ -83,6 +83,11 @@ template or a boundary rule:
 | Policy-lint (`shrk policy-lint`) | `policyRuleFiles` | `readonly IPolicyRule[]` | `id` |
 | Reuse primitives (`shrk reuse`) | `reusePrimitiveFiles` | `readonly IReusePrimitive[]` | `symbol` |
 
+A pack-contributed reuse primitive may carry `supersedes: string[]` — exported
+names it deliberately replaces. `shrk reuse` then never offers those names as
+uncurated export-surface candidates, and `shrk reuse coverage` does not count
+them as curation gaps (see [reuse.md](reuse.md)).
+
 These can be authored inline in a repo's `sharkcraft.config.ts`, **or shipped
 by a pack** so a framework pack can ship an invariant once instead of every
 consuming repo hand-copying it. For example, a NestJS pack can ship "every
@@ -127,22 +132,59 @@ object counts after dedup:
 
 ```
 === Packs (1) ===
-  OK      @example/sharkcraft-pack@0.1.0
-          files:    k=1 r=1 p=1 t=1 pl=1 d=5
+  OK      @example/sharkcraft-pack@0.1.0  REJECTED-ENTRIES
+          files:    k=1 r=1 p=1 t=1 pl=1 d=5 convention=1
           resolved: entries=61 templates=6 pipelines=5 docs=5
+          entries:  convention 8 accepted · 2 REJECTED · knowledge 61 accepted · template 6 accepted
+          ↳ shrk packs contributions --pack @example/sharkcraft-pack names every rejected entry
 ```
 
-The `files:` row is "how many contribution files were declared". The
-`resolved:` row is "how many objects actually loaded into the active
-project". Discrepancies happen when:
+The `files:` row is "how many contribution files were declared" — the six
+classic tokens always, then every other declared slot as `<kind>=<n>` (round
+12: a conventions-only pack printed all zeros). The `resolved:` row is "how
+many objects actually loaded into the active project". The `entries:` row
+(round 12) counts, per kind, the entries each loader ACCEPTED and REJECTED —
+from THE contributions inventory, the same numbers `shrk packs contributions`
+prints — so a partially-loaded file never looks like a fully-loaded one;
+`REJECTED-ENTRIES` marks a pack with any. `--json` adds `entryCounts` per
+pack (`{ <kind>: { files, accepted, rejected } }`). Discrepancies happen when:
 
 - A contribution file is missing on disk.
 - A contribution file is empty.
+- An entry is REJECTED by its loader (a missing required field, a duplicate
+  id) — see docs/pack-contributions.md "Rejected entries".
 - An id duplicates a local id (local always wins).
 - An id duplicates another pack's id (first pack wins; later packs skipped).
 
 `shrk packs get <pack>` and the MCP `get_pack` tool show the full breakdown
 per pack.
+
+A pack serving COMPILED contributions (`dist/*.js`) whose build is older than
+its source is marked `STALE-BUILD` on its `packs list` line (and
+`BUILD-UNVERIFIED` when no build record exists); `--json` carries
+`buildFreshness`. The CLI also prints a one-line startup warning for a stale
+build — "shrk is serving the previous build; run `npm run build`".
+
+### Freshness is content divergence, never age (round 11)
+
+ONE authority, `detectPackAssetFreshness`, answers "is this pack stale?" for
+every surface (`packs signature-status`, `packs dev-status`, the
+contributions inventory's `stale-signature` conflict, `packs doctor`,
+`shrk doctor`, the startup warning) — the three mtime heuristics that used to
+answer it, and disagreed in both directions, are gone.
+
+- **Signature** — `shrk packs sign` records `sha256` of every contribution
+  file (and each compiled artifact's mapped source) on the signature
+  (`signature.contentDigests`). Fresh iff every recorded file still has that
+  content; `stale` when one changed; `unverified` when the signature records
+  no digest for a file (signed before content digests existed) — re-sign to
+  record them. `packs signature-status` exits 1 on stale and 2 on unverified.
+- **Build** — for a compiled contribution with a mapped source on disk
+  (tsconfig `outDir` → `rootDir`, else `dist|build|lib|out` → `src`), the
+  build record is the source map's `sourcesContent` (what the compiler read)
+  or the signature's digests of the artifact + source pair. `stale` when the
+  source differs from the record; `unrecorded` (NOT verified) when no record
+  exists — emit source maps with `"sourceMap": true, "inlineSources": true`.
 
 ## Pack doctor
 
@@ -160,6 +202,12 @@ The doctor checks:
 | Manifest is structurally valid | error |
 | Contribution files exist on disk | error |
 | Manifest has at least one resolved contribution | error |
+| Every contribution file loaded (`contribution-load-failed`, one per file) | error |
+| Every declared entry was accepted by its loader (`contribution-entries-rejected`, one per file: `conventions.ts (convention): 2 of 10 entries rejected — 'conv.b' (default[8]) — severity: …`, with a `satisfies I<Kind>[]` / `--typecheck` pointer when `--typecheck` did not run; round 12) | error |
+| Every declared knowledge-family file produced ≥ 1 entry (`partially-resolved-contributions`; a file whose entries were all rejected is reported by the row above instead) | warning |
+| Compiled contributions match their source (`compiled-artifacts-stale`; `compiled-artifacts-unrecorded` when no build record) | warning (error with `--strict` / `--release`) |
+| Group-module exports are registered (`unregistered-export`) | error |
+| `--typecheck`: the pack's TS assets type-check (`typecheck-error`; `typecheck-not-run` when 0 TS files) | error — exit 2 when nothing could be checked |
 | Tampered signature (`--verify-signatures`) | error |
 | Pack ids collide with local ids | info |
 | Pack ids collide with another pack | warning |
@@ -168,27 +216,33 @@ The doctor checks:
 | Pipelines have at least one step | warning |
 | Pack is unsigned and `--require-signatures` is set | warning |
 
-The same logic is exposed via the MCP `doctor_packs` tool.
+The same logic is exposed via the MCP `doctor_packs` tool, settled by the
+same verdict (`packDoctorVerdict`): zero packs is `not-verified` (exit 2)
+there too, and the quality packs gate and bare `shrk check` render it as a
+skip — never as a pass.
 
 ## Pack contribution runtime test
 
 `shrk packs test <path>` validates a pack at a given path. By default it
-runs structural checks (package.json shape, expected asset files exist).
-Pass `--load` to actually evaluate the pack:
+runs structural checks: package.json shape, the manifest `sharkcraft.manifest`
+points at, and every contribution file that manifest declares (no hard-coded
+asset list). Pass `--load` to actually evaluate the pack, `--typecheck` to
+type-check it:
 
 ```bash
 shrk packs test ./my-pack --load
 shrk packs test ./my-pack --trusted-load
 shrk packs test ./my-pack --load --require-signature
+shrk packs test ./my-pack --typecheck        # exit 2 when no TS file could be checked
 ```
 
-`--load` imports each contribution file with dynamic `import()` (local
-file only) and asserts the export shape:
+`--load` imports the manifest and each declared contribution module with
+dynamic `import()` (local files only) and asserts the export shape:
 
 - knowledge / rules / paths / templates / pipelines / presets / boundaries
   must export an array of items, each with a string `id`
 - pipelines must declare at least one step
-- `src/sharkcraft.plugin.ts` must default-export an object
+- the manifest module must default-export a valid pack manifest
 
 `--trusted-load` adds template render probes — it calls each template's
 `targetPath()` and `content()` with synthesized default variables and

@@ -8,6 +8,7 @@
  * Playbooks are NEVER auto-executed; they are structured runbooks that the
  * agent or human reads and follows.
  */
+import type { TermMatchMode } from './term-match-mode.ts';
 
 export interface IPlaybookStep {
   id: string;
@@ -52,6 +53,12 @@ export interface IPlaybookInput {
   outputs?: readonly string[];
   /** Example tasks the playbook addresses. */
   examples?: readonly string[];
+  /**
+   * How `tags` / `taskKinds` match a task. Default `tokens` (normalised term
+   * sequences: tag `capability-pack` matches "add a capability pack");
+   * `substring` is the legacy raw containment.
+   */
+  matchMode?: TermMatchMode | `${TermMatchMode}`;
 }
 
 export function definePlaybook(input: IPlaybookInput): IPlaybookInput {

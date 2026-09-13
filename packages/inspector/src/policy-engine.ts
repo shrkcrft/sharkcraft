@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { evaluateBoundaries, loadTsconfigPaths, scanImports } from '@shrkcrft/boundaries';
+import { boundaryLoadIssueLabel, runBoundaryCheck } from './run-boundary-check.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { impactFor, loadOwnershipRules, type IOwnershipRule } from './ownership.ts';
-import { importModuleViaLoader } from '@shrkcrft/core';
+import { importModuleViaLoader, type IAssetReference } from '@shrkcrft/core';
 
 export const POLICY_REPORT_SCHEMA = 'sharkcraft.policy-report/v1';
 
@@ -60,6 +60,13 @@ export interface IPackPolicyCheck {
     planTargets: readonly string[];
     bundleAffectedFiles: readonly string[];
   }) => boolean | { message: string; suggestedFix?: string; context?: Record<string, unknown> };
+  /**
+   * Verifiable pointers to the directories / packages / files this check is
+   * about — swept by `shrk knowledge stale-check` like a knowledge entry's. A
+   * check's real scope lives inside `evaluate()`, which cannot be read without
+   * running it, so declaring references is the only way it can be verified.
+   */
+  references?: readonly IAssetReference[];
 }
 
 export interface IPolicyCheckRegistration {
@@ -119,14 +126,31 @@ export async function evaluatePolicy(
   const checks: IPolicyCheck[] = [];
   const registrations: IPolicyCheckRegistration[] = [];
 
-  // 1) Boundary violations.
-  if (inspection.boundaryRegistry.size() > 0) {
+  // 1) Boundary violations — through THE boundary orchestrator, the call
+  // `check boundaries` makes (round 11 review R11-GAP-3): an errored rule is an
+  // error check, and a scope it could not fully examine is named, never a
+  // silent "no boundary checks".
+  if (inspection.boundaryRegistry.size() > 0 || (inspection.boundaryLoadIssues ?? []).length > 0) {
     try {
-      const scan = scanImports({ projectRoot: cwd });
-      const tsconfigPaths = loadTsconfigPaths(cwd);
-      const evalResult = evaluateBoundaries(scan, inspection.boundaryRegistry.list(), {
-        ...(tsconfigPaths.aliases.size > 0 ? { tsconfigPaths } : {}),
-      });
+      const evalResult = runBoundaryCheck(inspection);
+      for (const issue of evalResult.loadIssues) {
+        checks.push({
+          id: `boundary:load-error:${boundaryLoadIssueLabel(issue)}`,
+          title: `Boundary rule did not load: ${boundaryLoadIssueLabel(issue)}`,
+          severity: PolicySeverity.Error,
+          checkType: PolicyCheckType.Import,
+          message: `${issue.file}: ${issue.issues.join('; ')} — NOT evaluated`,
+        });
+      }
+      if (evalResult.verdict === 'not-verified') {
+        checks.push({
+          id: 'boundary:not-verified',
+          title: 'Boundary scan NOT VERIFIED',
+          severity: PolicySeverity.Warning,
+          checkType: PolicyCheckType.Import,
+          message: `${evalResult.shortfalls.join('; ')} (this is not a pass)`,
+        });
+      }
       for (const v of evalResult.violations.slice(0, 200)) {
         checks.push({
           id: `boundary:${v.ruleId}:${v.file}:${v.line}`,
@@ -202,7 +226,7 @@ export async function evaluatePolicy(
             checkType: PolicyCheckType.Plan,
             message: `${input.planFile} has no signature.`,
             suggestedFix:
-              'Sign with `shrk plan sign <plan.json>` or generate with --sign.',
+              'Re-save it signed: `shrk gen <templateId> <name> --save-plan <plan.json> --sign`.',
           });
         }
       }

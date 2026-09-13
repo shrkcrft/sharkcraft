@@ -10,6 +10,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { COMMAND_CATALOG } from './command-catalog.ts';
 
@@ -17,6 +18,14 @@ const PLAN_SECRET_ENV = 'SHARKCRAFT_PLAN_SECRET';
 
 export const safetyCommand: ICommandHandler = {
   name: 'safety',
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: 'audit',
+      description: 'Audit the safety model: writers, shell runners, the MCP read-only invariant, signatures.',
+      usage: 'shrk safety audit [--deep] [--json]',
+    },
+  ],
   description:
     'Audit the SharkCraft safety model: which commands write source, which run shell, MCP read-only invariant, pack signature status, plan-signing status. Read-only.',
   usage: 'shrk safety audit [--json]',

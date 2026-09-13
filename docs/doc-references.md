@@ -51,6 +51,11 @@ export default defineSharkCraftConfig({
 `tokenPattern` is deliberately project-supplied: the engine has no business
 guessing what an id looks like in someone else's namespace.
 
+`files` is a glob list like every gate plane's: a leading `!` excludes
+(`['docs/**/*.md', '!docs/drafts/**']` — drafts are never scanned),
+order-independently; at least one inclusion glob is required. See
+[negation globs](gate-rules.md#negation-globs-round-12).
+
 ### Writing a `tokenPattern` that does not over-match
 
 `\b` is weaker than it looks — it sits between a word and a non-word character,
@@ -102,9 +107,70 @@ is now a test failure the day it is introduced.
 
 The resolver also answers for kinds prose never cites — `knowledge`, `rule`,
 `decision`, `convention`, `contract-template`, `migration-profile`,
-`routing-hint`, `registration-hint`, `scaffold-pattern` — so that the doctor and
-this plane cannot drift apart. `resolvesAs` is unchanged: it still accepts
-exactly the kinds in the table above.
+`workspace-profile`, `routing-hint`, `registration-hint`, `scaffold-pattern` —
+so that the doctor and this plane cannot drift apart. `resolvesAs` is
+unchanged: it still accepts exactly the kinds in the table above.
+
+### Declarability (round 12)
+
+`list ≡ resolve` proves the resolver reads what the `list` verb prints — over
+ids that already exist, so a kind whose registry NOTHING can fill would pass it
+vacuously and turn every reference to it into a permanent NOT VERIFIED. So
+every kind the resolver answers for is also **declarable**: it has a row in
+`REFERENCE_KIND_DECLARATIONS` (`packages/inspector/src/reference-kind-declarations.ts`,
+a `Record<IdReferenceKind, …>` — a kind added without a row does not compile)
+naming how its ids come to exist, and the r76 lock declares one id through
+EVERY path of every row (a real pack under `node_modules` for a pack key) and
+proves the resolver then lists it.
+
+| kind | declared via | shown by |
+|---|---|---|
+| `template` | config/pack `templateFiles` · `sharkcraft/templates.ts` | `shrk templates list` |
+| `pipeline` | config/pack `pipelineFiles` · `sharkcraft/pipelines.ts` | `shrk pipelines list` |
+| `playbook` | config/pack `playbookFiles` · `sharkcraft/playbooks.ts` | `shrk playbooks list` |
+| `policy` | pack `policyCheckFiles` · `sharkcraft/policies.ts` | `shrk policy list` |
+| `construct` | pack `constructFiles` · `sharkcraft/constructs.ts` | `shrk constructs list` |
+| `helper` | pack `helperFiles` · `sharkcraft/helpers.ts` | `shrk helper list` |
+| `boundary-rule` | config/pack `boundaryFiles` | `shrk boundaries list` |
+| `path-convention` | config/pack `pathFiles`, pack `pathConventionFiles` · `sharkcraft/paths.ts` | `shrk paths list` |
+| `rule` | config/pack `ruleFiles` · `sharkcraft/rules.ts` | `shrk rules list` |
+| `knowledge` | config/pack `knowledgeFiles` / `docsFiles` · `sharkcraft/knowledge.ts` | `shrk knowledge list` |
+| `decision` | pack `decisionFiles` · `sharkcraft/decisions.ts` · `sharkcraft/decisions/*.md` · `docs/adr/*.md` | `shrk self-config resolve <id>` |
+| `convention` | config/pack `conventionFiles` · `sharkcraft/conventions.ts` | `shrk conventions list` |
+| `contract-template` | pack `contractTemplateFiles` · `sharkcraft/contract-templates.ts` | `shrk contract template list` |
+| `migration-profile` | pack `migrationProfileFiles` · `sharkcraft/migration-profiles.ts` | `shrk profiles list --kind migration` |
+| `workspace-profile` | builtin (the `WorkspaceProfile` vocabulary) | `shrk profiles list --kind workspace` |
+| `routing-hint` | config/pack `taskRoutingHintFiles` · `sharkcraft/task-routing-hints.ts` | `shrk self-config resolve <id>` |
+| `registration-hint` | pack `registrationHintFiles` · `sharkcraft/registration-hints.ts` | `shrk registrations list` |
+| `scaffold-pattern` | pack `scaffoldPatternFiles` · `sharkcraft/scaffold-patterns.ts` | `shrk scaffolds list` |
+
+(Each local file also has its `…/index.ts` twin where the loader reads one; the
+table in code is the authority.) The table has three consumers, so it cannot
+drift into a doc-only list: the self-config doctor's loud-skip reason names how
+to fill an empty kind (`… — declare migration-profile via pack key
+migrationProfileFiles · sharkcraft/migration-profiles.ts …`), its `*-missing`
+findings print the list verb as `next:`, and `shrk profiles list` renders its
+empty state from it. `isReferenceKindDeclarable(kind)` is THE answer to "can
+anything fill this kind?".
+
+The lock has a **binding** half too, because declarability alone would not
+have caught round 12's defect: `discovery.profileIds` was bound to the
+declarable `migration-profile` kind — the wrong vocabulary. `PROBED_ID_FIELDS`
+is the one field → kind table the doctor iterates; every `*Ids` field of
+`IConventionAppliesTo`, `IRegistrationHintDiscovery` and template `metadata`
+must have a row naming a declarable kind.
+
+**Kind order is specificity.** A rule and a path convention are knowledge
+entries of one type, so `rule` and `path-convention` are listed before their
+superset `knowledge`. `referenceKindsOf(id)` returns EVERY kind that lists an
+id, most specific first; `referenceKindOf(id)` is its first element (it used to
+answer `knowledge` for every rule id).
+
+**The structured twin.** This plane checks ids cited in PROSE. Ids in declared
+`related`-style asset fields (knowledge `related` / `seeAlso` / `supersededBy`,
+construct and boundary `related*`, template `related`) are resolved by the
+declared cross-reference collector, through the same resolver — see
+[self-config-doctor.md](self-config-doctor.md#declared-cross-references-round-11).
 
 **Warming.** Several kinds load asynchronously (playbooks, constructs, policies,
 pack helpers, conventions, contract templates, migration profiles, routing and
@@ -223,3 +289,35 @@ The plane reads documents and consults registries. It **writes nothing and
 spawns nothing**, so unlike `baselines[].compute.run` and
 `generatedArtifacts[].regen`, a pack may contribute a `docReferences` rule
 freely.
+
+## Contributing rules from a pack (`docReferenceFiles`)
+
+A pack ships doc-reference rules through the `docReferenceFiles` manifest slot
+— each file default-exports `readonly IDocReferenceRule[]`, merged local-wins by
+`id` at the pack-plane merge seam (a local rule with the same id wins):
+
+```jsonc
+// the pack's manifest
+{
+  "schema": "sharkcraft.pack/v1",
+  "info": { "name": "@acme/docs-pack", "version": "1.0.0" },
+  "contributions": { "docReferenceFiles": ["./doc-references.ts"] }
+}
+```
+
+Each element is validated with the SAME schema a local `docReferences[]` rule
+is (`DocReferenceRuleSchema`); there is no shell to veto. Since round 13 the
+slot is declared (`CONTRIBUTION_FILE_KEYS`, contribution kind `doc-reference`),
+so a refused element travels the round-12 rejection channel like every other
+gate plane: `packs contributions` names the file and the entry (exit 1), `packs
+list` / `packs get` count the `doc-reference` kind, `packs test --load` reports
+`asset-entry-rejected` before you publish, `self-config doctor` reports
+`doc-reference-invalid`, and `gates check` and `docs references check` — the
+plane's own verb — carry the rule as an ERRORED row (`failed validation — NOT
+evaluated`, exit `1`; `docs references check --json` lists it under `rejected`,
+and `--id` selects it). Before, the merge read the key but no
+manifest declared it: a refused rule was one `! … invalid docReference element
+… — skipped` line under a ✓, and a valid one was enforced while `packs
+contributions` said the pack contributed no file. `expectEmpty` markers on a
+pack rule's `files` need engine ≥ 0.1.0-alpha.31 (see
+[intended-empty.md](intended-empty.md)).

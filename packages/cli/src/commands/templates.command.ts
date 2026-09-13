@@ -6,13 +6,21 @@ import {
   AssetProvenanceSource,
   buildTemplateAuthoringPreview,
   buildTemplateDriftReport,
+  ContributionKind,
   inspectSharkcraft,
+  lintTemplates,
   recordProvenance,
   TemplateAuthoringOperation,
   TemplateDriftStatus,
   type ITemplateAuthoringInput,
   type ITemplateUpdateOps,
 } from '@shrkcrft/inspector';
+import type { IVerdictCoverage } from '@shrkcrft/core';
+import { ALLOW_EMPTY_FLAG, allowEmptyValve } from '../gates/allow-empty.ts';
+import { settleVerdict } from '../gates/settle-verdict.ts';
+import { templateRegistryCoverage } from '../gates/template-registry-coverage.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
+import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
 import {
   detectAuthoringSource,
   multiFlagValues,
@@ -20,7 +28,7 @@ import {
 } from '../authoring/authoring-kit.ts';
 import { applyTemplateUpdate } from '../asset-preview/apply-template-update.ts';
 import type { ITemplateUpdateApplyInput } from '../asset-preview/apply-template-update.ts';
-import { previewTemplate } from '@shrkcrft/templates';
+import { previewTemplate, templateRemainderFields, templateRemainderLines } from '@shrkcrft/templates';
 import type { ITemplateDefinition as ITemplateDefinitionImport } from '@shrkcrft/templates';
 import { buildNameVariables } from '@shrkcrft/generator';
 import {
@@ -28,6 +36,7 @@ import {
   flagList,
   flagString,
   flagVars,
+  requireInputSelector,
   resolveCwd,
   type ICommandHandler,
   type ParsedArgs,
@@ -111,16 +120,23 @@ export const templatesListCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const list = inspection.templateRegistry.list();
+    // A template its loader refused (no `name`, a duplicate id) is named
+    // (round 12, 12.1) — it used to appear on no surface at all.
+    const note = { next: 'shrk templates doctor' };
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson(list.map((t) => ({ id: t.id, name: t.name, description: t.description, tags: t.tags }))) + '\n');
+      process.stdout.write(asJson(list.map((t) => ({ id: t.id, name: t.name, description: t.description, tags: t.tags ?? [] }))) + '\n');
+      await writeRejectedEntriesNote(inspection, [ContributionKind.Template], { ...note, json: true });
       return 0;
     }
     process.stdout.write(header(`Templates (${list.length})`));
     for (const t of list) {
       process.stdout.write(`  ${t.id.padEnd(28)} — ${t.name}\n`);
-      process.stdout.write(`      ${t.description}\n`);
-      if (t.tags.length) process.stdout.write(`      tags: ${t.tags.join(', ')}\n`);
+      process.stdout.write(`      ${t.description ?? ''}\n`);
+      // The loader normalises a missing `tags` to []; guard a frozen literal anyway (12.1d).
+      const tags = Array.isArray(t.tags) ? t.tags : [];
+      if (tags.length) process.stdout.write(`      tags: ${tags.join(', ')}\n`);
     }
+    await writeRejectedEntriesNote(inspection, [ContributionKind.Template], note);
     return 0;
   },
 };
@@ -151,6 +167,9 @@ export const templatesGetCommand: ICommandHandler = {
         appliesWhen: template.appliesWhen,
         variables: template.variables,
         postGenerationNotes: template.postGenerationNotes ?? [],
+        // The one remainder shape MCP `get_template` carries too.
+        ...templateRemainderFields(template),
+        remainderLines: templateRemainderLines(template),
         related: template.related ?? [],
       };
       process.stdout.write(asJson(safe) + '\n');
@@ -170,6 +189,8 @@ export const templatesGetCommand: ICommandHandler = {
         );
       }
     }
+    const remainder = templateRemainderLines(template);
+    if (remainder.length > 0) process.stdout.write(remainder.join('\n') + '\n');
     return 0;
   },
 };
@@ -179,6 +200,9 @@ export const templatesSearchCommand: ICommandHandler = {
   description: 'Search templates.',
   usage: 'shrk templates search <query>',
   async run(args: ParsedArgs): Promise<number> {
+    // No query is a usage error (3), never `Templates (N)` over nothing asked.
+    const noSelector = requireInputSelector(args, { flags: [], positional: true, usage: 'shrk templates search <query>' });
+    if (noSelector !== null) return noSelector;
     const query = args.positional.join(' ');
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const results = inspection.templateRegistry.search(query);
@@ -239,6 +263,8 @@ export const templatesPreviewCommand: ICommandHandler = {
         process.stdout.write(`  • ${note}\n`);
       }
     }
+    const remainder = templateRemainderLines(template);
+    if (remainder.length > 0) process.stdout.write('\n' + remainder.join('\n') + '\n');
     return 0;
   },
 };
@@ -259,6 +285,9 @@ export const templatesDriftCommand: ICommandHandler = {
 async function templatesDriftImpl(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
+    // `related` ids resolve against EVERY registry; a cold construct / playbook
+    // registry would report them NOT VERIFIED instead of resolving them.
+    await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
     const report = buildTemplateDriftReport(inspection, {
       ...(flagString(args, 'template') ? { templateId: flagString(args, 'template')! } : {}),
       ...(flagString(args, 'pack') ? { packId: flagString(args, 'pack')! } : {}),
@@ -469,6 +498,7 @@ export const templatesVerifyPathsCommand: ICommandHandler = {
   usage: 'shrk templates verify-paths [--template <id>] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
+    await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
     const report = buildTemplateDriftReport(inspection, {
       ...(flagString(args, 'template') ? { templateId: flagString(args, 'template')! } : {}),
     });
@@ -716,6 +746,21 @@ export const templatesAddCommand: ICommandHandler = {
     'Alias of `templates scaffold` — preview-only TS draft for a new template.',
 };
 
+/** Drift status rank — a folded lint finding can only raise a template's status. */
+const DRIFT_STATUS_RANK: Readonly<Record<TemplateDriftStatus, number>> = {
+  [TemplateDriftStatus.Pass]: 0,
+  [TemplateDriftStatus.Warn]: 1,
+  [TemplateDriftStatus.Fail]: 2,
+};
+
+/**
+ * The lint findings the doctor folds in: every error (`templates lint` exits 1
+ * on them — an invalid change operation, a malformed remainder, an unsafe
+ * target), plus `render-threw`, the one that means the operations were never
+ * checked (it is what the doctor's coverage counts as unexamined).
+ */
+const FOLDED_LINT_WARNINGS: ReadonlySet<string> = new Set(['render-threw']);
+
 /**
  * `shrk templates doctor` aggregates the existing drift + lint
  * signals into one structured report. Read-only.
@@ -723,47 +768,94 @@ export const templatesAddCommand: ICommandHandler = {
  * Distinct from `templates lint` (which surfaces test-style findings)
  * and `templates drift` (which compares declared vs. rendered output)
  * by combining them with a clean/dirty verdict + per-template summary.
+ * Lint is READ, never re-derived: a template `templates lint` fails can
+ * never read "Clean" here. Settled against coverage — 0 templates, or a
+ * template whose `changes()` threw with sample variables (its operations
+ * were never checked), is NOT VERIFIED (2), never a pass.
  */
 export const templatesDoctorCommand: ICommandHandler = {
   name: 'doctor',
   description:
-    'Template-quality doctor — combines drift + lint signals into one clean/dirty verdict per template. Read-only.',
-  usage: 'shrk templates doctor [--strict] [--json]',
+    'Template-quality doctor — combines drift + lint signals into one clean/dirty verdict per template. A lint error (an invalid change operation, a malformed remainder) fails the template, as `templates lint` does. Exit 0 clean · 1 a failing template (or a warning under --strict) · 2 nothing verified (no template registered — `--allow-empty` accepts that — or a changes() that threw with sample variables). Read-only.',
+  usage: 'shrk templates doctor [--strict] [--allow-empty] [--json]',
+  booleanFlags: new Set(['strict', 'json', ALLOW_EMPTY_FLAG]),
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
+    await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
     const drift = buildTemplateDriftReport(inspection);
+    // Both read the one template set (`templateRegistry` is built from
+    // `inspection.templates`), so every lint result has a drift entry.
+    const lint = lintTemplates(inspection);
+    const lintById = new Map(lint.results.map((r) => [r.templateId, r.issues] as const));
+    const entries = drift.entries.map((e) => {
+      const folded = (lintById.get(e.templateId) ?? [])
+        .filter((i) => i.severity === 'error' || FOLDED_LINT_WARNINGS.has(i.code))
+        .map((i) => ({
+          severity: i.severity,
+          code: i.code,
+          message: `[lint ${i.code}] ${i.message}`,
+          ...(i.suggestion ? { suggestedFix: i.suggestion } : {}),
+        }));
+      if (folded.length === 0) return e;
+      const lintStatus = folded.some((i) => i.severity === 'error') ? TemplateDriftStatus.Fail : TemplateDriftStatus.Warn;
+      const status = DRIFT_STATUS_RANK[lintStatus] > DRIFT_STATUS_RANK[e.status] ? lintStatus : e.status;
+      return { ...e, status, issues: [...e.issues, ...folded] };
+    });
     const totals = {
-      total: drift.entries.length,
-      pass: drift.entries.filter((e) => e.status === TemplateDriftStatus.Pass).length,
-      warn: drift.entries.filter((e) => e.status === TemplateDriftStatus.Warn).length,
-      fail: drift.entries.filter((e) => e.status === TemplateDriftStatus.Fail).length,
+      total: entries.length,
+      pass: entries.filter((e) => e.status === TemplateDriftStatus.Pass).length,
+      warn: entries.filter((e) => e.status === TemplateDriftStatus.Warn).length,
+      fail: entries.filter((e) => e.status === TemplateDriftStatus.Fail).length,
     };
+    const unchecked = entries
+      .filter((e) => e.issues.some((i) => FOLDED_LINT_WARNINGS.has(i.code)))
+      .map((e) => e.templateId);
+    // THE template-registry coverage record — `check templates` settles on it too.
+    const coverage: IVerdictCoverage = templateRegistryCoverage({
+      total: totals.total,
+      unchecked,
+      root: inspection.projectRoot,
+      acceptance: allowEmptyValve(args, totals.total),
+    });
     const strict = flagBool(args, 'strict');
-    const exit = totals.fail > 0 || (strict && totals.warn > 0) ? 1 : 0;
+    const settled = settleVerdict(totals.fail > 0 || (strict && totals.warn > 0) ? 1 : 0, [coverage]);
     if (flagBool(args, 'json')) {
       process.stdout.write(
         asJson({
           schema: 'sharkcraft.templates-doctor/v1',
           generatedAt: new Date().toISOString(),
           totals,
-          entries: drift.entries,
+          entries,
+          coverage,
+          exitCode: settled.exit,
+          verdict: settled.verdict,
+          shortfalls: settled.shortfalls,
+          accepted: settled.accepted,
         }) + '\n',
       );
-      return exit;
+      return settled.exit;
     }
     process.stdout.write(header('Templates doctor'));
     process.stdout.write(kv('totals', `${totals.pass} pass, ${totals.warn} warn, ${totals.fail} fail`) + '\n\n');
-    for (const e of drift.entries) {
+    for (const e of entries) {
       const label = (e.templateName ?? e.templateId);
       process.stdout.write(`  ${e.status.toUpperCase().padEnd(8)} ${label}\n`);
       for (const issue of e.issues) {
         process.stdout.write(`           [${issue.severity}] ${issue.message}\n`);
       }
     }
-    if (exit === 0) process.stdout.write('\nClean. ✓\n');
-    else process.stdout.write('\nIssues found. Run `shrk templates drift --min-severity warning` for detail.\n');
-    return exit;
+    if (settled.exit === 1) {
+      process.stdout.write(
+        '\nIssues found. Run `shrk templates lint` and `shrk templates drift --min-severity warning` for detail.\n',
+      );
+    }
+    const line = verdictLine(settled, '\nClean. ✓');
+    if (line) process.stdout.write(`${settled.exit === 0 ? '' : '\n'}${line}\n`);
+    if (settled.exit === 2 && totals.total === 0) {
+      process.stdout.write('Pass --allow-empty to accept a project with no templates explicitly.\n');
+    }
+    return settled.exit;
   },
 };
 

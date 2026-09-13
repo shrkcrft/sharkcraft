@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { runArchCheck } from '@shrkcrft/architecture-guard';
+import { archStoreMissing, runArchCheck } from '@shrkcrft/architecture-guard';
 import { FrameworkQueryApi } from '@shrkcrft/framework-scanners';
-import { detectGraphFreshness, GraphQueryApi, GraphStore } from '@shrkcrft/graph';
+import { detectGraphFreshness, GraphQueryApi, GraphStore, graphFreshnessBehind } from '@shrkcrft/graph';
 import {
   findResumePoint,
   type IMigrationRunReport,
@@ -140,7 +140,7 @@ function readGraphSection(
   // `corrupt` (store self-integrity) outranks `stale` (disk drift): a digest
   // failure means the counts themselves can't be trusted.
   const fresh = detectGraphFreshness(projectRoot);
-  const behind = fresh.modified.length + fresh.added.length + fresh.deleted.length;
+  const behind = graphFreshnessBehind(fresh);
   const verify = store.verifyDigest();
   const state: 'fresh' | 'stale' | 'corrupt' = !verify.ok ? 'corrupt' : behind > 0 ? 'stale' : 'fresh';
   return {
@@ -194,7 +194,7 @@ function readArchSection(projectRoot: string): IDashboardCodeIntelligenceRespons
   void archPath;
   const report = runArchCheck({ projectRoot });
   return {
-    available: report.diagnostics.length === 0 || !report.diagnostics.some((d) => d.includes('code-graph store missing')),
+    available: !archStoreMissing(report),
     errors: report.countsBySeverity.error,
     warnings: report.countsBySeverity.warning,
     violationsByKind: report.countsByKind,

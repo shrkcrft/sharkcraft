@@ -3,7 +3,7 @@
  *
  * Mirror of the markdown ADRs under `sharkcraft/decisions/`. The TS form
  * lets packs ship typed decision records, and integrates with
- * `shrk decisions list` + the new `shrk decisions doctor`.
+ * `listDecisions`; `shrk self-config doctor` validates their cross-references.
  */
 
 interface ILocalDecision {
@@ -123,9 +123,9 @@ export default [
     decision:
       'Add async `loadTsDecisions` reading `sharkcraft/decisions.ts` + pack `decisionFiles[]`. Markdown loader remains the primary surface; TS records are folded in via cache. Duplicate ids are skipped with markdown winning.',
     consequences:
-      'Existing markdown ADRs are unchanged. Packs ship typed decisions for cross-tool reference. `shrk decisions doctor` validates both sources.',
+      'Existing markdown ADRs are unchanged. Packs ship typed decisions for cross-tool reference. `shrk self-config doctor` validates both sources.',
     relatedKnowledge: ['engine.ts-decisions-loader'],
-    relatedCommands: ['shrk decisions list', 'shrk decisions doctor'],
+    relatedCommands: ['shrk self-config doctor'],
   }),
   defineDecision({
     id: 'project-path-conventions-are-a-pack-contribution',

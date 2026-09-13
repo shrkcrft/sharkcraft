@@ -59,7 +59,7 @@ Field reference:
 | `id` | stable id, shown in findings and selectable with `--only` |
 | `description` | one-line statement of the guarantee |
 | `severity` | `error` (default, fails) or `warning` (reports, does not fail) |
-| `declared.files` / `registered.files` | project-relative globs (`**`, `*`, `?`) |
+| `declared.files` / `registered.files` | project-relative globs (`**`, `*`, `?`); a leading `!` excludes from that side's list only (`['src/**/*.ts', '!src/**/*.spec.ts']`) — see [negation globs](gate-rules.md#negation-globs-round-12) |
 | `declared.pattern` / `registered.pattern` | regex source; **capture group 1** is the token. `g` is always applied; add more via `flags` |
 | `declared.flags` / `registered.flags` | extra regex flags (e.g. `i`, `m`) |
 | `<side>.arrayProperty` | capture array-literal elements of `<name> = [ … ]` / `<name>: [ … ]` instead of a regex (mutually exclusive with `pattern`) — see [Advanced matchers](#advanced-matchers) |
@@ -67,6 +67,7 @@ Field reference:
 | `groupBy` | `'dir'` / `'package'` — match within the same module, not the global pool |
 | `mode` | `'subset'` (default) or `'parity'` (also report registered-but-not-declared) |
 | `hint` / `hintDeclaredMissing` / `hintRegisteredMissing` | remediation line(s); the directional hints apply in `parity` mode |
+| `registeredExtras` | subset only: registered tokens the declared selector is known NOT to produce, accepted explicitly — literal ids, or `'allow'`. See [Subset coverage](#subset-coverage-and-registeredextras) |
 
 ### Authoring patterns safely
 
@@ -133,6 +134,50 @@ give a per-direction message via `hintDeclaredMissing` / `hintRegisteredMissing`
 A misconfigured rule (a side with neither `pattern` nor `arrayProperty`, a bad
 regex, etc.) degrades to a diagnostic — never a silent green.
 
+### Subset coverage and `registeredExtras`
+
+A `subset` rule checks `declared ⊆ registered`. That relation passes BY
+CONSTRUCTION whenever the declared selector is narrower than reality: a
+registered member the declared selector never produced is simply never
+examined, and the rule silently weakens every time the tree grows past the
+selector. So the engine computes the registered-minus-declared set — the same
+set `parity` reports as violations — and reports it as the rule's coverage: the
+rule reads **`partial`**, the verdict is **not verified (`2`)**, and the tokens
+are named on the verdict line:
+
+```
+  ~ tools-registered  (declared 283 / registered 284) — PARTIAL: examined 283 of 284 registered tokens, 1 registered with no declared site this selector produces: legacyTool
+
+NOT VERIFIED: tools-registered: examined 283 of 284 registered tokens, … (this is not a pass)
+```
+
+Three ways to resolve it, in order of preference:
+
+1. **Widen (or fix) the declared selector** so it reaches the real declaration.
+   This repo's own `mcp-tool-registered` rule sat at 282/284 because two tool
+   files exported the SAME names, so the registered side's import aliases had no
+   declared site; giving the exports distinct names made it 284/284.
+2. **`mode: 'parity'`** if the two sets should be equal — each extra then fails
+   as a `registered-missing` violation.
+3. **`registeredExtras`** when the registered side is legitimately a superset:
+   list the known extras (`registeredExtras: ['legacyTool']` — literal ids only,
+   so the acceptance cannot silently widen) or set `'allow'`. The verdict is `0`
+   and prints `accepted by registeredExtras: …` — never silent. It is valid only
+   on a classic subset rule; config load refuses it on `parity`, `disjoint` and
+   `chain` rules.
+
+`wiring explain` / `gates explain` list the same tokens under "Registered with
+NO declared site", `gates coverage` reports the rule `partial` too, and a
+passing rule's line always prints both counts (`declared N / registered M`) —
+all of them read the one engine derivation. Explain settles the rule with the
+SAME core rule as the gate envelope: it prints `status partial`, a `coverage`
+line (`examined 2 of 3 registered tokens`), `Verdict: not-verified` and the
+`NOT VERIFIED: …` line (or `accepted by registeredExtras: …` when the extras
+are listed), and its `--json` carries `coverage`, `shortfall` and `acceptance`.
+`wiring explain` / `wiring test` / `gates explain` stay informational (exit
+`0`); `check wiring --explain <id>` runs under the verdict verb, so it returns
+the explained rule's settled exit (`2` for a partial rule).
+
 ## Running it
 
 ```bash
@@ -184,6 +229,14 @@ candidate rule as a `.json` file or inline JSON, so you can iterate on a
 pattern against the live tree before committing it. `shrk check wiring --explain
 <ruleId>` is the same view reachable from the gate. (Mirrors the
 `search tuning explain` dry-run.)
+
+`shrk gates try` is the plane-agnostic form of `wiring test`: it takes a
+candidate of ANY plane (`--rule-file`) or a quick inline wiring spec
+(`--wiring 'declared=<glob>:<pattern> registered=<glob>:<pattern>'`, split at the
+first colon, `--flags m` for an anchored pattern), prints the same both-sides
+view, and **evaluates the candidate's `selfTest`** with the evaluator `gates
+coverage` uses — exit `1` when an expectation fails. See
+[gate-rules](gate-rules.md#gates-try--the-rule-authoring-repl).
 
 ## The registration / DI graph (`chain` / `unprovided` / `orphans`)
 
@@ -241,6 +294,24 @@ shrk wiring orphans --changed-only
   token unprovided?" question a pre-commit gate wants. An **empty** changed scope
   evaluated nothing, so it exits `2` (NOT verified), never a green `0`; this is
   the gate that slots into `shrk finish` (see [exit-codes.md](exit-codes.md)).
+- **A role that examined nothing is not a pass** (round 13). `unprovided` and
+  `orphans` fold every idiom's ROLE record from THE role authority `gates check`
+  reads (`measureRegistrationRoles`): a declared / provided / consumed role
+  whose globs matched no file (`declared (0 files)`) makes a clean answer NOT
+  VERIFIED (`2`), and a found token keeps its `1` with `(also not verified: …)`.
+  An idiom whose declared role named a planned file printed `✓ Every
+  declared/injected token has a provider. ✓` at `0` while `gates check` said
+  NOT VERIFIED on the same tree. The same fold reaches finish's `unprovided`
+  sub-gate (`partial`) and MCP `get_wiring_graph` (`verdict: 'not-verified'`,
+  `coverage`, `accepted`). A role whose every glob is marked `{ pattern,
+  expectEmpty: true }` is accepted instead (printed), exactly as on `gates
+  check`. finish keeps EVERY idiom's record — its most specific one as the
+  sub-gate's `coverage`, the rest as `extraCoverage`, each an envelope row — so
+  two idioms' acceptances are both printed and two dead roles both named.
+- **`--json` always carries the settled verdict** (round 13): `coverage` (the
+  graph's read scope, each idiom's role record, the demoted tokens), `exitCode`,
+  `verdict`, `shortfalls`, `accepted` and the shared `gate` envelope — they were
+  present only when a file was unread.
 
 This is the natural superset of the "is X registered" wiring rules: a real
 registration graph turns the question from a hand-authored regex into a query
@@ -367,6 +438,13 @@ shrk check wiring --fix --json     # the planned edits, machine-readable
 Dry run — nothing written. Re-run with `--write` to apply.
 ```
 
+The exit is settled exactly like the check's: any token left untouched is `1`
+(text and `--json` agree), and a fix over a rule that examined only part of its
+scope is `2` — `--fix` repairs declared-but-unregistered tokens, it cannot
+examine what the rule never examined, so "Nothing to fix" next to a `partial`
+rule prints `NOT VERIFIED: …`, never a green. `--json` carries `exitCode` and the
+`gate` envelope.
+
 **It refuses far more than it fixes, on purpose.** A wrong autofix in a gate is
 worse than no autofix — the tool would be writing the very thing it is supposed
 to verify. An edit is planned ONLY when all of these hold:
@@ -454,9 +532,12 @@ specifier all land here. **The planner never invents a path.**
 ## In the quality gate
 
 When `wiringRules[]` is present, the `wiring` gate runs as part of
-`shrk gate` (and the `get_quality_gates` MCP tool). With no rules configured the
-gate reports `skipped` — it is inert until a project opts in, and never produces
-a spurious red.
+`shrk gate` and the `get_quality_gate` MCP tool — both assemble the run through
+the one `prepareQualityGateRun` (the project's wiring + policy rules, the plane
+scan scope, the knowledge inspection) and settle through the one
+`settleQualityGateReport`, so MCP returns the same `exitCode` / `verdict` the
+verb exits on. With no rules configured the gate reports `skipped` — it is
+inert until a project opts in, and never produces a spurious red.
 
 ## When to reach for a wiring rule
 

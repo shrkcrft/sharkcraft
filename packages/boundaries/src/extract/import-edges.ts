@@ -1,8 +1,8 @@
 import type { IWiringSource } from '@shrkcrft/core';
-import { matchesAny } from '../scan/glob.ts';
+import { globListSelects } from '../scan/glob.ts';
 import { resolveAliasCandidates, type ITsconfigPathsMap } from '../scan/tsconfig-aliases.ts';
 import { safeCompile } from '../util/safe-regex.ts';
-import { parseImportStatements } from './parse-imports.ts';
+import { parseImportStatementsWithMeta } from './parse-imports.ts';
 import type { IExtractFileEntry, IExtractedSite } from './extract-tokens.ts';
 
 /**
@@ -105,12 +105,13 @@ function matchesTarget(
     if (modulePattern.test(resolved.specifier)) return true;
   }
   if (to.files && to.files.length > 0 && resolved.path !== undefined) {
-    if (matchesAny(resolved.path, to.files)) return true;
+    // `to.files` is a glob LIST like any other: a `!` entry subtracts.
+    if (globListSelects(resolved.path, to.files)) return true;
     // Specifiers routinely omit the extension, so probe the usual endings
     // rather than forcing every config to spell `*.{ts,tsx,…}` itself.
     for (const ext of ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx']) {
-      if (matchesAny(resolved.path + ext, to.files)) return true;
-      if (matchesAny(`${resolved.path}/index${ext}`, to.files)) return true;
+      if (globListSelects(resolved.path + ext, to.files)) return true;
+      if (globListSelects(`${resolved.path}/index${ext}`, to.files)) return true;
     }
   }
   return false;
@@ -132,7 +133,7 @@ export function extractImportEdges(
   source: IWiringSource,
   files: readonly IExtractFileEntry[],
   context: IImportEdgeContext = {},
-): { sites: IExtractedSite[]; error?: string; hint?: string } {
+): { sites: IExtractedSite[]; error?: string; hint?: string; blankedChars?: number } {
   const to = source.to ?? {};
   const emit: ImportEdgeEmit = source.emit ?? 'edge';
 
@@ -149,9 +150,20 @@ export function extractImportEdges(
     symbolPattern = compiled.re;
   }
 
+  // Zoning is judged by where the statement's KEYWORD starts and whether its
+  // specifier is a real string — the same authority `check boundaries` uses
+  // (round 11, 6.1a#import-edges-scan). The extractor receives RAW content:
+  // pre-blanking with `scan: 'code'` used to erase every specifier (a string)
+  // and turn the rule vacuous. Unset → comment-aware, matching `check
+  // boundaries`; `scan: 'all'` is the raw escape hatch. (`strings` / `comments`
+  // are rejected at config load: an import statement is code.)
+  const zone = source.scan === 'all' ? 'all' : 'code';
   const sites: IExtractedSite[] = [];
+  let blankedChars = 0;
   for (const file of files) {
-    for (const statement of parseImportStatements(file.content)) {
+    const parsed = parseImportStatementsWithMeta(file.content, { zone });
+    blankedChars += parsed.blankedChars;
+    for (const statement of parsed.statements) {
       const resolved = resolveSpecifier(file.path, statement.specifier, context.tsconfigPaths);
       if (!matchesTarget(resolved, to, modulePattern)) continue;
 
@@ -209,7 +221,8 @@ export function extractImportEdges(
         '0 edges via `to.files` — that matches an import\'s DIRECTLY-resolved path, so a symbol ' +
         're-exported through a barrel/package resolves to the package entry, not the deep file. ' +
         'Target by `to.module` + `to.match` instead.',
+      blankedChars,
     };
   }
-  return { sites };
+  return { sites, blankedChars };
 }

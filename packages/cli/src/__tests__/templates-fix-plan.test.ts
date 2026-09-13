@@ -9,7 +9,7 @@ import {
   type ITemplateAuditReport,
 } from '../audit/templates-audit.ts';
 import { enrichAuditWithLlm } from '../audit/templates-audit-llm.ts';
-import { inspectSharkcraft } from '@shrkcrft/inspector';
+import { inspectSharkcraft, warmReferenceRegistries } from '@shrkcrft/inspector';
 import { type IAiProvider } from '@shrkcrft/ai';
 import { ok } from '@shrkcrft/core';
 import type { ParsedArgs } from '../command-registry.ts';
@@ -198,6 +198,10 @@ describe('buildFixPlan — per-category dispatch', () => {
   test('related-id-unresolved produces a high-confidence fix naming the bad id', async () => {
     root = makeFixtureWorkspace({ withUnresolvedRelated: true });
     const inspection = await inspectSharkcraft({ cwd: root });
+    // Round 11: `related` resolves against every registry; on a cold cache an
+    // unresolvable id is NOT VERIFIED (`related-id-unverified`), never
+    // "unresolved" — warm before you resolve, as every CLI caller does.
+    await warmReferenceRegistries(inspection);
     const report = buildTemplateAudit(inspection);
     const plan = buildFixPlan(report);
     const fix = plan.fixes.find((f) => f.findingCategory === 'related-id-unresolved');

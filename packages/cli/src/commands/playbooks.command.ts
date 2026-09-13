@@ -5,6 +5,7 @@ import {
   buildPlaybookPreview,
   buildPlaybookScript,
   buildRunbook,
+  ContributionKind,
   inspectSharkcraft,
   loadPlaybooks,
   recommendPlaybooks,
@@ -20,6 +21,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header } from '../output/format-output.ts';
+import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
 
 async function loadAll(args: ParsedArgs): Promise<{
   playbooks: readonly IPlaybook[];
@@ -36,9 +38,12 @@ export const playbooksListCommand: ICommandHandler = {
   description: 'List registered playbooks.',
   usage: 'shrk playbooks list [--json]',
   async run(args: ParsedArgs): Promise<number> {
-    const { playbooks } = await loadAll(args);
+    const { playbooks, inspection } = await loadAll(args);
+    // A playbook its loader refused (no id, no `steps`) is named (round 12, 12.1).
+    const note = { next: 'shrk packs contributions' };
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(playbooks) + '\n');
+      await writeRejectedEntriesNote(inspection, [ContributionKind.Playbook], { ...note, json: true });
       return 0;
     }
     process.stdout.write(header(`Playbooks (${playbooks.length})`));
@@ -46,6 +51,7 @@ export const playbooksListCommand: ICommandHandler = {
     for (const p of playbooks) {
       process.stdout.write(`  ${p.id.padEnd(36)} ${p.title}\n`);
     }
+    await writeRejectedEntriesNote(inspection, [ContributionKind.Playbook], note);
     return 0;
   },
 };

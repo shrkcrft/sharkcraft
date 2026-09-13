@@ -203,7 +203,79 @@ export const KnowledgeEntrySchema = {
     appliesWhen: { type: 'array', items: { type: 'string' } },
     content: { type: 'string' },
     summary: { type: 'string' },
+    // Cross-reference ids (resolved by `shrk self-config doctor`).
+    related: { type: 'array', items: { type: 'string' } },
+    // Ids of any registered kind a reader should also look at.
+    seeAlso: { type: 'array', items: { type: 'string' } },
+    // Knowledge ids that replace this entry — non-empty means superseded.
+    supersededBy: { type: 'array', items: { type: 'string' } },
     actionHints: { $ref: 'action-hints.json' },
+    references: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['kind'],
+        properties: {
+          kind: {
+            enum: [
+              'file',
+              'directory',
+              'symbol',
+              'command',
+              'template',
+              'playbook',
+              'construct',
+              'helper',
+              'policy',
+              'boundary-rule',
+              'path-convention',
+              'package',
+              'url',
+            ],
+          },
+          path: { type: 'string' },
+          // `Name`, or `Owner.member` for a class / interface / enum / object member.
+          symbol: { type: 'string' },
+          id: { type: 'string' },
+          command: { type: 'string' },
+          required: { type: 'boolean' },
+          note: { type: 'string' },
+          // Content assertions (file / symbol references): a literal, a regex.
+          contains: { type: 'string', minLength: 1 },
+          matches: { type: 'string', minLength: 1 },
+          scan: { enum: ['all', 'code', 'strings', 'comments', 'code-and-templates'] },
+          // A number the entry claims, re-derived by the extraction DSL.
+          count: {
+            type: 'object',
+            required: ['source', 'expected'],
+            properties: {
+              source: { type: 'object' },
+              expected: { type: 'integer', minimum: 0 },
+              measure: { enum: ['ids', 'sites'] },
+            },
+          },
+        },
+      },
+    },
+    anchors: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['id', 'kind'],
+        properties: {
+          id: { type: 'string' },
+          kind: {
+            enum: ['file', 'symbol', 'command', 'construct', 'template', 'helper', 'playbook', 'policy'],
+          },
+          path: { type: 'string' },
+          symbol: { type: 'string' },
+          targetId: { type: 'string' },
+          description: { type: 'string' },
+        },
+      },
+    },
+    // The day an author last checked the entry against the code.
+    verifiedOn: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
   },
 } as const;
 
@@ -498,7 +570,27 @@ export const ScaffoldPatternSchema = {
     id: { type: 'string' },
     title: { type: 'string' },
     description: { type: 'string' },
-    matchPaths: { type: 'array', items: { type: 'string' }, minItems: 1 },
+    // Round 13: an entry is a glob, or `{ pattern, expectEmpty: true, reason? }`
+    // — a path the pattern names before any file lives there (docs/intended-empty.md).
+    matchPaths: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        oneOf: [
+          { type: 'string' },
+          {
+            type: 'object',
+            required: ['pattern', 'expectEmpty'],
+            additionalProperties: false,
+            properties: {
+              pattern: { type: 'string', minLength: 1 },
+              expectEmpty: { const: true },
+              reason: { type: 'string', minLength: 1 },
+            },
+          },
+        ],
+      },
+    },
     excludePaths: { type: 'array', items: { type: 'string' } },
     templateId: { type: 'string' },
     variables: {
@@ -553,7 +645,9 @@ export const QualityReportSchema = {
   type: 'object',
   required: ['overall', 'gates', 'score'],
   properties: {
-    overall: { enum: ['pass', 'warn', 'fail'] },
+    // `not-verified`: no blocking gate failed, but a gate could not run,
+    // examined nothing while required, or examined only part of its scope.
+    overall: { enum: ['pass', 'warn', 'fail', 'not-verified'] },
     blockers: { type: 'integer' },
     warnings: { type: 'integer' },
     score: { type: 'integer' },
@@ -562,6 +656,8 @@ export const QualityReportSchema = {
     note: { type: 'string' },
     nextCommand: { type: 'string' },
     nextRecommendations: { type: 'array', items: { type: 'string' } },
+    coverage: { type: 'object' },
+    shortfalls: { type: 'array', items: { type: 'string' } },
   },
 } as const;
 
@@ -785,6 +881,13 @@ export const AreaMapSchema = {
     projectRoot: { type: 'string' },
     areas: { type: 'array' },
     unclassifiedFiles: { type: 'integer' },
+    totalFiles: { type: 'integer' },
+    classifiedFiles: { type: 'integer' },
+    classificationRate: { type: 'number', minimum: 0, maximum: 1 },
+    minClassificationRate: { type: 'number', minimum: 0, maximum: 1 },
+    degraded: { type: 'boolean' },
+    unclassifiedSample: { type: 'array', items: { type: 'string' } },
+    patternSource: { enum: ['built-in', 'config', 'config+built-in'] },
   },
 } as const;
 
@@ -800,6 +903,14 @@ export const ImpactAnalysisSchema = {
     risk: { type: 'string' },
     affectedFiles: { type: 'array' },
     affectedAreas: { type: 'array' },
+    areaCoverage: {
+      type: 'object',
+      properties: {
+        classificationRate: { type: 'number', minimum: 0, maximum: 1 },
+        degraded: { type: 'boolean' },
+        unclassifiedTargets: { type: 'array', items: { type: 'string' } },
+      },
+    },
   },
 } as const;
 

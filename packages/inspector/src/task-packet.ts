@@ -9,7 +9,9 @@ import type { IRule } from '@shrkcrft/rules';
 // IKnowledgeEntry here so the ranker output can be reused without casts.
 import type { ITemplateDefinition } from '@shrkcrft/templates';
 import type { IPresetRecommendation } from '@shrkcrft/presets';
-import type { IPipelineDefinition } from '@shrkcrft/pipelines';
+import { PipelineStepType, type IPipelineDefinition } from '@shrkcrft/pipelines';
+import { commandSafetyLevel } from './command-safety-level.ts';
+import { classifyQueryIntent, intentAdmitsSourceWrites, intentIsRepairOrDiagnosis } from './query-intent.ts';
 import { rankAll, type IRankedItem } from './task-ranker.ts';
 import { listSearchTuning } from './search-tuning-registry.ts';
 import { contextTuningBoostFor } from './context-tuning.ts';
@@ -171,6 +173,24 @@ function pickPipelines(
 }
 
 /**
+ * Does following this pipeline write source? A `generation` tag, a step that
+ * produces or applies a generation plan, a step whose CLI command writes source
+ * (`commandSafetyLevel`, the classifier the recommender reads), or a step that
+ * references a template. A diagnose / repair task is never offered one.
+ */
+function pipelineWritesSource(pipeline: IPipelineDefinition, templateIds: ReadonlySet<string>): boolean {
+  if ((pipeline.tags ?? []).some((t) => t.toLowerCase() === 'generation')) return true;
+  return pipeline.steps.some(
+    (s) =>
+      s.type === PipelineStepType.GenerationPlan ||
+      s.type === PipelineStepType.ApplyPlan ||
+      s.type === 'generate' ||
+      (s.cliCommands ?? []).some((c) => commandSafetyLevel(c) === 'writes-source') ||
+      (s.references ?? []).some((r) => templateIds.has(r)),
+  );
+}
+
+/**
  * Build a deterministic, AI-ready bundle for a single task. Pure orchestration
  * over the existing inspector services — no AI calls, no writes.
  */
@@ -204,9 +224,25 @@ export function buildTaskPacket(
   const relevantPaths = compact
     ? ranking.paths.slice(0, COMPACT_CAPS.paths).map((r) => r.item)
     : ranking.paths.map((r) => r.item);
-  const relevantTemplates = compact
-    ? ranking.templates.slice(0, COMPACT_CAPS.templates).map((r) => r.item)
-    : ranking.templates.map((r) => r.item);
+  // THE query-intent classifier and eligibility rule the recommender reads
+  // (spec 2.3, round 11 review R11-GAP-6): a diagnose / repair task ("fix the
+  // broken build") is offered no create/scaffold pipeline, no template and no
+  // source-writing command, and a suggested generation needs a CREATE query.
+  // `recommend.scaffoldRequiresCreateIntent: false` opts out, as it does there.
+  const intent = classifyQueryIntent(task);
+  const scaffoldGate = inspection.config?.recommend?.scaffoldRequiresCreateIntent ?? true;
+  const repairLike = scaffoldGate && intentIsRepairOrDiagnosis(intent);
+  const templateIds = new Set(inspection.templates.map((t) => t.id));
+  const eligiblePipeline = (id: string): boolean => {
+    if (!repairLike) return true;
+    const p = inspection.pipelineRegistry.get(id);
+    return !p || !pipelineWritesSource(p, templateIds);
+  };
+  const relevantTemplates = repairLike
+    ? []
+    : compact
+      ? ranking.templates.slice(0, COMPACT_CAPS.templates).map((r) => r.item)
+      : ranking.templates.map((r) => r.item);
 
   // Aggregate hints from the *ranked* knowledge so unrelated entries don't
   // leak into the action-hints surface.
@@ -235,12 +271,17 @@ export function buildTaskPacket(
     : actionHintsRaw;
 
   // Pipelines: prefer ranker output, then verb fallback for context-only.
-  const rankedPipelines = ranking.pipelines.slice(0, 3).map((p) => ({
-    pipelineId: p.item.id,
-    reason: p.reasons.join('; ') || 'ranked match',
-  }));
+  const rankedPipelines = ranking.pipelines
+    .filter((p) => eligiblePipeline(p.item.id))
+    .slice(0, 3)
+    .map((p) => ({
+      pipelineId: p.item.id,
+      reason: p.reasons.join('; ') || 'ranked match',
+    }));
   const fallback =
-    rankedPipelines.length > 0 ? rankedPipelines : pickPipelines(inspection.pipelineRegistry.list(), task);
+    rankedPipelines.length > 0
+      ? rankedPipelines
+      : pickPipelines(inspection.pipelineRegistry.list(), task).filter((p) => eligiblePipeline(p.pipelineId));
   const recommendedPipelines = fallback;
   const humanReviewPoints: string[] = [];
   for (const r of recommendedPipelines) {
@@ -285,11 +326,10 @@ export function buildTaskPacket(
   let suggestedGen: ITaskPacketSuggestedGen | undefined;
   const top = ranking.templates[0];
   const runnerUp = ranking.templates[1];
-  if (
-    top &&
-    /\b(create|add|implement|generate|new|build)\b/i.test(task) &&
-    (!runnerUp || top.score - runnerUp.score >= 4)
-  ) {
+  const createWork = scaffoldGate
+    ? intentAdmitsSourceWrites(intent)
+    : /\b(create|add|implement|generate|new|build)\b/i.test(task);
+  if (top && createWork && (!runnerUp || top.score - runnerUp.score >= 4)) {
     const tpl = top.item;
     const required = (tpl.variables ?? [])
       .filter((v) => v.required)
@@ -339,9 +379,9 @@ export function buildTaskPacket(
     relevantTemplates,
     actionHints,
     recommendedMcpTools: actionHints.mcpTools.map((t) => t.tool),
-    recommendedCliCommands: actionHints.commands.map((c) =>
-      typeof c === 'string' ? c : c.command,
-    ),
+    recommendedCliCommands: actionHints.commands
+      .map((c) => (typeof c === 'string' ? c : c.command))
+      .filter((c) => !repairLike || commandSafetyLevel(c) !== 'writes-source'),
     forbiddenActions: actionHints.forbiddenActions,
     verificationCommands,
     humanReviewPoints,

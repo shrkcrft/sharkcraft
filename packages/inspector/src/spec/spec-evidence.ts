@@ -21,6 +21,10 @@
  * `collectChangedPaths` helper and `spec verify --coverage`).
  */
 
+// THE identifier tokenizer — shared with reuse and the recommender.
+import { matchesAny, TEST_FILE_GLOBS } from '@shrkcrft/boundaries';
+import { splitIdentifierTokens } from '../split-identifier.ts';
+
 /** The shape of evidence backing (or claiming to back) a criterion. */
 export type SpecEvidenceKind = 'symbol' | 'registration' | 'route' | 'companion' | 'test';
 
@@ -140,7 +144,7 @@ function collectFileEvidence(
   keywords: ReadonlySet<string>,
   push: (item: ISpecEvidenceItem) => void,
 ): void {
-  const pathTokens = tokenizeIdentifier(stripExtension(baseName(file)));
+  const pathTokens = splitIdentifierTokens(stripExtension(baseName(file)));
 
   if (isTestFile(file)) {
     // A new test backs a criterion when its path (or an exported helper)
@@ -151,7 +155,7 @@ function collectFileEvidence(
       return;
     }
     for (const symbol of extractExportedSymbols(content)) {
-      const hit = firstMatch(tokenizeIdentifier(symbol), keywords);
+      const hit = firstMatch(splitIdentifierTokens(symbol), keywords);
       if (hit) {
         push({ kind: 'test', file, detail: symbol, matched: hit });
         return;
@@ -168,7 +172,7 @@ function collectFileEvidence(
 
   // symbol: a newly exported declaration names the feature.
   for (const symbol of extractExportedSymbols(content)) {
-    const hit = firstMatch(tokenizeIdentifier(symbol), keywords);
+    const hit = firstMatch(splitIdentifierTokens(symbol), keywords);
     if (hit) push({ kind: 'symbol', file, detail: symbol, matched: hit });
   }
 
@@ -178,7 +182,7 @@ function collectFileEvidence(
     if (line.length === 0) continue;
     const member = registrationMember(line);
     if (member) {
-      const hit = firstMatch(tokenizeIdentifier(member), keywords);
+      const hit = firstMatch(splitIdentifierTokens(member), keywords);
       if (hit) {
         const kind: SpecEvidenceKind = ROUTE_MARKER.test(line) ? 'route' : 'registration';
         push({ kind, file, detail: member, matched: hit });
@@ -235,24 +239,11 @@ function extractExportedSymbols(content: string): string[] {
 function extractKeywords(text: string): ReadonlySet<string> {
   const out = new Set<string>();
   for (const raw of text.toLowerCase().match(/[a-z0-9][a-z0-9_-]*/g) ?? []) {
-    for (const tok of tokenizeIdentifier(raw)) {
+    for (const tok of splitIdentifierTokens(raw)) {
       if (tok.length >= 3 && !STOPWORDS.has(tok)) out.add(tok);
     }
   }
   return out;
-}
-
-/**
- * Split an identifier into lowercase tokens across camelCase, PascalCase,
- * snake_case, kebab-case and digit boundaries.
- */
-function tokenizeIdentifier(name: string): string[] {
-  return name
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .split(/[^A-Za-z0-9]+/)
-    .map((t) => t.toLowerCase())
-    .filter((t) => t.length > 0);
 }
 
 function firstMatch(tokens: readonly string[], keywords: ReadonlySet<string>): string | null {
@@ -262,12 +253,13 @@ function firstMatch(tokens: readonly string[], keywords: ReadonlySet<string>): s
   return null;
 }
 
+/**
+ * "Is this a test file?" through THE test-file layout list, `TEST_FILE_GLOBS`
+ * (the one a boundary rule's `excludeTests: true` expands to), so spec
+ * evidence and the boundary gate agree on which files are tests.
+ */
 function isTestFile(file: string): boolean {
-  return (
-    /\.(test|spec)\.[cm]?[jt]sx?$/.test(file) ||
-    file.includes('/__tests__/') ||
-    file.startsWith('__tests__/')
-  );
+  return matchesAny(file.split('\\').join('/'), TEST_FILE_GLOBS);
 }
 
 function baseName(file: string): string {

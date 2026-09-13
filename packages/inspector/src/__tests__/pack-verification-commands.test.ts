@@ -128,7 +128,9 @@ function doctorStub(opts: {
     packs: {
       invalidPacks: [],
       discoveredPacks: [
-        { valid: true, packageName, manifest: { contributions: {} }, resolvedCounts: undefined },
+        // `packageRoot` is a required IDiscoveredPack field real discovery always
+        // sets (the round-11 load-failure / freshness checks resolve against it).
+        { valid: true, packageName, packageRoot: '/nonexistent/acme-web-pack', manifest: { contributions: {} }, resolvedCounts: undefined },
       ],
     },
   } as unknown as ISharkcraftInspection;

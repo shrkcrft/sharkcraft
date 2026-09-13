@@ -14,6 +14,8 @@ export const getReleaseReadinessTool: IToolDefinition = {
     },
     additionalProperties: false,
   },
+  // Tool-maintenance: gated through the surface summary outside SharkCraft's own repo.
+  cliCommand: 'release readiness',
   async handler(input, ctx) {
     const strict = input['strict'] === true;
     const preflightRaw = typeof input['preflightFile'] === 'string' ? (input['preflightFile'] as string) : null;

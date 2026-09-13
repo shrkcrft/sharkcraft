@@ -30,6 +30,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson } from '../output/format-output.ts';
 
 const FEED_DIR = nodePath.join('.sharkcraft', 'feed');
@@ -91,6 +92,8 @@ function isProcessAlive(pid: number): boolean {
  */
 export const watchCommand: ICommandHandler = {
   name: 'watch',
+  // `shrk watch "<task>"`: the positional is the free-form task.
+  positionals: PositionalMode.Free,
   description:
     'Emit a focused-context packet on stdout JSONL each time the workspace changes (or every --interval seconds). No LLM calls.',
   usage:

@@ -16,7 +16,7 @@
 
 import { existsSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { matchesAny } from '@shrkcrft/boundaries';
+import { boundaryRuleCovers, boundaryRuleSeverity, matchesAny } from '@shrkcrft/boundaries';
 import { deriveApplicability } from '@shrkcrft/rules';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
@@ -52,7 +52,10 @@ export interface IWhyRule {
 export interface IWhyBoundaryRule {
   readonly id: string;
   readonly title: string;
+  /** The ENFORCED severity (an unset one is `error`, as the evaluator enforces it). */
   readonly severity?: string;
+  /** Inside `from`, but exempted (`exemptFiles` / `excludeTests` / a `!` glob): violations are suppressed. */
+  readonly exempt?: boolean;
   readonly from: readonly string[];
   readonly forbiddenImports?: readonly string[];
   readonly allowedImports?: readonly string[];
@@ -284,11 +287,15 @@ function matchBoundaries(
   const out: IWhyBoundaryRule[] = [];
   for (const rule of inspection.boundaryRegistry.list()) {
     if (rule.from.length === 0) continue;
-    if (!matchesAny(target.relativePath, rule.from)) continue;
+    // THE scope authority the evaluator itself uses — a `!` glob or an
+    // exemption is honoured here exactly as `check boundaries` honours it.
+    const decision = boundaryRuleCovers(rule, target.relativePath);
+    if (decision === 'out') continue;
     const entry: IWhyBoundaryRule = {
       id: rule.id,
       title: rule.title,
-      ...(rule.severity !== undefined ? { severity: rule.severity } : {}),
+      severity: boundaryRuleSeverity(rule),
+      ...(decision === 'exempt' ? { exempt: true } : {}),
       from: rule.from,
       ...(rule.forbiddenImports !== undefined ? { forbiddenImports: rule.forbiddenImports } : {}),
       ...(rule.allowedImports !== undefined ? { allowedImports: rule.allowedImports } : {}),

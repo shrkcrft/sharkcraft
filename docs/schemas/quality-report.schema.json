@@ -13,7 +13,8 @@
       "enum": [
         "pass",
         "warn",
-        "fail"
+        "fail",
+        "not-verified"
       ]
     },
     "blockers": {
@@ -38,6 +39,15 @@
       "type": "string"
     },
     "nextRecommendations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "coverage": {
+      "type": "object"
+    },
+    "shortfalls": {
       "type": "array",
       "items": {
         "type": "string"

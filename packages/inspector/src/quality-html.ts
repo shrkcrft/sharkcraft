@@ -3,6 +3,8 @@
  * no JS, dark-mode aware.
  */
 import type { IQualityReport } from './quality-report.ts';
+import { QualityGateStatus } from './quality-gate-status.ts';
+import { qualityGateStatus } from './quality-gate-row-status.ts';
 
 const CSS = `
 *{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;background:#0f1419;color:#e6e1cf;padding:2rem;line-height:1.55}
@@ -23,9 +25,10 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function badgeFor(overall: 'pass' | 'warn' | 'fail'): string {
+function badgeFor(overall: IQualityReport['overall']): string {
   if (overall === 'pass') return `<span class="badge b-pass">${overall}</span>`;
-  if (overall === 'warn') return `<span class="badge b-warn">${overall}</span>`;
+  // Not verified is never drawn as a pass.
+  if (overall === 'warn' || overall === 'not-verified') return `<span class="badge b-warn">${overall}</span>`;
   return `<span class="badge b-fail">${overall}</span>`;
 }
 
@@ -42,8 +45,17 @@ export function renderQualityHtml(report: IQualityReport): string {
   out.push('<h2>Gates</h2>');
   out.push('<table><thead><tr><th>Gate</th><th>Verdict</th><th>Blocking</th><th>Executed</th><th>Notes</th></tr></thead><tbody>');
   for (const g of report.gates) {
-    const tag = g.passed ? 'b-pass' : g.blocking ? 'b-fail' : 'b-warn';
-    const verdict = g.passed ? 'pass' : g.blocking ? 'fail' : 'warn';
+    // THE row status (`qualityGateStatus`): a gate that passed over part of
+    // its scope is `not-verified`, never drawn as a pass.
+    const verdict = qualityGateStatus(g);
+    const tag =
+      verdict === QualityGateStatus.Pass
+        ? 'b-pass'
+        : verdict === QualityGateStatus.Fail
+          ? 'b-fail'
+          : verdict === QualityGateStatus.Skipped
+            ? 'b-skip'
+            : 'b-warn';
     out.push(
       `<tr><td><code>${escapeHtml(g.id)}</code> — ${escapeHtml(g.label)}</td>` +
         `<td><span class="badge ${tag}">${verdict}</span></td>` +

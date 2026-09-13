@@ -25,7 +25,7 @@ R44 brief explicitly permits.
 
 | Kind | R44 preview support |
 | --- | --- |
-| `knowledge` | **implemented** — delegates to `shrk knowledge add/update/remove` |
+| `knowledge` | **implemented** — delegates to `shrk knowledge add` / `update` / `remove` |
 | `search-tuning` | deferred — edit pack `assets/search-tuning.ts` directly for now |
 | `feedback-rule` | deferred |
 | `agent-test` | deferred |
@@ -104,7 +104,7 @@ Schema: `sharkcraft.pack-author-validate/v1`.
 | --- | --- |
 | What kinds does this pack contribute to? | `shrk pack author status` |
 | What's left to finalise in this pack right now? | `shrk pack author pending` |
-| Want a knowledge entry added/updated/removed? | `shrk knowledge add/update/remove` (or `shrk pack author preview --kind knowledge --id <id>` for the dispatcher) |
+| Want a knowledge entry added/updated/removed? | `shrk knowledge add` / `update` / `remove` (or `shrk pack author preview --kind knowledge --id <id>` for the dispatcher) |
 | Want lint pass over the knowledge corpus? | `shrk knowledge lint --fix-preview --write-preview` |
 | Where do I see who/why authored a given asset? | `shrk provenance show <assetId>` |
 | Want the recommended validation list? | `shrk pack author validate` |

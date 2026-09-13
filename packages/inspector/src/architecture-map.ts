@@ -9,7 +9,7 @@
  * Read-only.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { evaluateBoundaries, loadTsconfigPaths, scanImports } from '@shrkcrft/boundaries';
+import { runBoundaryCheck } from './run-boundary-check.ts';
 import { analyzeImportGraph } from './import-graph-analysis.ts';
 import {
   buildRepositoryIntelligenceGraph,
@@ -68,6 +68,8 @@ export interface IArchitectureMap {
   boundaryRules: readonly string[];
   boundaryViolations: readonly IArchitectureBoundaryViolation[];
   boundaryViolationCounts: { error: number; warning: number; info: number };
+  /** Why the boundary counts are not a full answer (THE boundary verdict's shortfalls), when they are not. */
+  boundaryShortfalls?: readonly string[];
   constructsByKind: readonly { kind: string; count: number }[];
   packs: readonly string[];
   testsCoverageHint: string;
@@ -168,13 +170,13 @@ export async function buildArchitectureMap(
   // Boundary violations (real signal when --signals is enabled).
   let boundaryViolations: IArchitectureBoundaryViolation[] = [];
   let boundaryViolationCounts = { error: 0, warning: 0, info: 0 };
+  let boundaryShortfalls: readonly string[] = [];
   if (signalsEnabled && include.has('boundaries') && inspection.boundaryRegistry.size() > 0) {
     try {
-      const scan = scanImports({ projectRoot: inspection.projectRoot });
-      const tsconfigPaths = loadTsconfigPaths(inspection.projectRoot);
-      const evalResult = evaluateBoundaries(scan, inspection.boundaryRegistry.list(), {
-        ...(tsconfigPaths.aliases.size > 0 ? { tsconfigPaths } : {}),
-      });
+      // THE boundary orchestrator — the counts `check boundaries` reports
+      // (round 11 review R11-GAP-3), including what it could not examine.
+      const evalResult = runBoundaryCheck(inspection);
+      if (evalResult.verdict === 'not-verified') boundaryShortfalls = evalResult.shortfalls;
       boundaryViolations = evalResult.violations.slice(0, 50).map((v) => ({
         ruleId: v.ruleId,
         file: v.file,
@@ -218,7 +220,7 @@ export async function buildArchitectureMap(
     'shrk drift --json',
     'shrk coverage --json',
     'shrk impact --since main',
-    'shrk intelligence graph --json',
+    'shrk graph hubs --json',
   ];
 
   const risks: IArchitectureRisk[] = [];
@@ -251,6 +253,13 @@ export async function buildArchitectureMap(
         description: `${boundaryViolationCounts.warning} boundary violation(s) at warning severity.`,
       });
     }
+    if (boundaryShortfalls.length > 0) {
+      risks.push({
+        id: 'boundary-scan-not-verified',
+        severity: 'warning',
+        description: `Boundary scan NOT VERIFIED — the counts above miss what it could not examine: ${boundaryShortfalls.slice(0, 3).join('; ')}`,
+      });
+    }
     if (graph.truncation.filesCapped) {
       risks.push({
         id: 'file-list-truncated',
@@ -269,6 +278,7 @@ export async function buildArchitectureMap(
     boundaryRules,
     boundaryViolations,
     boundaryViolationCounts,
+    ...(boundaryShortfalls.length > 0 ? { boundaryShortfalls } : {}),
     constructsByKind,
     packs,
     testsCoverageHint,
@@ -288,42 +298,68 @@ export interface IArchitectureViolationsReport {
   total: number;
   byRule: readonly { ruleId: string; count: number }[];
   violations: readonly IArchitectureBoundaryViolation[];
+  /**
+   * 0 clean · 1 a violation (any severity) or a failing rule · 2 zero rules, or
+   * part of a rule's scope never examined — THE boundary verdict
+   * (`runBoundaryCheck`), with its shortfalls.
+   */
+  exitCode: number;
+  verdict: 'pass' | 'fail' | 'not-verified' | 'usage-error';
+  shortfalls: readonly string[];
+  /**
+   * THE boundary verdict's settled acceptances (`<rule>: accepted by
+   * expectEmpty: …`) — present only at exit 0 (round 13 review: a planned
+   * `from` glob settled this report 2 → 0 and the acceptance was never printed).
+   */
+  accepted?: readonly string[];
 }
 
 export async function buildArchitectureViolations(
   inspection: ISharkcraftInspection,
 ): Promise<IArchitectureViolationsReport> {
+  // THE boundary orchestrator — the call `check boundaries` makes (round 11
+  // review R11-GAP-3). A private scan + evaluate read `total 0` (exit 0) over
+  // an unreadable governed file the gate settled 2, and over zero rules.
   const violations: IArchitectureBoundaryViolation[] = [];
-  if (inspection.boundaryRegistry.size() > 0) {
-    try {
-      const scan = scanImports({ projectRoot: inspection.projectRoot });
-      const tsconfigPaths = loadTsconfigPaths(inspection.projectRoot);
-      const evalResult = evaluateBoundaries(scan, inspection.boundaryRegistry.list(), {
-        ...(tsconfigPaths.aliases.size > 0 ? { tsconfigPaths } : {}),
+  let proposed: {
+    exitCode: number;
+    verdict: IArchitectureViolationsReport['verdict'];
+    shortfalls: readonly string[];
+    accepted?: readonly string[];
+  };
+  try {
+    const r = runBoundaryCheck(inspection);
+    for (const v of r.violations) {
+      violations.push({
+        ruleId: v.ruleId,
+        file: v.file,
+        importSpecifier: v.importSpecifier,
+        severity: v.severity,
+        line: v.line,
+        message: v.message,
       });
-      for (const v of evalResult.violations) {
-        violations.push({
-          ruleId: v.ruleId,
-          file: v.file,
-          importSpecifier: v.importSpecifier,
-          severity: v.severity,
-          line: v.line,
-          message: v.message,
-        });
-      }
-    } catch {
-      /* best-effort */
     }
+    proposed = { exitCode: r.exitCode, verdict: r.verdict, shortfalls: r.shortfalls, accepted: r.accepted };
+  } catch (e) {
+    // A scan that could not run proved nothing — never a clean 0.
+    proposed = { exitCode: 2, verdict: 'not-verified', shortfalls: [`the boundary check could not run: ${(e as Error).message}`] };
   }
   const byRuleMap = new Map<string, number>();
   for (const v of violations) byRuleMap.set(v.ruleId, (byRuleMap.get(v.ruleId) ?? 0) + 1);
   const byRule = [...byRuleMap.entries()].map(([ruleId, count]) => ({ ruleId, count })).sort((a, b) => b.count - a.count);
+  // Any violation (warnings included) fails this report, as it always has.
+  const failed = violations.length > 0;
   return {
     schema: 'sharkcraft.architecture-violations/v1',
     generatedAt: new Date().toISOString(),
     total: violations.length,
     byRule,
     violations: violations.slice(0, 100),
+    exitCode: failed ? 1 : proposed.exitCode,
+    verdict: failed ? 'fail' : proposed.verdict,
+    shortfalls: proposed.shortfalls,
+    // An acceptance is printed at exit 0 only — never next to a violation.
+    accepted: failed ? [] : (proposed.accepted ?? []),
   };
 }
 

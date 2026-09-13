@@ -313,7 +313,7 @@ command to create the session.
   (or an explicit `--command`). Pack-contributed commands require
   `--allow-pack-commands`.
 - MCP is read-only by contract.
-- Old `shrk session start` sessions (without `session.json`) remain readable.
+- Sessions from the removed `shrk session start` (without `session.json`) remain readable.
 
 ## Blockers-only triage (R52)
 
@@ -538,8 +538,8 @@ Each `shrk` invocation appends one JSONL entry to
 
 Flag NAMES only, never values. Local-only — never sent anywhere.
 Opt-out via `sharkcraft.config.ts usage.enabled: false` or
-`SHARKCRAFT_USAGE_DISABLED=1`. Foundation for R57's
-`shrk surface --suggest-prune`.
+`SHARKCRAFT_USAGE_DISABLED=1`. Foundation for usage-driven surface
+pruning (`shrk surface list`, then `shrk surface hide <command> --write`).
 
 See also: [`docs/sessions.md`](./sessions.md),
 [`docs/plan-review.md`](./plan-review.md),

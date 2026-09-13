@@ -48,6 +48,13 @@ export interface IQueryResolution {
   bestMatch?: IQueryMatch;
   alternatives: ReadonlyArray<IQueryMatch>;
   confidence: 'exact' | 'high' | 'medium' | 'low' | 'unknown';
+  /**
+   * Match kinds that were NOT searched because their inventory lives above
+   * this layer and was not supplied (today: `command`, without
+   * {@link IQueryResolveOptions.commands}). A query that "matched nothing"
+   * there was never compared — not the same as no match.
+   */
+  unconsulted?: ReadonlyArray<QueryMatchKind>;
 }
 
 export interface IQueryResolveOptions {
@@ -55,6 +62,13 @@ export interface IQueryResolveOptions {
   limit?: number;
   /** Restrict to a subset of match kinds. */
   kinds?: ReadonlyArray<QueryMatchKind>;
+  /**
+   * The command inventory to rank `command` matches against — injected by the
+   * CLI from its command index (the inventory lives above this layer). It used
+   * to be read off `inspection.commandCatalog`, a property no inspection ever
+   * has, so command matching silently ranked nothing.
+   */
+  commands?: ReadonlyArray<{ id: string; name?: string; description?: string }>;
 }
 
 function normalize(s: string): string {
@@ -175,9 +189,11 @@ function rankPolicies(inspection: ISharkcraftInspection, query: string): IQueryM
   );
 }
 
-function rankCommands(inspection: ISharkcraftInspection, query: string): IQueryMatch[] {
-  const cat = (inspection as { commandCatalog?: readonly { id: string; name?: string; description?: string }[] }).commandCatalog ?? [];
-  return rankList(cat, query, QueryMatchKind.Command);
+function rankCommands(
+  commands: IQueryResolveOptions['commands'],
+  query: string,
+): IQueryMatch[] {
+  return rankList(commands ?? [], query, QueryMatchKind.Command);
 }
 
 function pickConfidence(top?: IQueryMatch): IQueryResolution['confidence'] {
@@ -205,7 +221,7 @@ export function resolveQuery(
     ...rankHelpers(query),
     ...rankPlaybooks(inspection, query),
     ...rankPolicies(inspection, query),
-    ...rankCommands(inspection, query),
+    ...rankCommands(options.commands, query),
   );
 
   const filtered = options.kinds && options.kinds.length > 0
@@ -215,11 +231,16 @@ export function resolveQuery(
   filtered.sort((a, b) => b.score - a.score);
   const limit = options.limit ?? 10;
   const top = filtered[0];
+  const commandsWanted =
+    !options.kinds || options.kinds.length === 0 || options.kinds.includes(QueryMatchKind.Command);
   return {
     schema: QUERY_RESOLUTION_SCHEMA,
     query,
     ...(top ? { bestMatch: top } : {}),
     alternatives: filtered.slice(1, limit + 1),
     confidence: pickConfidence(top),
+    ...(commandsWanted && options.commands === undefined
+      ? { unconsulted: [QueryMatchKind.Command] }
+      : {}),
   };
 }

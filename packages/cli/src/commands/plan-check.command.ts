@@ -31,6 +31,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header } from '../output/format-output.ts';
 
 export const PLAN_CHECK_SCHEMA = 'sharkcraft.plan-check/v1';
@@ -51,6 +52,8 @@ export interface IPlanCheckReport {
 
 export const planCheckCommand: ICommandHandler = {
   name: 'check',
+  // positional[0] is the plan / spec FILE; a verb-shaped non-file is refused.
+  positionals: PositionalMode.Path,
   description:
     'Validate an external plan/spec file against the live workspace. Read-only — the input file is never modified. Supports two built-in extractors and an optional --field-map.',
   usage:

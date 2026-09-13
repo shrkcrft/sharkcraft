@@ -131,8 +131,8 @@ const SCRIPTS: Record<DemoScenario, IDemoScript> = {
       {
         title: 'Compare quality baselines',
         commands: [
-          'shrk quality baseline history',
-          'shrk quality baseline diff latest previous --json',
+          'shrk quality --json',
+          'shrk report quality --format json',
         ],
       },
       {

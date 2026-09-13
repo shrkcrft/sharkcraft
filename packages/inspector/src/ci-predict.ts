@@ -74,12 +74,23 @@ const PROBES: Record<CiPredictProfileId, IGateProbe[]> = {
       id: 'self-config',
       title: 'Self-config doctor',
       reportFile: 'self-config-doctor.json',
+      // Round 13: only `ok` is a pass. `unverified` (a dead unit, an id that
+      // could not be looked up — the doctor exits 2 NOT VERIFIED, so the CI
+      // step `shrk self-config doctor --json` fails) read as PASS here, and so
+      // did any verdict this reader does not know. An unmeasured verdict is
+      // never a pass.
       reader: (j) => {
         const v = j['verdict'] as string | undefined;
-        return {
-          verdict: v === 'errors' ? CiPredictVerdict.Fail : v === 'warnings' ? CiPredictVerdict.Warn : CiPredictVerdict.Pass,
-          summary: `verdict=${v ?? 'unknown'}`,
-        };
+        if (v === 'ok') return { verdict: CiPredictVerdict.Pass, summary: 'verdict=ok' };
+        if (v === 'warnings') return { verdict: CiPredictVerdict.Warn, summary: 'verdict=warnings' };
+        if (v === 'errors') return { verdict: CiPredictVerdict.Fail, summary: 'verdict=errors' };
+        if (v === 'unverified') {
+          return {
+            verdict: CiPredictVerdict.Fail,
+            summary: 'verdict=unverified — NOT VERIFIED: the self-config doctor exits 2, so the CI step fails',
+          };
+        }
+        return { verdict: CiPredictVerdict.Unknown, summary: `verdict=${v ?? 'unknown'} — not a verdict this probe reads` };
       },
       nextCommand: 'shrk self-config doctor',
     },
@@ -183,6 +194,28 @@ const PROBES: Record<CiPredictProfileId, IGateProbe[]> = {
   ],
 };
 
+/**
+ * THE guard over every probe's reading (round 13): a cached report that
+ * carries its own non-zero `exitCode` (a verdict verb's `--json`, e.g. the CI
+ * scaffold's `self-config doctor --json`) never predicts PASS — nor WARN
+ * (review: `verdict: 'warnings'` written by `self-config doctor --strict`,
+ * which exits 1 on a warning, read as a non-blocking warn) — whatever field the
+ * probe's reader keys on: the CI step that wrote it exited non-zero. `2` is
+ * NOT VERIFIED: an unmeasured verdict is never a pass.
+ */
+function reportExitVeto(
+  read: { readonly verdict: CiPredictVerdict; readonly summary: string },
+  json: Record<string, unknown>,
+): { verdict: CiPredictVerdict; summary: string } {
+  const exit = json['exitCode'];
+  const lenient = read.verdict === CiPredictVerdict.Pass || read.verdict === CiPredictVerdict.Warn;
+  if (!lenient || typeof exit !== 'number' || exit === 0) return { ...read };
+  return {
+    verdict: CiPredictVerdict.Fail,
+    summary: `${read.summary} — but the report's exitCode is ${exit}${exit === 2 ? ' (NOT VERIFIED)' : ''}, so the CI step fails`,
+  };
+}
+
 export interface ICiPredictOptions {
   readonly projectRoot: string;
   readonly profileId: CiPredictProfileId;
@@ -213,7 +246,7 @@ export function buildCiPredictReport(options: ICiPredictOptions): ICiPredictRepo
     }
     try {
       const json = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
-      const r = p.reader(json);
+      const r = reportExitVeto(p.reader(json), json);
       gates.push({
         id: p.id,
         title: p.title,

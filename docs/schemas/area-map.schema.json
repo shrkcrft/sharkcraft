@@ -20,6 +20,38 @@
     },
     "unclassifiedFiles": {
       "type": "integer"
+    },
+    "totalFiles": {
+      "type": "integer"
+    },
+    "classifiedFiles": {
+      "type": "integer"
+    },
+    "classificationRate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "minClassificationRate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "degraded": {
+      "type": "boolean"
+    },
+    "unclassifiedSample": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "patternSource": {
+      "enum": [
+        "built-in",
+        "config",
+        "config+built-in"
+      ]
     }
   }
 }

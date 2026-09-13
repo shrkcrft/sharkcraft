@@ -86,6 +86,7 @@ describe('brutally small core', () => {
       spineCommands: new Set(['context', 'check boundaries']),
       packContributions: new Map(),
       surfaceConfig: undefined,
+      isToolRepo: true,
     });
     expect(summary.totals.core).toBeLessThanOrEqual(12);
     const ctx = findCommandInSummary(summary, 'context');

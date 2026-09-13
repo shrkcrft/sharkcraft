@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { resolveSourceGlobs, type IRegistrationIdiom, type IWiringSource } from '@shrkcrft/core';
-import { matchesAny } from '../scan/glob.ts';
+import { globListSelects } from '../scan/glob.ts';
 import { readMatchingFiles, walkMatching } from '../util/walk-files.ts';
+import type { IReadScope } from '../util/read-scope.ts';
+import { readScopeOfLists } from '../util/read-scope-coverage.ts';
 import { collectSourceSites, type IWiringFileEntry } from './evaluate-wiring.ts';
 
 export const REGISTRATION_GRAPH_SCHEMA = 'sharkcraft.registration-graph/v1' as const;
@@ -40,6 +42,13 @@ export interface IRegistrationGraph {
   readonly tokens: readonly IRegistrationNode[];
   /** Misconfiguration messages (bad regex / no capture group / bad source). */
   readonly diagnostics: readonly string[];
+  /**
+   * Set only when a file an idiom's globs matched was NOT read (over the read
+   * cap, or unreadable): the files read, and the unread ones. A token declared,
+   * provided or consumed only there is missing from `tokens`, so an
+   * "unprovided" or "orphan" answer over them proves nothing.
+   */
+  readonly readScope?: IReadScope;
 }
 
 export interface IBuildRegistrationGraphOptions {
@@ -79,17 +88,19 @@ export function buildRegistrationGraph(
   idioms: readonly IRegistrationIdiom[],
   options: IBuildRegistrationGraphOptions = {},
 ): IRegistrationGraph {
-  const cache = readMatchingFiles(
+  const matched = readMatchingFiles(
     projectRoot,
     registrationGlobs(idioms),
     new Set(options.excludeDirs ?? []),
   );
-  const entries: IWiringFileEntry[] = [...cache.entries()].map(([path, content]) => ({
+  const entries: IWiringFileEntry[] = [...matched.files.entries()].map(([path, content]) => ({
     path,
     content,
   }));
+  // The walk is the POSITIVE union of every role of every idiom; each role
+  // selects its own files, so one role's `!x` never hides another role's file.
   const filesFor = (source: IWiringSource): IWiringFileEntry[] =>
-    entries.filter((f) => matchesAny(f.path, resolveSourceGlobs(source)));
+    entries.filter((f) => globListSelects(f.path, resolveSourceGlobs(source)));
 
   const declared = new Map<string, IRegistrationSite[]>();
   const provided = new Map<string, IRegistrationSite[]>();
@@ -125,11 +136,18 @@ export function buildRegistrationGraph(
     consumed: sortSites(consumed.get(token) ?? []),
   }));
 
+  // Read scope PER ROLE LIST (one file counted once): an unread file every
+  // role that could reach it EXCLUDES is out of scope, not a gap.
+  const scope = readScopeOfLists(
+    matched,
+    idioms.flatMap((i) => [i.declared, i.provided, i.consumed].map((s) => resolveSourceGlobs(s))),
+  );
   return {
     schema: REGISTRATION_GRAPH_SCHEMA,
     idioms: idioms.map((i) => i.name),
     tokens,
     diagnostics,
+    ...(scope.unread.length > 0 ? { readScope: scope } : {}),
   };
 }
 
@@ -141,6 +159,10 @@ export function buildRegistrationGraph(
  * persisted registration-graph cache — a source edit shifts the signature even
  * when no reindex has run, so a stale wiring verdict is impossible. Walk-and-stat
  * only (no file reads), so it stays far cheaper than a full build. Never throws.
+ *
+ * It signs the POSITIVE union walk, not each role's selected set: a file a
+ * role's `!` excludes still shifts the signature. That over-inclusion can only
+ * cause a spurious cache miss — the safe direction — never a stale verdict.
  */
 export function registrationGraphSignature(
   projectRoot: string,
@@ -178,7 +200,7 @@ export function providedTokensFromEntries(
 ): Set<string> {
   const tokens = new Set<string>();
   for (const idiom of idioms) {
-    const files = entries.filter((f) => matchesAny(f.path, resolveSourceGlobs(idiom.provided)));
+    const files = entries.filter((f) => globListSelects(f.path, resolveSourceGlobs(idiom.provided)));
     for (const s of collectSourceSites(idiom.provided, files).sites) tokens.add(s.token);
   }
   return tokens;

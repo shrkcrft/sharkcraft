@@ -5,6 +5,11 @@
 // declares the canonical path in `metadata.path`, matching what
 // `definePathConvention` would produce in
 // `packages/paths/src/path-convention.ts`.
+//
+// `references` make each convention verifiable by `shrk knowledge
+// stale-check`: a path entry names directories, so it pins them (and the
+// canonical files its description names). An entry with no references is
+// counted UNVERIFIABLE — never healthy.
 
 export default [
   {
@@ -22,6 +27,12 @@ export default [
       description:
         'Workspace packages (core, workspace, config, knowledge, rules, paths, templates, pipelines, presets, boundaries, packs, generator, importer, inspector, mcp-server, cli, dashboard, dashboard-api, ai, shared, plugin-api).',
     },
+    references: [
+      { kind: 'directory', path: 'packages' },
+      { kind: 'directory', path: 'packages/core/src' },
+      { kind: 'directory', path: 'packages/cli/src' },
+    ],
+    verifiedOn: '2026-09-11',
     actionHints: {
       mcpTools: [
         { tool: 'check_boundaries', purpose: 'Confirm any new cross-package import respects layer order.' },
@@ -45,6 +56,12 @@ export default [
       description:
         'unconfigured-bun-service/, dogfood-target/, dashboard-e2e-target/. Treat these as black-box consumers, not engine internals.',
     },
+    references: [
+      { kind: 'directory', path: 'examples/dogfood-target/sharkcraft' },
+      { kind: 'directory', path: 'examples/unconfigured-bun-service' },
+      { kind: 'directory', path: 'examples/dashboard-e2e-target' },
+    ],
+    verifiedOn: '2026-09-11',
   },
   {
     id: 'engine.docs',
@@ -61,6 +78,12 @@ export default [
       description:
         'overview, philosophy, onboarding, inference, security, safety-model, dashboard, dashboard-api, testing, release-checklist, etc.',
     },
+    references: [
+      { kind: 'directory', path: 'docs' },
+      { kind: 'file', path: 'docs/overview.md' },
+      { kind: 'file', path: 'docs/philosophy.md' },
+    ],
+    verifiedOn: '2026-09-11',
   },
   {
     id: 'engine.e2e',
@@ -76,6 +99,14 @@ export default [
       path: 'e2e',
       description: 'Playwright suites. Includes the read-only safety contract.',
     },
+    references: [
+      { kind: 'directory', path: 'e2e' },
+      { kind: 'directory', path: 'examples/dashboard-e2e-target' },
+      { kind: 'file', path: 'e2e/20-read-only-safety.e2e.ts' },
+      { kind: 'file', path: 'package.json', contains: '"test:e2e:dashboard"' },
+      { kind: 'file', path: 'scripts/release-preflight.ts', contains: "'--with-e2e'" },
+    ],
+    verifiedOn: '2026-09-11',
   },
   {
     id: 'engine.scripts',
@@ -91,5 +122,12 @@ export default [
       path: 'scripts',
       description: 'release-preflight, build-dist, publish-* tooling.',
     },
+    references: [
+      { kind: 'directory', path: 'scripts' },
+      { kind: 'file', path: 'scripts/release-preflight.ts' },
+      { kind: 'file', path: 'scripts/build-dist.ts' },
+      { kind: 'file', path: 'scripts/publish-packages.ts' },
+    ],
+    verifiedOn: '2026-09-11',
   },
 ];

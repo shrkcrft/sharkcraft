@@ -1,7 +1,9 @@
 import type { IGeneratedArtifactRule } from '@shrkcrft/core';
-import { matchesAny } from '../scan/glob.ts';
+import { globListSelects } from '../scan/glob.ts';
 import { safeCompile } from '../util/safe-regex.ts';
-import { readMatchingFiles } from '../util/walk-files.ts';
+import { readSelectedFiles } from '../util/read-selected-files.ts';
+import type { IReadScope } from '../util/read-scope.ts';
+import { mergeReadScopes, unreadEntryMatches, unreadEntryWhollyMatches } from '../util/read-scope-coverage.ts';
 import { deriveOutsideGlobs } from './check-provenance.ts';
 
 /** One writer's slice of a mixed generated tree. */
@@ -49,6 +51,13 @@ export interface IGeneratedScan {
   readonly outside: ReadonlyMap<string, string>;
   /** Globs actually used for the outside scan (derived or configured). */
   readonly outsideGlobs: readonly string[];
+  /**
+   * The rule's read scope: every file read (committed generated files, plus
+   * the outside candidates when `forbidOutside` is on), and every matched file
+   * the reader did NOT read (over the read cap, or unreadable). An unread
+   * committed file was never header-checked or byte-compared.
+   */
+  readonly readScope: IReadScope;
 }
 
 /**
@@ -72,7 +81,10 @@ export function scanGeneratedFiles(
   excludeDirs: readonly string[] = [],
 ): IGeneratedScan {
   const exclude = new Set(excludeDirs);
-  const generated = readMatchingFiles(projectRoot, rule.generatedGlob, exclude);
+  // The files `generatedGlob` SELECTS: a `!` entry (`!gen/**/*.hand.ts`)
+  // excludes, so a hand file carved out of the tree is never header-checked.
+  const generatedRead = readSelectedFiles(projectRoot, rule.generatedGlob, exclude);
+  const generated = generatedRead.files;
 
   const blessPatterns = rule.handMaintained ?? [];
   // The in-file marker is read from the same head window the header contract
@@ -91,7 +103,7 @@ export function scanGeneratedFiles(
   const markedHandMaintained: string[] = [];
   const checkable = new Map<string, string>();
   for (const [path, content] of generated) {
-    if (blessPatterns.length > 0 && matchesAny(path, blessPatterns)) {
+    if (blessPatterns.length > 0 && globListSelects(path, blessPatterns)) {
       handMaintained.push(path);
       continue;
     }
@@ -107,14 +119,21 @@ export function scanGeneratedFiles(
 
   // A bless is pinned to a NAMED file (the schema forbids a wildcard basename),
   // so one that matches nothing points at a file that has been renamed away.
+  // A file over the read cap was still MATCHED, so a bless naming it is live.
+  // So is one that could match beneath a directory the walk could not list.
+  const matchedPaths = [...generated.keys()];
   const staleHandMaintained = blessPatterns
-    .filter((pattern) => ![...generated.keys()].some((p) => matchesAny(p, [pattern])))
+    .filter(
+      (pattern) =>
+        !matchedPaths.some((p) => globListSelects(p, [pattern])) &&
+        !generatedRead.unread.some((u) => unreadEntryMatches(u, [pattern])),
+    )
     .sort();
 
   const slices: IGeneratedSourceSlice[] = (rule.sources ?? []).map((src, i) => {
     const files = new Map<string, string>();
     for (const [path, content] of checkable) {
-      if (matchesAny(path, src.glob)) files.set(path, content);
+      if (globListSelects(path, src.glob)) files.set(path, content);
     }
     return {
       label: src.id ?? `source[${i}]`,
@@ -130,7 +149,7 @@ export function scanGeneratedFiles(
   const unclassified =
     slices.length === 0
       ? []
-      : [...checkable.keys()].filter((p) => !slices.some((s) => matchesAny(p, s.glob))).sort();
+      : [...checkable.keys()].filter((p) => !slices.some((s) => globListSelects(p, s.glob))).sort();
 
   const wantOutside = rule.provenanceHeader?.forbidOutside === true;
   if (!wantOutside) {
@@ -144,18 +163,24 @@ export function scanGeneratedFiles(
       slices,
       outside: new Map(),
       outsideGlobs: [],
+      readScope: { read: generated.size, unread: generatedRead.unread },
     };
   }
   const outsideGlobs =
     rule.provenanceHeader?.outsideGlob && rule.provenanceHeader.outsideGlob.length > 0
       ? [...rule.provenanceHeader.outsideGlob]
       : deriveOutsideGlobs(rule.generatedGlob);
-  const all = readMatchingFiles(projectRoot, outsideGlobs, exclude);
+  const all = readSelectedFiles(projectRoot, outsideGlobs, exclude);
   const outside = new Map<string, string>();
-  for (const [path, content] of all) {
-    if (matchesAny(path, rule.generatedGlob)) continue;
+  for (const [path, content] of all.files) {
+    // A file `generatedGlob` excludes is OUTSIDE the generated tree: carrying
+    // the "do not edit" header there is exactly a mislabel.
+    if (globListSelects(path, rule.generatedGlob)) continue;
     outside.set(path, content);
   }
+  // An unlistable directory is "outside" unless the generated glob covers ALL
+  // of it (it may hold both); `mergeReadScopes` counts a shared path once.
+  const outsideUnread = all.unread.filter((u) => !unreadEntryWhollyMatches(u, rule.generatedGlob));
   return {
     generated,
     checkable,
@@ -166,5 +191,6 @@ export function scanGeneratedFiles(
     slices,
     outside,
     outsideGlobs,
+    readScope: mergeReadScopes(generated.size + outside.size, [generatedRead.unread, outsideUnread]),
   };
 }

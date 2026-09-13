@@ -7,12 +7,13 @@ import {
   importModuleViaLoader,
   ok,
   resolvePlaneExtractors,
-  validateWiringSource,
+  unitProblemsOf,
+  validateResolvedPlaneSources,
   type AppError,
-  type IWiringSource,
   type Result,
 } from '@shrkcrft/core';
 import type { ISharkCraftConfig } from './sharkcraft-config.ts';
+import { normalizePlaneConfig } from './normalize-plane-config.ts';
 import { withDefaults } from './default-config.ts';
 import { detectProjectRoot, findSharkcraftDir } from './project-config-resolver.ts';
 import { SharkCraftConfigSchema } from './config-schema.ts';
@@ -50,30 +51,9 @@ function resolveExtractorRefs(
   }
 
   const merged: ISharkCraftConfig = { ...config, ...resolved };
-  const problems: string[] = [];
-  const check = (source: IWiringSource | undefined, at: string): void => {
-    if (!source || source.$use === undefined) return;
-    const problem = validateWiringSource(source);
-    if (problem) problems.push(`${at} (via extractor "${source.$use}"): ${problem}`);
-  };
-  for (const rule of merged.wiringRules ?? []) {
-    check(rule.declared, `wiringRules[${rule.id}].declared`);
-    const registered = Array.isArray(rule.registered) ? rule.registered : rule.registered ? [rule.registered] : [];
-    registered.forEach((s, i) => check(s, `wiringRules[${rule.id}].registered[${i}]`));
-    (rule.chain ?? []).forEach((s, i) => check(s, `wiringRules[${rule.id}].chain[${i}]`));
-  }
-  for (const decl of merged.registries ?? []) {
-    check(decl.source, `registries[${decl.name}].source`);
-    check(decl.consumer, `registries[${decl.name}].consumer`);
-  }
-  for (const idiom of merged.registrationGraph ?? []) {
-    check(idiom.declared, `registrationGraph[${idiom.name}].declared`);
-    check(idiom.provided, `registrationGraph[${idiom.name}].provided`);
-    check(idiom.consumed, `registrationGraph[${idiom.name}].consumed`);
-  }
-  for (const rule of merged.baselines ?? []) {
-    check(rule.compute.source, `baselines[${rule.id}].compute.source`);
-  }
+  // THE post-resolution check (core) — the pack-plane merge seam and `gates
+  // try` run the same one, so a `$use` source is judged identically everywhere.
+  const problems = validateResolvedPlaneSources(merged).map((p) => `${p.path} ${p.message}`);
   if (problems.length > 0) return { ok: false, message: problems.join('; ') };
   return { ok: true, config: merged };
 }
@@ -117,12 +97,28 @@ export async function loadProjectConfig(startDir: string): Promise<Result<Loaded
         );
       }
 
+      // Normalise every markable list (round 13) into the plain string list
+      // the engines read plus its `expectEmptyUnits` ledger — BEFORE `$use`
+      // resolution, so a consumer inherits an extractor's markers with its
+      // `files` (and a local `files` override replaces them). The schema has
+      // already refused every malformed marker; this cannot fail on a config
+      // that parsed, and says so loudly if it ever does.
+      const normalized = normalizePlaneConfig(parsed.data as ISharkCraftConfig);
+      if (!normalized.ok) {
+        return err(
+          new AppErrorImpl(ERROR_CODES.CONFIG_INVALID, `Invalid sharkcraft.config.ts: ${normalized.error.message}`, {
+            details: { fullPath, problems: unitProblemsOf(normalized.error) },
+            suggestion: 'Write each list entry as a plain string, or as { pattern, expectEmpty: true, reason? }.',
+          }),
+        );
+      }
+
       // Fold every `{ $use: "<id>" }` reference into a real source BEFORE any
       // engine sees the config. An unresolved reference is a typo in the
       // config, and a typo'd selector matches nothing — which every plane would
       // then report as a confident pass. So it fails the LOAD, loudly, with the
       // dotted path to the offending source.
-      const resolved = resolveExtractorRefs(parsed.data as ISharkCraftConfig);
+      const resolved = resolveExtractorRefs(normalized.value);
       if (!resolved.ok) {
         return err(
           new AppErrorImpl(ERROR_CODES.CONFIG_INVALID, `Invalid sharkcraft.config.ts: ${resolved.message}`, {

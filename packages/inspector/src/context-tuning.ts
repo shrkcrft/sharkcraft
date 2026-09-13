@@ -1,5 +1,7 @@
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { listSearchTuning, tuningBoostFor } from './search-tuning-registry.ts';
+import { searchDocumentId, searchKindForPrefix } from './search-document-id.ts';
+import { tuningQueryTokens } from './tuning-query-tokens.ts';
 
 // Context relevance scores are on a large scale (priority × weights, ~100–190),
 // so the pack's small ambient boostTags (±2–3) are noise there. The meaningful
@@ -16,6 +18,10 @@ const TASK_HINT_SCALE = 100;
  * (taskHint) boost only, scaled for the context score range; ambient boostTags
  * are intentionally ignored here. Returns undefined when no tuning is loaded so
  * buildContext skips the re-rank entirely.
+ *
+ * The document id comes from THE search-document codec and the trigger tokens
+ * from THE tuning tokenizer, so a key or trigger that fires in `shrk search`
+ * fires here too (a hyphenated `changed-only` trigger used to fire only there).
  */
 export function contextTuningBoostFor(
   inspection: ISharkcraftInspection,
@@ -25,15 +31,12 @@ export function contextTuningBoostFor(
   | undefined {
   const tuning = listSearchTuning(inspection);
   if (tuning.length === 0) return undefined;
-  const tokens = task
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((t) => t.length > 1);
+  const tokens = tuningQueryTokens(task);
   return (entry) => {
-    const isRule = String(entry.type).toLowerCase() === 'rule';
+    const prefix = String(entry.type).toLowerCase() === 'rule' ? 'rule' : 'knowledge';
     const doc = {
-      id: `${isRule ? 'rule' : 'knowledge'}:${entry.id}`,
-      kind: isRule ? 'rule' : 'knowledge',
+      id: searchDocumentId(prefix, entry.id),
+      kind: searchKindForPrefix(prefix) ?? prefix,
       ...(entry.tags ? { tags: entry.tags } : {}),
       source: 'local',
     };

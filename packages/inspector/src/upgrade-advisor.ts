@@ -7,6 +7,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { detectSharkcraftRepo } from './self-audit.ts';
 
 export const UPGRADE_ADVISOR_SCHEMA = 'sharkcraft.upgrade-advisor/v1';
 
@@ -91,7 +92,7 @@ export function buildUpgradeAdvice(
       id: 'repository-map-v1-present',
       severity: 'info',
       message: 'sharkcraft.repository-map/v1 artefacts found. sharkcraft.repository-intelligence/v1 ships alongside it.',
-      suggestedAction: 'No action required; run `shrk intelligence graph` for the new surface.',
+      suggestedAction: 'No action required; run `shrk graph hubs` for the new surface.',
     });
   }
 
@@ -115,14 +116,20 @@ export function buildUpgradeAdvice(
     });
   }
 
-  const recommendedSteps: string[] = [
-    'shrk doctor',
-    'shrk commands doctor',
-    'shrk safety audit',
-    'shrk release readiness',
-    'bun x tsc -p tsconfig.base.json --noEmit',
-    'bun test',
-  ];
+  // `commands doctor` / `release readiness` (and the tool's own tsc / test
+  // scripts) maintain SharkCraft itself: outside its repository they exit 78
+  // through the surface gate (THE host authority, `detectSharkcraftRepo`), so a
+  // consumer is pointed at the aggregate gate instead.
+  const recommendedSteps: string[] = detectSharkcraftRepo(inspection.projectRoot)
+    ? [
+        'shrk doctor',
+        'shrk commands doctor',
+        'shrk safety audit',
+        'shrk release readiness',
+        'bun x tsc -p tsconfig.base.json --noEmit',
+        'bun test',
+      ]
+    : ['shrk doctor', 'shrk safety audit', 'shrk quality'];
 
   return {
     schema: UPGRADE_ADVISOR_SCHEMA,

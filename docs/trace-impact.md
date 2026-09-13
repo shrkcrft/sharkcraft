@@ -31,7 +31,7 @@ Prints follow-up commands tailored to the best match's kind:
 | `helper` | `shrk helper plan <id>` |
 | `playbook` | `shrk playbooks runbook <id>` |
 | `policy` | `shrk policy get <id>` |
-| `command` | `shrk commands get <id>` |
+| `command` | `shrk help <id>` |
 
 ## Schema
 

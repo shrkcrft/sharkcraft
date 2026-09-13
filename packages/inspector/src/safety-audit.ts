@@ -201,7 +201,7 @@ export function buildSafetyAudit(input: IBuildSafetyAuditInput): ISafetyAuditRep
   }
   if (unsigned > 0) {
     recommendations.push(
-      `${unsigned} pack(s) are unsigned. Sign packs with \`shrk pack sign\` before adopting in production.`,
+      `${unsigned} pack(s) are unsigned. Sign packs with \`shrk packs sign\` before adopting in production.`,
     );
   }
   if (untrusted.length > 0) {

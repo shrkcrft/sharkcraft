@@ -41,7 +41,7 @@ export function runArchCheck(options: IRunArchCheckOptions): IArchReport {
   const diagnostics: string[] = [];
   const graphStore = new GraphStore(options.projectRoot);
   if (!graphStore.exists()) {
-    diagnostics.push("code-graph store missing — run `shrk graph index`");
+    diagnostics.push(ARCH_STORE_MISSING_DIAGNOSTIC);
     return emptyReport(diagnostics, 0);
   }
   const api = GraphQueryApi.fromStore(options.projectRoot);
@@ -84,6 +84,22 @@ export function runArchCheck(options: IRunArchCheckOptions): IArchReport {
     countsByKind,
     diagnostics,
   };
+}
+
+/** The diagnostic `runArchCheck` reports when there is no code-graph store to analyze. */
+export const ARCH_STORE_MISSING_DIAGNOSTIC = 'code-graph store missing — run `shrk graph index`';
+
+/**
+ * THE "did this arch report examine anything?" predicate: true when the run
+ * found no code-graph store, so its zero violations came from zero files.
+ *
+ * `shrk arch check`, the quality-gates arch gate, `shrk gate baseline
+ * --refreeze` and the dashboard each matched the diagnostic text with their own
+ * `includes(…)` copy; one said "No violations." and exited 0 where another said
+ * `skipped`. They all read this now, so a missing store is never a pass.
+ */
+export function archStoreMissing(report: Pick<IArchReport, 'diagnostics'>): boolean {
+  return report.diagnostics.some((d) => d.includes('code-graph store missing'));
 }
 
 function emptyReport(diagnostics: readonly string[], filesAnalyzed: number): IArchReport {

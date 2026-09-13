@@ -43,7 +43,7 @@ which is the largest thing that stays honest across `.ts`, `.kt`, `.swift`,
 | Field | Meaning |
 |---|---|
 | `$use` | Reference a named [shared extractor](#shared-extractors-use) instead of re-typing its selector. |
-| `files` | Project-relative globs (`**`, `*`, `?`). Required unless `$use` supplies them. |
+| `files` | Project-relative globs (`**`, `*`, `?`). Required unless `$use` supplies them. A leading `!` EXCLUDES: it is subtracted from what the list's other globs select, order-independently, and from this list only (`['src/**/*.ts', '!src/**/*.spec.ts']`). At least one inclusion glob is required; a bare `!` and a `!!x` are load errors. `to.files` takes the same syntax. See [negation globs](gate-rules.md#negation-globs-round-12). Any entry may instead be a marker, `{ pattern, expectEmpty: true, reason? }`, for a unit whose target does not exist yet ([intended-empty.md](intended-empty.md)). |
 | `anchor` | The construct to locate. A **dotted** anchor addresses a method call: `anchor: 'registry.register'` matches `registry.register(x)` and nothing else. |
 | `argIndex` | Which argument carries the id for `call-args` / `decorator-args` (default `0`). |
 | `capture` | `name` (default) or `value` — which half of a `key: value` / `Member = 'v'` pair becomes the id. Applies to `object-keys` and `enum-members`. |
@@ -184,6 +184,51 @@ Three properties are load-bearing:
 is the one setting that legitimately makes a rule match LESS while still reading
 green, so a suspicious drop stays visible.
 
+### Zones and regex cost
+
+Blanking turns every comment and string into a long run of spaces (newlines
+kept). A `regex-capture` pattern that is fast on real source can backtrack
+**O(run²)** on such a buffer — measured at 3 ms raw vs 5,402 ms blanked for the
+same file — when:
+
+- an alternative can **start** at every offset of a run and then consume the
+  rest of it: `\s*(?:async\s+)?foo\s*\(` (a leading `\s*`), or `(?:^|\n)\s*…`
+  (a newline-spanning `\s*` from every line start);
+- two whitespace quantifiers **touch**, with only optional items between them:
+  `\s*(?:<[^>]*>)?\s*=`, or a lazy `[^;]*?` next to `\s*`.
+
+So, under any `scan` other than `all`:
+
+- `findBlankRunHazards` (@shrkcrft/boundaries) lints the pattern text, and a
+  hazard becomes the extractor **hint** — `gates coverage` and `gates explain`
+  print it (`→ pattern backtracking hazard under scan: 'code': …`). For a
+  LEADING hazard, anchor the alternative on a literal: write `foo[ \t]*\(`, not
+  `[ \t]*foo\(`. A leading whitespace quantifier of any class is tried at every
+  offset. For an ADJACENT hazard, merge the touching quantifiers into one.
+- Each hazard carries its **reach** (`crossesNewline`, plus `fromLineStart`
+  for a line-start-only lead), and a file is priced by it:
+  - a newline-crossing lead (`\s*`) costs Σ run²;
+  - a line-bounded one (`[ \t]*`, `.*?`, `[ ]*`) costs Σ line-run²;
+  - a `(?:^|\n)\s*` lead costs Σ lines × run.
+
+  So a line-bounded pattern over a 400-line doc comment still scans in
+  milliseconds (it earns the hint but is never skipped for it), while one
+  20 KB blanked line is still bounded.
+- Each file is **bounded**:
+  - a flagged pattern skips a file whose predicted work is over the limit,
+    BEFORE running: `predicted over budget, so the regex was never run (<measure> = N > 2e8)`;
+  - any pattern stops a file that runs past `ZONED_REGEX_FILE_BUDGET_MS`
+    (1 s): `ran past the 1000 ms per-file cap and was stopped`.
+
+  Both are a named skip. The source reports `skipped N file(s): over budget —
+  … <files>` as an error, so the rule errors (never a quietly smaller token
+  set, never a green).
+
+The policy plane is unaffected: its patterns run on the RAW text and are then
+filtered by zone, so blanking never manufactures a run for them to backtrack on.
+`import-edges` also parses raw text and zones each statement by where its
+keyword starts.
+
 ## `filenames` — the companion-file invariant
 
 Every other extractor reads a file's CONTENTS, so "a declared thing must have
@@ -224,6 +269,18 @@ Every other extractor reads file contents, so an entire class of invariant —
 **alias-resolved dependency direction** — was inexpressible, and repos
 hand-rolled scripts for it (adoption ledgers, orphan scans). This emits the
 dependency edges as an id set, so every existing plane gets them for free.
+
+**Zoning (round 11).** `import-edges` reads through the same import parser as
+`check boundaries`, and judges a statement by where its KEYWORD starts and
+whether its specifier opens a real string: an unset `scan` (like `code` and
+`code-and-templates`) ignores a commented-out import, an import in a
+doc-comment code fence, and an import written inside a string literal;
+`scan: 'all'` reads the raw text. `scan: 'strings'` and `scan: 'comments'` are
+rejected at config load — an import statement is code, so zoning it there could
+only ever select phantom text. (Round 10's `scan: 'code'` blanked every
+specifier before this extractor ran, and the rule silently extracted nothing.)
+A two-way baseline over `import-edges` that had captured a commented-out
+import reports it LOST once after upgrading — re-baseline.
 
 ```ts
 {
@@ -326,6 +383,36 @@ its verified pass — without it the rule could never be green and could not gat
 anything. A non-empty result is still drift, so the assertion keeps its teeth,
 and `expectEmpty` with `failOnEmpty` is refused at load (they assert opposites).
 
+**A fence no longer waives a dead input** (round 13). The assertion is about the
+OUTPUT: an empty edge set over a source whose `files` matched nothing looked at
+nothing, so it is a failure (`expectEmpty asserts an empty output, but its input
+selector matched nothing …`), never a pass. A planned input is said per unit.
+
+### Planned units — `{ pattern, expectEmpty: true }`
+
+Every source's `files` list — and an `import-edges` `to.files` — takes a marker
+entry for a unit whose target does not exist yet (see
+[intended-empty.md](intended-empty.md)):
+
+```ts
+source: {
+  files: ['appA/**/*.ts', { pattern: 'appP/**/*.ts', expectEmpty: true, reason: 'app P lands next quarter' }],
+  extract: 'import-edges',
+  to: { files: ['appB/**', { pattern: 'packages/plugin-react/**', expectEmpty: true }] },
+}
+```
+
+- The loader normalises it into the plain list every engine reads plus the
+  source's `expectEmptyUnits`. A `$use` consumer inherits the named
+  extractor's markers with its `files`; a consumer that spells its own `files`
+  replaces them, markers included.
+- **`to.files` is judged** (round 13). An unmarked `to.files` glob matching no
+  file is an advisory dead unit in `gates coverage` (`--fail-on-dead-units`
+  fails it) — a typo'd fence target is no longer a silent pass.
+- A marked unit that matches nothing is accepted and printed; once something
+  matches it, it reads `expectEmpty is stale: … — the fence went live; remove
+  expectEmpty`. A verified fence never prints the barrel hint below.
+
 ### What it resolves, honestly
 
 - **Alias-aware.** Bare specifiers go through the tsconfig `paths` map — the
@@ -364,12 +451,30 @@ Handled, because these are the shapes that defeat a naive regex:
 
 Documented limits:
 
-- A **regex literal** whose body contains `//` or `/*` is read as a comment.
+- **Regex literals.** Zoning (`scan`) lexes a regex literal in expression
+  position as one opaque code span, so the backtick in `` /`/g `` or the `/*`
+  in `/\/*$/` opens nothing; a regex right after `)` (`if (x) /re/`) is still
+  read as a division. The bracket-literal extractors (`array-members`,
+  `object-keys`, `call-args`, …) skip comments with the plain lexer, so there a
+  regex literal whose body contains `//` or `/*` is still read as a comment.
 - **`#`-comment languages** are scanned as plain code.
 - `json-path` covers **JSON, not YAML** — a hand-rolled YAML reader would be a
   silent-wrong-answer risk, and a wrong answer here is worse than no rule.
 - `json-path` line numbers are resolved by locating the id's first quoted
   occurrence: exact when the id is unique, honestly approximate when it is not.
+
+## Counts in knowledge references (round 11)
+
+A knowledge entry (or a boundary rule / policy check) that states a number —
+"N handlers are registered", "the closed set has N members" — can pin it as
+`references[].count: { source, expected, measure? }`. `source` is an
+extraction-DSL source like any below; it is evaluated by the same
+`inspectSource` every gate plane uses, so zones, extractors and globs behave
+identically. `measure: 'ids'` (default) counts distinct ids, `'sites'` every
+capture site. `shrk knowledge stale-check` reports `count 13 ≠ expected 12 —
+set expected: 13` as a `count-mismatch`; a source matching 0 files is
+unverifiable, never a pass. `$use` is not resolved in a reference — inline the
+selector. See [knowledge-integrity.md](knowledge-integrity.md#content-assertions-round-11).
 
 ## Legacy sugar
 

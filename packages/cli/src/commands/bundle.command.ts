@@ -49,6 +49,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 const SUBCOMMANDS = new Set([
@@ -746,18 +747,18 @@ async function bundleValidate(args: ParsedArgs): Promise<number> {
 
   if (runBoundaries) {
     try {
-      const { evaluateBoundaries, loadTsconfigPaths, scanImports } = await import('@shrkcrft/boundaries');
-      const scan = scanImports({ projectRoot: cwd });
-      const tsconfigPaths = loadTsconfigPaths(cwd);
-      const evalResult = evaluateBoundaries(scan, inspection.boundaryRegistry.list(), {
-        ...(tsconfigPaths.aliases.size > 0 ? { tsconfigPaths } : {}),
-      });
+      // THE boundary orchestrator — the verdict `check boundaries` settles
+      // (round 11 review R11-GAP-3): zero rules, an errored rule or a scope it
+      // could not fully examine is never a passed boundaries step.
+      const { runBoundaryCheck } = await import('@shrkcrft/inspector');
+      const evalResult = runBoundaryCheck(inspection, { strict });
       boundaryViolations = evalResult.violations.length;
-      const fail = strict ? boundaryViolations > 0 : evalResult.counts.error > 0;
+      const notVerified =
+        evalResult.verdict === 'not-verified' ? ` — NOT VERIFIED: ${evalResult.shortfalls.slice(0, 2).join('; ')}` : '';
       commandsRun.push({
         command: 'boundaries',
-        passed: !fail,
-        note: `${boundaryViolations} violations (${evalResult.counts.error}err / ${evalResult.counts.warning}warn)`,
+        passed: evalResult.exitCode === 0,
+        note: `${boundaryViolations} violations (${evalResult.counts.error}err / ${evalResult.counts.warning}warn)${notVerified}`,
       });
       warnings += evalResult.counts.warning;
     } catch (e) {
@@ -769,11 +770,15 @@ async function bundleValidate(args: ParsedArgs): Promise<number> {
     try {
       const { buildDriftReport } = await import('@shrkcrft/inspector');
       const drift = buildDriftReport(inspection);
-      const fail = drift.counts.error > 0 || (strict && drift.counts.warning > 0);
+      // THE drift verdict: a boundary scope drift could not fully examine is
+      // NOT VERIFIED, never a passed step.
+      const fail = drift.exitCode !== 0 || (strict && drift.counts.warning > 0);
       commandsRun.push({
         command: 'drift',
         passed: !fail,
-        note: `${drift.counts.error}err / ${drift.counts.warning}warn / ${drift.counts.info}info`,
+        note:
+          `${drift.counts.error}err / ${drift.counts.warning}warn / ${drift.counts.info}info` +
+          (drift.verdict === 'not-verified' ? ` — NOT VERIFIED: ${drift.shortfalls.slice(0, 2).join('; ')}` : ''),
       });
       warnings += drift.counts.warning;
     } catch (e) {
@@ -800,6 +805,8 @@ async function bundleValidate(args: ParsedArgs): Promise<number> {
   if (runAgent) {
     try {
       const { loadAgentContractTests, runAgentContractTest } = await import('@shrkcrft/inspector');
+      // Same registry + command index `shrk test agent` resolves against.
+      await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
       const tests = await loadAgentContractTests(inspection);
       const results = tests.map((t) => runAgentContractTest(inspection, t));
       const failed = results.filter((r) => !r.passed).length;
@@ -816,6 +823,7 @@ async function bundleValidate(args: ParsedArgs): Promise<number> {
   if (runContext) {
     try {
       const { loadContextTests, runContextTest } = await import('@shrkcrft/inspector');
+      await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
       const tests = await loadContextTests(inspection);
       const results = tests.map((t) => runContextTest(inspection, t));
       const failed = results.filter((r) => !r.passed).length;
@@ -961,6 +969,47 @@ async function bundleDecompose(args: ParsedArgs): Promise<number> {
 
 export const bundleCommand: ICommandHandler = {
   name: 'bundle',
+  positionals: PositionalMode.None,
+  subverbs: [
+    { name: 'create', description: 'Create a feature bundle for a task.', usage: 'shrk bundle create "<task>"', positionals: PositionalMode.Free },
+    { name: 'list', description: 'List the feature bundles.', usage: 'shrk bundle list' },
+    { name: 'show', description: 'Show one bundle.', usage: 'shrk bundle show <id>', positionals: PositionalMode.Free },
+    { name: 'status', description: 'Which of a bundle’s plans are applied / validated.', usage: 'shrk bundle status <id>', positionals: PositionalMode.Free },
+    { name: 'next', description: 'The next plan to work on in a bundle.', usage: 'shrk bundle next <id>', positionals: PositionalMode.Free },
+    { name: 'report', description: 'A bundle report.', usage: 'shrk bundle report <id>', positionals: PositionalMode.Free },
+    { name: 'review', description: 'Review a bundle before applying it.', usage: 'shrk bundle review <id>', positionals: PositionalMode.Free },
+    { name: 'commands', description: 'The CLI commands a bundle needs, in order.', usage: 'shrk bundle commands <id>', positionals: PositionalMode.Free },
+    { name: 'plan', description: 'One plan of a bundle.', usage: 'shrk bundle plan <id> [<planName>]', positionals: PositionalMode.Free },
+    { name: 'graph', description: 'The bundle’s plan dependency graph.', usage: 'shrk bundle graph <id>', positionals: PositionalMode.Free },
+    {
+      name: 'apply-assist',
+      aliases: ['apply-plan'],
+      description: 'Apply assist: the next `shrk apply` step for a bundle.',
+      usage: 'shrk bundle apply-assist <id>',
+      positionals: PositionalMode.Free,
+    },
+    { name: 'validate', description: 'Validate a bundle.', usage: 'shrk bundle validate <id>', positionals: PositionalMode.Free },
+    { name: 'decompose', description: 'Decompose a task into bundle subtasks.', usage: 'shrk bundle decompose "<task>"', positionals: PositionalMode.Free },
+    {
+      name: 'record-apply',
+      description: 'Record that one bundle plan was applied.',
+      usage: 'shrk bundle record-apply <id> <planName> [--note <text>]',
+      positionals: PositionalMode.Free,
+    },
+    {
+      name: 'replay',
+      description: 'Replay a bundle (or --all) to detect drift; `replay scaffold github-actions` prints a CI job.',
+      usage:
+        'shrk bundle replay <id> [--strict] [--json]  |  shrk bundle replay --all  |  shrk bundle replay scaffold github-actions [--schedule weekly|daily|manual] [--with-report-site] [--output <path>] [--write] [--force]',
+      positionals: PositionalMode.Free,
+    },
+    {
+      name: 'diff',
+      description: 'Diff two bundles.',
+      usage: 'shrk bundle diff <bundleA> <bundleB> [--format text|markdown|html|json] [--output <path>]',
+      positionals: PositionalMode.Free,
+    },
+  ],
   description: 'Feature workflow bundles (multi-plan, dep graph, apply assist, validate).',
   usage:
     'shrk bundle create|list|show|status|report|commands|plan|graph|apply-assist|validate|replay|decompose|record-apply|next|review [...args]',

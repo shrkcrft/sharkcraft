@@ -6,6 +6,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 const BYTES_PER_KB = 1024;
@@ -27,6 +28,8 @@ function leftPad(s: string, n: number): string {
 
 export const statsCommand: ICommandHandler = {
   name: 'stats',
+  // Flag-driven (`--language <id>` scopes it): a bare token used to be ignored.
+  positionals: PositionalMode.None,
   description:
     'Repository statistics — per-language file counts, lines of code (code/comment/blank), bytes, averages, largest files.',
   usage:

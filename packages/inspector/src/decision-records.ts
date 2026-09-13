@@ -11,7 +11,8 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
-import { importModuleViaLoader } from '@shrkcrft/core';
+import { importModuleViaLoader, RejectionCause, type IRejectedEntry } from '@shrkcrft/core';
+import type { IContributionFileIssue } from './i-contribution-file-issue.ts';
 
 export const DECISION_RECORD_SCHEMA = 'sharkcraft.decision/v1';
 
@@ -34,6 +35,8 @@ export interface IDecisionRecord {
   relatedPolicies: readonly string[];
   relatedConstructs: readonly string[];
   relatedFiles: readonly string[];
+  /** Commands the decision relates to (TS decisions only) — probed by the self-config doctor. */
+  relatedCommands?: readonly string[];
   date: string;
   sourceFile?: string;
 }
@@ -182,6 +185,17 @@ function getTsDecisionsCached(projectRoot: string): readonly IDecisionRecord[] {
 }
 
 /**
+ * THE TS-decision acceptance predicate (round 12, 12.1): a non-empty string
+ * `id` — `[]` means accepted. An id-less decision used to be dropped with no
+ * signal (`if (!rec?.id) return`).
+ */
+export function decisionRejectionReasons(raw: unknown): readonly string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return ['(entry): must be an object'];
+  const id = (raw as { id?: unknown }).id;
+  return typeof id === 'string' && id.length > 0 ? [] : ['id: must be a non-empty string'];
+}
+
+/**
  * Async warm-up for `sharkcraft/decisions.ts` and pack-contributed
  * decisions. Call this before `listDecisions` if you want TS decisions
  * folded in.
@@ -189,11 +203,43 @@ function getTsDecisionsCached(projectRoot: string): readonly IDecisionRecord[] {
 export async function loadTsDecisions(
   inspection: ISharkcraftInspection,
 ): Promise<readonly IDecisionRecord[]> {
+  return (await loadTsDecisionsWithIssues(inspection)).decisions;
+}
+
+/**
+ * {@link loadTsDecisions} with what did not take effect (round 12, 12.1): a
+ * decision file that failed to import (it used to be swallowed to `[]`), and
+ * every declared decision the loader refused — invalid, or a duplicate id.
+ */
+export async function loadTsDecisionsWithIssues(inspection: ISharkcraftInspection): Promise<{
+  readonly decisions: readonly IDecisionRecord[];
+  readonly issues: readonly IContributionFileIssue[];
+  readonly rejected: readonly IRejectedEntry[];
+}> {
   const out: IDecisionRecord[] = [];
-  const seen = new Set<string>();
-  const addInput = (rec: ITsDecisionInput, source: string): void => {
-    if (!rec?.id || seen.has(rec.id)) return;
-    seen.add(rec.id);
+  const issues: IContributionFileIssue[] = [];
+  const rejected: IRejectedEntry[] = [];
+  const seen = new Map<string, string>();
+  const addInput = (raw: unknown, source: string, index: number): void => {
+    const reasons = decisionRejectionReasons(raw);
+    if (reasons.length > 0) {
+      rejected.push({ file: source, index, exportName: 'default', reasons, cause: RejectionCause.Invalid });
+      return;
+    }
+    const rec = raw as ITsDecisionInput;
+    const prev = seen.get(rec.id);
+    if (prev !== undefined) {
+      rejected.push({
+        file: source,
+        index,
+        exportName: 'default',
+        entryId: rec.id,
+        reasons: [`id: "${rec.id}" is already declared in ${prev}`],
+        cause: RejectionCause.DuplicateId,
+      });
+      return;
+    }
+    seen.set(rec.id, source);
     out.push({
       schema: DECISION_RECORD_SCHEMA,
       id: rec.id,
@@ -206,37 +252,50 @@ export async function loadTsDecisions(
       relatedPolicies: rec.relatedPolicies ?? [],
       relatedConstructs: rec.relatedConstructs ?? [],
       relatedFiles: rec.relatedFiles ?? [],
+      ...(rec.relatedCommands && rec.relatedCommands.length > 0
+        ? { relatedCommands: rec.relatedCommands }
+        : {}),
       date: rec.date ?? '',
       sourceFile: source,
     });
   };
+  const readInto = async (file: string, packageName?: string): Promise<void> => {
+    const r = await importDefaultArray(file);
+    if (r.error !== undefined) {
+      issues.push({
+        severity: 'warning',
+        code: 'load-failed',
+        message: `${packageName ? `Pack ${packageName} (${nodePath.relative(inspection.projectRoot, file) || file})` : `Failed to load ${nodePath.relative(inspection.projectRoot, file) || file}`}: ${r.error}`,
+        source: file,
+        ...(packageName ? { packageName } : {}),
+      });
+      return;
+    }
+    r.items.forEach((item, i) => addInput(item, file, i));
+  };
   // Local file.
   if (inspection.sharkcraftDir) {
-    const local = nodePath.join(inspection.sharkcraftDir, 'decisions.ts');
-    const arr = await importDefaultArray<ITsDecisionInput>(local);
-    for (const r of arr) addInput(r, local);
+    await readInto(nodePath.join(inspection.sharkcraftDir, 'decisions.ts'));
   }
   // Pack contributions.
   for (const pack of inspection.packs.validPacks) {
     const c = (pack.manifest?.contributions ?? {}) as { decisionFiles?: readonly string[] };
     for (const rel of c.decisionFiles ?? []) {
-      const full = nodePath.resolve(pack.packageRoot, rel);
-      const arr = await importDefaultArray<ITsDecisionInput>(full);
-      for (const r of arr) addInput(r, full);
+      await readInto(nodePath.resolve(pack.packageRoot, rel), pack.packageName);
     }
   }
   TS_DECISION_CACHE.set(inspection.projectRoot, out);
-  return out;
+  return { decisions: out, issues, rejected };
 }
 
-async function importDefaultArray<T>(absPath: string): Promise<readonly T[]> {
+/** A decision file's default array; `error` (first line) when the import threw. A missing file is `[]`. */
+async function importDefaultArray(absPath: string): Promise<{ items: readonly unknown[]; error?: string }> {
+  if (!existsSync(absPath)) return { items: [] };
   try {
-    if (!existsSync(absPath)) return [];
-    const { pathToFileURL } = await import('node:url');
     const mod = (await importModuleViaLoader(absPath)) as { default?: unknown };
-    return Array.isArray(mod.default) ? (mod.default as T[]) : [];
-  } catch {
-    return [];
+    return { items: Array.isArray(mod.default) ? (mod.default as unknown[]) : [] };
+  } catch (e) {
+    return { items: [], error: ((e as Error).message ?? String(e)).split('\n')[0]!.trim() };
   }
 }
 

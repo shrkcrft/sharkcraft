@@ -314,8 +314,8 @@ import {
 import {
   listTaskRoutingHintsTool,
   explainTaskRoutingTool,
-  listHelpersTool as listPackHelpersTool,
-  getHelperTool as getPackHelperTool,
+  listPackHelpersTool,
+  getPackHelperTool,
 } from './r33-routing-helpers.tool.ts';
 import {
   getDevCyclePlanTool,

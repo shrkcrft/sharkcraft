@@ -9,8 +9,14 @@
  */
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { importModuleViaLoader, type IDelegateRecipe } from '@shrkcrft/core';
-import type { ISharkCraftConfig } from '@shrkcrft/config';
+import {
+  importModuleViaLoader,
+  readContributionExport,
+  RejectionCause,
+  type IDelegateRecipe,
+  type IRejectedEntry,
+} from '@shrkcrft/core';
+import { DelegateRecipeSchema, type ISharkCraftConfig } from '@shrkcrft/config';
 import { discoverPacks, type IDiscoveredPack } from '@shrkcrft/packs';
 import { resolveDelegateCatalog, type IResolvedDelegateRecipe } from './delegate-catalog.ts';
 
@@ -25,22 +31,27 @@ export interface IPackRecipeIssue {
   severity: 'warning' | 'error';
   message: string;
   source?: string;
+  /** `load-failed` / `missing-file` — lifted into THE contribution load-failure map (round 12). */
+  code?: 'load-failed' | 'missing-file';
 }
 
 export interface ILoadPackRecipesResult {
   recipes: readonly IPackDelegateRecipe[];
   issues: readonly IPackRecipeIssue[];
+  /** Every declared recipe the loader refused — invalid or a duplicate id (round 12, 12.1). */
+  rejected: readonly IRejectedEntry[];
 }
 
-async function importRecipes(file: string): Promise<readonly IDelegateRecipe[]> {
-  const mod = (await importModuleViaLoader(file)) as {
-    default?: readonly IDelegateRecipe[] | IDelegateRecipe;
-    delegateRecipes?: readonly IDelegateRecipe[];
-  };
-  if (Array.isArray(mod.default)) return mod.default;
-  if (mod.default && typeof mod.default === 'object') return [mod.default as IDelegateRecipe];
-  if (Array.isArray(mod.delegateRecipes)) return mod.delegateRecipes;
-  return [];
+/**
+ * THE pack delegate-recipe acceptance predicate (round 12, 12.1): the SAME
+ * zod schema the config loader validates an inline recipe with
+ * (`DelegateRecipeSchema`), one `<path>: <message>` per issue — `[]` means
+ * accepted. A pack recipe used to be accepted with no validation at all.
+ */
+export function delegateRecipeRejectionReasons(raw: unknown): readonly string[] {
+  const parsed = DelegateRecipeSchema.safeParse(raw);
+  if (parsed.success) return [];
+  return parsed.error.issues.map((i) => `${i.path.join('.') || '(entry)'}: ${i.message}`);
 }
 
 export async function loadDelegateRecipesFromPacks(
@@ -48,6 +59,8 @@ export async function loadDelegateRecipesFromPacks(
 ): Promise<ILoadPackRecipesResult> {
   const recipes: IPackDelegateRecipe[] = [];
   const issues: IPackRecipeIssue[] = [];
+  const rejected: IRejectedEntry[] = [];
+  const seen = new Map<string, string>();
   for (const pack of validPacks) {
     const files = pack.manifest?.contributions?.delegateRecipeFiles ?? [];
     for (const rel of files) {
@@ -55,26 +68,52 @@ export async function loadDelegateRecipesFromPacks(
       if (!existsSync(file)) {
         issues.push({
           severity: 'warning',
+          code: 'missing-file',
           message: `Pack ${pack.packageName} declares ${rel} but the file is missing.`,
           source: file,
         });
         continue;
       }
       try {
-        const list = await importRecipes(file);
-        for (const recipe of list) {
+        const exp = readContributionExport(await importModuleViaLoader(file), { namedKeys: ['delegateRecipes'] });
+        exp.items.forEach((raw, i) => {
+          const at = {
+            file,
+            index: exp.single ? -1 : i,
+            ...(exp.exportName ? { exportName: exp.exportName } : {}),
+          };
+          const rawId = raw && typeof raw === 'object' ? (raw as { id?: unknown }).id : undefined;
+          const id = typeof rawId === 'string' ? rawId : undefined;
+          const reasons = delegateRecipeRejectionReasons(raw);
+          if (reasons.length > 0) {
+            rejected.push({ ...at, ...(id ? { entryId: id } : {}), reasons, cause: RejectionCause.Invalid });
+            return;
+          }
+          const recipe = raw as IDelegateRecipe;
+          const prev = seen.get(recipe.id);
+          if (prev !== undefined) {
+            rejected.push({
+              ...at,
+              entryId: recipe.id,
+              reasons: [`id: "${recipe.id}" is already declared in ${prev}`],
+              cause: RejectionCause.DuplicateId,
+            });
+            return;
+          }
+          seen.set(recipe.id, `${pack.packageName} (${rel})`);
           recipes.push({ recipe, packageName: pack.packageName, sourceFile: rel });
-        }
+        });
       } catch (e) {
         issues.push({
           severity: 'warning',
+          code: 'load-failed',
           message: `Pack ${pack.packageName} (${rel}): ${(e as Error).message}`,
           source: file,
         });
       }
     }
   }
-  return { recipes, issues };
+  return { recipes, issues, rejected };
 }
 
 /**

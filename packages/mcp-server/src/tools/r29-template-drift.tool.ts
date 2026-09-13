@@ -1,7 +1,7 @@
 /**
  * Read-only MCP tool: get_template_drift_report.
  */
-import { buildTemplateDriftReport } from '@shrkcrft/inspector';
+import { buildTemplateDriftReport, warmReferenceRegistries } from '@shrkcrft/inspector';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
 function nextHint(cmd: string): string {
@@ -21,6 +21,9 @@ export const getTemplateDriftReportTool: IToolDefinition = {
     },
   },
   async handler(input, ctx) {
+    // Warm first: `related` ids are resolved against EVERY registry, and a cold
+    // construct / playbook registry would otherwise report them NOT VERIFIED.
+    await warmReferenceRegistries(ctx.inspection);
     const report = buildTemplateDriftReport(ctx.inspection, {
       ...(typeof input.templateId === 'string' ? { templateId: input.templateId } : {}),
       ...(typeof input.packId === 'string' ? { packId: input.packId } : {}),

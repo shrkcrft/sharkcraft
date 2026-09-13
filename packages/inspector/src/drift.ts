@@ -1,5 +1,6 @@
-import { evaluateBoundaries, loadTsconfigPaths, scanImports } from '@shrkcrft/boundaries';
+import { settleVerdict, type IVerdictCoverage } from '@shrkcrft/core';
 import { resolvePreset, resolvePresetReferences } from '@shrkcrft/presets';
+import { boundaryCheckCoverage, boundaryLoadIssueLabel, runBoundaryCheck } from './run-boundary-check.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { inspectionReferenceLookup } from './reference-lookup.ts';
 
@@ -25,6 +26,22 @@ export interface IDriftFinding {
 export interface IDriftReport {
   findings: IDriftFinding[];
   counts: { error: number; warning: number; info: number };
+  /**
+   * What the boundary half examined — THE records `check boundaries` settles
+   * on (`boundaryCheckCoverage`). Empty when boundaries were skipped or none
+   * is configured.
+   */
+  coverage: readonly IVerdictCoverage[];
+  /** 0 clean · 1 an error finding · 2 part of a boundary rule's scope was never examined. */
+  exitCode: number;
+  verdict: 'pass' | 'fail' | 'not-verified' | 'usage-error';
+  shortfalls: readonly string[];
+  /**
+   * The settled acceptances (`<rule>: accepted by expectEmpty: …`) — present
+   * only at exit 0, like every acceptance (round 13 review: a boundary rule's
+   * expectEmpty acceptance reached this settle and was never printed).
+   */
+  accepted?: readonly string[];
 }
 
 export interface IBuildDriftOptions {
@@ -48,14 +65,32 @@ export function buildDriftReport(
 ): IDriftReport {
   const findings: IDriftFinding[] = [];
 
-  // 1. Boundary violations.
-  if ((options.runBoundaries ?? true) && inspection.boundaryRegistry.size() > 0) {
-    const scan = scanImports({ projectRoot: inspection.projectRoot });
-    const tsconfigPaths = loadTsconfigPaths(inspection.projectRoot);
-    const evalResult = evaluateBoundaries(scan, inspection.boundaryRegistry.list(), {
-      ...(tsconfigPaths.aliases.size > 0 ? { tsconfigPaths } : {}),
-    });
-    for (const v of evalResult.violations) {
+  // 1. Boundary violations — through THE boundary orchestrator, the call
+  // `check boundaries` makes (round 11 review R11-GAP-3). Drift ran its own
+  // scan + evaluate: an unreadable governed file read `0` here where the gate
+  // read 2, and an errored rule or a stale exception was invisible.
+  let coverage: IVerdictCoverage[] = [];
+  const loadIssues = inspection.boundaryLoadIssues ?? [];
+  if ((options.runBoundaries ?? true) && (inspection.boundaryRegistry.size() > 0 || loadIssues.length > 0)) {
+    const r = runBoundaryCheck(inspection);
+    coverage = boundaryCheckCoverage(r);
+    for (const issue of r.loadIssues) {
+      findings.push({
+        category: 'boundary',
+        severity: 'error',
+        message: `Boundary rule ${boundaryLoadIssueLabel(issue)} did not load — NOT evaluated: ${issue.issues.join('; ')}`,
+        evidence: { file: issue.file, kind: issue.kind, ...(issue.ruleId ? { ruleId: issue.ruleId } : {}) },
+      });
+    }
+    for (const s of r.staleExceptions) {
+      findings.push({
+        category: 'boundary',
+        severity: 'error',
+        message: s.message,
+        evidence: { ruleId: s.ruleId, file: s.file },
+      });
+    }
+    for (const v of r.violations) {
       findings.push({
         category: 'boundary',
         severity: v.severity,
@@ -147,5 +182,16 @@ export function buildDriftReport(
 
   const counts = { error: 0, warning: 0, info: 0 };
   for (const f of findings) counts[f.severity] += 1;
-  return { findings, counts };
+  // Settled with core's one fold: a boundary scope that was not fully examined
+  // turns a clean drift report into NOT VERIFIED (2), never "No drift".
+  const settled = settleVerdict(counts.error > 0 ? 1 : 0, coverage);
+  return {
+    findings,
+    counts,
+    coverage,
+    exitCode: settled.exit,
+    verdict: settled.verdict,
+    shortfalls: settled.shortfalls,
+    accepted: settled.accepted,
+  };
 }

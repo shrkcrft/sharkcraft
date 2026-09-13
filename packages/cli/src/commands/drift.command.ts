@@ -1,3 +1,4 @@
+import { verdictLine } from '../gates/verdict-line.ts';
 import {
   buildDriftReport,
   classifyChangedScope,
@@ -75,7 +76,10 @@ export const driftCommand: ICommandHandler = {
       process.stdout.write(
         asJson({ ...report, ...(classification ? { changedScope: classification } : {}) }) + '\n',
       );
-      return report.counts.error > 0 ? 1 : 0;
+      // THE drift verdict (settled in the inspector over the boundary
+      // orchestrator's coverage): 2 when a boundary rule's scope was never
+      // fully examined — never a clean 0 over an unreadable governed file.
+      return report.exitCode;
     }
     process.stdout.write(header('Drift report'));
     process.stdout.write(
@@ -87,16 +91,24 @@ export const driftCommand: ICommandHandler = {
     if (classification) {
       process.stdout.write(`changed-scope: ${summariseChangedScope(classification)}\n\n`);
     }
+    const settled = {
+      exit: report.exitCode,
+      verdict: report.verdict,
+      shortfalls: report.shortfalls,
+      accepted: report.accepted ?? [],
+    };
     if (report.findings.length === 0) {
-      process.stdout.write('No drift detected.\n');
-      return 0;
+      process.stdout.write(`${verdictLine(settled, 'No drift detected.')}\n`);
+      return report.exitCode;
     }
     for (const f of report.findings) {
       const tag = f.severity.toUpperCase().padEnd(8);
       process.stdout.write(`  ${tag} ${f.category.padEnd(22)} ${f.message}\n`);
       if (f.suggestedFix) process.stdout.write(`           ↳ ${f.suggestedFix}\n`);
     }
-    return report.counts.error > 0 ? 1 : 0;
+    const tail = verdictLine(settled, '');
+    if (tail) process.stdout.write(`\n${tail}\n`);
+    return report.exitCode;
   },
 };
 

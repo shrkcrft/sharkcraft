@@ -22,6 +22,12 @@ export interface IScaffoldedSelfTest {
   readonly marginPercent: number;
   /** The literal block to paste into the rule. */
   readonly snippet: string;
+  /**
+   * Why some extracted ids were NOT pinned, or why `expectIds` is empty. Today
+   * this applies to the policy plane: a live finding is debt, and pinning it
+   * would turn paying the debt into a gate failure.
+   */
+  readonly note?: string;
 }
 
 /** Markers that make an id a poor anchor: it is likely to be renamed or removed. */
@@ -62,7 +68,11 @@ export function scaffoldSelfTest(
   marginPercent: number,
   sampleSize = 3,
 ): IScaffoldedSelfTest {
-  const ids = coverage.allIds ?? coverage.sampleIds;
+  // A plane whose extracted set mixes stable anchors with ids that are meant to
+  // go away (the policy plane: a live finding is debt) says which ids are safe
+  // to pin. Only those are scaffolded. Pinning a live violation would make
+  // `gates coverage` fail on the day the author fixes the code the rule forbids.
+  const ids = coverage.pinIds ?? coverage.allIds ?? coverage.sampleIds;
   const count = coverage.unitsMatched;
   const floor = Math.max(1, Math.floor(count * (1 - marginPercent / 100)));
   const expectIds = [...ids]
@@ -71,12 +81,11 @@ export function scaffoldSelfTest(
   const snippet = [
     'selfTest: {',
     `  expectMatchesAtLeast: ${floor},`,
-    ...(expectIds.length > 0
-      ? [`  expectIds: [${expectIds.map((i) => `'${i}'`).join(', ')}],`]
-      : []),
+    `  expectIds: [${expectIds.map((i) => `'${i}'`).join(', ')}],`,
     '  expectNotIds: [],',
     '},',
   ].join('\n');
+  const note = pinNote(coverage);
   return {
     ruleId: coverage.id,
     plane: coverage.plane,
@@ -85,7 +94,25 @@ export function scaffoldSelfTest(
     expectIds,
     marginPercent,
     snippet,
+    ...(note ? { note } : {}),
   };
+}
+
+/** Why a plane's pinnable set is narrower than what it extracted, when it is. */
+function pinNote(coverage: IGateCoverage): string | undefined {
+  if (coverage.pinIds === undefined) return undefined;
+  const pinnable = new Set(coverage.pinIds);
+  const live = (coverage.allIds ?? coverage.sampleIds).filter((id) => !pinnable.has(id));
+  const skipped =
+    live.length > 0
+      ? `${live.length} id(s) matched by a live finding were not pinned (${live.slice(0, 3).join(', ')}` +
+        `${live.length > 3 ? ', …' : ''}). A finding is debt, and pinning it would fail the gate once the debt is paid. `
+      : '';
+  if (coverage.pinIds.length > 0) return skipped ? skipped.trimEnd() : undefined;
+  return (
+    `${skipped}No exempted hit to pin, so expectIds is left empty. Add a fixture file under the rule's ` +
+    '`exemptFiles` that contains the forbidden pattern. expectIds can then prove the pattern still bites.'
+  );
 }
 
 /** Outcome of inserting a scaffolded selfTest into the config text. */

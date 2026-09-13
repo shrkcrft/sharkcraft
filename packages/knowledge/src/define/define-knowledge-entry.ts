@@ -1,4 +1,10 @@
-import type { IKnowledgeEntry, IKnowledgeExample, IKnowledgeSource } from '../model/knowledge-entry.ts';
+import type {
+  IKnowledgeAnchor,
+  IKnowledgeEntry,
+  IKnowledgeExample,
+  IKnowledgeReference,
+  IKnowledgeSource,
+} from '../model/knowledge-entry.ts';
 import type { IActionHints } from '../model/action-hints.ts';
 import { KnowledgePriority } from '../model/knowledge-priority.ts';
 import { isValidKnowledgeId } from '@shrkcrft/core';
@@ -20,6 +26,16 @@ export interface DefineKnowledgeInput {
   actionHints?: IActionHints;
   /** Author opt-out: no actionable next step → excluded from hint-coverage. */
   noAction?: boolean;
+  /** Verifiable references to repo artefacts (checked by `shrk knowledge stale-check`). */
+  references?: readonly IKnowledgeReference[];
+  /** Named anchors describing what the entry is about. */
+  anchors?: readonly IKnowledgeAnchor[];
+  /** `YYYY-MM-DD` — the day an author last checked this entry against the code. */
+  verifiedOn?: string;
+  /** Ids of any registered kind a reader should also look at. */
+  seeAlso?: readonly string[];
+  /** Knowledge ids that replace this entry (non-empty = superseded). */
+  supersededBy?: readonly string[];
 }
 
 export function defineKnowledgeEntry(input: DefineKnowledgeInput): IKnowledgeEntry {
@@ -57,5 +73,12 @@ export function defineKnowledgeEntry(input: DefineKnowledgeInput): IKnowledgeEnt
     metadata: input.metadata,
     actionHints: input.actionHints,
     ...(input.noAction !== undefined ? { noAction: input.noAction } : {}),
+    // References and anchors used to be dropped here, so an entry built with
+    // the helper could never be verified by the stale-check it was declared for.
+    ...(input.references ? { references: Object.freeze([...input.references]) } : {}),
+    ...(input.anchors ? { anchors: Object.freeze([...input.anchors]) } : {}),
+    ...(input.verifiedOn !== undefined ? { verifiedOn: input.verifiedOn } : {}),
+    ...(input.seeAlso ? { seeAlso: Object.freeze([...input.seeAlso]) } : {}),
+    ...(input.supersededBy ? { supersededBy: Object.freeze([...input.supersededBy]) } : {}),
   };
 }

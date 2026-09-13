@@ -37,9 +37,18 @@ export interface ISinkBinding {
   readonly specifier?: string;
 }
 
-/** Top-level value/type declarations — the names a file binds itself. */
-const LOCAL_DECL =
-  /(?:^|\n)\s*(?:export\s+)?(?:declare\s+)?(?:default\s+)?(?:const|let|var|function\s*\*?|class|enum|interface|type)\s+([A-Za-z_$][\w$]*)/g;
+/**
+ * Top-level value/type declarations — the names a file binds itself.
+ *
+ * Every whitespace run is single-line (`[ \t]`). The old form opened with
+ * `(?:^|\n)\s*`: from every newline of a long blank block, `\s*` ran across all
+ * the lines below it and backtracked through each — O(lines × run) per block
+ * (`findBlankRunHazards` flags that shape). Modifiers and the declared name sit
+ * on the declaration's own line in real TS, so the matches are the same
+ * (`r75-blank-run-linearity.test.ts` holds old ≡ new over every source file).
+ */
+export const LOCAL_DECL =
+  /(?:^|\n)[ \t]*(?:export[ \t]+)?(?:declare[ \t]+)?(?:default[ \t]+)?(?:const|let|var|function(?:[ \t]*\*)?|class|enum|interface|type)[ \t]+([A-Za-z_$][\w$]*)/g;
 
 /**
  * Every value name bound in the file: imports plus its own top-level

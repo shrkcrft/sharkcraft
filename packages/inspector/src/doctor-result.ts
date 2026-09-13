@@ -1,3 +1,5 @@
+import type { IVerdictCoverage } from '@shrkcrft/core';
+
 export enum DoctorSeverity {
   Ok = 'ok',
   Info = 'info',
@@ -49,4 +51,11 @@ export interface IDoctorResult {
      */
     advisoryCount?: number;
   };
+  /**
+   * Scope the doctor could not verify: today, compiled pack builds with no
+   * build record (never compared with their source). `shrk doctor` settles
+   * its exit through it (NOT VERIFIED, 2, as `packs doctor` does) and never
+   * prints "Ready ✓" over it. Set only when non-empty.
+   */
+  coverage?: readonly IVerdictCoverage[];
 }

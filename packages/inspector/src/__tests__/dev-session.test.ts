@@ -169,7 +169,9 @@ describe('dev-session state model', () => {
     state = setDevSessionPhase(state, DevSessionPhase.Completed);
     writeDevSessionState(root, state);
     load = scanDevSession(root, 'sess-1') as IDevSessionLoad;
-    expect(computeDevNextAction(load).command).toContain('shrk session show');
+    // Round 11: `shrk session show` never existed; a completed session's next
+    // action points at its reports (`shrk dev reports <id>`).
+    expect(computeDevNextAction(load).command).toContain('shrk dev reports');
   });
 
   test('upsertDevPlanEntry replaces existing entry by name', () => {

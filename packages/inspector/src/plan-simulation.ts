@@ -14,8 +14,9 @@ import * as nodePath from 'node:path';
 import {
   evaluateBoundaries,
   loadTsconfigPaths,
-  scanImports,
 } from '@shrkcrft/boundaries';
+import { ChangedScopeMode } from './boundaries-changed-only.ts';
+import { runBoundaryCheck } from './run-boundary-check.ts';
 import {
   planGeneration,
   verifyPlan,
@@ -502,9 +503,15 @@ export async function simulatePlan(
     const tsconfigPaths = loadTsconfigPaths(inspection.projectRoot);
     const aliasOpts = tsconfigPaths.aliases.size > 0 ? { tsconfigPaths } : {};
     try {
-      const scan = scanImports({ projectRoot: inspection.projectRoot });
-      const evalResult = evaluateBoundaries(scan, inspection.boundaryRegistry.list(), aliasOpts);
-      const targetSet = new Set(files.map((f) => f.relativePath));
+      // Current state through THE boundary orchestrator, scoped to the planned
+      // paths (round 11 review R11-GAP-3): a governed target it could not read
+      // is a named limitation, never a silent "no concerns".
+      const targets = files.map((f) => f.relativePath);
+      const evalResult = runBoundaryCheck(inspection, { changed: { mode: ChangedScopeMode.Files, files: targets } });
+      if (evalResult.verdict === 'not-verified' && evalResult.selectedRuleIds.length > 0) {
+        limitations.push(`Boundary scan NOT VERIFIED: ${evalResult.shortfalls.join('; ')}`);
+      }
+      const targetSet = new Set(targets);
       for (const v of evalResult.violations) {
         if (!targetSet.has(v.file)) continue;
         potentialBoundaryConcerns.push({
@@ -521,6 +528,9 @@ export async function simulatePlan(
     }
     if (liveChanges.length > 0) {
       try {
+        // PLANNED contents are not on disk, so the orchestrator cannot scan
+        // them: a sanctioned direct `evaluateBoundaries` over planned edges
+        // only (the r75 one-boundary-authority lock names this call site).
         const plannedEdges = collectPlannedEdges(liveChanges);
         const evalResult = evaluateBoundaries(
           { filesScanned: liveChanges.length, edges: plannedEdges, warnings: [] },
@@ -613,7 +623,7 @@ export async function simulatePlan(
           ],
   });
   for (const cmd of resolvedValidations) requiredValidations.add(cmd);
-  if (publicApiTouched || barrelExportTouched) requiredValidations.add('shrk api report --all --public-only');
+  if (publicApiTouched || barrelExportTouched) requiredValidations.add('shrk api-diff .sharkcraft/api-baseline.json --fail-on-breaking');
   if (pluginKeysTouched) requiredValidations.add('shrk packs doctor --release');
   if (adapterBoundaryTouched) requiredValidations.add('shrk architecture violations');
   if (potentialBoundaryConcerns.length > 0 || planIntroducedBoundaryConcerns.length > 0) {

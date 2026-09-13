@@ -28,6 +28,14 @@ import {
 } from './search-tuning-registry.ts';
 import { rankAll } from './task-ranker.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import {
+  isSearchDocumentPrefix,
+  parseSearchDocumentId,
+  searchDocumentId,
+  searchDocumentPrefixForKind,
+  searchKindForPrefix,
+} from './search-document-id.ts';
+import { tuningQueryTokens } from './tuning-query-tokens.ts';
 
 export const RANKER_EXPLAINABILITY_SCHEMA = 'sharkcraft.ranker-explainability/v1';
 
@@ -316,13 +324,13 @@ function inferDomainAppliesWhen(taskLower: string): string[] {
 function commonSuggestedCommands(found: boolean, hit: IRegistryHit | undefined): string[] {
   if (!found) {
     return [
-      'shrk commands suggest "<partial id>"',
-      'shrk find <text>',
+      'shrk commands search "<partial id>"',
+      'shrk search <text>',
       'shrk search <text> --explain',
     ];
   }
   const out: string[] = [];
-  out.push(`shrk why-not ${hit?.id ?? '<id>'} --for-task "<task>"`);
+  out.push('shrk task "<task>" --explain-ranking');
   out.push('shrk search "<task>" --explain');
   out.push('shrk search tuning explain "<task>"');
   out.push('shrk coverage scaffolds --task "<task>"');
@@ -362,16 +370,38 @@ function deriveMatchedAndMissing(
   return { matched, missing };
 }
 
+/**
+ * A registry hit's SEARCH-DOCUMENT id — what `tuningBoostFor` and the search
+ * index key by — from THE codec. `why` used to hand the matcher the BARE id, so
+ * it reported a dead bare boost as applied and hid every live prefixed one.
+ */
+function registryHitDocumentId(hit: IRegistryHit): string {
+  const prefix = searchDocumentPrefixForKind(hit.kind);
+  return prefix ? searchDocumentId(prefix, hit.id) : hit.id;
+}
+
+/** The hit for a bare registry id OR its search-document id (`knowledge:foo`). */
+function findRegistryHit(hits: readonly IRegistryHit[], requested: string): IRegistryHit | undefined {
+  const exact = hits.find((h) => h.id === requested);
+  if (exact) return exact;
+  const parsed = parseSearchDocumentId(requested);
+  if (!parsed || !isSearchDocumentPrefix(parsed.prefix)) return undefined;
+  const kind = searchKindForPrefix(parsed.prefix);
+  return hits.find((h) => h.id === parsed.id && h.kind === kind);
+}
+
 function gatherTuningTrace(
   hit: IRegistryHit | undefined,
   tuning: readonly ISearchTuningEntry[],
   taskOrQuery: string,
 ): IRankerExplainTuningTrace[] {
   if (!hit) return [];
-  const tokens = tokenize(taskOrQuery);
+  // THE trigger tokenizer and THE document id — the same inputs the rankers
+  // hand `tuningBoostFor`, so this trace is what they apply (explain ≡ ranker).
+  const tokens = tuningQueryTokens(taskOrQuery);
   const boost = tuningBoostFor(
     {
-      id: hit.id,
+      id: registryHitDocumentId(hit),
       kind: hit.kind,
       ...(hit.tags ? { tags: hit.tags } : {}),
       source: hit.source,
@@ -410,8 +440,12 @@ export function explainRankerDecision(
 ): IRankerExplainReport {
   const topN = options.topN ?? 10;
   const hits = listRegistryHits(inspection);
-  const id = request.id;
-  const found = hits.find((h) => h.id === id);
+  // A search-document id (`knowledge:foo`) and the bare registry id (`foo`)
+  // name the same entry; the ranker compares bare ids, the search index
+  // prefixed ones.
+  const found = findRegistryHit(hits, request.id);
+  const id = found?.id ?? request.id;
+  const documentId = found ? registryHitDocumentId(found) : request.id;
   const taskOrQuery = request.task ?? request.query ?? '';
   const tuning = listSearchTuning(inspection);
 
@@ -427,7 +461,7 @@ export function explainRankerDecision(
   if (request.query) {
     const index = buildSearchIndex(inspection);
     const result = searchIndex(index, { query: request.query, limit: Math.max(topN, 20), explain: true }, inspection);
-    const targetHit = result.hits.find((h) => h.document.id === id);
+    const targetHit = result.hits.find((h) => h.document.id === documentId);
     if (targetHit) {
       documentSnapshot = targetHit.document;
       searchScore = targetHit.score;
@@ -524,7 +558,7 @@ export function explainRankerDecision(
 
 export function renderRankerExplainText(report: IRankerExplainReport, whyNot: boolean): string {
   const lines: string[] = [];
-  const heading = whyNot ? `=== shrk why-not ${report.request.id} ===` : `=== shrk why ${report.request.id} ===`;
+  const heading = whyNot ? `=== why-not ${report.request.id} ===` : `=== why ${report.request.id} ===`;
   lines.push(heading);
   if (report.request.task) lines.push(`task: ${report.request.task}`);
   if (report.request.query) lines.push(`query: ${report.request.query}`);
@@ -593,7 +627,7 @@ function escHtml(s: string): string {
 
 export function renderRankerExplainMarkdown(report: IRankerExplainReport, whyNot: boolean): string {
   const lines: string[] = [];
-  lines.push(`# ${whyNot ? 'shrk why-not' : 'shrk why'} \`${report.request.id}\``);
+  lines.push(`# ${whyNot ? 'why-not' : 'why'}\`${report.request.id}\``);
   if (report.request.task) lines.push(`Task: \`${report.request.task}\``);
   if (report.request.query) lines.push(`Query: \`${report.request.query}\``);
   lines.push('');

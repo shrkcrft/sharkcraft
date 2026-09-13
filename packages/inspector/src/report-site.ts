@@ -1,6 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { buildAreaMap, renderAreaMapMarkdown, type IAreaMap } from './area-map.ts';
+import {
+  areaMapDegradedLine,
+  buildAreaMap,
+  formatClassificationRate,
+  renderAreaMapMarkdown,
+  type IAreaMap,
+} from './area-map.ts';
 import { buildCoverageReport } from './coverage-report.ts';
 import { buildDriftReport } from './drift.ts';
 import { evaluatePolicy } from './policy-engine.ts';
@@ -18,6 +24,8 @@ import {
   readQualityBaseline,
 } from './quality-baseline.ts';
 import { buildQualityReport } from './quality-report.ts';
+import { QualityGateStatus } from './quality-gate-status.ts';
+import { qualityGateStatus } from './quality-gate-row-status.ts';
 import { renderBundleValidationHtml } from './bundle-validate-html.ts';
 import { renderImpactHtml } from './impact-render.ts';
 import { renderImpactDot, renderImpactMermaid } from './impact-graph.ts';
@@ -377,7 +385,7 @@ export async function buildReportSite(
     <h1>SharkCraft report</h1>
     <p class="muted">Generated ${esc(new Date().toISOString())}</p>
     <table>
-      <tr><th>Quality score</th><td>${quality.score} <span class="tag ${quality.overall === 'fail' ? 'fail' : quality.overall === 'warn' ? 'warn' : 'ok'}">${esc(quality.overall.toUpperCase())}</span></td></tr>
+      <tr><th>Quality score</th><td>${quality.score} <span class="tag ${quality.overall === 'fail' ? 'fail' : quality.overall === 'warn' || quality.overall === 'not-verified' ? 'warn' : 'ok'}">${esc(quality.overall.toUpperCase())}</span></td></tr>
       <tr><th>Blockers</th><td>${quality.blockers}</td></tr>
       <tr><th>Warnings</th><td>${quality.warnings}</td></tr>
       <tr><th>Coverage overall</th><td>${coverage.overall}</td></tr>
@@ -408,10 +416,24 @@ export async function buildReportSite(
 
   // quality.html
   let qualityBody = `<h1>Quality</h1>`;
-  qualityBody += `<p>Overall: <span class="tag ${quality.overall === 'fail' ? 'fail' : quality.overall === 'warn' ? 'warn' : 'ok'}">${esc(quality.overall.toUpperCase())}</span> · Score: ${quality.score} · Blockers: ${quality.blockers} · Warnings: ${quality.warnings}</p>`;
+  qualityBody += `<p>Overall: <span class="tag ${quality.overall === 'fail' ? 'fail' : quality.overall === 'warn' || quality.overall === 'not-verified' ? 'warn' : 'ok'}">${esc(quality.overall.toUpperCase())}</span> · Score: ${quality.score} · Blockers: ${quality.blockers} · Warnings: ${quality.warnings}</p>`;
   qualityBody += '<table><thead><tr><th>Gate</th><th>Result</th><th>Notes</th></tr></thead><tbody>';
   for (const g of quality.gates) {
-    qualityBody += `<tr><td><code>${esc(g.id)}</code></td><td><span class="tag ${g.passed ? 'ok' : g.blocking ? 'fail' : 'warn'}">${g.passed ? 'OK' : g.blocking ? 'BLOCK' : 'WARN'}</span></td><td>${esc(g.notes.join('; '))}</td></tr>`;
+    // THE row status (`qualityGateStatus`): a gate that passed over part of
+    // its scope reads NOT VERIFIED, never OK.
+    const status = qualityGateStatus(g);
+    const tag = status === QualityGateStatus.Pass ? 'ok' : status === QualityGateStatus.Fail ? 'fail' : 'warn';
+    const label =
+      status === QualityGateStatus.Pass
+        ? 'OK'
+        : status === QualityGateStatus.Fail
+          ? 'BLOCK'
+          : status === QualityGateStatus.NotVerified
+            ? 'NOT VERIFIED'
+            : status === QualityGateStatus.Skipped
+              ? 'SKIPPED'
+              : 'WARN';
+    qualityBody += `<tr><td><code>${esc(g.id)}</code></td><td><span class="tag ${tag}">${label}</span></td><td>${esc(g.notes.join('; '))}</td></tr>`;
   }
   qualityBody += '</tbody></table>';
   if (baseline) {
@@ -425,8 +447,8 @@ export async function buildReportSite(
     'quality.html',
     shell('Quality', qualityBody, {
       current: 'quality',
-      description: 'Quality gate matrix. Each gate is run by `shrk quality` and `shrk quality baseline compare`.',
-      commandHints: ['shrk quality --strict --ci', 'shrk quality baseline diff latest previous'],
+      description: 'Quality gate matrix. Each gate is run by `shrk quality`.',
+      commandHints: ['shrk quality --strict --ci', 'shrk report quality --format html --output ./quality.html'],
     }),
   );
 
@@ -812,7 +834,11 @@ export async function buildReportSite(
 function renderAreaMapHtmlBody(map: IAreaMap): string {
   const lines: string[] = [];
   lines.push('<h1>Area map</h1>');
-  lines.push(`<p class="muted">${map.areas.length} areas · ${map.unclassifiedFiles} unclassified files</p>`);
+  lines.push(
+    `<p class="muted">${map.areas.length} areas · ${map.unclassifiedFiles} unclassified files · classified ${map.classifiedFiles}/${map.totalFiles} (${formatClassificationRate(map.classificationRate)})</p>`,
+  );
+  const degraded = areaMapDegradedLine(map);
+  if (degraded) lines.push(`<p class="warn"><strong>Warning:</strong> ${esc(degraded)}.</p>`);
   lines.push('<table><thead><tr><th>Kind</th><th>Files</th><th>Paths</th><th>Boundary rules</th><th>Risk</th></tr></thead><tbody>');
   for (const a of map.areas) {
     lines.push(

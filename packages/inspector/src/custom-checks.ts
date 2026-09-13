@@ -10,6 +10,15 @@
  * `metadata.checks: ICustomCheckDescriptor[]`. The engine never invents
  * a check; we only inventory what authors declare.
  *
+ * WHAT IS SCANNED: `type: 'rule'` entries ({@link isRuleEntry} — the same set
+ * `shrk rules list` shows) loaded from TypeScript knowledge / rule files, local
+ * or pack. A declaration anywhere else is REPORTED, never silently skipped:
+ *   - `metadata.checks` on a non-rule entry → `ignored`;
+ *   - a Markdown rule whose frontmatter held `metadata` (the Markdown loader
+ *     does not read it) → `ignored`;
+ *   - a non-array `metadata.checks` on a rule → `invalid`.
+ * Each is a declared check that can never run — a doctor error.
+ *
  * Hard rules:
  *   - No spawning a process by default.
  *   - Read-only inventory unless `--execute` is set explicitly.
@@ -19,7 +28,9 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { type IKnowledgeEntry, KnowledgeType } from '@shrkcrft/knowledge';
+import { type IKnowledgeEntry, unsupportedFrontmatterKeys } from '@shrkcrft/knowledge';
+import { isRuleEntry } from '@shrkcrft/rules';
+import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
 export const CUSTOM_CHECK_REPORT_SCHEMA = 'sharkcraft.custom-check/v1';
 export const CUSTOM_CHECKS_REGISTRY_SCHEMA = 'sharkcraft.custom-checks-registry/v1';
@@ -102,15 +113,41 @@ export interface ICustomCheckRegistryEntry {
   warnings: readonly string[];
 }
 
+/** A `metadata.checks` declaration the registry found but does not register — it can never run. */
+export interface ICustomCheckIgnoredDeclaration {
+  /** The entry that declared it. */
+  entryId: string;
+  /** Its knowledge `type` (`'rule'` only for a Markdown rule whose metadata the loader dropped). */
+  entryType: string;
+  /** The declaring file, project-relative when the root is known. */
+  source?: string;
+  /** Why it is not registered, and what to do instead. */
+  reason: string;
+  /** The check ids it declared, when readable — `checks run <id>` names where they went. */
+  checkIds: readonly string[];
+}
+
 export interface ICustomCheckRegistry {
   schema: typeof CUSTOM_CHECKS_REGISTRY_SCHEMA;
   generatedAt: string;
   entries: readonly ICustomCheckRegistryEntry[];
   duplicates: readonly { id: string; ruleIds: readonly string[] }[];
-  invalid: readonly { ruleId: string; reason: string }[];
+  /** Declared on a rule, but unusable (no id, no command, a non-array `metadata.checks`). */
+  invalid: readonly { ruleId: string; reason: string; source?: string; checkId?: string }[];
+  /** Declared where the registry does not read (a non-rule entry, a Markdown rule). */
+  ignored: readonly ICustomCheckIgnoredDeclaration[];
+  /** `type: 'rule'` entries scanned — via {@link isRuleEntry}, the set `shrk rules list` shows. */
+  scannedRules: number;
+}
+
+/** The inspection-free inputs of {@link buildCustomChecksRegistry}. */
+export interface IBuildCustomChecksOptions {
+  /** Makes each declaration's `source` project-relative. */
+  readonly projectRoot?: string;
 }
 
 const ID_RE = /^[a-z][a-z0-9.-]+$/;
+const TS_SOURCE_RE = /\.(?:ts|tsx|js|mjs|cjs)$/;
 
 /** Read the descriptors a rule declares under `metadata.checks`. */
 export function readDescriptorsFromRule(rule: IKnowledgeEntry): readonly ICustomCheckDescriptor[] {
@@ -120,27 +157,101 @@ export function readDescriptorsFromRule(rule: IKnowledgeEntry): readonly ICustom
   return raw.map((r) => ({ ...(r as ICustomCheckDescriptor), ownerRuleId: rule.id }));
 }
 
+function describeType(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+/** The string ids of a declared `metadata.checks` value (whatever its shape). */
+function declaredCheckIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    const id = raw && typeof raw === 'object' ? (raw as { id?: unknown }).id : undefined;
+    return typeof id === 'string' ? [id] : [];
+  }
+  return raw
+    .map((d) => (d && typeof d === 'object' ? (d as { id?: unknown }).id : undefined))
+    .filter((id): id is string => typeof id === 'string');
+}
+
+function relativeSource(origin: string | undefined, projectRoot: string | undefined): string | undefined {
+  if (!origin) return undefined;
+  if (!projectRoot || !nodePath.isAbsolute(origin)) return origin;
+  return nodePath.relative(projectRoot, origin).split(nodePath.sep).join('/');
+}
+
+/**
+ * Did this Markdown file's frontmatter declare `metadata` holding `checks`?
+ * Read through the Markdown loader's own "what did I drop" authority.
+ */
+function markdownDroppedChecks(origin: string | undefined): boolean {
+  if (!origin || !existsSync(origin)) return false;
+  let text: string;
+  try {
+    text = readFileSync(origin, 'utf8');
+  } catch {
+    return false;
+  }
+  return unsupportedFrontmatterKeys(text).some((k) => k.key === 'metadata' && /\bchecks\b/.test(k.block));
+}
+
 export function buildCustomChecksRegistry(
   entries: readonly IKnowledgeEntry[],
+  options: IBuildCustomChecksOptions = {},
 ): ICustomCheckRegistry {
   const out: ICustomCheckRegistryEntry[] = [];
   const idIndex = new Map<string, string[]>();
-  const invalid: { ruleId: string; reason: string }[] = [];
+  const invalid: { ruleId: string; reason: string; source?: string; checkId?: string }[] = [];
+  const ignored: ICustomCheckIgnoredDeclaration[] = [];
+  let scannedRules = 0;
 
   for (const e of entries) {
-    if (String(e.type) !== KnowledgeType.Rule) continue;
+    const source = relativeSource(e.source?.origin, options.projectRoot);
+    const at = source ? { source } : {};
+    const raw = (e.metadata as Record<string, unknown> | undefined)?.['checks'];
+    if (!isRuleEntry(e)) {
+      if (raw !== undefined) {
+        ignored.push({
+          entryId: e.id,
+          entryType: String(e.type),
+          ...at,
+          reason: `metadata.checks on a type:'${String(e.type)}' entry is not scanned — only type:'rule' entries carry checks (set type: 'rule', or move the checks onto a rule)`,
+          checkIds: declaredCheckIds(raw),
+        });
+      }
+      continue;
+    }
+    scannedRules += 1;
+    if (e.source?.loader === 'markdown') {
+      if (markdownDroppedChecks(e.source.origin)) {
+        ignored.push({
+          entryId: e.id,
+          entryType: String(e.type),
+          ...at,
+          reason:
+            'Markdown rule — the Markdown loader does not support metadata, so its metadata.checks were dropped; declare the rule (with its checks) in a TypeScript rule file',
+          checkIds: [],
+        });
+      }
+      continue;
+    }
+    if (raw === undefined) continue;
+    if (!Array.isArray(raw)) {
+      invalid.push({ ruleId: e.id, reason: `metadata.checks must be an array (got ${describeType(raw)})`, ...at });
+      continue;
+    }
     const descriptors = readDescriptorsFromRule(e);
     for (const d of descriptors) {
       const warnings: string[] = [];
       if (!d.id || typeof d.id !== 'string') {
-        invalid.push({ ruleId: e.id, reason: 'check entry missing string id' });
+        invalid.push({ ruleId: e.id, reason: 'check entry missing string id', ...at });
         continue;
       }
       if (!ID_RE.test(d.id)) {
         warnings.push(`id "${d.id}" should match ${ID_RE.source}`);
       }
       if (!d.command || typeof d.command !== 'string') {
-        invalid.push({ ruleId: e.id, reason: `check "${d.id}" missing command` });
+        invalid.push({ ruleId: e.id, reason: `check "${d.id}" missing command`, checkId: d.id, ...at });
         continue;
       }
       if (d.output === CustomCheckOutput.Json && !d.reportPath) {
@@ -167,7 +278,67 @@ export function buildCustomChecksRegistry(
     entries: out,
     duplicates,
     invalid,
+    ignored,
+    scannedRules,
   };
+}
+
+/**
+ * Every declaration the registry saw: registered + invalid + ignored (an
+ * ignored entry whose ids are unreadable still counts as one). The `expected`
+ * of the doctor's coverage — 0 means nothing was declared at all.
+ */
+export function declaredCustomCheckCount(registry: ICustomCheckRegistry): number {
+  return (
+    registry.entries.length +
+    registry.invalid.length +
+    registry.ignored.reduce((n, i) => n + Math.max(1, i.checkIds.length), 0)
+  );
+}
+
+/** Where `metadata.checks[]` is read from — what the empty state names instead of "add it to a rule". */
+export interface ICustomCheckScanSurface {
+  /** Project-relative TypeScript files (that exist — what the loader reads) whose `type: 'rule'` entries are scanned. */
+  readonly files: readonly { readonly file: string; readonly via: string }[];
+  /** Existing Markdown files listed as knowledge / rule sources — their entries cannot carry metadata. */
+  readonly markdownFiles: readonly string[];
+  /** `type: 'rule'` entries that came from Markdown. */
+  readonly markdownRules: number;
+}
+
+/**
+ * The concrete surface the custom-checks registry scans: local `ruleFiles` /
+ * `knowledgeFiles` / `docsFiles` and every valid pack's `ruleFiles` /
+ * `knowledgeFiles` — split into TypeScript (scanned) and Markdown (cannot
+ * carry metadata).
+ */
+export function customCheckScanSurface(inspection: ISharkcraftInspection): ICustomCheckScanSurface {
+  const files: { file: string; via: string }[] = [];
+  const markdownFiles: string[] = [];
+  const add = (abs: string, via: string): void => {
+    // The loaders skip a configured file that does not exist (the config's
+    // default docsFiles, a stale entry) — so does the surface they read.
+    if (!existsSync(abs)) return;
+    const file = nodePath.relative(inspection.projectRoot, abs).split(nodePath.sep).join('/') || abs;
+    if (TS_SOURCE_RE.test(abs)) files.push({ file, via });
+    else if (abs.toLowerCase().endsWith('.md')) markdownFiles.push(file);
+  };
+  const cfg = inspection.config;
+  if (cfg && inspection.sharkcraftDir) {
+    for (const key of ['ruleFiles', 'knowledgeFiles', 'docsFiles'] as const) {
+      for (const rel of cfg[key] ?? []) add(nodePath.resolve(inspection.sharkcraftDir, rel), key);
+    }
+  }
+  for (const pack of inspection.packs.validPacks ?? []) {
+    const c = pack.manifest?.contributions;
+    for (const key of ['ruleFiles', 'knowledgeFiles'] as const) {
+      for (const rel of c?.[key] ?? []) add(nodePath.resolve(pack.packageRoot, rel), `pack ${pack.packageName} ${key}`);
+    }
+  }
+  const markdownRules = inspection.knowledgeEntries.filter(
+    (e) => isRuleEntry(e) && e.source?.loader === 'markdown',
+  ).length;
+  return { files, markdownFiles, markdownRules };
 }
 
 export interface ICustomCheckDoctorReport {
@@ -176,11 +347,19 @@ export interface ICustomCheckDoctorReport {
   totalChecks: number;
   warnings: number;
   errors: number;
+  /** Declarations seen (registered + invalid + ignored) — 0 means nothing was declared. */
+  declaredChecks: number;
+  /** Declarations that can never run because the registry does not read them. */
+  ignored: number;
+  /** `type: 'rule'` entries scanned. */
+  scannedRules: number;
   details: readonly {
     ruleId: string;
     checkId: string;
     severity: 'error' | 'warning' | 'info';
     message: string;
+    /** The declaring file, when known. */
+    source?: string;
   }[];
 }
 
@@ -189,7 +368,23 @@ export function doctorCustomChecks(
 ): ICustomCheckDoctorReport {
   const details: ICustomCheckDoctorReport['details'][number][] = [];
   for (const inv of registry.invalid) {
-    details.push({ ruleId: inv.ruleId, checkId: '(invalid)', severity: 'error', message: inv.reason });
+    details.push({
+      ruleId: inv.ruleId,
+      checkId: inv.checkId ?? '(invalid)',
+      severity: 'error',
+      message: inv.reason,
+      ...(inv.source ? { source: inv.source } : {}),
+    });
+  }
+  // A declared check that can never run is a defect, not a footnote.
+  for (const ig of registry.ignored) {
+    details.push({
+      ruleId: ig.entryId,
+      checkId: ig.checkIds.join(',') || '(ignored)',
+      severity: 'error',
+      message: ig.reason,
+      ...(ig.source ? { source: ig.source } : {}),
+    });
   }
   for (const dup of registry.duplicates) {
     details.push({
@@ -215,6 +410,9 @@ export function doctorCustomChecks(
     totalChecks: registry.entries.length,
     warnings: details.filter((d) => d.severity === 'warning').length,
     errors: details.filter((d) => d.severity === 'error').length,
+    declaredChecks: declaredCustomCheckCount(registry),
+    ignored: registry.ignored.length,
+    scannedRules: registry.scannedRules,
     details,
   };
 }

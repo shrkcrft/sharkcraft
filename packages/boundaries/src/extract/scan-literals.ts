@@ -12,15 +12,28 @@
  * plain code.
  */
 
-/** Index of the closing quote of the string starting at `start` (handles escapes). */
+/**
+ * Index of the closing quote of the string starting at `start` (handles escapes).
+ *
+ * A `'…'` or `"…"` literal ends at an unescaped NEWLINE (JS semantics — only a
+ * template literal spans lines): the returned index is then the last character
+ * before the newline. Without this a quote the lexer could not recognise as
+ * code — the `'` inside a regex literal such as `/[&<>"']/g`, an apostrophe in
+ * prose — swallowed the rest of the FILE as one phantom string, hiding every
+ * real construct after it (round 11, 6.1a: a real `import()` 60 lines later
+ * vanished). Bounding the mis-lex to one line is strictly more accurate for
+ * every caller: zone lexing, the policy plane and array extraction alike.
+ */
 export function skipString(content: string, start: number): number {
   const quote = content[start];
+  const singleLine = quote === "'" || quote === '"';
   for (let i = start + 1; i < content.length; i += 1) {
     if (content[i] === '\\') {
       i += 1;
       continue;
     }
     if (content[i] === quote) return i;
+    if (singleLine && content[i] === '\n') return i - 1;
   }
   return content.length - 1;
 }

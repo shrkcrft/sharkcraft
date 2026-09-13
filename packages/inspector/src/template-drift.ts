@@ -19,6 +19,9 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { ITemplateDefinition } from '@shrkcrft/templates';
+import { collectDeclaredXrefs } from './declared-cross-references.ts';
+import { DeclaredXrefStatus } from './declared-xref-status.ts';
+import type { IDeclaredXrefReport } from './i-declared-xref-report.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
 export const TEMPLATE_DRIFT_SCHEMA = 'sharkcraft.template-drift/v1';
@@ -237,21 +240,33 @@ function checkBarrelTargets(
   return issues;
 }
 
+/**
+ * `template.related`, read from THE declared cross-reference collector (the
+ * same rows the self-config doctor reports). This used to look in knowledge
+ * and templates only, so a related construct or boundary-rule id — both real —
+ * was reported unresolved. The message keeps its `related id "<id>"` prefix:
+ * `shrk fix --template-drift` parses it.
+ */
 function checkRelatedIds(
-  inspection: ISharkcraftInspection,
+  xrefs: IDeclaredXrefReport,
   template: ITemplateDefinition,
 ): ITemplateDriftIssue[] {
   const issues: ITemplateDriftIssue[] = [];
-  for (const id of template.related ?? []) {
-    // related ids are knowledge / construct / template / playbook — try
-    // them all.
-    const knowledge = inspection.index.get(id);
-    const tmpl = inspection.templates.find((t) => t.id === id);
-    if (!knowledge && !tmpl) {
+  for (const row of xrefs.rows) {
+    if (row.sourceKind !== 'template' || row.sourceId !== template.id || row.field !== 'related') continue;
+    if (row.status === DeclaredXrefStatus.Dangling) {
       issues.push({
         severity: 'info',
         code: 'related-id-unresolved',
-        message: `related id "${id}" not found in knowledge or template registries.`,
+        message: `related id "${row.targetId}" not found in any registry${row.didYouMean.length > 0 ? ` — did you mean "${row.didYouMean[0]}"?` : '.'}`,
+      });
+    } else if (row.status === DeclaredXrefStatus.Unverified) {
+      // A cold registry is "could not look", never "does not exist" — and
+      // `fix --template-drift` must not drop an id nobody looked up.
+      issues.push({
+        severity: 'info',
+        code: 'related-id-unverified',
+        message: `related id "${row.targetId}" NOT VERIFIED — the registries were not warmed, so it could not be looked up.`,
       });
     }
   }
@@ -375,6 +390,11 @@ export function buildTemplateDriftReport(
   const entries: ITemplateDriftEntry[] = [];
   const all = inspection.templates as ITemplateDefinition[];
   const filtered = options.templateId ? all.filter((t) => t.id === options.templateId) : all;
+  // Collected once, and only when some template actually declares `related` —
+  // the collector walks every asset, which a report with nothing to resolve
+  // should not pay for.
+  let xrefs: IDeclaredXrefReport | undefined;
+  const xrefsFor = (): IDeclaredXrefReport => (xrefs ??= collectDeclaredXrefs(inspection));
 
   // Build the cross-template anchor producer map ONCE so each entry
   // can look up "is anchor X declared by some template?".
@@ -403,7 +423,7 @@ export function buildTemplateDriftReport(
       ...checkForbiddenFragments(t, paths),
       ...checkPathConventions(inspection, paths),
       ...checkBarrelTargets(inspection.projectRoot, ops),
-      ...checkRelatedIds(inspection, t),
+      ...((t.related?.length ?? 0) > 0 ? checkRelatedIds(xrefsFor(), t) : []),
       ...checkAnchorsNonEmpty(ops),
       ...checkProducedAnchors(t, values),
       ...checkRequiredAnchors(t, allProduced),

@@ -11,7 +11,40 @@
  * It is a lexer, not a compiler: it answers what the text says, which is the
  * largest thing that stays honest across `.ts`, `.tsx`, `.mts` and plain JS
  * with one code path.
+ *
+ * Round 11 (6.1a) made it the ONLY import extractor: `scanImports` (every
+ * boundary check, drift, impact, review packet…) and the `import-edges` DSL
+ * extractor both read through here, so "what does this file import" has one
+ * answer. By default it reads CODE only — a commented-out import, an import in
+ * a doc-comment code fence, or `"import x from 'y'"` inside a string is not a
+ * dependency. Measured against the TypeScript oracle over this repo (1716
+ * files): 79 phantom edges and 1 real miss before, 0 / 0 after.
  */
+import {
+  blankZoneKinds,
+  lexCodeZones,
+  zoneContaining,
+  zoneKeepsAt,
+  type CodeZoneKind,
+} from './code-zones.ts';
+
+/**
+ * Which text an import statement may be read from.
+ *
+ *   - `code` (the default): the statement's keyword must start in executable
+ *     code and its specifier must be a real string literal; comments are
+ *     blanked before matching, so an apostrophe inside a comment within a
+ *     multi-line clause can no longer cut a real import short.
+ *   - `all`: the raw file text — every byte, comments included. The explicit
+ *     escape hatch (`check boundaries --include-comments`, `scan: 'all'`).
+ */
+export type ImportParseZone = 'code' | 'all';
+
+/** Options for {@link parseImportStatements}. */
+export interface IParseImportsOptions {
+  /** Default `code`. */
+  readonly zone?: ImportParseZone;
+}
 
 /** How a name entered scope through an import. */
 export type ImportBindingKind = 'named' | 'default' | 'namespace';
@@ -54,14 +87,29 @@ export interface IParsedImport {
  * Matches one import/re-export statement up to its specifier.
  *
  * The clause may span lines (a multi-line `{ … }` block is normal) but never
- * contains a `;` or a quote, which is what keeps the lazy match from running
- * past the end of its own statement into the next one.
+ * contains a `;`, a quote or a BACKTICK, which is what keeps the lazy match
+ * from running past the end of its own statement into the next one. No real
+ * import clause holds a backtick; prose does — a doc comment's
+ * `` `shrk import <format> --populate` `` used to open a clause that ran on to
+ * the next real `from '…'`, so the raw reading (`--include-comments`,
+ * `scan: 'all'`) filed that import on the comment's line. The old scanImports
+ * regex excluded the backtick too; raw-mode lines match it again.
  *
  * `export … from '…'` is matched too: a re-export is an edge in the dependency
  * graph exactly like an import, and a barrel that is invisible here would make
  * every consumer behind it invisible as well.
+ *
+ * Linear by construction (round 11, 6.1(b)): the old form
+ * `\s+([^;'"]*?)\s*from` put three whitespace-consuming quantifiers side by
+ * side, which is fine on raw source and O(run²) once comments are blanked into
+ * long runs of spaces (6 / 24 / 94 / 371 ms as a JSDoc block doubled). Here a
+ * single `\s` separates the keyword from ONE lazy class, and `\bfrom` needs no
+ * whitespace quantifier in front of it, so each keyword costs one forward scan
+ * to its statement's end. Verified byte-identical to the old form on the raw
+ * text of every file in this repo. Do not reintroduce adjacent `\s*`/`\s+`
+ * around a lazy class — `r75-import-scan-zones.test.ts` times it.
  */
-const IMPORT_STATEMENT = /\b(import|export)\s+([^;'"]*?)\s*from\s*['"]([^'"]+)['"]\s*;?/g;
+const IMPORT_STATEMENT = /\b(import|export)\s([^;'"`]*?)\bfrom\s*['"]([^'"]+)['"]\s*;?/g;
 
 /**
  * The specifier-only forms, which bind no name: a side-effect import, a dynamic
@@ -129,13 +177,42 @@ function parseClause(clause: string): IImportBinding[] {
   return bindings;
 }
 
-/** 1-based line number of `index` within `content`. */
-function lineAt(content: string, index: number): number {
-  let line = 1;
-  for (let i = 0; i < index && i < content.length; i += 1) {
-    if (content[i] === '\n') line += 1;
+/** Offsets of every `\n` in `content`, for O(log n) line lookups. */
+function newlineOffsets(content: string): number[] {
+  const out: number[] = [];
+  for (let i = content.indexOf('\n'); i !== -1; i = content.indexOf('\n', i + 1)) out.push(i);
+  return out;
+}
+
+/**
+ * 1-based line of `index`: one plus the number of newlines BEFORE it. The
+ * index is the keyword's own offset — the old `scanImports` regex consumed the
+ * preceding `\n` with `(?:^|\s)`, so every import after line 1 was reported
+ * one line early (round 11, 6.1a#line-numbers).
+ */
+function lineAt(newlines: readonly number[], index: number): number {
+  let lo = 0;
+  let hi = newlines.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (newlines[mid]! < index) lo = mid + 1;
+    else hi = mid;
   }
-  return line;
+  return lo + 1;
+}
+
+/** Zones blanked before matching in `code` mode: comments only — the specifier is a string. */
+const COMMENT_ZONES: ReadonlySet<CodeZoneKind> = new Set<CodeZoneKind>(['comment']);
+
+/**
+ * Offset (within the match) of the specifier's OPENING quote. Every pattern
+ * ends `<quote><specifier><quote>` followed only by whitespace, `;` or `)`,
+ * and no clause may contain a quote, so the last quote in the match closes the
+ * specifier.
+ */
+function specifierQuoteOffset(match: string, specifier: string): number {
+  const closing = Math.max(match.lastIndexOf("'"), match.lastIndexOf('"'));
+  return closing - specifier.length - 1;
 }
 
 /**
@@ -146,23 +223,75 @@ function lineAt(content: string, index: number): number {
  * dependency graph legitimately counts it as an edge. Returning it and letting
  * each caller decide keeps that judgement at the call site instead of baking
  * one feature's answer into the shared parser.
+ *
+ * In the default `code` zone a statement is kept only when its keyword starts
+ * in a code zone AND its specifier quote opens a real string literal — the
+ * same {@link zoneKeepsAt} authority the policy plane and the extraction DSL
+ * use. Offsets, lines and `raw` always refer to the ORIGINAL text (blanking
+ * preserves length), so callers that splice `content` stay correct.
  */
-export function parseImportStatements(content: string): IParsedImport[] {
+export function parseImportStatements(
+  content: string,
+  options: IParseImportsOptions = {},
+): IParsedImport[] {
+  return parseImportStatementsWithMeta(content, options).statements;
+}
+
+/**
+ * {@link parseImportStatements}, plus how many characters the zone BLANKED
+ * before matching: the comment characters under `code`, `0` under `all`.
+ *
+ * The `import-edges` extractor zones itself (a pre-blanked buffer would erase
+ * every specifier), so this is the figure it reports as its `blankedChars` —
+ * the number `wiring explain` / `gates explain` print as
+ * `scan: code (N chars blanked)`. Without it the note claimed a zone removed
+ * nothing while it had dropped a commented-out edge.
+ */
+export function parseImportStatementsWithMeta(
+  content: string,
+  options: IParseImportsOptions = {},
+): { readonly statements: IParsedImport[]; readonly blankedChars: number } {
+  const zone: ImportParseZone = options.zone ?? 'code';
+  const zones = zone === 'code' ? lexCodeZones(content) : undefined;
+  const blanked = zones ? blankZoneKinds(content, zones, COMMENT_ZONES) : undefined;
+  const text = blanked ? blanked.content : content;
+  // Built on first use: a file whose statements are all zoned out (or that has
+  // none) never needs a line table.
+  let newlines: number[] | undefined;
+  const lineOfIndex = (index: number): number => lineAt((newlines ??= newlineOffsets(content)), index);
+  const keep = (index: number, match: string, specifier: string): boolean => {
+    if (!zones) return true;
+    const quote = index + specifierQuoteOffset(match, specifier);
+    // The specifier's quote must OPEN a plain string literal. "Inside a string"
+    // is not enough: `export const t = \`import z from 'w'\`` starts with a
+    // code `export`, and its `'w'` sits inside the template literal.
+    const specZone = zoneContaining(zones, quote);
+    return (
+      zoneKeepsAt('code', zones, index) &&
+      zoneKeepsAt('strings', zones, quote) &&
+      specZone !== undefined &&
+      specZone.start === quote &&
+      specZone.template !== true
+    );
+  };
+
   const out: IParsedImport[] = [];
   const claimed: { start: number; end: number }[] = [];
   let m: RegExpExecArray | null;
 
   IMPORT_STATEMENT.lastIndex = 0;
-  while ((m = IMPORT_STATEMENT.exec(content)) !== null) {
+  while ((m = IMPORT_STATEMENT.exec(text)) !== null) {
+    const specifier = m[3]!;
+    if (!keep(m.index, m[0], specifier)) continue;
     const clause = m[2]!;
     const typeOnly = /^type\b/.test(clause.trim());
     claimed.push({ start: m.index, end: m.index + m[0].length });
     out.push({
-      specifier: m[3]!,
+      specifier,
       bindings: typeOnly ? [] : parseClause(clause),
-      line: lineAt(content, m.index),
+      line: lineOfIndex(m.index),
       index: m.index,
-      raw: m[0]!,
+      raw: content.slice(m.index, m.index + m[0].length),
       typeOnly,
       kind: m[1] === 'export' ? 'reexport' : 'import',
     });
@@ -180,19 +309,21 @@ export function parseImportStatements(content: string): IParsedImport[] {
     [REQUIRE_CALL, 'require'],
   ] as const) {
     re.lastIndex = 0;
-    while ((m = re.exec(content)) !== null) {
+    while ((m = re.exec(text)) !== null) {
       if (overlapsClaimed(m.index)) continue;
+      const specifier = m[1]!;
+      if (!keep(m.index, m[0], specifier)) continue;
       out.push({
-        specifier: m[1]!,
+        specifier,
         bindings: [],
-        line: lineAt(content, m.index),
+        line: lineOfIndex(m.index),
         index: m.index,
-        raw: m[0]!,
+        raw: content.slice(m.index, m.index + m[0].length),
         typeOnly: false,
         kind,
       });
     }
   }
 
-  return out.sort((a, b) => a.index - b.index);
+  return { statements: out.sort((a, b) => a.index - b.index), blankedChars: blanked?.blankedChars ?? 0 };
 }

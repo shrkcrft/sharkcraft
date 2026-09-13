@@ -194,6 +194,11 @@ async function main(): Promise<void> {
     '',
   ].join('\n');
   writeFileSync(cfgPath, minimalCfg, 'utf8');
+  // The sentinel rule must govern at least one real source file: a rule whose
+  // `from` globs reach nothing checked nothing, and `check boundaries` settles
+  // that to exit 2 (NOT VERIFIED) — never a pass. A fresh consumer has no src/.
+  mkdirSync(join(tmp, 'src'), { recursive: true });
+  writeFileSync(join(tmp, 'src', 'index.ts'), 'export const smoke = 1;\n', 'utf8');
   const boundariesOut = capture('npx', tmp, [
     '--no-install',
     'shrk',
@@ -221,6 +226,16 @@ async function main(): Promise<void> {
     throw new Error(`Node-direct invocation produced unexpected output: ${nodeVersion}`);
   }
   console.log(`  → ${nodeVersion.trim()} (Node-direct)`);
+
+  // 6d. The bin target itself (round 13): `shrk` points at the dist/shrk.js
+  //     bootstrap, which loads dist/main.js and turns an unlinked workspace
+  //     dependency into one line at exit 70.
+  console.log('• node node_modules/@shrkcrft/cli/dist/shrk.js --version');
+  const binVersion = capture('node', tmp, ['node_modules/@shrkcrft/cli/dist/shrk.js', '--version']);
+  if (!/\d+\.\d+\.\d+/.test(binVersion)) {
+    throw new Error(`bin bootstrap produced unexpected output: ${binVersion}`);
+  }
+  console.log(`  → ${binVersion.trim()} (bin bootstrap)`);
 
   // 7. Cleanup tarballs (consumer dir stays for inspection).
   rmSync(tarballsDir, { recursive: true, force: true });

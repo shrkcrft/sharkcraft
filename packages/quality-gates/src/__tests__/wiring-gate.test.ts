@@ -65,13 +65,18 @@ describe('wiringGate', () => {
     }
   });
 
-  test('skipped (loud) when rules are configured but match no files (evaluated:0)', () => {
+  test('loud when rules are configured but match no files (evaluated:0): never skipped, never a pass', () => {
     const root = mkdtempSync(join(tmpdir(), 'shrk-wiring-empty-'));
     try {
+      // Round 11: a SELECTED rule that examined nothing is not `skipped` (which
+      // `shrk gate` would settle to 0) — at `error` severity `failOnEmpty`
+      // defaults on, so it FAILS exactly where `check wiring` exits 1, and it
+      // carries the rule's coverage.
       const r = wiringGate(root, { rules: [RULE] });
-      expect(r.status).toBe('skipped');
+      expect(r.status).toBe('fail');
       expect(r.message).toContain('nothing evaluated');
       expect(r.details?.evaluated).toBe(0);
+      expect(r.coverage?.[0]).toMatchObject({ subject: RULE.id, expected: 0, examined: 0 });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

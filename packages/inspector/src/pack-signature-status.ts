@@ -2,19 +2,22 @@
  * Pack signature freshness inspector.
  *
  * Reports each discovered pack's signature state without ever computing or
- * faking HMAC. Surfaces three statuses:
+ * faking HMAC. Freshness is read from THE pack-asset freshness authority
+ * (`detectPackAssetFreshness`): content digests recorded at sign time, never an
+ * mtime. Statuses:
  *
- *   present       — manifest has a signature and the timestamp is >= any
- *                   contribution file mtime we can see (heuristic — real
- *                   HMAC validation happens in pack-doctor).
- *   stale         — manifest has a signature but at least one contribution
- *                   file has a newer mtime than the signature timestamp.
- *   missing       — manifest has no signature block.
+ *   present     — signed, and every recorded contribution file still has the
+ *                 content that was signed (real HMAC validation happens in
+ *                 pack-doctor / packs verify).
+ *   stale       — signed, but a recorded contribution file changed since.
+ *   unverified  — signed, but the signature records no content digest for some
+ *                 file (signed before digests existed) — freshness NOT verified.
+ *   missing     — manifest has no signature block.
  *
  * The check is deterministic, read-only, and never requires the pack secret.
  */
-import { existsSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { describePackAssetFreshness, detectPackAssetFreshness } from './pack-asset-freshness.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
 export const PACK_SIGNATURE_STATUS_SCHEMA = 'sharkcraft.pack-signature-status/v1';
@@ -22,6 +25,7 @@ export const PACK_SIGNATURE_STATUS_SCHEMA = 'sharkcraft.pack-signature-status/v1
 export enum PackSignatureStatusKind {
   Present = 'present',
   Stale = 'stale',
+  Unverified = 'unverified',
   Missing = 'missing',
 }
 
@@ -32,8 +36,17 @@ export interface IPackSignatureEntry {
   readonly status: PackSignatureStatusKind;
   readonly signatureSignedAt?: string;
   readonly reason?: string;
+  /** First contribution file whose content changed since signing (back-compat alias of `divergedFiles[0]`). */
   readonly newerContributionFile?: string;
+  /**
+   * @deprecated Freshness is content divergence, never age — no mtime is read
+   * any more. Always absent.
+   */
   readonly newerContributionMtime?: string;
+  /** Every pack-relative file whose content differs from the signed record. */
+  readonly divergedFiles?: readonly string[];
+  /** Pack-relative files the signature holds no content digest for. */
+  readonly unrecordedFiles?: readonly string[];
   readonly secretAvailable: boolean;
   readonly nextCommand?: string;
   /**
@@ -53,6 +66,8 @@ export interface IPackSignatureStatusReport {
     readonly total: number;
     readonly present: number;
     readonly stale: number;
+    /** Signed packs whose freshness could not be verified (no content record). */
+    readonly unverified: number;
     readonly missing: number;
     /** Packs whose latest signature is dev-only (subset of `present`). */
     readonly dev: number;
@@ -61,35 +76,6 @@ export interface IPackSignatureStatusReport {
   readonly nextCommands: readonly string[];
 }
 
-const CONTRIB_SLOTS = [
-  'knowledgeFiles',
-  'ruleFiles',
-  'pathFiles',
-  'pathConventionFiles',
-  'templateFiles',
-  'pipelineFiles',
-  'presetFiles',
-  'boundaryFiles',
-  'contextTestFiles',
-  'agentTestFiles',
-  'scaffoldPatternFiles',
-  'policyCheckFiles',
-  'constructFiles',
-  'constructFacetFiles',
-  'playbookFiles',
-  'searchTuningFiles',
-  'feedbackRuleFiles',
-  'decisionFiles',
-  'mcpToolFiles',
-  'aiProviderFiles',
-  'docsFiles',
-  'contractTemplateFiles',
-  'migrationProfileFiles',
-  'conventionFiles',
-  'helperFiles',
-  'taskRoutingHintFiles',
-] as const;
-
 export function buildPackSignatureStatusReport(
   inspection: ISharkcraftInspection,
 ): IPackSignatureStatusReport {
@@ -97,6 +83,8 @@ export function buildPackSignatureStatusReport(
   const out: IPackSignatureEntry[] = [];
 
   for (const pack of inspection.packs.validPacks ?? []) {
+    const rel = nodePath.relative(inspection.projectRoot, pack.packageRoot);
+    const signCmd = secret ? `shrk packs sign ${rel}` : `SHARKCRAFT_PACK_SECRET=<secret> shrk packs sign ${rel}`;
     const sig = pack.manifest?.signature;
     if (!sig) {
       out.push({
@@ -106,80 +94,54 @@ export function buildPackSignatureStatusReport(
         status: PackSignatureStatusKind.Missing,
         reason: 'no signature block on manifest',
         secretAvailable: secret,
-        nextCommand: secret
-          ? `shrk packs sign ${nodePath.relative(inspection.projectRoot, pack.packageRoot)}`
-          : `SHARKCRAFT_PACK_SECRET=<secret> shrk packs sign ${nodePath.relative(inspection.projectRoot, pack.packageRoot)}`,
+        nextCommand: signCmd,
       });
       continue;
     }
-    const sigMs = (() => {
-      try {
-        return new Date(sig.signedAt).getTime();
-      } catch {
-        return 0;
-      }
-    })();
-    let newerFile: string | undefined;
-    let newerMtime: string | undefined;
-    const contributions = (pack.manifest?.contributions ?? {}) as Record<string, readonly string[] | undefined>;
-    for (const slot of CONTRIB_SLOTS) {
-      const rels = contributions[slot];
-      if (!rels) continue;
-      for (const rel of rels) {
-        const abs = nodePath.resolve(pack.packageRoot, rel);
-        if (!existsSync(abs)) continue;
-        try {
-          const st = statSync(abs);
-          if (st.mtimeMs > sigMs + 1000) {
-            newerFile = rel;
-            newerMtime = new Date(st.mtimeMs).toISOString();
-            break;
-          }
-        } catch {
-          continue;
-        }
-      }
-      if (newerFile) break;
-    }
-    if (newerFile && sig.dev === true) {
+    const freshness = detectPackAssetFreshness(pack);
+    const said = describePackAssetFreshness(freshness).signature;
+    const base = {
+      packageName: pack.packageName,
+      packageVersion: pack.packageVersion,
+      packageRoot: pack.packageRoot,
+      signatureSignedAt: sig.signedAt,
+      secretAvailable: secret,
+      ...(freshness.signature.diverged.length > 0
+        ? { divergedFiles: freshness.signature.diverged, newerContributionFile: freshness.signature.diverged[0] }
+        : {}),
+      ...(freshness.signature.unrecorded.length > 0 ? { unrecordedFiles: freshness.signature.unrecorded } : {}),
+    };
+    if (freshness.signature.state === 'diverged' && sig.dev === true) {
       // Dev packs are signed with the well-known PACK_DEV_SECRET and load fine
-      // locally unsigned/dev — every local `npm run build` re-stales them, so a
-      // standing "stale" warning is pure noise during pack development. Keep
-      // them out of the stale bucket (still counted under summary.dev) and
-      // soften the reason. Production (non-dev) signed packs are untouched.
+      // locally — every local build re-stales them, so a standing "stale" is
+      // pure noise during pack development. Keep them out of the stale bucket
+      // (still counted under summary.dev) and soften the reason. Production
+      // (non-dev) signed packs are untouched.
       out.push({
-        packageName: pack.packageName,
-        packageVersion: pack.packageVersion,
-        packageRoot: pack.packageRoot,
+        ...base,
         status: PackSignatureStatusKind.Present,
-        signatureSignedAt: sig.signedAt,
-        secretAvailable: secret,
         dev: true,
-        reason: `dev signature re-staled by a local build ("${newerFile}" newer) — dev packs load fine locally; re-sign before release`,
+        reason: `dev signature re-staled by a local build ("${freshness.signature.diverged[0]}" changed since signing) — dev packs load fine locally; re-sign before release`,
       });
-    } else if (newerFile) {
+    } else if (freshness.signature.state === 'diverged') {
       out.push({
-        packageName: pack.packageName,
-        packageVersion: pack.packageVersion,
-        packageRoot: pack.packageRoot,
+        ...base,
         status: PackSignatureStatusKind.Stale,
-        signatureSignedAt: sig.signedAt,
-        reason: `contribution file "${newerFile}" mtime (${newerMtime}) is newer than signature (${sig.signedAt})`,
-        newerContributionFile: newerFile,
-        newerContributionMtime: newerMtime,
-        secretAvailable: secret,
-        nextCommand: secret
-          ? `shrk packs sign ${nodePath.relative(inspection.projectRoot, pack.packageRoot)}`
-          : `SHARKCRAFT_PACK_SECRET=<secret> shrk packs sign ${nodePath.relative(inspection.projectRoot, pack.packageRoot)}`,
+        ...(said ? { reason: said } : {}),
+        nextCommand: signCmd,
+      });
+    } else if (freshness.signature.state === 'unrecorded') {
+      out.push({
+        ...base,
+        status: PackSignatureStatusKind.Unverified,
+        ...(said ? { reason: said } : {}),
+        ...(sig.dev === true ? { dev: true } : {}),
+        nextCommand: signCmd,
       });
     } else {
       out.push({
-        packageName: pack.packageName,
-        packageVersion: pack.packageVersion,
-        packageRoot: pack.packageRoot,
+        ...base,
         status: PackSignatureStatusKind.Present,
-        signatureSignedAt: sig.signedAt,
-        secretAvailable: secret,
         ...(sig.dev === true ? { dev: true } : {}),
       });
     }
@@ -192,6 +154,7 @@ export function buildPackSignatureStatusReport(
       total: out.length,
       present: out.filter((p) => p.status === PackSignatureStatusKind.Present).length,
       stale: out.filter((p) => p.status === PackSignatureStatusKind.Stale).length,
+      unverified: out.filter((p) => p.status === PackSignatureStatusKind.Unverified).length,
       missing: out.filter((p) => p.status === PackSignatureStatusKind.Missing).length,
       dev: out.filter((p) => p.dev === true).length,
     },
@@ -206,17 +169,17 @@ export function buildPackSignatureStatusReport(
 /**
  * Pack signature explanation. Surfaces the distinct lifecycle
  * states (`unsigned`, `stale`, `invalid`, `valid`, `present-unverified`,
- * `dev-signature`, `secret-missing`, `not-required`) per pack with a one-line
- * "why this matters".
+ * `freshness-unverified`, `dev-signature`, `secret-missing`, `not-required`)
+ * per pack with a one-line "why this matters".
  *
  * Read-only. Reads `inspection.packs.discoveredPacks[i].signatureStatus`
  * which already reflects the verifier's outcome when the inspector was
  * constructed with `verifyPackSignatures: true`.
  *
  * `valid` is reserved STRICTLY for a real HMAC pass (verifier === 'verified').
- * A pack whose signature timestamp is merely fresher than its contribution
- * files — but whose HMAC was not checked this run — is `present-unverified`,
- * never `valid`: freshness is not verification.
+ * A pack whose signed content record still matches — but whose HMAC was not
+ * checked this run — is `present-unverified`, never `valid`: freshness is not
+ * verification.
  */
 export type PackSignatureExplainState =
   | 'valid'
@@ -224,6 +187,7 @@ export type PackSignatureExplainState =
   | 'stale'
   | 'invalid'
   | 'present-unverified'
+  | 'freshness-unverified'
   | 'dev-signature'
   | 'secret-missing'
   | 'not-required'
@@ -292,15 +256,19 @@ export function explainPackSignatureStatus(
       nextCommand = signCmd;
     } else if (fresh?.status === 'stale') {
       state = 'stale';
-      explanation = `${fresh.reason ?? 'Signature is older than at least one contribution file.'}`;
+      explanation = `${fresh.reason ?? 'A contribution file changed since the signature was made.'}`;
+      nextCommand = signCmd;
+    } else if (fresh?.status === 'unverified') {
+      state = 'freshness-unverified';
+      explanation = `${fresh.reason ?? 'The signature records no content digests, so freshness is NOT verified.'}`;
       nextCommand = signCmd;
     } else if (fresh?.status === 'present') {
       // Freshness only — the HMAC was NOT checked this run. Reserve `valid`
-      // strictly for a real verifier pass so a bogus-HMAC-but-fresh-timestamp
-      // pack is never mislabelled as verified.
+      // strictly for a real verifier pass so a bogus-HMAC-but-fresh pack is
+      // never mislabelled as verified.
       state = 'present-unverified';
       explanation =
-        'Signature present and newer than every contribution file, but the HMAC was NOT checked this run.';
+        'Signature present and every contribution file still matches its signed content digest, but the HMAC was NOT checked this run.';
       nextCommand = 'shrk packs verify --required';
     } else {
       state = mode === 'required' ? 'unknown' : 'not-required';

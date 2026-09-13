@@ -11,10 +11,19 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 export const coverageCommand: ICommandHandler = {
   name: 'coverage',
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: 'scaffolds',
+      description: 'Scaffold coverage for a task or a domain.',
+      usage: 'shrk coverage scaffolds [--task "<task>"|--domain <domain>] [--json]',
+    },
+  ],
   description:
     'Report relationship/coverage quality across registries + scaffold coverage (`shrk coverage scaffolds --task "<task>"`).',
   usage:

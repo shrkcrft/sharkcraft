@@ -12,12 +12,27 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { printError } from '../output/print-error.ts';
 import { loadSurfaceContext } from '../surface/load-surface-context.ts';
-import { buildSurfaceSummary, findCommandInSummary } from '../surface/surface-summary.ts';
+import { surfaceRefusalFor } from '../surface/not-enabled-error.ts';
+import { SurfaceRefusalReason } from '../surface/surface-refusal-reason.ts';
+import {
+  buildSurfaceSummary,
+  findCommandInSummary,
+  type ISurfaceCommandView,
+} from '../surface/surface-summary.ts';
 
 export const mcpCommand: ICommandHandler = {
   name: 'mcp',
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: 'serve',
+      description: 'Start the read-only MCP server (stdio, or --http).',
+      usage: 'shrk [--cwd <dir>] mcp serve [--verbose] [--watch] [--http] [--port <n>] [--host <h>]',
+    },
+  ],
   description: 'MCP server operations (subcommand required).',
   usage:
     'shrk [--cwd <dir>] mcp serve [--verbose] [--watch] [--http] [--port <n>] [--host <h>]',
@@ -58,11 +73,16 @@ export const mcpCommand: ICommandHandler = {
  * enabled). Tools without `cliCommand` are always callable
  * (bootstrap MCP-only tools).
  *
+ * The same summary the CLI surface gate reads, so a tool whose sibling is a
+ * tool-maintenance command (`get_docs_check` → `docs check`) is refused
+ * outside SharkCraft's own repository, and one whose sibling a
+ * `surface.disabled` selector denies is refused too — with the CLI's reason.
+ *
  * Failure-soft: any error building the summary returns a no-op
  * resolver — the server stays open rather than failing closed on
  * unrelated issues.
  */
-async function buildMcpGateResolver(
+export async function buildMcpGateResolver(
   cwd: string,
 ): Promise<((tool: IToolDefinition) => IMcpGateDecision | null) | undefined> {
   try {
@@ -72,14 +92,24 @@ async function buildMcpGateResolver(
       if (!tool.cliCommand) return null;
       const view = findCommandInSummary(summary, tool.cliCommand);
       if (!view || view.callable) return null;
-      return {
-        command: tool.cliCommand,
-        reason: view.detail
-          ? `Sibling CLI command \`${tool.cliCommand}\` is experimental: ${view.detail}.`
-          : `Sibling CLI command \`${tool.cliCommand}\` is experimental and not enabled.`,
-      };
+      return { command: tool.cliCommand, reason: mcpGateReason(tool.cliCommand, view) };
     };
   } catch {
     return undefined;
+  }
+}
+
+/** The refusal reason an MCP tool reports — the CLI gate's cause and remedy. */
+function mcpGateReason(cliCommand: string, view: ISurfaceCommandView): string {
+  const refusal = surfaceRefusalFor(view);
+  switch (refusal.reasonCode) {
+    case SurfaceRefusalReason.ToolMaintenance:
+      return `${refusal.reason} To run it anyway: ${refusal.enableCommand}`;
+    case SurfaceRefusalReason.Disabled:
+      return `${refusal.reason} To allow it again: ${refusal.enableCommand}`;
+    case SurfaceRefusalReason.Experimental:
+      return view.detail
+        ? `Sibling CLI command \`${cliCommand}\` is experimental: ${view.detail}.`
+        : `Sibling CLI command \`${cliCommand}\` is experimental and not enabled.`;
   }
 }

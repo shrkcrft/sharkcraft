@@ -111,7 +111,7 @@ const FLOWS_PRIMARY: readonly IStartHereFlow[] = [
       'shrk dev start "<task>" --brief',
       'shrk dev status <id>',
       'shrk dev report <id>',
-      'shrk handoff --session <id>',
+      'shrk brief "<task>" --session <id> --mode handoff',
     ],
     safety: 'writes-drafts',
     docsLink: 'docs/dev-workflow.md',
@@ -169,7 +169,6 @@ const FLOWS_OPTIONAL: readonly IStartHereFlow[] = [
     whenToUse: 'You are about to tag.',
     commands: [
       'shrk release readiness',
-      'shrk demo package --validate',
       'shrk release smoke',
       'bun run release:preflight',
       'shrk release readiness --strict --preflight auto',

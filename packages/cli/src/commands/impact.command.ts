@@ -21,17 +21,27 @@ import {
   type ImpactGraphFormat,
 } from '@shrkcrft/inspector';
 import {
+  emptySelectionExit,
   flagBool,
   flagNumber,
   flagString,
   flagList,
+  requireInputSelector,
   resolveCwd,
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
+import { formatCoverage } from '@shrkcrft/core';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { fuzzyImpactAmbiguousHints, renderFailureHints } from '../output/failure-hints.ts';
 import { computeDeletedOrphans } from '../diff/deleted-orphans.ts';
+import { deletedOrphanCoverage } from '../diff/deleted-orphan-coverage.ts';
+import { deletedOrphanScopeNotes } from '../diff/deleted-orphan-scope-notes.ts';
+import { ExitCode } from '../exit-codes.ts';
+import { ALLOW_EMPTY_FLAG, allowEmptyValve } from '../gates/allow-empty.ts';
+import { settleVerdict } from '../gates/settle-verdict.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
 
 function collectFiles(
   args: ParsedArgs,
@@ -382,12 +392,20 @@ async function runViaGraph(args: ParsedArgs): Promise<number> {
  * default branch) and queries the graph for surviving files that still
  * import them or reference a symbol they declared (alias-resolved, incl.
  * barrel re-exports). Any surviving importer is reported with `file:line`
- * and the command exits non-zero; with none it exits 0 with
- * "no orphaned importers". Mirrors `--via-graph`'s flag/JSON style.
+ * and the command exits 1. Mirrors `--via-graph`'s flag/JSON style.
  *
  * The graph is queried against the CURRENT index snapshot — a not-yet-
  * reindexed delete still carries its inbound edges, which is exactly what
  * lets the check see the broken importers before they hit the build.
+ *
+ * It answers the same question as `shrk check orphans`, from the same scan,
+ * and settles the same way: "no orphaned importers" (exit 0) only when every
+ * deleted source file was checked against an index current for every
+ * surviving importer. A deleted source file the index does not know, an index
+ * that never read files changed since it was built, or nothing deleted at all
+ * is NOT VERIFIED (2). `--allow-empty` accepts an EMPTY scope (nothing the
+ * graph indexes was deleted) explicitly — never a stale one. `--json` carries
+ * `coverage`, `indexDivergence`, `exitCode`, `verdict` and `shortfalls`.
  */
 async function runDeletedOrphans(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
@@ -408,8 +426,17 @@ async function runDeletedOrphans(args: ParsedArgs): Promise<number> {
     }
     return 2;
   }
+  // What the scan examined — the ONE authority `check orphans` settles on
+  // (`deletedOrphanCoverage`): the deleted source files the index knows, over
+  // an index current for every surviving importer. This verb answers the same
+  // question from the same scan, so it settles the same way (`settleVerdict`;
+  // it has no gate envelope): "no orphaned importers" is printed only through
+  // the settled verdict, never over a stale, unindexed or empty scope.
+  const measured = deletedOrphanCoverage(scan);
+  const coverage = { ...measured, ...allowEmptyValve(args, measured.expected) };
   const deleted = scan.deleted;
   if (deleted.length === 0) {
+    const settled = settleVerdict(ExitCode.VerifiedPass, [coverage]);
     if (wantJson) {
       process.stdout.write(
         asJson({
@@ -418,27 +445,61 @@ async function runDeletedOrphans(args: ParsedArgs): Promise<number> {
           unresolvedDeleted: [],
           orphans: [],
           diagnostics: [`no deleted files in diff vs ${scan.ref}`],
+          coverage,
+          exitCode: settled.exit,
+          verdict: settled.verdict,
+          shortfalls: settled.shortfalls,
+          accepted: settled.accepted,
         }) + '\n',
       );
-      return 0;
+      return settled.exit;
     }
     process.stdout.write(header('Deleted-symbol orphans'));
     process.stdout.write(`No deleted files in diff vs ${scan.ref}.\n`);
-    return 0;
+    const line = verdictLine(settled, 'Nothing deleted — accepted.');
+    if (line) process.stdout.write(`\n${line}\n`);
+    if (settled.exit === ExitCode.NotVerified) {
+      process.stdout.write(`  Pass --${ALLOW_EMPTY_FLAG} to accept an empty diff explicitly.\n`);
+    }
+    return settled.exit;
   }
 
   const report = scan.report!;
+  const settled = settleVerdict(
+    report.orphans.length > 0 ? ExitCode.Failure : ExitCode.VerifiedPass,
+    [coverage],
+  );
+  const exit = settled.exit;
   if (wantJson) {
-    process.stdout.write(asJson(report) + '\n');
-    return report.orphans.length > 0 ? 1 : 0;
+    process.stdout.write(
+      asJson({
+        ...report,
+        ...(scan.indexDivergence ? { indexDivergence: scan.indexDivergence } : {}),
+        coverage,
+        exitCode: exit,
+        verdict: settled.verdict,
+        shortfalls: settled.shortfalls,
+        accepted: settled.accepted,
+      }) + '\n',
+    );
+    return exit;
   }
 
+  const notes = deletedOrphanScopeNotes(scan, coverage, 'shrk impact --deleted');
   process.stdout.write(header('Deleted-symbol orphans'));
   process.stdout.write(`Deleted files (vs ${scan.ref}): ${deleted.length}\n`);
+  process.stdout.write(kv('coverage', formatCoverage(coverage)) + '\n');
+  if (notes.index !== undefined) process.stdout.write(kv('index', notes.index) + '\n');
   if (report.orphans.length === 0) {
-    process.stdout.write('no orphaned importers\n');
     for (const d of report.diagnostics.slice(0, 5)) process.stdout.write(`! ${d}\n`);
-    return 0;
+    const line = verdictLine(settled, 'no orphaned importers', notes.lead);
+    if (line) process.stdout.write(`${line}\n`);
+    if (exit === ExitCode.NotVerified && coverage.expected === 0) {
+      process.stdout.write(
+        `  Pass --${ALLOW_EMPTY_FLAG} to accept a delete with no indexed source files explicitly.\n`,
+      );
+    }
+    return exit;
   }
   process.stdout.write(
     `\n${report.orphans.length} surviving importer(s) still reference deleted code:\n`,
@@ -452,15 +513,44 @@ async function runDeletedOrphans(args: ParsedArgs): Promise<number> {
     process.stdout.write(`  ✗ ${loc} ${detail} from deleted ${o.deletedFile}\n`);
   }
   for (const d of report.diagnostics.slice(0, 5)) process.stdout.write(`! ${d}\n`);
-  return 1;
+  // A surviving importer is real even over a partial scope (1); the line names
+  // what was not examined next to it.
+  const tail = verdictLine(settled, '');
+  if (tail) process.stdout.write(`${tail}\n`);
+  return exit;
 }
 
 export const impactCommand: ICommandHandler = {
   name: 'impact',
+  // Free: `impact <fileOrQuery>` resolves a fuzzy query, never refused.
+  positionals: PositionalMode.Free,
+  subverbs: [
+    { name: 'tests', description: 'The tests a change impacts.', usage: 'shrk impact tests ["<task>"] [--files a,b] [--since <ref>] [--json]', positionals: PositionalMode.Free },
+    {
+      name: 'graph',
+      description: 'Render a saved impact report as a graph.',
+      usage: 'shrk impact graph <impact-report.json> [--format mermaid|dot] [--output <path>]',
+      positionals: PositionalMode.Path,
+    },
+    {
+      name: 'baseline',
+      description: 'Write / show / clear the impact baseline (`show` is the default).',
+      usage: 'shrk impact baseline <write|show|clear> [--json]',
+      positionals: PositionalMode.None,
+      subverbs: [
+        { name: 'write', description: 'Write the impact baseline.', usage: 'shrk impact baseline write [--json]' },
+        { name: 'show', description: 'Show the impact baseline.', usage: 'shrk impact baseline show [--json]' },
+        { name: 'clear', description: 'Clear the impact baseline.', usage: 'shrk impact baseline clear [--json]' },
+      ],
+    },
+  ],
   description:
     'Architecture impact analysis: direct + transitive dependents, risk + suggested commands. Supports fuzzy <query> resolution. Read-only.',
   usage:
-    'shrk impact <fileOrQuery> | --file <path> | --specifier <spec> | --since <ref> | --staged | --files a,b | --plan <plan.json> | --bundle <id> | --deleted [--since <ref>] [--max-depth N] [--limit N] [--format text|markdown|html|json] [--output <path>] [--tree|--no-tree] [--json] [--html] [--resolve|--resolve-only|--explain-resolution|--no-resolve]',
+    'shrk impact <fileOrQuery> | --file <path> | --specifier <spec> | --since <ref> | --staged | --files a,b | --plan <plan.json> | --bundle <id> | --deleted [--since <ref>] [--allow-empty] [--max-depth N] [--limit N] [--format text|markdown|html|json] [--output <path>] [--tree|--no-tree] [--json] [--html] [--resolve|--resolve-only|--explain-resolution|--no-resolve]',
+  // `--deleted` and `--allow-empty` take no value — they must never swallow a
+  // following positional.
+  booleanFlags: new Set(['deleted', ALLOW_EMPTY_FLAG]),
   async run(args: ParsedArgs): Promise<number> {
     if (args.positional[0] === 'tests') {
       return runImpactTests({ ...args, positional: args.positional.slice(1) });
@@ -485,6 +575,15 @@ export const impactCommand: ICommandHandler = {
     if (args.flags.has('deleted')) {
       return runDeletedOrphans(args);
     }
+    // No input at all is a usage error (3) — it used to render as a confident
+    // `Impact (empty) … Risk: low`, a verdict over nothing.
+    const noSelector = requireInputSelector(args, {
+      flags: ['file', 'files', 'specifier', 'since', 'staged', 'plan', 'bundle', 'task', 'symbol'],
+      positional: true,
+      usage:
+        'shrk impact <fileOrQuery> | --file <path> | --files a,b | --specifier <spec> | --since <ref> | --staged | --plan <plan.json> | --bundle <id> | --task "<text>" | --symbol <Name> | --deleted',
+    });
+    if (noSelector !== null) return noSelector;
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
     // Warm construct cache so fuzzy resolution can map plugin keys / events /
@@ -516,7 +615,7 @@ export const impactCommand: ICommandHandler = {
           }
           process.stdout.write('\nNext commands:\n');
           process.stdout.write(`  shrk trace --symbol ${symbolFlag}\n`);
-          process.stdout.write(`  shrk find "${symbolFlag}"\n`);
+          process.stdout.write(`  shrk search "${symbolFlag}"\n`);
         }
         return 1;
       }
@@ -567,6 +666,17 @@ export const impactCommand: ICommandHandler = {
     const collected = collectFiles(args, cwd);
     const positionalRest = args.positional.slice(1).join(' ').trim();
     const task = flagString(args, 'task') ?? (positionalRest.length > 0 ? positionalRest : undefined);
+    // A selector was given but resolved to 0 files (`--since HEAD` on a clean
+    // tree): nothing was analysed — 2, never `Impact (empty) … Risk: low`.
+    if (
+      collected.files.length === 0 &&
+      collected.planTargets.length === 0 &&
+      collected.specifier === undefined &&
+      task === undefined &&
+      args.positional.length === 0
+    ) {
+      return emptySelectionExit(flagBool(args, 'json') || flagString(args, 'format') === 'json');
+    }
     const maxDepth = flagNumber(args, 'max-depth');
     const limit = flagNumber(args, 'limit');
 

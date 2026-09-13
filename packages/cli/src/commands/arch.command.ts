@@ -2,11 +2,16 @@ import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
   ArchReportStore,
+  archStoreMissing,
   diffSnapshots,
   runArchCheck,
   type IArchContract,
   type IArchReport,
 } from '@shrkcrft/architecture-guard';
+import type { IVerdictCoverage } from '@shrkcrft/core';
+import { settleVerdict } from '../gates/settle-verdict.ts';
+import type { ISettledVerdict } from '../gates/settled-verdict.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
 import {
   flagBool,
   flagString,
@@ -74,12 +79,27 @@ async function runArchCheckCommand(args: ParsedArgs): Promise<number> {
       // best-effort
     }
   }
+  // Settle first, render second: a run with no code-graph store analyzed ZERO
+  // files, so its "0 errors" proves nothing — NOT VERIFIED (2), the same answer
+  // the quality-gates arch gate (`skipped`) and `gate baseline --refreeze` (2)
+  // give the same diagnostic. `arch` is a registered verdict verb.
+  const coverage: IVerdictCoverage[] = archStoreMissing(report)
+    ? [{ unit: 'files', expected: 0, examined: 0, reason: 'code-graph store missing — run `shrk graph index`' }]
+    : [];
+  const settled = settleVerdict(report.countsBySeverity.error > 0 ? 1 : 0, coverage);
   if (wantJson) {
-    process.stdout.write(asJson(report) + '\n');
-    return report.countsBySeverity.error > 0 ? 1 : 0;
+    process.stdout.write(
+      asJson({
+        ...report,
+        exitCode: settled.exit,
+        verdict: settled.verdict,
+        shortfalls: settled.shortfalls,
+      }) + '\n',
+    );
+    return settled.exit;
   }
-  printArchReport(report);
-  return report.countsBySeverity.error > 0 ? 1 : 0;
+  printArchReport(report, settled);
+  return settled.exit;
 }
 
 async function runArchBaseline(args: ParsedArgs): Promise<number> {
@@ -164,14 +184,17 @@ async function runArchBaseline(args: ParsedArgs): Promise<number> {
   return 2;
 }
 
-function printArchReport(report: IArchReport): void {
+function printArchReport(report: IArchReport, settled: ISettledVerdict): void {
   process.stdout.write(header('Architecture guard'));
   process.stdout.write(kv('schema', report.schema) + '\n');
   process.stdout.write(kv('files analyzed', String(report.filesAnalyzed)) + '\n');
   process.stdout.write(kv('errors', String(report.countsBySeverity.error)) + '\n');
   process.stdout.write(kv('warnings', String(report.countsBySeverity.warning)) + '\n');
   if (report.violations.length === 0) {
-    process.stdout.write('\nNo violations.\n');
+    // "No violations." only when the run examined something (exit 0); over a
+    // missing store the settled line says NOT VERIFIED instead.
+    const line = verdictLine(settled, 'No violations.');
+    if (line) process.stdout.write(`\n${line}\n`);
   } else {
     process.stdout.write('\nViolations:\n');
     for (const v of report.violations.slice(0, 80)) {

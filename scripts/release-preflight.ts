@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { runWorkspaceLinkGate } from './lib/workspace-links.ts';
 
 interface IStep {
   name: string;
@@ -101,7 +102,24 @@ function checkTaxonomyDrift(): number {
 }
 
 const STEPS: readonly IStep[] = [
+  // Round 13 (13.2): an unlinked or undeclared workspace dependency. FIRST —
+  // it costs about a second and every later step's meaning depends on it: each Bun-run
+  // step below (import-hygiene, the doctor audit, tests) resolves @shrkcrft/*
+  // through tsconfig paths and is blind to a missing link, and build-dist
+  // would emit a dist that dies under node on every verb. (build and
+  // build-dist refuse the same tree; this names it before 20 minutes of tests.)
+  {
+    name: 'workspace-links',
+    run: () => runWorkspaceLinkGate(process.cwd(), '[workspace-links]'),
+    required: true,
+  },
   { name: 'typecheck', cmd: 'bun', args: ['x', 'tsc', '-p', 'tsconfig.base.json', '--noEmit'], required: true },
+  // Round 13 (K12): scripts/** is excluded from tsconfig.base.json (its include
+  // is packages/*/src, examples and tools), so the release tooling itself —
+  // this file, build-dist, the workspace-link gate, the node-dist smoke — was
+  // never typechecked. tsconfig.scripts.json covers every script and its
+  // tests; REQUIRED, right after the package typecheck.
+  { name: 'typecheck-scripts', cmd: 'bun', args: ['x', 'tsc', '-p', 'tsconfig.scripts.json', '--noEmit'], required: true },
   // R37: hard-gate on import-hygiene errors. `shrk check imports` exits
   // non-zero on any `error`-severity finding, including lazy
   // `require('node:*')`. Warnings (dynamic imports) do not block.
@@ -127,6 +145,14 @@ const STEPS: readonly IStep[] = [
   // genuine hang. Keep in sync with the `test` script + ci.yml.
   { name: 'tests', cmd: 'bun', args: ['test', '--timeout', '30000'], required: true },
   { name: 'build-dist', cmd: 'bun', args: ['run', 'build:dist'], required: true },
+  // Round 13 (13.2): run the EMITTED dist under node — `node
+  // packages/cli/dist/main.js --version` must exit 0 and print the version, and
+  // the MCP entry (stdin closed) must not die with ERR_MODULE_NOT_FOUND; both
+  // bin bootstraps get the same probes. Every step above runs through Bun,
+  // whose tsconfig-paths resolution of @shrkcrft/* is blind to a missing
+  // workspace link, so without this "ready to tag" was printable over a dist
+  // no node could load. REQUIRED, right after build-dist (it probes that dist).
+  { name: 'node-dist-smoke', cmd: 'bun', args: ['run', 'scripts/node-dist-smoke.ts'], required: true },
   { name: 'dashboard-build', cmd: 'bun', args: ['run', 'dashboard:build'], required: true },
   { name: 'publish-dry-run', cmd: 'bun', args: ['run', 'publish:dry-run'], required: true },
   { name: 'release-check', cmd: 'bun', args: ['run', 'release:check'], required: false },

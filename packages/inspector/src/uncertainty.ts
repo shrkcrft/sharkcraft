@@ -127,7 +127,7 @@ function buildSuggestedCommands(
     out.push(`shrk coverage scaffolds --task "${task}"`);
   }
   if (signals.some((s) => s.code === 'weak-knowledge-matches' || s.code === 'low-ranker-confidence')) {
-    out.push(`shrk why-not <id> --for-task "${task}"`);
+    out.push(`shrk task "${task}" --explain-ranking`);
     out.push(`shrk search tuning explain "${task}"`);
     out.push(`shrk search "${task}" --explain`);
   }

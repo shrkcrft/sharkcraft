@@ -8,9 +8,11 @@ import {
   readFeatureBundle,
 } from '@shrkcrft/inspector';
 import {
+  emptySelectionExit,
   flagBool,
   flagString,
   flagList,
+  requireInputSelector,
   resolveCwd,
   type ICommandHandler,
   type ParsedArgs,
@@ -29,7 +31,7 @@ export const ownersListCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
-    const cfg = (inspection.config as { ownershipFiles?: readonly string[] } | null)?.ownershipFiles;
+    const cfg = inspection.config?.ownershipFiles;
     const { rules, sources, warnings } = await loadOwnershipRules(cwd, cfg);
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson({ rules, sources, warnings }) + '\n');
@@ -56,7 +58,7 @@ export const ownersMatchCommand: ICommandHandler = {
     }
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
-    const cfg = (inspection.config as { ownershipFiles?: readonly string[] } | null)?.ownershipFiles;
+    const cfg = inspection.config?.ownershipFiles;
     const { rules } = await loadOwnershipRules(cwd, cfg);
     const m = matchFile(file, rules);
     if (flagBool(args, 'json')) {
@@ -71,11 +73,19 @@ export const ownersMatchCommand: ICommandHandler = {
   },
 };
 
+const OWNERS_IMPACT_USAGE = 'shrk owners impact --files a,b | --plan <plan.json> | --bundle <id>';
+
 export const ownersImpactCommand: ICommandHandler = {
   name: 'impact',
   description: 'Ownership impact for files / plan / bundle.',
-  usage: 'shrk owners impact --files a,b | --plan <plan.json> | --bundle <id>',
+  usage: OWNERS_IMPACT_USAGE,
   async run(args: ParsedArgs): Promise<number> {
+    // A required selector omitted is a usage error — never `(0 files)`, exit 0.
+    const noSelector = requireInputSelector(args, {
+      flags: ['files', 'plan', 'bundle'],
+      usage: OWNERS_IMPACT_USAGE,
+    });
+    if (noSelector !== null) return noSelector;
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
     const planFile = flagString(args, 'plan');
@@ -104,7 +114,10 @@ export const ownersImpactCommand: ICommandHandler = {
         for (const p of b.plans) for (const t of p.expectedTargets) all.push(t);
       }
     }
-    const cfg = (inspection.config as { ownershipFiles?: readonly string[] } | null)?.ownershipFiles;
+    // A selector that resolved to nothing (an empty plan, an unknown bundle)
+    // analysed nothing — 2, never `Ownership impact (0 files)`.
+    if (all.length === 0) return emptySelectionExit(flagBool(args, 'json'));
+    const cfg = inspection.config?.ownershipFiles;
     const { rules } = await loadOwnershipRules(cwd, cfg);
     const impact = impactFor([...new Set(all)], rules);
     if (flagBool(args, 'json')) {

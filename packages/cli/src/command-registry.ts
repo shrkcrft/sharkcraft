@@ -1,4 +1,6 @@
 import * as nodePath from 'node:path';
+import type { PositionalMode } from './dispatch/positional-mode.ts';
+import type { ISubverbSpec } from './dispatch/subverb-spec.ts';
 
 export interface ParsedArgs {
   positional: string[];
@@ -7,6 +9,14 @@ export interface ParsedArgs {
   multiFlags: Map<string, string[]>;
   /** Resolved global cwd (absolute), if --cwd was passed at the top level. */
   globalCwd?: string;
+  /**
+   * The tokens `parseArgs` read, verbatim — how each flag was SPELLED, which
+   * the parsed map cannot tell (`--x` and `-x` both key `x`; `--offset -1`
+   * leaves `offset` valueless and keys `1`). Set by `parseArgs`; absent on a
+   * hand-built ParsedArgs. Read it through {@link spellFlagAsTyped} /
+   * {@link misreadValueHint}.
+   */
+  argv?: readonly string[];
 }
 
 export interface ICommandHandler {
@@ -21,6 +31,34 @@ export interface ICommandHandler {
    * naturally emits). Optional; commands without it parse exactly as before.
    */
   booleanFlags?: ReadonlySet<string>;
+  /**
+   * Subverbs this handler dispatches internally from `positional[0]`
+   * (`shrk check wiring`). Opt-in: the command index lists each as a
+   * first-class command, and — with `positionals: PositionalMode.None` — the
+   * command-string resolver can prove an unknown bare token is an unknown
+   * subverb instead of a free positional.
+   */
+  subverbs?: readonly ISubverbSpec[];
+  /**
+   * What a `positional[0]` that is not a subverb means. `undefined` = legacy
+   * (unchecked): an unknown tail is reported `prefix-only`, never flagged.
+   */
+  positionals?: PositionalMode;
+  /**
+   * The COMPLETE accepted flag set, when declared. The dispatcher refuses any
+   * other flag BEFORE the handler runs (`usageExitFor`: 3 on a verdict verb, 2
+   * elsewhere), so a typo can never read as an opt-in; the global flags
+   * (`dispatch/global-flags.ts`) are always accepted on top. A declared
+   * subverb's `flags` add to it. Undeclared = the post-run read-tracking
+   * detector judges instead.
+   */
+  flags?: ReadonlySet<string>;
+  /**
+   * The handler re-executes `process.argv` in a child process, so the flags it
+   * uses are read by the child: the post-run read-tracking detector must not
+   * judge this process's parse.
+   */
+  forwardsArgv?: boolean;
   run(args: ParsedArgs): Promise<number> | number;
 }
 
@@ -40,12 +78,29 @@ function makeTrieNode(): ICommandTrieNode {
   return { children: new Map(), aliases: new Map() };
 }
 
+/**
+ * Does `token` continue the command path below `node` — a trie child (or child
+ * alias), or a subverb the node's handler declares (`check wiring`)?
+ */
+function continuesPath(node: ICommandTrieNode, token: string): boolean {
+  if (token.startsWith('-')) return false;
+  if (node.children.has(node.aliases.get(token) ?? token)) return true;
+  return node.handler?.subverbs?.some((s) => s.name === token || s.aliases?.includes(token) === true) === true;
+}
+
 /** Result of a greedy descent through the trie. */
 export interface ICommandResolution {
   /** Handler at the deepest matched path (may be undefined if it's a pure group). */
   handler?: ICommandHandler;
   /** The canonical segments that matched (aliases already resolved). */
   matchedPath: string[];
+  /**
+   * The same segments as the user SPELLED them (an alias stays an alias), the
+   * global flags the descent stepped over removed. `[...matchedTokens, ...rest]`
+   * is the argv with its command path first — the view the verdict path and
+   * the usage record read (`withoutPathGlobals`).
+   */
+  matchedTokens: string[];
   /** Tokens left over after the descent stopped (passed to the handler). */
   rest: string[];
   /** The trie node where the descent stopped — useful for help/suggestions. */
@@ -214,25 +269,73 @@ export class CommandRegistry {
    *
    * Returns the deepest node's handler, the canonical path that matched,
    * and the remaining tokens (passed to the handler).
+   *
+   * `options.transparent` names flag tokens the descent may step OVER instead
+   * of stopping at (the dispatcher's global `--strict` / `--no-hints`) — only
+   * while they sit INSIDE the command path. A run of them is stepped over when
+   * the token after it continues the path (a child or child alias of the
+   * current node, or a subverb its handler declares); the run is hoisted into
+   * `rest` before any `--` sentinel, so the handler still sees it. So
+   * `shrk --no-hints scaffolds list` resolves `scaffolds list` and
+   * `shrk check --strict wiring` keeps `wiring` as the subverb.
+   *
+   * Past the path, a token `options.bindsValue` names (the bare `--strict`,
+   * which `doctor` reads as `--strict <level>`) stays exactly where it is, in
+   * front of its value: `doctor --strict warnings` leaves `['--strict',
+   * 'warnings']`, never a positional `warnings`. A self-contained one
+   * (`--no-hints`, `--strict=<level>`) is still moved out of the way, so it
+   * never swallows the positional after it (`task --no-hints "add a thing"`).
    */
-  resolve(tokens: readonly string[]): ICommandResolution {
+  resolve(
+    tokens: readonly string[],
+    options: {
+      readonly transparent?: (token: string) => boolean;
+      readonly bindsValue?: (token: string) => boolean;
+    } = {},
+  ): ICommandResolution {
     let node = this.root;
     const matched: string[] = [];
+    const spelled: string[] = [];
+    const hoisted: string[] = [];
+    const kept: string[] = [];
+    const isTransparent = (t: string | undefined): boolean =>
+      t !== undefined && t !== '--' && options.transparent?.(t) === true;
     let i = 0;
     while (i < tokens.length) {
       const t = tokens[i]!;
+      if (isTransparent(t)) {
+        let end = i;
+        while (isTransparent(tokens[end])) end += 1;
+        const run = tokens.slice(i, end);
+        i = end;
+        const next = tokens[i];
+        if (next !== undefined && continuesPath(node, next)) {
+          hoisted.push(...run);
+          continue;
+        }
+        for (const flag of run) (options.bindsValue?.(flag) === true ? kept : hoisted).push(flag);
+        break;
+      }
       if (t.startsWith('-')) break;
       const canonical = node.aliases.get(t) ?? t;
       const child = node.children.get(canonical);
       if (!child) break;
       node = child;
       matched.push(canonical);
+      spelled.push(t);
       i += 1;
+    }
+    const rest = [...kept, ...tokens.slice(i)];
+    if (hoisted.length > 0) {
+      const sentinel = rest.indexOf('--');
+      if (sentinel === -1) rest.push(...hoisted);
+      else rest.splice(sentinel, 0, ...hoisted);
     }
     return {
       handler: node.handler,
       matchedPath: matched,
-      rest: tokens.slice(i),
+      matchedTokens: spelled,
+      rest,
       node,
     };
   }
@@ -315,9 +418,39 @@ export function parseArgs(argv: readonly string[], options: ParseArgsOptions = {
       positional.push(arg);
     }
   }
-  const out: ParsedArgs = { positional, flags, multiFlags };
+  const out: ParsedArgs = { positional, flags, multiFlags, argv: [...argv] };
   if (options.globalCwd) out.globalCwd = options.globalCwd;
   return out;
+}
+
+/**
+ * How the user SPELLED a parsed flag. The parser keys `--x` and `-x` alike as
+ * `x`, so a message that inferred the dashes from the key's length named a
+ * flag nobody typed (`graph cycles --x` → `Unknown flag "-x"`). Reads the argv
+ * `parseArgs` kept; without it, the conventional spelling (`-k` for one letter).
+ */
+export function spellFlagAsTyped(key: string, argv: readonly string[] | undefined): string {
+  for (const token of argv ?? []) {
+    if (token === '--') break;
+    if (token === `--${key}` || token.startsWith(`--${key}=`)) return `--${key}`;
+    if (token === `-${key}`) return `-${key}`;
+  }
+  return `${key.length === 1 ? '-' : '--'}${key}`;
+}
+
+/**
+ * `--offset -1`: a flag value never starts with `-`, so `parseArgs` reads `-1`
+ * as a flag of its own and leaves `--offset` valueless. A refusal that said
+ * "-1 is not a flag" named the wrong problem; this names the flag the number
+ * was meant for, and the `=` spelling that passes it as the value. `undefined`
+ * unless `key` is numeric and its token directly follows a value-less `--flag`.
+ */
+export function misreadValueHint(key: string, argv: readonly string[] | undefined): string | undefined {
+  if (argv === undefined || !/^\d+(?:\.\d+)?$/.test(key)) return undefined;
+  const at = argv.indexOf(`-${key}`);
+  const owner = at > 0 ? argv[at - 1] : undefined;
+  if (owner === undefined || owner === '--' || !owner.startsWith('--') || owner.includes('=')) return undefined;
+  return `-${key} was read as a flag, not as the value of ${owner} — a flag value cannot start with "-" (${owner}=-${key} passes it as the value)`;
 }
 
 /**
@@ -496,6 +629,48 @@ export function flagString(args: ParsedArgs, name: string): string | undefined {
 export function flagBool(args: ParsedArgs, name: string): boolean {
   const v = args.flags.get(name);
   return v === true || v === 'true';
+}
+
+/**
+ * The guard for a per-item query verb whose input SELECTOR is required
+ * (`tests missing --files a,b`). Without it, "you gave me nothing to check"
+ * rendered as "I checked and found nothing": zero bytes, exit 0.
+ *
+ * Returns `null` when any listed flag (or, with `positional: true`, any
+ * positional) was passed; otherwise writes the usage line and the accepted
+ * selectors to stderr and returns `3` — the request itself was malformed.
+ */
+export function requireInputSelector(
+  args: ParsedArgs,
+  spec: { readonly flags: readonly string[]; readonly positional?: boolean; readonly usage: string },
+): number | null {
+  const given = spec.flags.some((f) => {
+    const v = args.flags.get(f);
+    return v !== undefined && v !== false && v !== '';
+  });
+  if (given || (spec.positional === true && args.positional.length > 0)) return null;
+  const selectors = spec.flags.map((f) => `--${f}`).join('/');
+  const hint =
+    selectors.length === 0
+      ? 'pass a positional argument'
+      : `pass one of ${selectors}${spec.positional ? ' (or a positional argument)' : ''}`;
+  process.stderr.write(`Usage: ${spec.usage}\n  no input selected — ${hint}\n`);
+  return 3;
+}
+
+/**
+ * A selector WAS given but resolved to 0 files (`--since HEAD` on a clean
+ * tree): nothing was analysed, so the answer is `2` (not verified) — never a
+ * confident empty result. `--json` gets a parseable object saying so.
+ */
+export function emptySelectionExit(wantJson: boolean): number {
+  const reason = '0 files selected — nothing analysed';
+  if (wantJson) {
+    process.stdout.write(`${JSON.stringify({ files: [], analysed: false, reason, exitCode: 2 })}\n`);
+  } else {
+    process.stderr.write(`${reason} (not verified).\n`);
+  }
+  return 2;
 }
 
 export function flagNumber(args: ParsedArgs, name: string): number | undefined {

@@ -1,4 +1,5 @@
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import type { IVerdictCoverage } from '@shrkcrft/core';
 import { hasActionHints, type IActionHints, type IKnowledgeEntry } from '@shrkcrft/knowledge';
 import {
   PackageManager,
@@ -8,8 +9,30 @@ import {
 import { PipelineStepType } from '@shrkcrft/pipelines';
 import { resolvePreset, resolvePresetReferences } from '@shrkcrft/presets';
 import { PACK_SECRET_ENV, verifyPackManifest } from '@shrkcrft/plugin-api';
+import * as nodePath from 'node:path';
 import { inspectionReferenceLookup } from './reference-lookup.ts';
+import {
+  buildDeclaredXrefReport,
+  collectDeclaredXrefs,
+  isBrokenXref,
+} from './declared-cross-references.ts';
+import { DeclaredXrefStatus } from './declared-xref-status.ts';
+import type { IDeclaredXrefReport } from './i-declared-xref-report.ts';
 import { runPackReleaseCheck, type IPackReleaseCheck } from './pack-release-check.ts';
+import {
+  collectContributionLoadFailures,
+  collectContributionRejections,
+  collectRegistryOutcomes,
+  formatEntryRejection,
+  type IContributionLoadFailure,
+} from './contribution-load-failures.ts';
+import { ContributionKind } from './contribution-kind.ts';
+import type { IContributionEntryRejection } from './i-contribution-entry-rejection.ts';
+import type { IRegistryOutcomes } from './i-registry-outcomes.ts';
+import { describePackAssetFreshness, detectPackAssetFreshness } from './pack-asset-freshness.ts';
+import { detectUnregisteredExports, type IUnregisteredExport } from './unregistered-exports.ts';
+import { typecheckPackAssets } from './pack-typecheck.ts';
+import type { ITypecheckFilesResult } from './typecheck-files.ts';
 
 export interface IPackDoctorIssue {
   severity: 'error' | 'warning' | 'info';
@@ -37,7 +60,24 @@ export interface IPackDoctorIssue {
     | 'release-contribution-issue'
     | 'release-signature-issue'
     | 'release-files-issue'
-    | 'release-readiness-issue';
+    | 'release-readiness-issue'
+    | 'contribution-load-failed'
+    /** Round 12 (12.1): entries a contribution file declares that its loader refused. */
+    | 'contribution-entries-rejected'
+    | 'partially-resolved-contributions'
+    | 'compiled-artifacts-stale'
+    | 'compiled-artifacts-unrecorded'
+    | 'unregistered-export'
+    | 'typecheck-error'
+    | 'typecheck-not-run'
+    /** A pack-contributed asset names a cross-reference id no registry has. */
+    | 'pack-xref-dangling'
+    /** …names an id that resolves only in a kind the field does not accept. */
+    | 'pack-xref-wrong-kind'
+    /** …names ids that could not be looked up (registry not warmed / empty). */
+    | 'pack-xref-unverified'
+    /** A declaration problem: unknown facet kind, supersession cycle / chain, malformed field. */
+    | 'pack-xref-invalid';
   message: string;
   /** Free-form suggestion. */
   suggestion?: string;
@@ -56,6 +96,17 @@ export interface IPackDoctorReport {
   };
   /** Optional release-check payload per pack (populated when --release was passed). */
   releaseChecks?: readonly IPackReleaseCheck[];
+  /** Per-pack typecheck results when the opt-in `--typecheck` ran (callers derive coverage from them). */
+  typecheckResults?: readonly { readonly packageName: string; readonly result: ITypecheckFilesResult }[];
+  /**
+   * Compiled contribution artifacts that HAVE a source, and how many of them a
+   * build record (source-map `sourcesContent` or signed digests) let the
+   * freshness authority compare. An `unrecorded` artifact was never examined,
+   * so a verdict over it is NOT VERIFIED. Absent when no pack ships a compiled
+   * artifact with a source. Derived from the same `detectPackAssetFreshness`
+   * call that emits the compiled-artifacts-* issues.
+   */
+  compiledArtifactCoverage?: IVerdictCoverage;
 }
 
 export interface IPackDoctorOptions {
@@ -72,6 +123,30 @@ export interface IPackDoctorOptions {
   release?: boolean;
   /** When true, release-check warnings escalate to errors. */
   strict?: boolean;
+  /**
+   * Load failures the async registry loaders reported (helpers, conventions,
+   * routing hints, …) — {@link buildPackDoctorReportAsync} gathers them. The
+   * inspection-time loader failures are always read from the inspection.
+   */
+  registryLoadFailures?: readonly IContributionLoadFailure[];
+  /**
+   * What EVERY registry loader reported in one run (`collectRegistryOutcomes`)
+   * — {@link buildPackDoctorReportAsync} gathers it. Its rejections feed
+   * `contribution-entries-rejected` (round 12, 12.1); without it only the
+   * inspection-time loaders' rejections are seen.
+   */
+  registryOutcomes?: IRegistryOutcomes;
+  /** Pack entries exported by a group module but never registered (see `detectUnregisteredExports`). */
+  unregisteredExports?: readonly IUnregisteredExport[];
+  /** Per-pack `typecheckPackAssets` results (the opt-in `--typecheck`). */
+  typecheckResults?: readonly { readonly packageName: string; readonly result: ITypecheckFilesResult }[];
+  /**
+   * THE declared cross-reference report (`buildDeclaredXrefReport`, warmed) —
+   * {@link buildPackDoctorReportAsync} gathers it. Without it the sync doctor
+   * collects on the caller's warm state: a cold cache yields `unverified`
+   * rows, never a false dangling id.
+   */
+  declaredXrefs?: IDeclaredXrefReport;
 }
 
 const GEN_KEYWORDS = ['generate', 'create', 'add', 'refactor', 'test', 'review'];
@@ -85,6 +160,44 @@ function appliesToGeneration(e: IKnowledgeEntry): boolean {
 function isCriticalOrHigh(e: IKnowledgeEntry): boolean {
   const p = String(e.priority);
   return p === 'critical' || p === 'high';
+}
+
+/**
+ * The `@shrkcrft/plugin-api` authoring type an asset of each kind can be
+ * annotated with (`satisfies I<Kind>[]`), so `--typecheck` fails a missing
+ * required field at build time. A kind with no published type is absent.
+ */
+const ASSET_TYPE_BY_KIND: Readonly<Partial<Record<ContributionKind, string>>> = {
+  [ContributionKind.Knowledge]: 'IKnowledgeEntry',
+  [ContributionKind.Rule]: 'IKnowledgeEntry',
+  [ContributionKind.Path]: 'IKnowledgeEntry',
+  [ContributionKind.PathConvention]: 'IKnowledgeEntry',
+  [ContributionKind.Template]: 'ITemplateDefinition',
+  [ContributionKind.Convention]: 'IConvention',
+  [ContributionKind.Helper]: 'IPackHelper',
+  [ContributionKind.TaskRoutingHint]: 'ITaskRoutingHint',
+  [ContributionKind.RegistrationHint]: 'IRegistrationHint',
+  [ContributionKind.Playbook]: 'IPlaybookInput',
+  [ContributionKind.Construct]: 'IConstructInput',
+  [ContributionKind.ConstructFacet]: 'IConstructFacetInput',
+  [ContributionKind.SearchTuning]: 'ISearchTuning',
+  [ContributionKind.ScaffoldPattern]: 'IScaffoldPattern',
+  [ContributionKind.Policy]: 'IPackPolicyCheck',
+  [ContributionKind.DelegateRecipe]: 'IDelegateRecipe',
+};
+
+/**
+ * THE build-time pointer printed next to a rejected entry (round 12, 12.1f):
+ * the runtime validator caught it; an annotated asset makes `--typecheck`
+ * catch it before the pack ships.
+ */
+export function rejectedEntryTypecheckHint(kind: ContributionKind, pack: string): string {
+  const type = ASSET_TYPE_BY_KIND[kind];
+  if (!type) {
+    // No published authoring type for this kind: the runtime loader is the check.
+    return `\`shrk packs test ${pack} --load\` runs this loader at build time and fails on the entry — run it before publishing.`;
+  }
+  return `Annotate the asset with a type-only import and \`satisfies ${type}[]\` (from @shrkcrft/plugin-api) — see docs/pack-authoring.md — then \`shrk packs test ${pack} --typecheck\` catches this at build time.`;
 }
 
 /** A leading package-manager / runner literal a pack verification command may
@@ -158,6 +271,32 @@ export function buildPackDoctorReport(
       .map((e) => e.id),
   );
   const detectedPm = detectedProjectManager(inspection.workspace);
+  const loadFailures = collectContributionLoadFailures(
+    inspection,
+    options.registryLoadFailures ?? options.registryOutcomes?.loadFailures ?? [],
+  );
+  // THE rejection channel, and each file's accepted count (the loader's own):
+  // `N of M entries rejected` is accepted + rejected = declared.
+  const rejections = collectContributionRejections(inspection, options.registryOutcomes?.rejections ?? []);
+  const acceptedByFile = new Map<string, number>();
+  for (const a of options.registryOutcomes?.accepted ?? []) {
+    acceptedByFile.set(a.file, (acceptedByFile.get(a.file) ?? 0) + 1);
+  }
+  for (const d of inspection.loaderDiagnostics ?? []) {
+    if (d.status !== 'ok') continue;
+    const abs = nodePath.resolve(d.filePath);
+    acceptedByFile.set(abs, (acceptedByFile.get(abs) ?? 0) + d.count);
+  }
+  const rejectedFiles = new Set(rejections.map((r) => r.file));
+  // Files the inspection-time loaders imported AND that produced ≥ 1 entry.
+  // Compiled artifacts with a source, and those no build record covers.
+  let compiledWithSource = 0;
+  const unrecordedArtifacts: string[] = [];
+  const producingFiles = new Set(
+    (inspection.loaderDiagnostics ?? [])
+      .filter((d) => d.status === 'ok' && d.count > 0)
+      .map((d) => nodePath.resolve(d.filePath)),
+  );
 
   for (const pack of inspection.packs.invalidPacks) {
     issues.push({
@@ -197,9 +336,150 @@ export function buildPackDoctorReport(
         packageName: pack.packageName,
         code: 'empty-resolved-contributions',
         message:
-          'Pack declared contribution files but nothing loaded — every file is missing, empty, or duplicates local entries.',
+          'Pack declared contribution files but nothing loaded — every file is missing, empty, failed to load, or duplicates local entries.',
         suggestion: 'Run `shrk packs get <pack>` and check the listed contribution files.',
       });
+    }
+
+    // A contribution file the module loader could not import: nothing in it
+    // takes effect, whatever a regex scrape of it might list. One error per file.
+    const packRootPrefix = nodePath.resolve(pack.packageRoot) + nodePath.sep;
+    const packFailures = [...loadFailures.values()].filter(
+      (f) => f.packageName === pack.packageName || f.file.startsWith(packRootPrefix),
+    );
+    for (const f of packFailures) {
+      issues.push({
+        severity: 'error',
+        packageName: pack.packageName,
+        code: 'contribution-load-failed',
+        message: `${nodePath.relative(pack.packageRoot, f.file) || f.file} (${f.kind}) failed to load — ${f.message}. Nothing in it takes effect.`,
+        suggestion: 'Fix the syntax / import error in that file; release-check reproduces the load.',
+        suggestedCommand: `shrk packs release-check ${pack.packageRoot}`,
+      });
+    }
+
+    // Entries a contribution file DECLARES that its loader REFUSED (round 12,
+    // 12.1): one error per file. A file with 8 of 10 entries used to read as
+    // healthy here — only a file producing ZERO entries was ever flagged.
+    const packRejections = rejections.filter(
+      (r) => r.packageName === pack.packageName || r.file.startsWith(packRootPrefix),
+    );
+    const byFile = new Map<string, IContributionEntryRejection[]>();
+    for (const r of packRejections) byFile.set(r.file, [...(byFile.get(r.file) ?? []), r]);
+    for (const [file, list] of byFile) {
+      const declared = (acceptedByFile.get(file) ?? 0) + list.length;
+      const kind = list[0]!.kind;
+      issues.push({
+        severity: 'error',
+        packageName: pack.packageName,
+        code: 'contribution-entries-rejected',
+        message: `${nodePath.relative(pack.packageRoot, file) || file} (${kind}): ${list.length} of ${declared} ${
+          declared === 1 ? 'entry' : 'entries'
+        } rejected — ${list.map((r) => formatEntryRejection(r)).join('; ')}. A rejected entry does not take effect.`,
+        suggestion: `Fix the field(s) the loader names. ${
+          options.typecheckResults ? '' : rejectedEntryTypecheckHint(kind, nodePath.relative(inspection.projectRoot, pack.packageRoot) || pack.packageRoot)
+        }`.trim(),
+        suggestedCommand: `shrk packs contributions --pack ${pack.packageName}`,
+      });
+    }
+
+    // Declared knowledge-family files that LOADED but produced no entry: the
+    // pack prints `k=2` next to `entries=1` and that pair used to go unread.
+    if (declaredAny && resolvedAny) {
+      const familyRels = [
+        ...(manifest.contributions.knowledgeFiles ?? []),
+        ...(manifest.contributions.ruleFiles ?? []),
+        ...(manifest.contributions.pathFiles ?? []),
+        ...(manifest.contributions.pathConventionFiles ?? []),
+        ...(manifest.contributions.templateFiles ?? []),
+        ...(manifest.contributions.pipelineFiles ?? []),
+        ...(manifest.contributions.docsFiles ?? []),
+      ];
+      const familyAbs = [...new Set(familyRels.map((rel) => nodePath.resolve(pack.packageRoot, rel)))];
+      const silent = familyAbs.filter(
+        (abs) =>
+          !producingFiles.has(abs) &&
+          !loadFailures.has(abs) &&
+          // Every entry rejected: `contribution-entries-rejected` says why.
+          !rejectedFiles.has(abs) &&
+          !inspection.warnings.includes(
+            `pack ${pack.packageName}: missing contribution file ${nodePath.relative(pack.packageRoot, abs)}`,
+          ),
+      );
+      if (silent.length > 0) {
+        issues.push({
+          severity: 'warning',
+          packageName: pack.packageName,
+          code: 'partially-resolved-contributions',
+          message: `${silent.length} of ${familyAbs.length} declared contribution file(s) loaded but produced no entries: ${silent
+            .map((abs) => nodePath.relative(pack.packageRoot, abs))
+            .join(', ')}.`,
+          suggestion:
+            'Each file must export entry-shaped values (an array default export, or named entries); check the export shape and the required fields.',
+        });
+      }
+    }
+
+    // Compiled contributions vs their source — THE freshness authority
+    // (content, never mtime). A stale build means shrk serves the previous one.
+    const freshness = detectPackAssetFreshness(pack);
+    const saidBuild = describePackAssetFreshness(freshness).build;
+    if (freshness.build.state === 'stale' && saidBuild) {
+      issues.push({
+        severity: options.strict || options.release ? 'error' : 'warning',
+        packageName: pack.packageName,
+        code: 'compiled-artifacts-stale',
+        message: saidBuild,
+        ...(freshness.build.rebuildCommand
+          ? { suggestedCommand: `(cd ${pack.packageRoot} && ${freshness.build.rebuildCommand})` }
+          : {}),
+      });
+    } else if (freshness.build.state === 'unrecorded' && saidBuild) {
+      // Never compared (no build record): NOT VERIFIED by default — the
+      // verdict settles it through `compiledArtifactCoverage` — and, like a
+      // stale build, an error under --strict / --release.
+      issues.push({
+        severity: options.strict || options.release ? 'error' : 'warning',
+        packageName: pack.packageName,
+        code: 'compiled-artifacts-unrecorded',
+        message: saidBuild,
+      });
+    }
+    for (const a of freshness.build.artifacts) {
+      if (a.source === null) continue; // no source → nothing to compare it to
+      compiledWithSource += 1;
+      if (a.state === 'unrecorded') unrecordedArtifacts.push(`${pack.packageName}:${a.artifact}`);
+    }
+
+    for (const u of options.unregisteredExports ?? []) {
+      if (u.packageName !== pack.packageName) continue;
+      issues.push({
+        severity: 'error',
+        packageName: pack.packageName,
+        code: 'unregistered-export',
+        message: `${u.group}${u.line > 0 ? `:${u.line}` : ''} ${u.message}`,
+      });
+    }
+
+    for (const t of options.typecheckResults ?? []) {
+      if (t.packageName !== pack.packageName) continue;
+      if (!t.result.ran) {
+        issues.push({
+          severity: 'warning',
+          packageName: pack.packageName,
+          code: 'typecheck-not-run',
+          message: `--typecheck examined 0 TS files (${t.result.note ?? 'nothing to check'}) — NOT verified.`,
+        });
+        continue;
+      }
+      for (const e of t.result.errors) {
+        issues.push({
+          severity: 'error',
+          packageName: pack.packageName,
+          code: 'typecheck-error',
+          message: `${nodePath.relative(pack.packageRoot, e.file) || e.file}:${e.line}:${e.column} TS${e.code} ${e.message}`,
+        });
+      }
     }
 
     // Templates contributed by this pack — require a non-trivial description.
@@ -415,6 +695,50 @@ export function buildPackDoctorReport(
     }
   }
 
+  // Declared cross-references on pack-contributed assets (round 11, 4.2): the
+  // SAME rows the self-config doctor reports, scoped to the pack that owns the
+  // source asset — never a second walker over the fields.
+  const xrefs = options.declaredXrefs ?? collectDeclaredXrefs(inspection);
+  const packNames = new Set(inspection.packs.discoveredPacks.map((p) => p.packageName));
+  const unverifiedByPack = new Map<string, number>();
+  for (const row of xrefs.rows) {
+    if (!row.packageName || !packNames.has(row.packageName)) continue;
+    if (row.status === DeclaredXrefStatus.Unverified) {
+      unverifiedByPack.set(row.packageName, (unverifiedByPack.get(row.packageName) ?? 0) + 1);
+      continue;
+    }
+    if (!isBrokenXref(row)) continue;
+    issues.push({
+      severity: row.severity === 'error' ? 'error' : 'warning',
+      packageName: row.packageName,
+      code: row.status === DeclaredXrefStatus.Dangling ? 'pack-xref-dangling' : 'pack-xref-wrong-kind',
+      message: `${row.message}${row.file ? ` (${row.file})` : ''}`,
+      suggestion:
+        row.didYouMean.length > 0
+          ? `Did you mean "${row.didYouMean[0]}"? Fix the id in the pack source, then re-sign the pack.`
+          : 'Fix or remove the id in the pack source, then re-sign the pack.',
+      suggestedCommand: `shrk self-config resolve ${row.targetId}`,
+    });
+  }
+  for (const issue of xrefs.issues) {
+    if (!issue.packageName || !packNames.has(issue.packageName)) continue;
+    issues.push({
+      severity: issue.severity,
+      packageName: issue.packageName,
+      code: 'pack-xref-invalid',
+      message: `[${issue.code}] ${issue.message}${issue.file ? ` (${issue.file})` : ''}`,
+    });
+  }
+  for (const [packageName, n] of unverifiedByPack) {
+    issues.push({
+      severity: 'info',
+      packageName,
+      code: 'pack-xref-unverified',
+      message: `${n} declared cross-reference id(s) NOT VERIFIED — the registry they resolve against was not warmed, or is empty.`,
+      suggestedCommand: 'shrk self-config xrefs --json',
+    });
+  }
+
   const summary = {
     errors: issues.filter((i) => i.severity === 'error').length,
     warnings: issues.filter((i) => i.severity === 'warning').length,
@@ -425,7 +749,53 @@ export function buildPackDoctorReport(
     packsChecked: inspection.packs.discoveredPacks.length,
     issues,
     summary,
+    ...(options.typecheckResults ? { typecheckResults: options.typecheckResults } : {}),
+    ...(compiledWithSource > 0
+      ? {
+          compiledArtifactCoverage: {
+            unit: 'compiled artifacts',
+            expected: compiledWithSource,
+            examined: compiledWithSource - unrecordedArtifacts.length,
+            reason: 'have no build record (source-map sourcesContent or signed content digests) to compare their source against',
+            ...(unrecordedArtifacts.length > 0
+              ? { unexamined: unrecordedArtifacts.slice(0, 20), unexaminedTotal: unrecordedArtifacts.length }
+              : {}),
+          },
+        }
+      : {}),
   };
+}
+
+/**
+ * The pack doctor with every ASYNC input gathered first: the registry loaders'
+ * load failures, unregistered group-module exports, and (opt-in) a typecheck
+ * of each pack's TS assets. `packs doctor` and the MCP doctor tools share it,
+ * so both report the same issues.
+ */
+export async function buildPackDoctorReportAsync(
+  inspection: ISharkcraftInspection,
+  options: IPackDoctorOptions & { readonly typecheck?: boolean } = {},
+): Promise<IPackDoctorReport> {
+  // ONE run of every registry loader: load failures, rejected and accepted entries.
+  const [registryOutcomes, unregisteredExports] = await Promise.all([
+    collectRegistryOutcomes(inspection),
+    detectUnregisteredExports(inspection).then((all) => all.filter((u) => u.packageName !== undefined)),
+  ]);
+  const registryLoadFailures = registryOutcomes.loadFailures;
+  const typecheckResults = options.typecheck
+    ? inspection.packs.validPacks.map((p) => ({
+        packageName: p.packageName,
+        result: typecheckPackAssets({ packageRoot: p.packageRoot, manifestPath: p.manifestPath, manifest: p.manifest ?? null }),
+      }))
+    : undefined;
+  return buildPackDoctorReport(inspection, {
+    ...options,
+    registryLoadFailures,
+    registryOutcomes,
+    unregisteredExports,
+    declaredXrefs: options.declaredXrefs ?? (await buildDeclaredXrefReport(inspection)),
+    ...(typecheckResults ? { typecheckResults } : {}),
+  });
 }
 
 /** Map a single release-check finding code to one of the four IPackDoctorIssue

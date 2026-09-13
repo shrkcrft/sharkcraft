@@ -1,4 +1,8 @@
-import { inspectSharkcraft, type ISharkcraftInspection } from '@shrkcrft/inspector';
+import {
+  detectSharkcraftRepo,
+  inspectSharkcraft,
+  type ISharkcraftInspection,
+} from '@shrkcrft/inspector';
 import type { ISurfaceConfig } from '@shrkcrft/config';
 import { extractSpineCommands } from './spine-extractor.ts';
 import { BUILTIN_PROFILES, getProfile, type ISurfaceProfile } from './profiles.ts';
@@ -33,7 +37,14 @@ export interface ILoadedSurfaceContext {
  *      engine repo — `ICommandPlugin` exists in the plugin-api but no
  *      pack contributes commands today; future packs will populate
  *      the inspection's pack discovery).
- *   4. Read the user's `surface{}` config block.
+ *   4. Read the user's `surface{}` config block and compose it with the
+ *      active profile ({@link composeSurfaceConfig}).
+ *   5. Detect the host (`detectSharkcraftRepo`, the one authority): outside
+ *      SharkCraft's own repository, tool-maintenance commands are gated.
+ *
+ * The CLI surface gate, the MCP gate, `surface list/explain` and `--help` all
+ * read this ONE context, so they cannot disagree about what is visible or
+ * callable here.
  */
 export async function loadSurfaceContext(
   options: LoadSurfaceContextOptions,
@@ -53,24 +64,54 @@ export async function loadSurfaceContext(
     ? getProfile(profileId, packProfiles)
     : undefined;
 
-  // Compose profile.hidden + config.hidden / profile.enabled + config.enabled.
-  // Config wins on conflicts (explicit user choice over profile default).
+  const composed = composeSurfaceConfig(rawConfig, activeProfile);
+  const isToolRepo = detectSharkcraftRepo(inspection.projectRoot ?? options.cwd);
+
+  return {
+    inspection,
+    context: {
+      spineCommands,
+      packContributions,
+      surfaceConfig: composed.surfaceConfig,
+      isToolRepo,
+      ...(composed.explicitSurface ? { explicitSurface: composed.explicitSurface } : {}),
+    },
+    availableProfiles: [...BUILTIN_PROFILES, ...packProfiles],
+    ...(activeProfile ? { activeProfile } : {}),
+  };
+}
+
+/**
+ * Compose the project's `surface{}` block with the active profile — the one
+ * merge. Each list is the union of the profile's and the config's entries;
+ * `explicitSurface` keeps the config's OWN `enabled` / `disabled` whenever a
+ * profile is active, because the deny rule needs the layer ("an explicit
+ * config `enabled` overrides a profile's deny, never a config deny").
+ */
+export function composeSurfaceConfig(
+  rawConfig: ISurfaceConfig | undefined,
+  activeProfile: ISurfaceProfile | undefined,
+): Pick<ITierResolverContext, 'surfaceConfig' | 'explicitSurface'> {
+  const profileId = rawConfig?.profile;
   const mergedHidden = mergeUnique(activeProfile?.hidden, rawConfig?.hidden);
   const mergedEnabled = mergeUnique(activeProfile?.enabled, rawConfig?.enabled);
+  const mergedDisabled = mergeUnique(activeProfile?.disabled, rawConfig?.disabled);
   const surfaceConfig: ISurfaceConfig | undefined =
     rawConfig || activeProfile
       ? {
           ...(profileId ? { profile: profileId } : {}),
           ...(mergedHidden.length > 0 ? { hidden: mergedHidden } : {}),
           ...(mergedEnabled.length > 0 ? { enabled: mergedEnabled } : {}),
+          ...(mergedDisabled.length > 0 ? { disabled: mergedDisabled } : {}),
         }
       : undefined;
-
+  if (!activeProfile) return { surfaceConfig };
   return {
-    inspection,
-    context: { spineCommands, packContributions, surfaceConfig },
-    availableProfiles: [...BUILTIN_PROFILES, ...packProfiles],
-    ...(activeProfile ? { activeProfile } : {}),
+    surfaceConfig,
+    explicitSurface: {
+      enabled: [...(rawConfig?.enabled ?? [])],
+      disabled: [...(rawConfig?.disabled ?? [])],
+    },
   };
 }
 
@@ -102,12 +143,17 @@ function collectPackProfiles(
         description: typeof r.description === 'string' ? r.description : `Pack profile (${pack.packageName})`,
         source: 'pack',
         pack: pack.packageName,
-        ...(Array.isArray(r.hidden) ? { hidden: (r.hidden as string[]).filter((s) => typeof s === 'string') } : {}),
-        ...(Array.isArray(r.enabled) ? { enabled: (r.enabled as string[]).filter((s) => typeof s === 'string') } : {}),
+        ...(Array.isArray(r.hidden) ? { hidden: stringsOf(r.hidden) } : {}),
+        ...(Array.isArray(r.enabled) ? { enabled: stringsOf(r.enabled) } : {}),
+        ...(Array.isArray(r.disabled) ? { disabled: stringsOf(r.disabled) } : {}),
       });
     }
   }
   return out;
+}
+
+function stringsOf(values: readonly unknown[]): string[] {
+  return values.filter((s): s is string => typeof s === 'string');
 }
 
 /**

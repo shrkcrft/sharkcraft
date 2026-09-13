@@ -26,6 +26,13 @@ export interface ISurfaceProfile {
    * classification, not paper over it.
    */
   enabled?: readonly string[];
+  /**
+   * Commands this profile DISABLES (round 11): not callable, absent from
+   * `--help`. Exact paths or `<group> *` selectors. An explicit
+   * `surface.enabled` entry in the project config overrides a profile's deny.
+   * Presets reach this through `surfaceProfile` — no preset schema change.
+   */
+  disabled?: readonly string[];
   /** Where the profile comes from (annotation for `surface explain`). */
   source: 'builtin' | 'pack' | 'local';
   /** When source='pack', the pack name. */

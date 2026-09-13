@@ -18,6 +18,14 @@ interface Frontmatter {
   appliesWhen?: string | string[];
   summary?: string;
   related?: string | string[];
+  /** `YYYY-MM-DD` — the day an author last checked this entry against the code. */
+  verifiedOn?: string | string[];
+  /** Ids of any kind a reader should also look at (`seeAlso:` or `see-also:`). */
+  seeAlso?: string | string[];
+  'see-also'?: string | string[];
+  /** Knowledge ids that replace this entry (`supersededBy:` or `superseded-by:`). */
+  supersededBy?: string | string[];
+  'superseded-by'?: string | string[];
 }
 
 function parseFrontmatter(text: string): { meta: Frontmatter; body: string } {
@@ -43,6 +51,81 @@ function parseFrontmatter(text: string): { meta: Frontmatter; body: string } {
     (meta as Record<string, unknown>)[key] = value;
   }
   return { meta, body };
+}
+
+/**
+ * The frontmatter keys this loader maps onto the entry. Every other key is
+ * parsed and then dropped — so {@link unsupportedFrontmatterKeys} names it and
+ * the loader warns, instead of the value vanishing silently.
+ */
+const ENTRY_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
+  'id',
+  'title',
+  'type',
+  'priority',
+  'scope',
+  'tags',
+  'appliesWhen',
+  'summary',
+  'related',
+  'verifiedOn',
+  'seeAlso',
+  'see-also',
+  'supersededBy',
+  'superseded-by',
+]);
+
+/**
+ * Every TOP-LEVEL frontmatter key this loader does NOT carry onto the entry, in
+ * file order, each with its raw block (the key line plus the indented lines
+ * under it). THE answer to "what did the Markdown loader drop?" — the loader's
+ * warnings and the custom-checks registry (a Markdown rule whose `metadata`
+ * held `checks`) both read it, so the two cannot disagree.
+ *
+ * `metadata` is the notable one: a Markdown rule cannot carry
+ * `metadata.checks[]` (or any metadata) — only a TypeScript entry can.
+ */
+export function unsupportedFrontmatterKeys(
+  text: string,
+): readonly { readonly key: string; readonly block: string }[] {
+  const match = FRONTMATTER_RE.exec(text);
+  if (!match) return [];
+  const out: { key: string; block: string }[] = [];
+  let current: { key: string; lines: string[] } | null = null;
+  const flush = (): void => {
+    if (current) out.push({ key: current.key, block: current.lines.join('\n') });
+    current = null;
+  };
+  for (const line of (match[1] ?? '').split('\n')) {
+    // An unindented `key:` line opens a block; indented lines, list items and
+    // comments belong to whatever block is open.
+    const topLevel = line.length > 0 && !/^\s/.test(line) && !line.startsWith('-') && !line.startsWith('#');
+    if (!topLevel) {
+      current?.lines.push(line);
+      continue;
+    }
+    flush();
+    const idx = line.indexOf(':');
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    if (ENTRY_FRONTMATTER_KEYS.has(key) || out.some((o) => o.key === key)) continue;
+    current = { key, lines: [line] };
+  }
+  flush();
+  return out;
+}
+
+function unsupportedKeyWarning(filePath: string, key: string): string {
+  if (key === 'metadata') {
+    return (
+      `${filePath}: frontmatter key "metadata" was dropped — the Markdown loader does not support metadata; ` +
+      'attach metadata (e.g. metadata.checks) in a TypeScript rule file'
+    );
+  }
+  return (
+    `${filePath}: frontmatter key "${key}" was dropped — it is not a field the Markdown loader reads ` +
+    `(reads: ${[...ENTRY_FRONTMATTER_KEYS].join(', ')})`
+  );
 }
 
 function toArray(value: string | string[] | undefined): string[] {
@@ -80,8 +163,14 @@ export class MarkdownKnowledgeLoader implements IKnowledgeLoader {
     }
 
     const { meta, body } = parseFrontmatter(text);
+    // Parsed-then-dropped keys used to vanish without a word; the entry shape
+    // is unchanged, the drop is now said out loud.
+    for (const { key } of unsupportedFrontmatterKeys(text)) warnings.push(unsupportedKeyWarning(filePath, key));
     const baseName = basename(filePath, '.md');
     const titleFromBody = /^#\s+(.+)$/m.exec(body)?.[1]?.trim();
+    // Both spellings: YAML authors reach for kebab-case keys.
+    const seeAlso = toArray(meta.seeAlso ?? meta['see-also']);
+    const supersededBy = toArray(meta.supersededBy ?? meta['superseded-by']);
 
     const entry: IKnowledgeEntry = {
       id: meta.id ? normalizeKnowledgeId(meta.id) : `doc.${toKebabCase(baseName)}`,
@@ -95,6 +184,14 @@ export class MarkdownKnowledgeLoader implements IKnowledgeLoader {
       summary: meta.summary,
       related: meta.related ? Object.freeze(toArray(meta.related)) : undefined,
       source: { origin: filePath, loader: 'markdown' },
+      // Carried verbatim; the validator (not the loader) decides whether it is a
+      // real date, so a typo surfaces as an `invalid-verified-on` issue instead
+      // of vanishing.
+      ...(typeof meta.verifiedOn === 'string' && meta.verifiedOn.length > 0
+        ? { verifiedOn: meta.verifiedOn }
+        : {}),
+      ...(seeAlso.length > 0 ? { seeAlso: Object.freeze(seeAlso) } : {}),
+      ...(supersededBy.length > 0 ? { supersededBy: Object.freeze(supersededBy) } : {}),
     };
 
     entries.push(entry);

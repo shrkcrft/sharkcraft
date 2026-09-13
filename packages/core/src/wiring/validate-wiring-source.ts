@@ -1,3 +1,4 @@
+import { globListProblem } from '../glob/parse-glob-list.ts';
 import { SCAN_ZONES } from '../scan/scan-zone.ts';
 import type { ExtractorKind, IWiringSource } from './wiring-rule.ts';
 
@@ -123,6 +124,12 @@ export function validateWiringSource(source: IWiringSource): string | undefined 
   if (!source.files || source.files.length === 0) {
     return 'sets no `files` globs — a source that selects no files can only ever match nothing (set `files`, or `$use` a named extractor that supplies them)';
   }
+  // A bare `!`, a `!!x` or a negation-only list loads and selects nothing — the
+  // one parser (`parseGlobList`) decides what `!` is, so the one shape check
+  // lives beside it. Wiring, registry, registration, extractor baselines, the
+  // `extractors` map and the pack-plane merge seam all reach this line.
+  const filesProblem = globListProblem(source.files);
+  if (filesProblem !== undefined) return `\`files\` ${filesProblem}`;
 
   const kind = resolveExtractorKind(source)!;
   if (ANCHORED.has(kind) && resolveExtractorAnchor(source) === undefined) {
@@ -156,6 +163,8 @@ export function validateWiringSource(source: IWiringSource): string | undefined 
     if (!hasTarget) {
       return 'extract "import-edges" requires a `to` selector (`module`, `modulePattern`, `files`, or `match`) — otherwise it would pin every import in the scanned tree';
     }
+    const toFilesProblem = t.files !== undefined ? globListProblem(t.files) : undefined;
+    if (toFilesProblem !== undefined) return `\`to.files\` ${toFilesProblem}`;
     for (const [field, pattern, flags] of [
       ['to.modulePattern', t.modulePattern, t.modulePatternFlags],
       ['to.match', t.match, t.matchFlags],
@@ -189,6 +198,12 @@ export function validateWiringSource(source: IWiringSource): string | undefined 
     }
     if (UNZONED.has(kind)) {
       return `\`scan\` does not apply to extract "${kind}" — it reads ${kind === 'json-path' ? 'a parsed document' : 'the file PATH'}, not file text`;
+    }
+    // An import statement is CODE (round 11, 6.1a#import-edges-scan): zoning
+    // import-edges to strings or comments can only ever select phantom text —
+    // a rule that proves nothing while reading green.
+    if (kind === 'import-edges' && (source.scan === 'strings' || source.scan === 'comments')) {
+      return `\`scan: '${source.scan}'\` does not apply to extract "import-edges" — an import statement is code; use \`code\` (the default, comment-aware) or \`all\` (raw text, comments included)`;
     }
   }
   return undefined;

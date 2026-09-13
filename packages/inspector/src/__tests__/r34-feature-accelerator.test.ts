@@ -210,7 +210,10 @@ describe('pack contributions / self-config / pack signature', () => {
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'r34' }));
     const inspection = await inspectSharkcraft({ cwd: root });
     const report = await buildSelfConfigDoctorReport(inspection);
-    expect(['ok', 'warnings', 'errors'].includes(report.verdict)).toBe(true);
+    // `unverified` (round 11): v1 is a projection of v2, whose verdict says so
+    // when a unit was not verified — e.g. command strings in a direct engine
+    // call, which has no command index injected.
+    expect(['ok', 'warnings', 'errors', 'unverified'].includes(report.verdict)).toBe(true);
     rmSync(root, { recursive: true });
   });
 

@@ -23,6 +23,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson } from '../output/format-output.ts';
 
 async function runPrSummary(args: ParsedArgs): Promise<number> {
@@ -120,6 +121,21 @@ function writeOutputFile(cwd: string, file: string, body: string): void {
 
 export const prCommand: ICommandHandler = {
   name: 'pr',
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: 'summary',
+      description: 'The PR summary (the default).',
+      usage:
+        'shrk pr summary [--since <ref>|--staged|--files a,b,c] [--max-items N] [--format markdown|json] [--output <file>] [--include-raw-links]',
+    },
+    {
+      name: 'description',
+      description: 'The PR description (the same generator).',
+      usage:
+        'shrk pr description [--since <ref>|--staged|--files a,b,c] [--max-items N] [--format markdown|json] [--output <file>] [--include-raw-links]',
+    },
+  ],
   description:
     'PR summary / description generator. Consumes `shrk changes summary` + .sharkcraft/reports/*. Read-only by default. Write only when --output is passed.',
   usage:

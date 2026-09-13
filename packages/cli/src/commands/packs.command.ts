@@ -1,9 +1,19 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
-  buildPackDoctorReport,
+  buildPackContributionsInventoryAsync,
+  buildPackDoctorReportAsync,
+  ContributionKind,
+  contributionKindForSlot,
+  contributionKindOfLoader,
+  formatEntryRejection,
+  nearestIds,
+  packDoctorCoverage,
+  packEntryCounts,
   buildPackSignatureStatusReport,
   checkPackSymbolCompat,
+  computePackContentDigests,
+  describePackAssetFreshness,
   explainPackSignatureStatus,
   inspectSharkcraft,
   mergePackReleaseChecks,
@@ -11,7 +21,13 @@ import {
   runPackReleaseChecksForReport,
   type IPackSignatureExplainReport,
 } from '@shrkcrft/inspector';
+import type { IVerdictCoverage } from '@shrkcrft/core';
+import { usageExitFor } from '../exit-codes.ts';
+import { ALLOW_EMPTY_FLAG, allowEmptyValve } from '../gates/allow-empty.ts';
+import { settleVerdict } from '../gates/settle-verdict.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
 import {
+  CONTRIBUTION_FILE_KEYS,
   PACK_SECRET_ENV,
   signPackManifest,
   validatePackManifest,
@@ -32,50 +48,206 @@ function statusLabel(valid: boolean): string {
   return valid ? 'OK     ' : 'INVALID';
 }
 
+/**
+ * Refuse a `--kind` / `--pack` that names no contribution kind / no discovered
+ * pack (or carries no value): a usage error naming the known values and the
+ * nearest, exit `usageExitFor` (3 — `packs contributions` is a verdict verb).
+ * It used to narrow the view to nothing and settle a ✓ over it at exit 0 — a
+ * flag that could not fail (round 12 review, A-1). `undefined` when the flag
+ * is absent or names a known value.
+ */
+function refuseUnknownFilter(args: ParsedArgs, flag: 'kind' | 'pack', known: readonly string[]): number | undefined {
+  if (!args.flags.has(flag)) return undefined;
+  const raw = args.flags.get(flag);
+  if (typeof raw === 'string' && known.includes(raw)) return undefined;
+  const near = typeof raw === 'string' ? nearestIds(raw, known, 3).map((n) => n.id) : [];
+  const knownText =
+    known.length > 0 ? `known: ${known.join(', ')}` : flag === 'pack' ? 'no pack was discovered' : 'none is known';
+  process.stderr.write(
+    `unknown --${flag} ${typeof raw === 'string' ? `"${raw}"` : '(no value)'} — ${knownText}.${
+      near.length > 0 ? ` Did you mean: ${near.join(', ')}?` : ''
+    }\n`,
+  );
+  return usageExitFor('packs contributions');
+}
+
 export const packsContributionsCommand: ICommandHandler = {
   name: 'contributions',
   description:
-    'List all pack/local contributions across every supported kind. Read-only inventory.',
+    'THE contributions report: every pack/local contribution across every loader-backed kind (how each id was derived — structural / regex-fallback / file-only), every file that failed to load, every entry a loader REJECTED with its reasons, and — per contributed file (`By file:`) — entries declared · accepted · rejected plus references that cannot be checked because their kind\'s registry is empty or undeclarable. Exit 0 · 1 an error-severity conflict, a load failure or a rejected entry · 2 only unresolvable references remain, or no contributed file is in view (NOT VERIFIED; --allow-empty accepts an empty view explicitly) · 3 an unknown --kind or --pack.',
   usage:
-    'shrk packs contributions [--pack <name>] [--kind <kind>] [--format text|markdown|json] [--output <file>]',
+    'shrk packs contributions [--pack <name>] [--kind <kind>] [--allow-empty] [--format text|markdown|json] [--output <file>]',
+  booleanFlags: new Set(['json', ALLOW_EMPTY_FLAG]),
   async run(args: ParsedArgs): Promise<number> {
     const {
-      buildPackContributionsInventoryAsync,
+      collectUnresolvableReferences,
+      contributionsReportOf,
+      filterContributionsReport,
+      renderContributionsByFileMarkdown,
+      renderContributionsByFileText,
       renderInventoryMarkdown,
       renderInventoryText,
       inspectSharkcraft,
     } = await import('@shrkcrft/inspector');
+    // A filter naming no kind is refused before anything loads; a pack name
+    // is checked against the packs discovery found.
+    const kindRefused = refuseUnknownFilter(args, 'kind', Object.values(ContributionKind));
+    if (kindRefused !== undefined) return kindRefused;
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
+    const packRefused = refuseUnknownFilter(
+      args,
+      'pack',
+      [...new Set(inspection.packs.discoveredPacks.map((p) => p.packageName))].sort(),
+    );
+    if (packRefused !== undefined) return packRefused;
     // Use the async/structural-first variant so nested step.id and
     // sub-object ids don't show up as separate contribution ids.
     const inv = await buildPackContributionsInventoryAsync(inspection);
     const filterPack = flagString(args, 'pack');
     const filterKind = flagString(args, 'kind');
+    // THE per-file report (round 12, ONE-CHANGE): the inventory, THE rejection
+    // channel it carries, and the self-config doctor's own reference probes.
+    const report = filterContributionsReport(
+      contributionsReportOf(inspection, inv, await collectUnresolvableReferences(inspection)),
+      { ...(filterPack ? { pack: filterPack } : {}), ...(filterKind ? { kind: filterKind } : {}) },
+    );
     let entries = inv.entries;
-    if (filterPack) entries = entries.filter((e) => e.packageName === filterPack);
-    if (filterKind) entries = entries.filter((e) => e.kind === filterKind);
-    const filtered = { ...inv, entries };
+    let conflicts = inv.conflicts;
+    let loadFailures = inv.loadFailures;
+    let rejections = inv.rejections;
+    if (filterPack) {
+      entries = entries.filter((e) => e.packageName === filterPack);
+      conflicts = conflicts.filter((c) => c.sources.some((s) => s.packageName === filterPack));
+      loadFailures = loadFailures.filter((f) => f.packageName === filterPack);
+      rejections = rejections.filter((r) => r.packageName === filterPack);
+    }
+    if (filterKind) {
+      entries = entries.filter((e) => e.kind === filterKind);
+      conflicts = conflicts.filter((c) => c.contributionKind === filterKind);
+      // The printed failures follow the same filter as the conflicts the exit
+      // reads — never a failure listed next to an exit that ignores it. A
+      // failure's loader `kind` maps through THE table the report's rows use
+      // (`contributionKindOfLoader`), so the row and the exit read one answer.
+      loadFailures = loadFailures.filter((f) => contributionKindOfLoader(f.kind) === filterKind);
+      rejections = rejections.filter((r) => r.kind === filterKind);
+    }
+    const filtered = { ...inv, entries, conflicts, loadFailures, rejections };
+    // THE verdict (round 12): 1 on an error-severity conflict, a file that
+    // failed to load, or an entry a loader rejected (none of them takes
+    // effect); settled against the references the view could not check, so
+    // unresolvable references alone are 2 NOT VERIFIED — never a pass.
+    const errorConflicts = conflicts.filter((c) => c.severity === 'error').length;
+    const proposed = errorConflicts > 0 || loadFailures.length > 0 || rejections.length > 0 ? 1 : 0;
+    // The contributed files in view are the run's unit (round 12 review,
+    // A-1): an empty view — no contribution at all, or a filter selecting
+    // none — examined nothing, so it is 2 NOT VERIFIED and never a ✓, unless
+    // `--allow-empty` accepts it explicitly.
+    const inView = report.totals.files;
+    const narrowed = [filterPack ? `--pack ${filterPack}` : '', filterKind ? `--kind ${filterKind}` : '']
+      .filter((s) => s.length > 0)
+      .join(' ');
+    const fileCoverage: IVerdictCoverage = {
+      unit: 'contributed files',
+      expected: inView,
+      examined: inView,
+      ...(inView === 0
+        ? {
+            reason: narrowed
+              ? `no contributed file matches ${narrowed}`
+              : 'no contributed file (local or pack) was discovered',
+          }
+        : {}),
+      ...allowEmptyValve(args, inView),
+    };
+    const settled = settleVerdict(proposed, [
+      fileCoverage,
+      ...(report.referenceCoverage ? [report.referenceCoverage] : []),
+    ]);
+    const exit = settled.exit;
     const format = flagString(args, 'format') ?? 'text';
     if (flagBool(args, 'json') || format === 'json') {
-      process.stdout.write(asJson(filtered) + '\n');
-      return 0;
+      process.stdout.write(
+        asJson({
+          ...filtered,
+          report,
+          exitCode: exit,
+          verdict: settled.verdict,
+          shortfalls: settled.shortfalls,
+          accepted: settled.accepted,
+        }) + '\n',
+      );
+      return exit;
     }
+    const t = report.totals;
+    const clean = `${t.accepted} of ${t.declared} declared entr${t.declared === 1 ? 'y' : 'ies'} accepted across ${t.files} contributed file(s); no rejected entry, load failure or error conflict. ✓`;
+    const lead =
+      t.files === 0
+        ? 'Nothing was examined — no contributed file is in view.'
+        : `No rejected entry, load failure or error conflict — but ${t.unresolvable} declared reference(s) could not be checked.`;
+    const line = verdictLine(settled, clean, lead);
+    const emptyHint =
+      exit === 2 && t.files === 0 ? `Pass --${ALLOW_EMPTY_FLAG} to accept an empty view explicitly.\n` : '';
+    const attention =
+      exit === 1
+        ? `Contributions need attention: ${rejections.length} rejected entr${rejections.length === 1 ? 'y' : 'ies'}, ${loadFailures.length} load failure(s), ${errorConflicts} error conflict(s).`
+        : '';
     if (format === 'markdown') {
       process.stdout.write(renderInventoryMarkdown(filtered));
-      return 0;
+      process.stdout.write('\n' + renderContributionsByFileMarkdown(report));
+      if (attention) process.stdout.write(`\n**${attention}**\n`);
+      if (line) process.stdout.write(`\n${line}\n`);
+      process.stdout.write(emptyHint);
+      return exit;
     }
     process.stdout.write(renderInventoryText(filtered));
-    return 0;
+    process.stdout.write('\n' + renderContributionsByFileText(report));
+    if (attention) process.stdout.write(`\n${attention}\n`);
+    if (line) process.stdout.write(`\n${line}\n`);
+    process.stdout.write(emptyHint);
+    return exit;
   },
 };
+
+/** `convention 8 accepted · 2 REJECTED · helper 1 accepted` — kinds sorted, REJECTED only when > 0. */
+function entryCountsLine(counts: Record<string, { files: number; accepted: number; rejected: number }>): string {
+  const parts = Object.keys(counts)
+    .sort()
+    .filter((k) => counts[k]!.accepted > 0 || counts[k]!.rejected > 0)
+    .map((k) => {
+      const c = counts[k]!;
+      return `${k} ${c.accepted} accepted${c.rejected > 0 ? ` · ${c.rejected} REJECTED` : ''}`;
+    });
+  return parts.length > 0 ? parts.join(' · ') : '(no entry loaded)';
+}
+
+/** The `files:` tokens: the six classic ones always, then every other non-zero slot as `<kind>=<n>`. */
+const CLASSIC_FILE_SLOTS: ReadonlySet<string> = new Set([
+  'knowledgeFiles',
+  'ruleFiles',
+  'pathFiles',
+  'templateFiles',
+  'pipelineFiles',
+  'docsFiles',
+]);
+
+function extraFileTokens(counts: Readonly<Record<string, number | undefined>>): string {
+  const parts: string[] = [];
+  for (const slot of CONTRIBUTION_FILE_KEYS) {
+    if (CLASSIC_FILE_SLOTS.has(slot)) continue;
+    const n = counts[slot] ?? 0;
+    if (n > 0) parts.push(`${contributionKindForSlot(slot) ?? slot}=${n}`);
+  }
+  return parts.length > 0 ? ` ${parts.join(' ')}` : '';
+}
 
 export const packsSignatureStatusCommand: ICommandHandler = {
   name: 'signature-status',
   description:
     'Report pack signature freshness (present/stale/missing). Never fake-signs; never requires the secret. `--release-readiness` annotates each pack with whether it would block release:preflight (dev signature + no SHARKCRAFT_PACK_SECRET = blocking).',
   usage:
-    'shrk packs signature-status [<pack>] [--release-readiness] [--format text|markdown|json]',
+    'shrk packs signature-status [<pack>] [--release-readiness] [--allow-empty] [--format text|markdown|json]',
+  booleanFlags: new Set(['release-readiness', 'json', ALLOW_EMPTY_FLAG]),
   async run(args: ParsedArgs): Promise<number> {
     const { buildPackSignatureStatusReport, inspectSharkcraft } = await import('@shrkcrft/inspector');
     const cwd = resolveCwd(args);
@@ -121,16 +293,53 @@ export const packsSignatureStatusCommand: ICommandHandler = {
         : { enabled: false },
     };
     const format = flagString(args, 'format') ?? 'text';
-    const exitCode = filtered.summary.stale > 0 || (releaseReadiness && blockingCount > 0) ? 1 : 0;
+    // Freshness comes from the one authority (content digests recorded at
+    // signing). A signed pack whose signature records no digests is NOT
+    // verified — never a pass: settle it as 2 when nothing is stale.
+    const signed = annotated.filter((p) => p.status !== 'missing');
+    const unverifiedPacks = annotated.filter((p) => p.status === 'unverified');
+    const coverage: IVerdictCoverage[] =
+      signed.length > 0
+        ? [
+            {
+              unit: 'signed packs',
+              expected: signed.length,
+              examined: signed.length - unverifiedPacks.length,
+              ...(unverifiedPacks.length > 0
+                ? {
+                    unexamined: unverifiedPacks.map((p) => p.packageName),
+                    reason: 'their signature records no content digests — re-sign to verify freshness',
+                  }
+                : {}),
+            },
+          ]
+        : [
+            // Zero signed packs is not "every signature is fresh": nothing was
+            // verified. 2, unless --allow-empty accepts the empty set explicitly.
+            {
+              unit: 'signed packs',
+              expected: 0,
+              examined: 0,
+              reason: annotated.length === 0 ? 'no pack discovered' : 'no discovered pack carries a signature',
+              ...allowEmptyValve(args, 0),
+            },
+          ];
+    const settled = settleVerdict(
+      filtered.summary.stale > 0 || (releaseReadiness && blockingCount > 0) ? 1 : 0,
+      coverage,
+    );
+    const exitCode = settled.exit;
     if (flagBool(args, 'json') || format === 'json') {
-      process.stdout.write(asJson(filtered) + '\n');
+      process.stdout.write(
+        asJson({ ...filtered, exitCode, verdict: settled.verdict, shortfalls: settled.shortfalls }) + '\n',
+      );
       return exitCode;
     }
     if (format === 'markdown') {
       const lines: string[] = ['# Pack signature status', ''];
       lines.push(`- generatedAt: ${filtered.generatedAt}`);
       lines.push(`- secret available: ${filtered.secretAvailable}`);
-      lines.push(`- total: ${filtered.summary.total} (present ${filtered.summary.present} / stale ${filtered.summary.stale} / missing ${filtered.summary.missing})`);
+      lines.push(`- total: ${filtered.summary.total} (present ${filtered.summary.present} / stale ${filtered.summary.stale} / unverified ${filtered.summary.unverified} / missing ${filtered.summary.missing})`);
       if (releaseReadiness) {
         lines.push(`- dev-signed: ${devCount}`);
         lines.push(`- release-blocking: ${blockingCount}`);
@@ -150,6 +359,7 @@ export const packsSignatureStatusCommand: ICommandHandler = {
     process.stdout.write(`  total       ${filtered.summary.total}\n`);
     process.stdout.write(`  present     ${filtered.summary.present}\n`);
     process.stdout.write(`  stale       ${filtered.summary.stale}\n`);
+    process.stdout.write(`  unverified  ${filtered.summary.unverified}\n`);
     process.stdout.write(`  missing     ${filtered.summary.missing}\n`);
     process.stdout.write(`  secret env  ${filtered.secretAvailable ? 'set' : 'NOT set (no fake-signing — re-sign manually)'}\n`);
     if (releaseReadiness) {
@@ -169,6 +379,11 @@ export const packsSignatureStatusCommand: ICommandHandler = {
       process.stdout.write(
         `\nRelease would FAIL CLOSED — set SHARKCRAFT_PACK_SECRET and run \`shrk packs sign <pack>\` for each dev-signed pack.\n`,
       );
+    }
+    const line = verdictLine(settled, '');
+    if (line) process.stdout.write(`\n${line}\n`);
+    if (signed.length === 0 && exitCode === 2) {
+      process.stdout.write(`Pass --${ALLOW_EMPTY_FLAG} to accept a project with no signed pack explicitly.\n`);
     }
     return exitCode;
   },
@@ -230,6 +445,13 @@ export const packsListCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const packs = inspection.packs.discoveredPacks;
+    // Compiled-build freshness, from the one pack-asset freshness authority
+    // (computed at inspection for packs serving compiled contributions).
+    const freshnessByRoot = new Map((inspection.packAssetFreshness ?? []).map((f) => [f.packageRoot, f]));
+    // Per-kind accepted / REJECTED entries, from THE contributions inventory
+    // (round 12, 12.1b): a conventions-only pack printed all zeros, and a
+    // partially-loaded file looked identical to a fully-loaded one.
+    const inv = inspection.packs.validPacks.length > 0 ? await buildPackContributionsInventoryAsync(inspection) : null;
     if (flagBool(args, 'json')) {
       process.stdout.write(
         asJson(
@@ -240,11 +462,13 @@ export const packsListCommand: ICommandHandler = {
             manifestPath: p.manifestPath,
             contributionCounts: p.contributionCounts,
             resolvedCounts: p.resolvedCounts,
+            entryCounts: packEntryCounts(inv, p),
             signatureStatus: p.signatureStatus,
             signatureMessage: p.signatureMessage,
             signatureDev: p.signatureDev,
             loadError: p.loadError,
             validationIssues: p.validationIssues,
+            buildFreshness: freshnessByRoot.get(p.packageRoot)?.build.state ?? 'not-compiled',
           })),
         ) + '\n',
       );
@@ -258,17 +482,36 @@ export const packsListCommand: ICommandHandler = {
     for (const p of packs) {
       const c = p.contributionCounts;
       const r = p.resolvedCounts;
+      const counts = packEntryCounts(inv, p);
+      const rejected = Object.values(counts).reduce((n, x) => n + x.rejected, 0);
+      const freshness = freshnessByRoot.get(p.packageRoot);
+      const buildMark =
+        freshness?.build.state === 'stale'
+          ? '  STALE-BUILD'
+          : freshness?.build.state === 'unrecorded'
+            ? '  BUILD-UNVERIFIED'
+            : '';
       process.stdout.write(
-        `  ${statusLabel(p.valid)} ${p.packageName}@${p.packageVersion}\n`,
+        `  ${statusLabel(p.valid)} ${p.packageName}@${p.packageVersion}${buildMark}${rejected > 0 ? '  REJECTED-ENTRIES' : ''}\n`,
       );
+      if (freshness && buildMark) {
+        const said = describePackAssetFreshness(freshness).build;
+        if (said) process.stdout.write(`          ${said}\n`);
+      }
       process.stdout.write(
-        `          files:    k=${c.knowledgeFiles} r=${c.ruleFiles} p=${c.pathFiles} t=${c.templateFiles} pl=${c.pipelineFiles} d=${c.docsFiles}\n`,
+        `          files:    k=${c.knowledgeFiles} r=${c.ruleFiles} p=${c.pathFiles} t=${c.templateFiles} pl=${c.pipelineFiles} d=${c.docsFiles}${extraFileTokens(c)}\n`,
       );
       if (r) {
         const totalEntries = r.knowledgeEntries + r.rules + r.pathConventions;
         process.stdout.write(
           `          resolved: entries=${totalEntries} templates=${r.templates} pipelines=${r.pipelines} docs=${r.docs}\n`,
         );
+      }
+      if (p.valid) {
+        process.stdout.write(`          entries:  ${entryCountsLine(counts)}\n`);
+        if (rejected > 0) {
+          process.stdout.write(`          ↳ shrk packs contributions --pack ${p.packageName} names every rejected entry\n`);
+        }
       }
       if (!p.valid) {
         if (p.loadError) process.stdout.write(`          error: ${p.loadError}\n`);
@@ -297,8 +540,12 @@ export const packsGetCommand: ICommandHandler = {
       process.stderr.write(`No pack with name "${id}" was discovered.\n`);
       return 1;
     }
+    // Every slot and every entry, from THE contributions inventory (round 12, 12.1b).
+    const inv = pack.valid ? await buildPackContributionsInventoryAsync(inspection) : null;
+    const counts = packEntryCounts(inv, pack);
+    const rejections = (inv?.rejections ?? []).filter((r) => r.packageName === pack.packageName);
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson(pack) + '\n');
+      process.stdout.write(asJson({ ...pack, entryCounts: counts, rejections }) + '\n');
       return 0;
     }
     process.stdout.write(header(`Pack: ${pack.packageName}`));
@@ -318,6 +565,23 @@ export const packsGetCommand: ICommandHandler = {
     process.stdout.write(`  pipeline files:         ${c.pipelineFiles}\n`);
     process.stdout.write(`  docs files:             ${c.docsFiles}\n`);
     process.stdout.write(`  scaffold pattern files: ${c.scaffoldPatternFiles}\n`);
+    // Every other declared slot (round 12, 12.1b) — conventions, helpers,
+    // hints, gate planes, … were never shown.
+    for (const slot of CONTRIBUTION_FILE_KEYS) {
+      if (CLASSIC_FILE_SLOTS.has(slot) || slot === 'scaffoldPatternFiles') continue;
+      const n = (c as Readonly<Record<string, number | undefined>>)[slot] ?? 0;
+      if (n > 0) process.stdout.write(`  ${`${slot}:`.padEnd(24)}${n}\n`);
+    }
+    if (Object.keys(counts).length > 0) {
+      process.stdout.write('\nEntries (accepted / rejected by their loader):\n');
+      for (const k of Object.keys(counts).sort()) {
+        const x = counts[k]!;
+        process.stdout.write(`  ${`${k}:`.padEnd(24)}${x.accepted} accepted${x.rejected > 0 ? ` · ${x.rejected} REJECTED` : ''}\n`);
+      }
+      for (const r of rejections) {
+        process.stdout.write(`    ✗ ${r.file}  ${formatEntryRejection(r)}\n`);
+      }
+    }
     if (pack.resolvedCounts) {
       const r = pack.resolvedCounts;
       process.stdout.write('\nResolved (after dedup against local):\n');
@@ -414,9 +678,20 @@ export const packsInspectCommand: ICommandHandler = {
 export const packsDoctorCommand: ICommandHandler = {
   name: 'doctor',
   description:
-    'Validate pack discovery: invalid manifests, missing files, empty contributions, duplicates, template/pipeline quality, action-hint coverage, signatures. `--release` folds pack-release-check findings into the report. `--signature-explain` adds per-pack signature explanation.',
+    'Validate pack discovery: invalid manifests, missing files, contribution files that failed to load, partially-resolved / empty contributions, stale compiled builds, unregistered group exports, duplicates, template/pipeline quality, action-hint coverage, signatures. `--release` folds pack-release-check findings into the report. `--typecheck` type-checks each pack\'s TS assets (exit 2 when nothing could be checked). `--signature-explain` adds per-pack signature explanation.',
   usage:
-    'shrk [--cwd <dir>] packs doctor [--verify-signatures] [--require-signatures] [--allow-dev-signature] [--release] [--strict] [--secret <secret>] [--signature-explain] [--json]',
+    'shrk [--cwd <dir>] packs doctor [--verify-signatures] [--require-signatures] [--allow-dev-signature] [--release] [--strict] [--typecheck] [--allow-empty] [--secret <secret>] [--signature-explain] [--json]',
+  booleanFlags: new Set([
+    'verify-signatures',
+    'require-signatures',
+    'allow-dev-signature',
+    'release',
+    'strict',
+    'typecheck',
+    ALLOW_EMPTY_FLAG,
+    'signature-explain',
+    'json',
+  ]),
   async run(args: ParsedArgs): Promise<number> {
     const signatureExplain = flagBool(args, 'signature-explain');
     // `--signature-explain` implies signature verification so the lifecycle
@@ -437,9 +712,15 @@ export const packsDoctorCommand: ICommandHandler = {
       ...(verify ? { verifyPackSignatures: true } : {}),
       ...(secret !== undefined ? { packSecret: secret } : {}),
     });
-    const report = buildPackDoctorReport(inspection, {
+    const typecheck = flagBool(args, 'typecheck');
+    // The async doctor: registry load failures, unregistered group exports and
+    // (opt-in) a typecheck of every pack's TS assets are gathered first.
+    const report = await buildPackDoctorReportAsync(inspection, {
       requireSignatures: required,
       ...(allowDev ? { allowDevSignatures: true } : {}),
+      ...(release ? { release: true } : {}),
+      ...(strict ? { strict: true } : {}),
+      ...(typecheck ? { typecheck: true } : {}),
     });
     if (release) {
       const releaseChecks = await runPackReleaseChecksForReport(inspection);
@@ -449,11 +730,43 @@ export const packsDoctorCommand: ICommandHandler = {
     if (signatureExplain) {
       signatureExplanation = explainPackSignatureStatus(inspection, { requireSignatures: required });
     }
+    // The run examines the discovered packs. Zero is an empty selection — NOT
+    // VERIFIED (2) unless --allow-empty says a pack-less project is expected.
+    const discovered = inspection.packs.discoveredPacks.length;
+    // THE pack-doctor coverage (`packDoctorCoverage`, which `packDoctorVerdict`
+    // — MCP doctor_packs, the quality gate, bare `check` — settles on): the
+    // discovered packs, with this verb's `--allow-empty` valve, and compiled
+    // artifacts with no build record (never compared to their source).
+    const coverage: IVerdictCoverage[] = packDoctorCoverage(report, inspection, allowEmptyValve(args, discovered));
+    // `--typecheck` is a verdict over TS files: a pack with none to check
+    // examined nothing — never a pass. (Zero packs is the run record's case.)
+    if (typecheck && discovered > 0) {
+      const packCount = inspection.packs.validPacks.length;
+      coverage.push({
+        unit: 'packs',
+        expected: packCount,
+        examined: packCount,
+        reason: 'no valid pack discovered to type-check',
+        ...allowEmptyValve(args, packCount),
+      });
+      for (const t of report.typecheckResults ?? []) {
+        coverage.push({
+          unit: 'TS files',
+          expected: t.result.checkedFiles.length,
+          examined: t.result.ran ? t.result.checkedFiles.length : 0,
+          subject: t.packageName,
+          ...(t.result.note ? { reason: t.result.note } : {}),
+        });
+      }
+    }
+    const settled = settleVerdict(report.passed ? 0 : 1, coverage);
 
     if (flagBool(args, 'json')) {
       process.stdout.write(
         asJson({
-          passed: report.passed,
+          // The settled verdict, never the pre-settlement report flag: a run
+          // that verified nothing (exit 2) is not `passed`.
+          passed: settled.exit === 0,
           packsChecked: report.packsChecked,
           summary: report.summary,
           discoveredPackCount: inspection.packs.discoveredPacks.length,
@@ -461,10 +774,14 @@ export const packsDoctorCommand: ICommandHandler = {
           invalidPackCount: inspection.packs.invalidPacks.length,
           issues: report.issues,
           ...(report.releaseChecks ? { releaseChecks: report.releaseChecks } : {}),
+          ...(report.typecheckResults ? { typecheckResults: report.typecheckResults } : {}),
           ...(signatureExplanation ? { signatureExplanation } : {}),
+          exitCode: settled.exit,
+          verdict: settled.verdict,
+          shortfalls: settled.shortfalls,
         }) + '\n',
       );
-      return report.passed ? 0 : 1;
+      return settled.exit;
     }
 
     process.stdout.write(header('Pack doctor'));
@@ -478,6 +795,7 @@ export const packsDoctorCommand: ICommandHandler = {
     else if (verify) modeParts.push('verify signatures');
     else modeParts.push('structure only');
     if (release) modeParts.push('release-check');
+    if (typecheck) modeParts.push('typecheck');
     if (strict) modeParts.push('strict');
     process.stdout.write(kv('mode', modeParts.join(' + ')) + '\n\n');
     if (report.issues.length === 0) {
@@ -498,7 +816,12 @@ export const packsDoctorCommand: ICommandHandler = {
     process.stdout.write(
       `\nSummary: ${report.summary.errors} errors, ${report.summary.warnings} warnings, ${report.summary.info} info\n`,
     );
-    process.stdout.write(`\nVerdict: ${report.passed ? 'OK ✓' : 'pack issues need attention'}\n`);
+    if (settled.exit === 1) process.stdout.write(`\nVerdict: pack issues need attention\n`);
+    const verdict = verdictLine(settled, '\nVerdict: OK ✓');
+    if (verdict) process.stdout.write(`${settled.exit === 0 ? '' : '\n'}${verdict}\n`);
+    if (settled.exit === 2 && discovered === 0) {
+      process.stdout.write('Pass --allow-empty to accept a project with no packs explicitly.\n');
+    }
     if (signatureExplanation) {
       process.stdout.write('\n--- Signature explanation ---\n');
       process.stdout.write(`secret env: ${signatureExplanation.secretAvailable ? 'set' : 'NOT set'}\n`);
@@ -509,7 +832,7 @@ export const packsDoctorCommand: ICommandHandler = {
         if (p.nextCommand) process.stdout.write(`           next: ${p.nextCommand}\n`);
       }
     }
-    return report.passed ? 0 : 1;
+    return settled.exit;
   },
 };
 
@@ -700,6 +1023,18 @@ function resolveManifestInput(input: string): { manifestPath: string } | { error
   return { manifestPath };
 }
 
+/** The package root a manifest belongs to: the nearest ancestor with a package.json. */
+function findPackRoot(manifestPath: string): string {
+  let dir = nodePath.dirname(manifestPath);
+  for (let i = 0; i < 8; i += 1) {
+    if (existsSync(nodePath.join(dir, 'package.json'))) return dir;
+    const up = nodePath.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return nodePath.dirname(manifestPath);
+}
+
 async function loadManifestFromPath(
   manifestPath: string,
 ): Promise<ISharkCraftPackManifest> {
@@ -826,10 +1161,15 @@ export const packsSignCommand: ICommandHandler = {
     const secret = flagString(args, 'secret');
     const keyId = flagString(args, 'key-id');
     const dev = flagBool(args, 'dev');
+    // Record what was signed — sha256 of every contribution file (and each
+    // compiled artifact's mapped source) — with the ONE digest function pack
+    // freshness compares against. Freshness is content divergence, never age.
+    const contentDigests = computePackContentDigests(findPackRoot(manifestPath), manifest);
     const result = signPackManifest(manifest, {
       ...(secret !== undefined ? { secret } : {}),
       ...(keyId !== undefined ? { keyId } : {}),
       ...(dev ? { dev: true } : {}),
+      contentDigests,
     });
     if (!result.ok) {
       process.stderr.write(result.message + '\n');
@@ -874,6 +1214,9 @@ export const packsSignCommand: ICommandHandler = {
     process.stdout.write(kv('output', outPath) + '\n');
     process.stdout.write(kv('algo', result.signature.algo) + '\n');
     process.stdout.write(kv('signed at', result.signature.signedAt) + '\n');
+    process.stdout.write(
+      kv('content digests', `${Object.keys(result.signature.contentDigests ?? {}).length} file(s) recorded`) + '\n',
+    );
     if (result.signature.keyId) process.stdout.write(kv('key id', result.signature.keyId) + '\n');
     if (verifyOutcome !== 'skipped') {
       process.stdout.write(
@@ -892,8 +1235,9 @@ export const packsSignCommand: ICommandHandler = {
 export const packsReleaseCheckCommand: ICommandHandler = {
   name: 'release-check',
   description:
-    'Run a deterministic release-readiness check on a pack: manifest validation, contribution loading, signature, files whitelist.',
-  usage: 'shrk packs release-check <path-to-pack> [--json]',
+    'Run a deterministic release-readiness check on a pack: manifest validation, contribution loading, signature, files whitelist. `--typecheck` also type-checks the pack\'s TS assets (exit 2 when no TS file could be checked).',
+  usage: 'shrk packs release-check <path-to-pack> [--typecheck] [--json]',
+  booleanFlags: new Set(['typecheck', 'json']),
   async run(args: ParsedArgs): Promise<number> {
     const target = args.positional[0];
     if (!target) {
@@ -902,19 +1246,48 @@ export const packsReleaseCheckCommand: ICommandHandler = {
     }
     const cwd = resolveCwd(args);
     const abs = nodePath.isAbsolute(target) ? target : nodePath.resolve(cwd, target);
-    const result = await runPackReleaseCheck(abs);
+    const typecheck = flagBool(args, 'typecheck');
+    const result = await runPackReleaseCheck(abs, { typecheck });
+    const coverage: IVerdictCoverage[] =
+      typecheck && result.typecheck
+        ? [
+            {
+              unit: 'TS files',
+              expected: result.typecheck.checkedFiles,
+              examined: result.typecheck.ran ? result.typecheck.checkedFiles : 0,
+              ...(result.typecheck.note ? { reason: result.typecheck.note } : {}),
+            },
+          ]
+        : [];
+    const settled = settleVerdict(result.passed ? 0 : 1, coverage);
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson(result) + '\n');
-      return result.passed ? 0 : 1;
+      process.stdout.write(
+        asJson({
+          ...result,
+          // The settled verdict: a --typecheck that checked nothing (exit 2)
+          // is not `passed`, whatever the findings list says.
+          passed: settled.exit === 0,
+          exitCode: settled.exit,
+          verdict: settled.verdict,
+          shortfalls: settled.shortfalls,
+        }) + '\n',
+      );
+      return settled.exit;
     }
     process.stdout.write(header(`Pack release check`));
     process.stdout.write(kv('pack', result.packPath) + '\n');
     process.stdout.write(kv('manifest', result.manifestFile ?? '(none)') + '\n');
     process.stdout.write(kv('contributions', String(result.contributionsFound)) + '\n');
-    process.stdout.write(kv('passed', String(result.passed)) + '\n\n');
+    if (result.typecheck) {
+      process.stdout.write(
+        kv('typecheck', `${result.typecheck.ran ? result.typecheck.checkedFiles : 0} TS file(s) checked, ${result.typecheck.errors} error(s)`) + '\n',
+      );
+    }
+    process.stdout.write(kv('passed', String(settled.exit === 0)) + '\n\n');
     if (result.findings.length === 0) {
-      process.stdout.write('No issues.\n');
-      return result.passed ? 0 : 1;
+      const line = verdictLine(settled, 'No issues.');
+      if (line) process.stdout.write(line + '\n');
+      return settled.exit;
     }
     for (const f of result.findings) {
       process.stdout.write(`  ${f.severity.toUpperCase().padEnd(8)} ${f.code.padEnd(28)} ${f.message}\n`);
@@ -922,7 +1295,9 @@ export const packsReleaseCheckCommand: ICommandHandler = {
       if (f.suggestedFix) process.stdout.write(`         fix: ${f.suggestedFix}\n`);
       if (f.suggestedCommand) process.stdout.write(`         $ ${f.suggestedCommand}\n`);
     }
-    return result.passed ? 0 : 1;
+    const line = verdictLine(settled, '');
+    if (line) process.stdout.write(`\n${line}\n`);
+    return settled.exit;
   },
 };
 
@@ -1032,7 +1407,7 @@ export const packsDevStatusCommand: ICommandHandler = {
     const consumerAbs = consumer
       ? (nodePath.isAbsolute(consumer) ? consumer : nodePath.resolve(resolveCwd(args), consumer))
       : undefined;
-    const status = buildPackDevStatus({
+    const status = await buildPackDevStatus({
       packPath: abs,
       ...(consumerAbs ? { consumerPath: consumerAbs } : {}),
     });

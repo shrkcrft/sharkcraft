@@ -1,3 +1,4 @@
+import type { IUnitMark } from '../liveness/i-unit-mark.ts';
 import type { IRuleSelfTest, IWiringSource } from '../wiring/wiring-rule.ts';
 
 /**
@@ -151,4 +152,12 @@ export interface IBaselineRule {
   readonly severity?: 'error' | 'warning';
   /** Remediation hint shown on drift (defaults to the `shrk baseline update` line). */
   readonly hint?: string;
+  /**
+   * The `expectEmpty` marker ledger of {@link watchFiles} (round 13, `list:
+   * 'watchFiles'`). An extractor compute's `source` carries its own ledger.
+   * Distinct from the rule-level {@link expectEmpty}, which asserts the
+   * OUTPUT is empty; a mark asserts one INPUT glob's target does not exist
+   * yet. Filled by the loader / merge seam. Never authored.
+   */
+  readonly expectEmptyUnits?: readonly IUnitMark[];
 }

@@ -23,6 +23,11 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
+
+/** The selection / render flags every `changes` subverb shares (the handler usage's tail). */
+const CHANGES_FLAGS =
+  '[files... | --files a,b,c] [--since <ref>] [--staged] [--round <name>] [--profile changed-only|standard|strict] [--format text|markdown|json] [--output <file>]';
 import { asJson, header } from '../output/format-output.ts';
 
 async function runChangesSummary(args: ParsedArgs): Promise<number> {
@@ -153,6 +158,18 @@ async function runChangesAcceptanceReplay(args: ParsedArgs): Promise<number> {
 
 export const changesCommand: ICommandHandler = {
   name: 'changes',
+  positionals: PositionalMode.None,
+  subverbs: [
+    { name: 'summary', description: 'The grouped changes summary (the default).', usage: `shrk changes summary ${CHANGES_FLAGS}`, positionals: PositionalMode.Free },
+    { name: 'report', description: 'The changes summary as a report.', usage: `shrk changes report ${CHANGES_FLAGS}`, positionals: PositionalMode.Free },
+    { name: 'impact', description: 'The changes summary with impact.', usage: `shrk changes impact ${CHANGES_FLAGS}`, positionals: PositionalMode.Free },
+    {
+      name: 'acceptance-replay',
+      aliases: ['replay', 'acceptance'],
+      description: 'Replay the acceptance checks for a change set.',
+      usage: `shrk changes acceptance-replay ${CHANGES_FLAGS}`,
+    },
+  ],
   description:
     'Changes summary — grouped diff over --since/--staged/--files. Supports --round label and `changes acceptance-replay`. Read-only.',
   usage:

@@ -1,6 +1,14 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { importModuleViaLoader } from '@shrkcrft/core';
+import {
+  importModuleViaLoader,
+  readContributionExport,
+  RejectionCause,
+  type IAssetReference,
+  type IRejectedEntry,
+} from '@shrkcrft/core';
+import type { IContributionFileIssue } from './i-contribution-file-issue.ts';
+import type { IPolicyDeclaration } from './policy-declaration.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
 /**
@@ -30,44 +38,97 @@ import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 interface ICacheEntry {
   cacheKey: string;
   list: string[];
+  /** The same load, kept whole — the staleness sweep reads their `references[]`. */
+  declarations: IPolicyDeclaration[];
+  /** Policy files that failed to import (round 12, 12.1c — they were swallowed to `[]`). */
+  issues: IContributionFileIssue[];
+  /** Every declared check the loader refused (round 12, 12.1). */
+  rejected: IRejectedEntry[];
 }
 
 const CACHE = new Map<string, ICacheEntry>();
 
-interface IPolicyModule {
-  default?: readonly { id?: string }[];
-  policyChecks?: readonly { id?: string }[];
+/**
+ * THE policy-declaration acceptance predicate (round 12, 12.1): a non-empty
+ * string `id` — `[]` means accepted. An id-less declaration used to be
+ * filtered out with no signal. (A declaration's `evaluate` is the policy
+ * engine's to run; an id alone is enough to be referenced.)
+ */
+export function policyCheckRejectionReasons(raw: unknown): readonly string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return ['(entry): must be an object'];
+  const id = (raw as { id?: unknown }).id;
+  return typeof id === 'string' && id.length > 0 ? [] : ['id: must be a non-empty string'];
 }
 
-async function idsFrom(file: string, namespace: (id: string) => string): Promise<string[]> {
+async function declarationsFrom(
+  file: string,
+  source: 'local' | 'pack',
+  namespace: (id: string) => string,
+  sink: Pick<ICacheEntry, 'declarations' | 'issues' | 'rejected'>,
+  label: string,
+  packageName?: string,
+): Promise<string[]> {
+  let exp;
   try {
-    const mod = (await importModuleViaLoader(file)) as IPolicyModule;
-    const decls = mod.default ?? mod.policyChecks ?? [];
-    return decls
-      .filter((d) => typeof d?.id === 'string')
-      .flatMap((d) => [d.id as string, namespace(d.id as string)]);
-  } catch {
-    // A policy file that will not load is `evaluatePolicy`'s problem to report
-    // (it emits a load-failed check). Listing must not turn that into a crash.
+    exp = readContributionExport(await importModuleViaLoader(file), {
+      namedKeys: ['policyChecks'],
+      singleObject: false,
+    });
+  } catch (e) {
+    // A policy file that will not load must not crash listing — and must not
+    // vanish either: it is a load failure THE failure map reports.
+    sink.issues.push({
+      severity: 'warning',
+      code: 'load-failed',
+      message: `${label}: ${((e as Error).message ?? String(e)).split('\n')[0]!.trim()}`,
+      source: file,
+      ...(packageName ? { packageName } : {}),
+    });
     return [];
   }
+  const ids: string[] = [];
+  exp.items.forEach((d, index) => {
+    const reasons = policyCheckRejectionReasons(d);
+    if (reasons.length > 0) {
+      sink.rejected.push({
+        file,
+        index,
+        ...(exp.exportName ? { exportName: exp.exportName } : {}),
+        reasons,
+        cause: RejectionCause.Invalid,
+      });
+      return;
+    }
+    const decl = d as { id: string; references?: readonly IAssetReference[] };
+    sink.declarations.push({
+      id: decl.id,
+      qualifiedId: namespace(decl.id),
+      source,
+      sourceFile: file,
+      ...(Array.isArray(decl.references) ? { references: decl.references } : {}),
+    });
+    ids.push(decl.id, namespace(decl.id));
+  });
+  return ids;
 }
 
-/** Load every declared policy id — local files first, then pack contributions. */
-export async function loadPolicyIds(inspection: ISharkcraftInspection): Promise<readonly string[]> {
+/** One load of every declared policy check — local files first, then pack contributions — cached per project. */
+async function loadPolicyCache(inspection: ISharkcraftInspection): Promise<ICacheEntry> {
   const validPacks = inspection.packs?.validPacks ?? [];
   const cacheKey = `${inspection.projectRoot}:${validPacks
     .map((p) => p.packageName + '@' + p.packageVersion)
     .join(',')}`;
   const cached = CACHE.get(inspection.projectRoot);
-  if (cached && cached.cacheKey === cacheKey) return cached.list;
+  if (cached && cached.cacheKey === cacheKey) return cached;
 
-  const out: string[] = [];
-  const cfg = inspection.config as { localPolicyFiles?: readonly string[] } | null;
-  for (const rel of cfg?.localPolicyFiles ?? ['sharkcraft/policies.ts']) {
+  const entry: ICacheEntry = { cacheKey, list: [], declarations: [], issues: [], rejected: [] };
+  // The local policy file is the policy engine's own default. `localPolicyFiles`
+  // is an engine INPUT (`evaluatePolicy`), not a config key — the strict config
+  // schema rejects it — so the config read that used to sit here was dead.
+  for (const rel of ['sharkcraft/policies.ts']) {
     const full = nodePath.isAbsolute(rel) ? rel : nodePath.join(inspection.projectRoot, rel);
     if (!existsSync(full)) continue;
-    out.push(...(await idsFrom(full, (id) => `local:${id}`)));
+    entry.list.push(...(await declarationsFrom(full, 'local', (id) => `local:${id}`, entry, `Failed to load ${rel}`)));
   }
   for (const pack of validPacks) {
     const contributions = pack.manifest?.contributions as
@@ -77,12 +138,52 @@ export async function loadPolicyIds(inspection: ISharkcraftInspection): Promise<
     for (const rel of contributions?.policyCheckFiles ?? []) {
       const full = nodePath.resolve(pack.packageRoot, rel);
       if (!existsSync(full)) continue;
-      out.push(...(await idsFrom(full, (id) => `pack:${pack.packageName}:${id}`)));
+      entry.list.push(
+        ...(await declarationsFrom(
+          full,
+          'pack',
+          (id) => `pack:${pack.packageName}:${id}`,
+          entry,
+          `Pack ${pack.packageName} (${rel})`,
+          pack.packageName,
+        )),
+      );
     }
   }
 
-  CACHE.set(inspection.projectRoot, { cacheKey, list: out });
-  return out;
+  CACHE.set(inspection.projectRoot, entry);
+  return entry;
+}
+
+/** Load every declared policy id — local files first, then pack contributions. */
+export async function loadPolicyIds(inspection: ISharkcraftInspection): Promise<readonly string[]> {
+  return (await loadPolicyCache(inspection)).list;
+}
+
+/**
+ * The declared policy checks WITH what did not take effect (round 12, 12.1):
+ * files that failed to import and every declaration the loader refused — from
+ * the same one load {@link loadPolicyIds} reads.
+ */
+export async function loadPolicyDeclarationsWithIssues(inspection: ISharkcraftInspection): Promise<{
+  readonly declarations: readonly IPolicyDeclaration[];
+  readonly issues: readonly IContributionFileIssue[];
+  readonly rejected: readonly IRejectedEntry[];
+}> {
+  const c = await loadPolicyCache(inspection);
+  return { declarations: c.declarations, issues: c.issues, rejected: c.rejected };
+}
+
+/**
+ * The declared policy checks (id, source, `references[]`) from the SAME cache
+ * {@link warmPolicyCache} fills — one reader of the declarations. Returns `[]`
+ * until the cache is warm; the staleness sweep reports that as "not in sweep",
+ * never as "no policies".
+ */
+export function listPolicyDeclarations(
+  inspection: ISharkcraftInspection,
+): readonly IPolicyDeclaration[] {
+  return CACHE.get(inspection.projectRoot)?.declarations ?? [];
 }
 
 /**

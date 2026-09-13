@@ -4,7 +4,7 @@ import type { ISurfaceConfig } from '@shrkcrft/config';
 
 export interface ISurfaceConfigEdit {
   /** What changed. */
-  field: 'enabled' | 'hidden';
+  field: 'enabled' | 'hidden' | 'disabled';
   /** Command name that was added/removed. */
   command: string;
   /** Operation. */
@@ -28,10 +28,15 @@ export interface ISurfaceConfigWriteResult {
 }
 
 /**
- * Mutate the `surface.enabled[]` array in
+ * Mutate the `surface.enabled[]` / `hidden[]` / `disabled[]` arrays in
  * `sharkcraft.config.ts`. Preview-first: the caller computes the diff
  * via {@link planSurfaceEdit} and only applies it via
  * {@link applySurfaceEdit} when `--write` is passed.
+ *
+ * `before` must be the project config's OWN `surface{}` block — never the
+ * profile-merged view: the rendered block replaces the file's block
+ * wholesale, so a merged input would write the profile's lists into the
+ * config. `profile` is carried over untouched.
  */
 export function planSurfaceEdit(
   configFile: string,
@@ -39,21 +44,28 @@ export function planSurfaceEdit(
   edits: readonly ISurfaceConfigEdit[],
 ): ISurfaceConfigDiff {
   const beforeNormalised: ISurfaceConfig = {
+    ...(before?.profile ? { profile: before.profile } : {}),
     enabled: [...(before?.enabled ?? [])],
     hidden: [...(before?.hidden ?? [])],
+    ...(before?.disabled && before.disabled.length > 0 ? { disabled: [...before.disabled] } : {}),
   };
-  const afterEnabled = new Set(beforeNormalised.enabled ?? []);
-  const afterHidden = new Set(beforeNormalised.hidden ?? []);
+  const lists: Record<ISurfaceConfigEdit['field'], Set<string>> = {
+    enabled: new Set(beforeNormalised.enabled ?? []),
+    hidden: new Set(beforeNormalised.hidden ?? []),
+    disabled: new Set(beforeNormalised.disabled ?? []),
+  };
 
   for (const edit of edits) {
-    const target = edit.field === 'enabled' ? afterEnabled : afterHidden;
+    const target = lists[edit.field];
     if (edit.operation === 'add') target.add(edit.command);
     else target.delete(edit.command);
   }
 
   const after: ISurfaceConfig = {
-    enabled: [...afterEnabled].sort(),
-    hidden: [...afterHidden].sort(),
+    ...(before?.profile ? { profile: before.profile } : {}),
+    enabled: [...lists.enabled].sort(),
+    hidden: [...lists.hidden].sort(),
+    ...(lists.disabled.size > 0 ? { disabled: [...lists.disabled].sort() } : {}),
   };
 
   return {
@@ -142,6 +154,12 @@ export function renderSurfaceBlock(surface: ISurfaceConfig, indent = '  '): stri
     lines.push(`${indent}  ],`);
   } else {
     lines.push(`${indent}  hidden: [],`);
+  }
+  // Rendered only when present, so a block without a deny list is unchanged.
+  if (surface.disabled && surface.disabled.length > 0) {
+    lines.push(`${indent}  disabled: [`);
+    for (const name of surface.disabled) lines.push(`${indent}    ${JSON.stringify(name)},`);
+    lines.push(`${indent}  ],`);
   }
   lines.push(`${indent}},`);
   return lines.join('\n') + '\n';

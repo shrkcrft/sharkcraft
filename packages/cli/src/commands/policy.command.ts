@@ -5,6 +5,7 @@ import {
   applyPolicyOverrides,
   ChangedScopeMode,
   classifyChangedScope,
+  ContributionKind,
   evaluatePolicy,
   inspectSharkcraft,
   listPolicyOverrides,
@@ -27,6 +28,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header } from '../output/format-output.ts';
+import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
 
 function buildEvaluateInput(args: ParsedArgs): IPolicyEvaluateInput {
   const out: IPolicyEvaluateInput = {};
@@ -55,8 +57,11 @@ export const policyListCommand: ICommandHandler = {
       onlyId: '__none__', // skip predicate execution; we only want registrations
     });
     const regs = report.registrations;
+    // A policy declaration its loader refused (no id) is named (round 12, 12.1).
+    const note = { next: 'shrk packs contributions' };
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(regs) + '\n');
+      await writeRejectedEntriesNote(inspection, [ContributionKind.Policy], { ...note, json: true });
       return 0;
     }
     process.stdout.write(header(`Policy checks (${regs.length})`));
@@ -65,6 +70,7 @@ export const policyListCommand: ICommandHandler = {
         `  [${r.source}] ${r.severity.padEnd(7)} ${r.id.padEnd(40)} ${r.title}\n`,
       );
     }
+    await writeRejectedEntriesNote(inspection, [ContributionKind.Policy], note);
     return 0;
   },
 };

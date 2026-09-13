@@ -6,6 +6,8 @@ import {
   type IWiringSource,
 } from '@shrkcrft/core';
 import { safeCompile } from '../util/safe-regex.ts';
+import { findBlankRunHazards } from '../util/blank-run-hazard.ts';
+import type { IBlankRunHazard } from '../util/blank-run-hazard-finding.ts';
 import { blankOutsideZone } from './code-zones.ts';
 import { extractImportEdges } from './import-edges.ts';
 import type { ITsconfigPathsMap } from '../scan/tsconfig-aliases.ts';
@@ -90,8 +92,12 @@ export function extractTokens(
   // reports the true `file:line` and none of them needs zone logic of its own.
   const zone = source.scan ?? 'all';
   let blankedChars = 0;
+  // `import-edges` zones itself (round 11, 6.1a#import-edges-scan): it judges a
+  // statement by where its KEYWORD starts, through the one import parser.
+  // Pre-blanking here erased every specifier (a string) under `scan: 'code'`,
+  // and the rule silently extracted nothing.
   const scanned: readonly IExtractFileEntry[] =
-    zone === 'all'
+    zone === 'all' || kind === 'import-edges'
       ? files
       : files.map((f) => {
           const blanked = blankOutsideZone(f.content, zone);
@@ -100,10 +106,28 @@ export function extractTokens(
         });
 
   let sites: IExtractedSite[];
+  // A user pattern run on a BLANKED buffer can backtrack O(run²) on the
+  // whitespace runs the zone manufactures. Lint it (the hint reaches `gates
+  // coverage` / `explain`), and bound each file: a file over budget is a
+  // named, loud skip — the rule errors, never a silent partial.
+  let regexHint: string | undefined;
   switch (kind) {
-    case 'regex-capture':
-      sites = byRegex(source, scanned);
+    case 'regex-capture': {
+      const zoned = zone !== 'all';
+      const hazards = zoned ? findBlankRunHazards(source.pattern!) : [];
+      if (hazards.length > 0) regexHint = blankRunHazardHint(zone, hazards);
+      const run = byRegex(source, scanned, zoned, hazards);
+      if (run.predicted.length + run.ran.length > 0) {
+        return {
+          sites: [],
+          error: zonedOverBudgetError(zone, run, hazards),
+          ...(regexHint ? { hint: regexHint } : {}),
+          ...zoneMeta(zone, blankedChars),
+        };
+      }
+      sites = run.sites;
       break;
+    }
     case 'array-members':
       sites = byBracketLiteral(anchor!, '[', scanned, (el) => elementToken(el));
       break;
@@ -138,6 +162,10 @@ export function extractTokens(
         ...(context.tsconfigPaths ? { tsconfigPaths: context.tsconfigPaths } : {}),
       });
       if (edges.error) return { sites: [], error: edges.error };
+      // It zones itself, so what its zone blanked is its own figure — the
+      // `scan: code (N chars blanked)` note must not read 0 over a zone that
+      // dropped a commented-out edge.
+      blankedChars += edges.blankedChars ?? 0;
       if (edges.hint) return { sites: edges.sites, hint: edges.hint, ...zoneMeta(zone, blankedChars) };
       sites = edges.sites;
       break;
@@ -164,7 +192,7 @@ export function extractTokens(
       });
     }
   }
-  return { sites, ...zoneMeta(zone, blankedChars) };
+  return { sites, ...zoneMeta(zone, blankedChars), ...(regexHint ? { hint: regexHint } : {}) };
 }
 
 /** The zone provenance to attach to a result — omitted entirely when unzoned. */
@@ -212,23 +240,252 @@ function byFilenames(
   return sites;
 }
 
-/** Capture-group-1 of a pattern, per file. */
-function byRegex(source: IWiringSource, files: readonly IExtractFileEntry[]): IExtractedSite[] {
+/**
+ * Wall-clock cap for ONE file's `regex-capture` pass under a non-`all` scan
+ * zone. Checked between matches; a file that trips it contributes nothing and
+ * is NAMED (the source errors), so a partial token set can never read green.
+ */
+export const ZONED_REGEX_FILE_BUDGET_MS = 1000;
+
+/**
+ * For a pattern the blank-run lint flags: a file whose PREDICTED backtracking
+ * work (priced by each hazard's reach, below) exceeds this is skipped BEFORE
+ * the regex runs. One `exec` over such a buffer cannot be interrupted (a
+ * 16 KB newline-crossing run already costs ~300–470 ms), so the prediction is
+ * what makes the cap a real bound.
+ */
+const ZONED_HAZARD_COST_LIMIT = 2e8;
+
+/** Blank stretches shorter than this are ordinary indentation — not worth pricing. */
+const MIN_PRICED_RUN = 64;
+
+/**
+ * The three shapes of quadratic work a flagged pattern can do on a blanked
+ * buffer, measured in one pass. Blanking writes spaces and keeps newlines, so
+ * a RUN is a maximal stretch of spaces/newlines and a LINE SEGMENT a maximal
+ * stretch of spaces alone.
+ */
+interface IBlankRunCosts {
+  /** Σ run² — a newline-crossing quantifier (`\s*`) that can start at any offset. */
+  readonly run: number;
+  /** Σ segment² — a line-bounded one (`[ \t]*`, `.*?`, `[ ]*`): it stops at every `\n`. */
+  readonly line: number;
+  /** Σ (lines × run) — a newline-crossing one that can only start at a line start (`(?:^|\n)\s*`). */
+  readonly linesTimesRun: number;
+}
+
+function blankRunCosts(content: string): IBlankRunCosts {
+  let run = 0;
+  let segment = 0;
+  let newlines = 0;
+  let runCost = 0;
+  let lineCost = 0;
+  let linesTimesRun = 0;
+  for (let i = 0; i <= content.length; i += 1) {
+    const c = i < content.length ? content.charCodeAt(i) : 0;
+    if (c === 0x20) {
+      run += 1;
+      segment += 1;
+      continue;
+    }
+    if (segment >= MIN_PRICED_RUN) lineCost += segment * segment;
+    segment = 0;
+    if (c === 0x0a) {
+      run += 1;
+      newlines += 1;
+      continue;
+    }
+    if (run >= MIN_PRICED_RUN) {
+      runCost += run * run;
+      linesTimesRun += (newlines + 1) * run;
+    }
+    run = 0;
+    newlines = 0;
+  }
+  return { run: runCost, line: lineCost, linesTimesRun };
+}
+
+/** One file's predicted work under the costliest flagged hazard, and the measure it was priced by. */
+interface IPredictedCost {
+  readonly cost: number;
+  readonly measure: string;
+}
+
+/** Price every flagged hazard by its OWN reach; the file costs what its worst hazard costs. */
+function predictedHazardCost(hazards: readonly IBlankRunHazard[], costs: IBlankRunCosts): IPredictedCost {
+  let worst: IPredictedCost = { cost: 0, measure: 'Σ run²' };
+  for (const h of hazards) {
+    const priced: IPredictedCost = !h.crossesNewline
+      ? { cost: costs.line, measure: 'Σ line-run²' }
+      : h.shape === 'leading' && h.fromLineStart
+        ? { cost: costs.linesTimesRun, measure: 'Σ lines×run' }
+        : { cost: costs.run, measure: 'Σ run²' };
+    if (priced.cost > worst.cost) worst = priced;
+  }
+  return worst;
+}
+
+/**
+ * The remedy for each hazard shape present. A LEADING quantifier is fixed by
+ * a literal anchor — never by another quantifier: a leading `[ \t]*` is still
+ * tried at every offset of a blanked line.
+ */
+function hazardRemedy(hazards: readonly IBlankRunHazard[]): string {
+  const remedies: string[] = [];
+  if (hazards.some((h) => h.shape === 'leading')) {
+    remedies.push(
+      'anchor the alternative on a literal — begin it with the token the whitespace precedes ' +
+        '(`foo[ \\t]*\\(`, not `[ \\t]*foo\\(`), since a leading whitespace quantifier of any class is tried at every offset',
+    );
+  }
+  if (hazards.some((h) => h.shape === 'adjacent')) {
+    remedies.push('collapse the touching whitespace quantifiers into one');
+  }
+  return remedies.join('; ');
+}
+
+/** The hint a hazardous user pattern earns under a zone — surfaced through `gates coverage` / `explain`. */
+function blankRunHazardHint(zone: string, hazards: readonly IBlankRunHazard[]): string {
+  const h = hazards[0]!;
+  const reach = hazards.every((x) => !x.crossesNewline)
+    ? ' It stops at each newline, so only a very long blanked line is costly.'
+    : '';
+  return (
+    `pattern backtracking hazard under scan: '${zone}': ${h.message}. Blanked comments and strings become ` +
+    `long whitespace runs; ${hazardRemedy(hazards)} (or scan: 'all').${reach}`
+  );
+}
+
+/** A file skipped before its regex ran, because its predicted work was over the limit. */
+interface IPredictedSkip extends IPredictedCost {
+  readonly path: string;
+}
+
+/** One zoned `regex-capture` pass: the sites, and every file it could NOT judge — split by why. */
+interface IRegexRun {
+  readonly sites: IExtractedSite[];
+  /** Skipped BEFORE running: the predicted cost was over {@link ZONED_HAZARD_COST_LIMIT}. */
+  readonly predicted: readonly IPredictedSkip[];
+  /** Stopped AFTER running past {@link ZONED_REGEX_FILE_BUDGET_MS}. */
+  readonly ran: readonly string[];
+}
+
+function namedFiles(files: readonly string[]): string {
+  return files.slice(0, 5).join(', ') + (files.length > 5 ? `, … (+${files.length - 5} more)` : '');
+}
+
+function formatCost(n: number): string {
+  return n.toExponential(1).replace('e+', 'e');
+}
+
+/**
+ * The error for files a zoned `regex-capture` could not judge — loud, named,
+ * never a silent partial. The two causes are worded apart: a PREDICTED skip
+ * never ran the regex (so it spent nothing), a STOPPED file ran past the cap.
+ */
+function zonedOverBudgetError(zone: string, run: IRegexRun, hazards: readonly IBlankRunHazard[]): string {
+  const parts: string[] = [];
+  if (run.predicted.length > 0) {
+    const worst = run.predicted.reduce((a, b) => (b.cost > a.cost ? b : a));
+    parts.push(
+      `predicted over budget, so the regex was never run (${worst.measure} = ${formatCost(worst.cost)} > ` +
+        `${formatCost(ZONED_HAZARD_COST_LIMIT)}): ${namedFiles(run.predicted.map((p) => p.path))}`,
+    );
+  }
+  if (run.ran.length > 0) {
+    parts.push(`ran past the ${ZONED_REGEX_FILE_BUDGET_MS} ms per-file cap and was stopped: ${namedFiles(run.ran)}`);
+  }
+  const total = run.predicted.length + run.ran.length;
+  const why = hazards.length > 0 ? ` — ${hazards[0]!.message}` : '';
+  const fix = hazards.length > 0 ? hazardRemedy(hazards) : 'simplify the pattern';
+  return (
+    `regex-capture under scan: '${zone}' skipped ${total} file(s): over budget — ${parts.join('; ')}${why}. ` +
+    `${fix.charAt(0).toUpperCase()}${fix.slice(1)}, or use scan: 'all'.`
+  );
+}
+
+/**
+ * Capture-group-1 of a pattern, per file. Under a zone (`zoned`), each file is
+ * bounded: a FLAGGED pattern skips a file whose predicted work — each hazard
+ * priced by its own reach, so a line-bounded one pays per line — is over the
+ * limit, and any pattern stops a file that runs past the per-file budget.
+ * Both are named, never a quietly smaller token set.
+ */
+function byRegex(
+  source: IWiringSource,
+  files: readonly IExtractFileEntry[],
+  zoned: boolean,
+  hazards: readonly IBlankRunHazard[],
+): IRegexRun {
   const { re } = safeCompile(source.pattern!, source.flags);
-  if (!re) return [];
+  if (!re) return { sites: [], predicted: [], ran: [] };
   const sites: IExtractedSite[] = [];
+  const predicted: IPredictedSkip[] = [];
+  const ran: string[] = [];
   for (const f of files) {
+    if (zoned && hazards.length > 0) {
+      const p = predictedHazardCost(hazards, blankRunCosts(f.content));
+      if (p.cost > ZONED_HAZARD_COST_LIMIT) {
+        predicted.push({ path: f.path, ...p });
+        continue;
+      }
+    }
+    const startedAt = Date.now();
+    const fileSites: IExtractedSite[] = [];
+    let over = false;
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(f.content)) !== null) {
       // Guard against a zero-width match looping forever.
       if (m.index === re.lastIndex) re.lastIndex += 1;
       const token = m[1];
-      if (token === undefined || token === '') continue;
-      sites.push({ token, file: f.path, line: lineOf(f.content, m.index) });
+      if (token !== undefined && token !== '') {
+        fileSites.push({ token, file: f.path, line: lineOf(f.content, m.index) });
+      }
+      if (zoned && Date.now() - startedAt > ZONED_REGEX_FILE_BUDGET_MS) {
+        over = true;
+        break;
+      }
     }
+    if (over) {
+      ran.push(f.path);
+      continue;
+    }
+    sites.push(...fileSites);
   }
-  return sites;
+  return { sites, predicted, ran };
+}
+
+/**
+ * The head regexes the anchor-based extractors run — possibly on a blanked
+ * buffer. One factory, so the linearity lock (`r75-blank-run-linearity`)
+ * times and lints the exact patterns that run, not copies of them.
+ */
+export function extractorHeadPatterns(anchor: string): {
+  readonly arrayLiteral: RegExp;
+  readonly objectLiteral: RegExp;
+  readonly enumBody: RegExp;
+  readonly call: RegExp;
+  readonly decorator: RegExp;
+  readonly stringUnion: RegExp;
+  readonly exportDecl: RegExp;
+  readonly exportClause: RegExp;
+} {
+  const a = escapeRegex(anchor);
+  const literalHead = (open: '[' | '{'): RegExp =>
+    new RegExp(`(?<![\\w$])${a}\\s*(?::[^=\\n]*)?[:=]\\s*(?:[A-Za-z_$][\\w$.]*\\s*\\(\\s*)?\\${open}`, 'g');
+  return {
+    arrayLiteral: literalHead('['),
+    objectLiteral: literalHead('{'),
+    enumBody: new RegExp(`\\benum\\s+${a}\\s*\\{`, 'g'),
+    call: new RegExp(`(?<![\\w$.@])${a}\\s*\\(`, 'g'),
+    decorator: new RegExp(`@${a}\\s*\\(`, 'g'),
+    // Collapsed from `\s*(?:<[^>]*>)?\s*=`: two whitespace quantifiers with
+    // only an optional group between them re-partition a blank run.
+    stringUnion: new RegExp(`\\btype\\s+${a}\\s*(?:<[^>]*>\\s*)?=`, 'g'),
+    exportDecl: EXPORT_DECL,
+    exportClause: EXPORT_CLAUSE,
+  };
 }
 
 /**
@@ -246,10 +503,8 @@ function byBracketLiteral(
   tokenOf: (elementText: string) => string | undefined,
 ): IExtractedSite[] {
   const sites: IExtractedSite[] = [];
-  const head = new RegExp(
-    `(?<![\\w$])${escapeRegex(anchor)}\\s*(?::[^=\\n]*)?[:=]\\s*(?:[A-Za-z_$][\\w$.]*\\s*\\(\\s*)?\\${open}`,
-    'g',
-  );
+  const heads = extractorHeadPatterns(anchor);
+  const head = open === '[' ? heads.arrayLiteral : heads.objectLiteral;
   for (const f of files) {
     head.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -275,7 +530,7 @@ function byEnumMembers(
   files: readonly IExtractFileEntry[],
 ): IExtractedSite[] {
   const sites: IExtractedSite[] = [];
-  const head = new RegExp(`\\benum\\s+${escapeRegex(anchor)}\\s*\\{`, 'g');
+  const head = extractorHeadPatterns(anchor).enumBody;
   for (const f of files) {
     head.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -331,9 +586,8 @@ function byCallArgs(
   files: readonly IExtractFileEntry[],
 ): IExtractedSite[] {
   const sites: IExtractedSite[] = [];
-  const head = decorator
-    ? new RegExp(`@${escapeRegex(anchor)}\\s*\\(`, 'g')
-    : new RegExp(`(?<![\\w$.@])${escapeRegex(anchor)}\\s*\\(`, 'g');
+  const heads = extractorHeadPatterns(anchor);
+  const head = decorator ? heads.decorator : heads.call;
   for (const f of files) {
     head.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -357,7 +611,7 @@ function byCallArgs(
 /** The string literals of `type <anchor> = 'a' | 'b' | 'c'`. */
 function byStringUnion(anchor: string, files: readonly IExtractFileEntry[]): IExtractedSite[] {
   const sites: IExtractedSite[] = [];
-  const head = new RegExp(`\\btype\\s+${escapeRegex(anchor)}\\s*(?:<[^>]*>)?\\s*=`, 'g');
+  const head = extractorHeadPatterns(anchor).stringUnion;
   const member = /['"`]([^'"`]+)['"`]/g;
   for (const f of files) {
     head.lastIndex = 0;

@@ -21,6 +21,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { startDashboardApiServer } from '../dashboard/dashboard-api-server.ts';
 import { asJson } from '../output/format-output.ts';
 
@@ -28,6 +29,16 @@ const DEFAULT_PORT = 4567;
 
 export const dashboardCommand: ICommandHandler = {
   name: 'dashboard',
+  // Mixed-mode (export / diff are trie children); `serve` is dispatched here.
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: 'serve',
+      description: 'Start the dashboard (the same as bare `shrk dashboard`).',
+      usage:
+        'shrk [--cwd <dir>] dashboard serve [--host <addr>] [--port <n>] [--open|--no-open] [--api-only] [--static-only] [--dev-assets <path>] [--json]',
+    },
+  ],
   description:
     'Start the local read-only SharkCraft dashboard (web UI + API). GET/HEAD only; 127.0.0.1 by default; no write endpoints.',
   usage:

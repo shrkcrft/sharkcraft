@@ -34,7 +34,7 @@ The result is a sorted list with `score` and `reasons[]`.
 shrk understand-task "<task>"                 # ranked list (text)
 shrk understand-task "<task>" --explain       # one block per file with reasons
 shrk understand-task "<task>" --format markdown --explain
-shrk context build --task "<task>" --explain
+shrk context build --task "<task>"
 ```
 
 Output fields:

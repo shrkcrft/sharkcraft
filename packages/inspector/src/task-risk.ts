@@ -726,7 +726,7 @@ export async function buildTaskRiskReport(
     'shrk architecture map --risk --signals',
     'shrk policy run --explain-overrides',
   ];
-  if (publicApiTouch) recommendedReviewCommands.push('shrk api report --all --public-only');
+  if (publicApiTouch) recommendedReviewCommands.push('shrk api-diff .sharkcraft/api-baseline.json --fail-on-breaking');
   if (ownershipGaps.length > 0) recommendedReviewCommands.push('shrk owners impact');
   if (testGaps.length > 0) recommendedReviewCommands.push('shrk tests missing --since main');
   if (memory && memory.score > 0) recommendedReviewCommands.push('shrk memory risk "' + (trimmed || '<task>') + '"');

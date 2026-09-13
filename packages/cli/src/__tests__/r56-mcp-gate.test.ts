@@ -3,13 +3,26 @@
  * the surface summary correctly gates experimental tools and lets
  * core / extended tools pass.
  */
-import { describe, expect, test } from 'bun:test';
-import type { IToolDefinition } from '@shrkcrft/mcp-server';
+import { afterAll, describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { ALL_TOOLS, type IToolDefinition } from '@shrkcrft/mcp-server';
 import {
   buildSurfaceSummary,
   findCommandInSummary,
 } from '../surface/surface-summary.ts';
 import { CommandTier } from '../commands/command-catalog.ts';
+import { buildMcpGateResolver } from '../commands/mcp.command.ts';
+import { buildRegistry } from '../main.ts';
+import { setActiveCommandRegistry } from '../surface/command-index.ts';
+
+const REPO_ROOT = join(import.meta.dir, '..', '..', '..', '..');
+const fixtures: string[] = [];
+afterAll(() => {
+  setActiveCommandRegistry(undefined);
+  for (const f of fixtures) rmSync(f, { recursive: true, force: true });
+});
 
 function mkTool(name: string, cliCommand?: string): IToolDefinition {
   return {
@@ -36,6 +49,7 @@ describe('MCP gate resolver', () => {
       spineCommands: new Set(),
       packContributions: new Map(),
       surfaceConfig: undefined,
+      isToolRepo: true,
     });
     const resolver = resolverFor(summary);
     const tool = mkTool('inspect_workspace'); // no cliCommand
@@ -47,6 +61,7 @@ describe('MCP gate resolver', () => {
       spineCommands: new Set(),
       packContributions: new Map(),
       surfaceConfig: undefined,
+      isToolRepo: true,
     });
     const resolver = resolverFor(summary);
     const tool = mkTool('doctor_tool', 'doctor');
@@ -58,6 +73,7 @@ describe('MCP gate resolver', () => {
       spineCommands: new Set(),
       packContributions: new Map(),
       surfaceConfig: undefined,
+      isToolRepo: true,
     });
     const resolver = resolverFor(summary);
     const tool = mkTool('inspect_tool', 'inspect');
@@ -70,6 +86,7 @@ describe('MCP gate resolver', () => {
       spineCommands: new Set(),
       packContributions: new Map([['some-experimental', 'fake-pack']]),
       surfaceConfig: undefined,
+      isToolRepo: true,
     });
     // Need to inject the catalog entry — pack-contributed commands
     // only appear when the catalog has them. For this test we walk
@@ -92,5 +109,34 @@ describe('MCP gate resolver', () => {
     const decision = resolver(tool);
     expect(decision).not.toBeNull();
     expect(decision?.command).toBe(view.command);
+  });
+});
+
+describe('MCP gate resolver — tool-maintenance siblings (round 11 §5.1)', () => {
+  test('get_docs_check / get_release_readiness are refused in a consumer repo and allowed in the SharkCraft repo', async () => {
+    const fx = mkdtempSync(join(tmpdir(), 'shrk-r56-mcpgate-'));
+    fixtures.push(fx);
+    for (const [rel, body] of Object.entries({
+      'package.json': JSON.stringify({ name: 'consumer-app', version: '0.0.0' }),
+      'sharkcraft/sharkcraft.config.ts': "export default { projectName: 'consumer-app' };\n",
+    })) {
+      mkdirSync(dirname(join(fx, rel)), { recursive: true });
+      writeFileSync(join(fx, rel), body);
+    }
+    // The real registry and the real production resolver (`shrk mcp serve` wires it).
+    setActiveCommandRegistry(buildRegistry());
+    const consumerGate = await buildMcpGateResolver(fx);
+    const repoGate = await buildMcpGateResolver(REPO_ROOT);
+    expect(consumerGate).toBeDefined();
+    expect(repoGate).toBeDefined();
+    for (const name of ['get_docs_check', 'get_release_readiness']) {
+      const tool = ALL_TOOLS.find((t) => t.name === name);
+      expect(tool?.cliCommand).toBeDefined();
+      const decision = consumerGate!(tool!);
+      expect(decision?.command).toBe(tool!.cliCommand!);
+      expect(decision?.reason).toContain('maintains SharkCraft itself and does not apply to this repository');
+      expect(decision?.reason).toContain('shrk surface enable');
+      expect(repoGate!(tool!)).toBeNull();
+    }
   });
 });

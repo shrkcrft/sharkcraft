@@ -15,6 +15,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 /**
@@ -27,6 +28,17 @@ import { asJson, header, kv } from '../output/format-output.ts';
  */
 export const apiDiffCommand: ICommandHandler = {
   name: 'api-diff',
+  // positional[0] is `capture` or the baseline FILE: a verb-shaped token that
+  // is neither (`api-diff status`) is refused before it can become a path
+  // (it used to read as "Baseline read error: ENOENT …/status").
+  positionals: PositionalMode.Path,
+  subverbs: [
+    {
+      name: 'capture',
+      description: 'Write the current public API surface to a baseline file.',
+      usage: 'shrk api-diff capture --output <path> [--packages @scope/a,@scope/b] [--with-signatures] [--json]',
+    },
+  ],
   description:
     'Compare the current public API surface to a saved baseline. Reports added / removed / kind-changed / moved symbols, with breaking-change severity.',
   usage:

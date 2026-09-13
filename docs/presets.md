@@ -136,7 +136,7 @@ includes: {
 ```
 
 References are resolved against the current inspection registries.
-`shrk presets get/preview/diff` lists each as **OK** (resolved) or
+`shrk presets get` / `preview` / `diff` lists each as **OK** (resolved) or
 **MISSING** (not present — install the pack that ships it or add it
 locally). Referenced assets are **not** written to disk; only embedded
 `knowledge` / `rules` / `paths` / `templates` / `pipelines` and

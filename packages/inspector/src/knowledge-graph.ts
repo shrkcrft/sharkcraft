@@ -46,6 +46,12 @@ export interface IKnowledgeGraph {
   edges: IGraphEdge[];
   /** Convenience: lookup by composite id (kind:id). */
   byId: ReadonlyMap<string, IGraphNode>;
+  /**
+   * Declared edges NOT drawn because an endpoint is not a node of this graph
+   * (a dangling id, or a kind the graph does not model). A shrunken graph says
+   * it shrank — `shrk self-config xrefs --dangling-only` lists the ids.
+   */
+  droppedEdges?: number;
 }
 
 function nodeKey(kind: GraphNodeKind, id: string): string {
@@ -60,6 +66,7 @@ export function buildKnowledgeGraph(inspection: ISharkcraftInspection): IKnowled
   const nodes: IGraphNode[] = [];
   const edges: IGraphEdge[] = [];
   const byId = new Map<string, IGraphNode>();
+  let droppedEdges = 0;
 
   function addNode(n: IGraphNode): void {
     const key = nodeKey(n.kind, n.id);
@@ -75,8 +82,12 @@ export function buildKnowledgeGraph(inspection: ISharkcraftInspection): IKnowled
   ): void {
     const fromKey = nodeKey(from.kind, from.id);
     const toKey = nodeKey(to.kind, to.id);
-    if (!byId.has(toKey)) return; // don't add edges to nodes we didn't see
-    if (!byId.has(fromKey)) return;
+    // An edge to a node we didn't see is not drawn — but it is COUNTED, so the
+    // graph never reads as complete while it silently lost edges.
+    if (!byId.has(toKey) || !byId.has(fromKey)) {
+      droppedEdges += 1;
+      return;
+    }
     edges.push({ from: fromKey, to: toKey, relation, why });
   }
   function sourceOf(
@@ -242,7 +253,10 @@ export function buildKnowledgeGraph(inspection: ISharkcraftInspection): IKnowled
               : byId.has(kKey)
                 ? 'knowledge'
                 : null;
-        if (!targetKind) continue;
+        if (!targetKind) {
+          droppedEdges += 1;
+          continue;
+        }
         addEdge(
           { kind: 'pipeline', id: pipeline.id },
           { kind: targetKind as GraphNodeKind, id: ref },
@@ -273,12 +287,21 @@ export function buildKnowledgeGraph(inspection: ISharkcraftInspection): IKnowled
     }
   }
 
-  // Pack contributions: pack → its contributed items.
+  // Pack contributions: pack → its contributed items. A contributed rule or
+  // path convention is a `rule:` / `path:` node, not a `knowledge:` one — the
+  // edge used to target `knowledge:<id>` and was silently dropped for both.
+  const entryKinds = new Map<string, GraphNodeKind>();
+  for (const e of inspection.knowledgeEntries) {
+    entryKinds.set(
+      e.id,
+      String(e.type) === 'rule' ? 'rule' : String(e.type) === 'path' ? 'path' : 'knowledge',
+    );
+  }
   for (const [id, src] of inspection.entrySources) {
     if (src.type !== 'pack' || !src.packageName) continue;
     addEdge(
       { kind: 'pack', id: src.packageName },
-      { kind: 'knowledge', id },
+      { kind: entryKinds.get(id) ?? 'knowledge', id },
       'pack-contributes',
       'knowledge entry',
     );
@@ -320,7 +343,7 @@ export function buildKnowledgeGraph(inspection: ISharkcraftInspection): IKnowled
     );
   }
 
-  return { nodes, edges, byId };
+  return { nodes, edges, byId, droppedEdges };
 }
 
 export interface IGraphPathStep {

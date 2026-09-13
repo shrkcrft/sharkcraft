@@ -22,6 +22,25 @@
     },
     "affectedAreas": {
       "type": "array"
+    },
+    "areaCoverage": {
+      "type": "object",
+      "properties": {
+        "classificationRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "degraded": {
+          "type": "boolean"
+        },
+        "unclassifiedTargets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }

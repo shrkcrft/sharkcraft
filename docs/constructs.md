@@ -46,6 +46,30 @@ contributions: {
 `defineConstructFacet` works similarly for stand-alone facet files that
 get folded back into their target construct.
 
+### Related ids are validated (round 11)
+
+`relatedKnowledge`, `relatedRules`, `relatedTemplates`, `relatedPipelines` and
+`relatedPathConventions` are resolved by `shrk self-config doctor` (and `packs
+doctor` for a pack's constructs): an id no registry has is `xref-dangling`, one
+that resolves only in the wrong kind (a template id in `relatedRules`) is
+`xref-wrong-kind`. `shrk constructs related <id>` prints each id with the
+namespace it resolved into, or `UNRESOLVED` (`--json` adds `resolvedAs` /
+`status`).
+
+A facet value is free-form (an event topic, a token name) unless it declares
+what it names:
+
+```ts
+facets: {
+  'boundary-rules': [{ id: 'b1', value: 'app.no-db-in-ui', resolvesAs: ['boundary-rule'] }],
+}
+```
+
+Only values with `resolvesAs` are resolved; the rest are counted
+(`examined.facetValuesUndeclared`). An unknown kind name in `resolvesAs` is an
+error (`xref-unknown-kind`) — a typo must not quietly turn an id back into text.
+Stand-alone facet files carry `resolvesAs` too.
+
 ## CLI
 
 ```
@@ -83,6 +107,19 @@ generated module is **not loaded** by SharkCraft — copy the entries you
 want into your live `sharkcraft/constructs.ts`.
 
 MCP: `infer_constructs_preview` returns the same payload without writes.
+
+## Required fields and rejected constructs (round 12)
+
+A construct needs a non-empty `id` and a string `type` (`IConstructInput`); a
+facet needs string `id` / `constructId` / `kind` / `value`, and a
+`constructId` that names a loaded construct. An id-less construct and a facet
+with no target used to be dropped silently, a construct without `type` was
+ACCEPTED and crashed `shrk constructs list`, and a construct file that failed
+to import was swallowed. Now each refused entry is a REJECTED entry — `shrk
+constructs list` ends with `⚠ N entries rejected from <file>: …`, the
+self-config doctor reports `construct-invalid` / `construct-facet-invalid`
+(error) — and a file that fails to import is a load failure on `shrk packs
+doctor` / `packs contributions`.
 
 ## MCP (read-only)
 

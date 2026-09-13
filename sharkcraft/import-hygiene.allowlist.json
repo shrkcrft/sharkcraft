@@ -28,6 +28,16 @@
       "reason": "Watcher + HTTP transport are optional MCP runtime features that should not be eagerly loaded for the stdio default path."
     },
     {
+      "path": "packages/cli/src/shrk.ts",
+      "kind": "dynamic-import",
+      "reason": "The `shrk` bin bootstrap (round 13, 13.2): only a dynamic import of ./main lets a load failure of the entry's static module graph reach a handler, so an unlinked workspace dependency exits 70 with one line instead of Node's raw resolver stack."
+    },
+    {
+      "path": "packages/mcp-server/src/shrk-mcp.ts",
+      "kind": "dynamic-import",
+      "reason": "The `shrk-mcp` bin bootstrap (round 13, 13.2): only a dynamic import of ./main lets a load failure of the entry's static module graph reach a handler, so an unlinked workspace dependency exits 70 with one line instead of Node's raw resolver stack."
+    },
+    {
       "path": "packages/inspector/src/dashboard-export.ts",
       "kind": "dynamic-import",
       "reason": "Language profile detection is heavy and only needed for the export subcommand."

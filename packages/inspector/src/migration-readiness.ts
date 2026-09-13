@@ -235,9 +235,7 @@ export function buildMigrationReadiness(options: IMigrationReadinessOptions): IM
     `Profile: ${profile.title} (${profile.id})`,
     `Verdict: ${verdict}`,
     `Passed: ${passed.length}, Warnings: ${warnings.length}, Blockers: ${blockers.length}`,
-    'Next: review blockers (if any), then re-run `shrk migration readiness --profile ' +
-      profile.id +
-      '`.',
+    `Next: review blockers (if any), then re-run the readiness check for ${profile.id}.`,
   ];
 
   return {

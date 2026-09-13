@@ -52,6 +52,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { printError } from '../output/print-error.ts';
 import { runValidationLoop } from '../validation/run-validation-loop.ts';
@@ -324,7 +325,7 @@ async function planSession(args: ParsedArgs): Promise<number> {
   if (!load.state) {
     process.stderr.write(
       `Session ${load.id} has no session.json (legacy session). ` +
-        `Use shrk dev status / shrk session report for legacy sessions.\n`,
+        `Use shrk dev status ${load.id} / shrk dev report ${load.id} for legacy sessions.\n`,
     );
     return 1;
   }
@@ -937,7 +938,9 @@ function reportSession(args: ParsedArgs): number {
     let state = recordReportFile(load.state, 'final-report.md');
     if (htmlOut) state = recordReportFile(state, 'final-report.html');
     state = setDevSessionPhase(state, DevSessionPhase.Completed);
-    state = setDevNextAction(state, `shrk session show ${load.id}`);
+    // `shrk session show` never existed; a completed session's next action is
+    // its reports — the same answer the inspector's computeDevNextAction gives.
+    state = setDevNextAction(state, `shrk dev reports ${load.id}`);
     writeDevSessionState(cwd, state);
   }
 
@@ -1525,6 +1528,46 @@ function commandsCmd(args: ParsedArgs): number {
 
 export const devCommand: ICommandHandler = {
   name: 'dev',
+  // Free: `shrk dev "<task>"` is the documented alias of `dev start "<task>"`.
+  positionals: PositionalMode.Free,
+  subverbs: [
+    { name: 'start', description: 'Start a dev session for a task.', usage: 'shrk dev start "<task>"', positionals: PositionalMode.Free },
+    { name: 'plan', description: 'Plan the next step of a session.', usage: 'shrk dev plan <sessionId>', positionals: PositionalMode.Free },
+    { name: 'status', description: 'A session’s status.', usage: 'shrk dev status [<sessionId>]', positionals: PositionalMode.Free },
+    { name: 'next', description: 'The next action for a session.', usage: 'shrk dev next [<sessionId>]', positionals: PositionalMode.Free },
+    { name: 'continue', description: 'Continue a session (same as `next`).', usage: 'shrk dev continue [<sessionId>]', positionals: PositionalMode.Free },
+    { name: 'validate', description: 'Validate a session’s applied plans.', usage: 'shrk dev validate <sessionId>', positionals: PositionalMode.Free },
+    { name: 'report', description: 'A session report.', usage: 'shrk dev report <sessionId>', positionals: PositionalMode.Free },
+    { name: 'list', description: 'List dev sessions.', usage: 'shrk dev list' },
+    {
+      name: 'mark-applied',
+      description: 'Record that a plan of the session was applied.',
+      usage: 'shrk dev mark-applied <sessionId> <planPath> [--note <text>]',
+      positionals: PositionalMode.Free,
+    },
+    {
+      name: 'mark-validated',
+      description: 'Record a session’s validation result.',
+      usage: 'shrk dev mark-validated <sessionId> [--report <path>] [--status passed|failed] [--note <text>]',
+      positionals: PositionalMode.Free,
+    },
+    { name: 'diff', description: 'Diff two sessions.', usage: 'shrk dev diff <sessionA> <sessionB> [--json]', positionals: PositionalMode.Free },
+    { name: 'archive', description: 'Archive a session.', usage: 'shrk dev archive <sessionId>', positionals: PositionalMode.Free },
+    {
+      name: 'clean',
+      description: 'Clean old sessions (dry-run unless --write).',
+      usage: 'shrk dev clean --older-than <duration> [--archive] [--write] [--include-active]',
+    },
+    {
+      name: 'open',
+      description: 'Open a session report.',
+      usage: 'shrk dev open <sessionId> [--html] [--serve [--host <addr>] [--port <n>]]',
+      positionals: PositionalMode.Free,
+    },
+    { name: 'plans', description: 'A session’s plans.', usage: 'shrk dev plans <sessionId>', positionals: PositionalMode.Free },
+    { name: 'reports', description: 'A session’s reports.', usage: 'shrk dev reports <sessionId>', positionals: PositionalMode.Free },
+    { name: 'commands', description: 'The commands a session ran / needs.', usage: 'shrk dev commands <sessionId>', positionals: PositionalMode.Free },
+  ],
   description:
     'Safe AI-assisted development workflow: task → session → plan → review → apply (CLI) → validate → report. ' +
     'Never auto-applies plans; never runs untrusted pack commands; never writes outside .sharkcraft/sessions/.',

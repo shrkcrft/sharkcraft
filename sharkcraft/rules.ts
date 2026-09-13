@@ -10,6 +10,12 @@
 // "preferred flow" guidance, and `shrk coverage` / `shrk doctor` use them to
 // score AI-readiness. Each hint here is something an engine contributor
 // would actually do — not filler.
+//
+// `references` make each rule verifiable by `shrk knowledge stale-check`: they
+// pin the artefacts the rule's content NAMES (the enforcing scripts, the
+// contract test, the pipeline it protects), with `contains` where the claim is
+// about a file's contents. A rule with no references is counted UNVERIFIABLE —
+// the stale-check never folds it into the healthy total.
 
 export default [
   {
@@ -27,6 +33,13 @@ same diff — those changes belong in their own PR. Auto-formatters that touch
 files outside the task scope must be skipped or scoped down. This rule exists
 because the repo ships a deterministic CLI and MCP surface; unrelated edits
 make plan/apply diffs hard to review and easy to revert.`,
+    // The plan → review → apply pipeline whose diffs this rule keeps reviewable.
+    references: [
+      { kind: 'symbol', symbol: 'signPlan', path: 'packages/generator/src/plan-signing.ts' },
+      { kind: 'symbol', symbol: 'verifyPlan', path: 'packages/generator/src/plan-signing.ts' },
+      { kind: 'directory', path: 'packages/mcp-server/src/tools' },
+    ],
+    verifiedOn: '2026-09-11',
     actionHints: {
       commands: [
         { command: 'git status --short', purpose: 'Confirm the diff scope before staging.', when: 'before' },
@@ -65,6 +78,15 @@ Cross-package imports must use the absolute \`@shrkcrft/<pkg>\` name; no
 relative paths across package boundaries. \`shared/\` and \`ai/\` may only
 depend on \`core\` and a few stable peers. Run \`bun run check:circular-deps\`
 whenever a change spans packages, and \`shrk check boundaries\` to enforce.`,
+    // The order as the repo brief states it, the rules that enforce it, and
+    // the cycle detector the content tells you to run.
+    references: [
+      { kind: 'file', path: 'CLAUDE.md', contains: 'core → workspace → config → knowledge' },
+      { kind: 'file', path: 'sharkcraft/boundaries.ts' },
+      { kind: 'file', path: 'package.json', contains: '"check:circular-deps"' },
+      { kind: 'file', path: 'scripts/check-circular-deps.ts' },
+    ],
+    verifiedOn: '2026-09-11',
     actionHints: {
       commands: [
         {
@@ -114,6 +136,13 @@ style setups, \`examples/dogfood-target/sharkcraft/\` is the canonical
 reference. For engine internals, the nearest neighbour in the same package
 directory is the reference. Inventing a new file layout when one already
 exists creates drift that the engine itself has to reason about — avoid it.`,
+    // The canonical references the content points at.
+    references: [
+      { kind: 'directory', path: 'examples/dogfood-target/sharkcraft' },
+      { kind: 'directory', path: 'packages/cli/src/commands' },
+      { kind: 'directory', path: 'packages/mcp-server/src/tools' },
+    ],
+    verifiedOn: '2026-09-11',
     actionHints: {
       mcpTools: [
         { tool: 'inspect_workspace', purpose: 'Confirm framework + workspace shape before suggesting a path.' },
@@ -159,6 +188,13 @@ Never write files directly when a template exists; never bypass
 divergence unless \`--allow-divergent\` is passed deliberately. MCP must never
 perform the write step — agents return a next-command hint and let the human
 or CLI execute it.`,
+    // Plan signing, and the two apply flags the content names.
+    references: [
+      { kind: 'symbol', symbol: 'signPlan', path: 'packages/generator/src/plan-signing.ts' },
+      { kind: 'file', path: 'packages/cli/src/commands/apply.command.ts', contains: '--verify-signature' },
+      { kind: 'file', path: 'packages/cli/src/commands/apply.command.ts', contains: "'allow-divergent'" },
+    ],
+    verifiedOn: '2026-09-11',
     actionHints: {
       commands: [
         {
@@ -218,6 +254,14 @@ do. The dashboard server returns 405 for any non-GET/HEAD method;
 the empty array. These contracts are exercised by
 \`e2e/20-read-only-safety.e2e.ts\`. Do not add features that break them, and
 do not silence the test if it fails — fix the feature.`,
+    // The contract test the content names, the empty writeEndpoints it
+    // asserts, and the script that runs it.
+    references: [
+      { kind: 'file', path: 'e2e/20-read-only-safety.e2e.ts' },
+      { kind: 'file', path: 'packages/inspector/src/dashboard/dashboard-data.ts', contains: 'writeEndpoints: []' },
+      { kind: 'file', path: 'package.json', contains: '"test:e2e:dashboard"' },
+    ],
+    verifiedOn: '2026-09-11',
     actionHints: {
       commands: [
         {
@@ -258,6 +302,13 @@ test runner. Test files end in \`.test.ts\` and live in
 configured and will not run in CI. The single exception is Playwright for
 end-to-end UI testing, under \`e2e/*.e2e.ts\`, which is opt-in via
 \`bun run test:e2e:dashboard\`.`,
+    // The Playwright exception the content names, and where it lives.
+    references: [
+      { kind: 'file', path: 'package.json', contains: '"test:e2e:dashboard"' },
+      { kind: 'directory', path: 'e2e' },
+      { kind: 'directory', path: 'packages/core/src/__tests__' },
+    ],
+    verifiedOn: '2026-09-11',
     actionHints: {
       commands: [
         { command: 'bun test', purpose: 'Full suite. Cheap on Bun — run it before claiming done.', when: 'after', required: true },
@@ -313,6 +364,12 @@ The single legitimate exception is the import-hygiene allowlist (with a
 required \`reason\` field), reserved for cases where dynamic loading is
 actually intentional — e.g. CLI startup boundaries that defer loading a
 heavy subcommand module.`,
+    // The import-hygiene checker the content names, and its allowlist.
+    references: [
+      { kind: 'symbol', symbol: 'buildImportHygieneReport', path: 'packages/inspector/src/import-hygiene.ts' },
+      { kind: 'file', path: 'sharkcraft/import-hygiene.allowlist.json' },
+    ],
+    verifiedOn: '2026-09-11',
     actionHints: {
       commands: [
         { command: 'shrk check imports', purpose: 'Scan for forbidden lazy require / inline import patterns.', when: 'after', required: true },

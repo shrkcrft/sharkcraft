@@ -274,15 +274,18 @@ function buildAllowedCommands(role: RoleId, intent: IChangeIntent): string[] {
   const t = JSON.stringify(intent.task || '<task>');
   const out: string[] = [
     `shrk brief ${t}`,
-    `shrk intent ${t}`,
+    // The risk report carries the change intent; there is no separate intent verb.
     `shrk risk ${t} --include-memory`,
     `shrk impact --since main`,
     'shrk check boundaries',
   ];
   if (role === RoleId.AiAgent) {
-    out.push(`shrk handoff ${t}`);
+    // The handoff is a brief mode, not a verb of its own.
+    out.push(`shrk brief ${t} --mode handoff`);
     out.push(`shrk orchestrate ${t} --mode conservative`);
-    out.push(`shrk agent graph ${t} --role ai-agent`);
+    // There was never an agent-graph verb (the execution graph is the MCP
+    // `create_execution_graph` tool); the task packet is the CLI's answer.
+    out.push(`shrk task ${t}`);
   }
   if (role === RoleId.Reviewer || role === RoleId.Architect) {
     out.push('shrk review packet --v3 --since main');
@@ -295,6 +298,9 @@ function buildAllowedCommands(role: RoleId, intent: IChangeIntent): string[] {
   }
   return uniq(out);
 }
+
+/** The migration gate: the named migration's plan (there is no migration-readiness verb). */
+const MIGRATION_PLAN_COMMAND = 'shrk migrate plan <id>';
 
 function buildRequiredValidations(intent: IChangeIntent, risk: ITaskRiskReport): string[] {
   const out = new Set<string>();
@@ -317,7 +323,7 @@ function buildRequiredValidations(intent: IChangeIntent, risk: ITaskRiskReport):
     out.add('shrk release readiness --strict');
   }
   if (isMigrationTask(intent)) {
-    out.add('shrk migration readiness');
+    out.add(MIGRATION_PLAN_COMMAND);
   }
   return [...out];
 }
@@ -404,8 +410,8 @@ function buildDefinitionOfDone(intent: IChangeIntent, validations: readonly stri
   if (isReleaseTask(intent)) {
     out.push('CHANGELOG entry exists; preflight is green.');
   }
-  if (validations.includes('shrk migration readiness')) {
-    out.push('Migration readiness verdict is "ready".');
+  if (validations.includes(MIGRATION_PLAN_COMMAND)) {
+    out.push('The migration plan was reviewed before it was applied.');
   }
   return out;
 }
@@ -429,7 +435,7 @@ function buildSafetyNotes(role: RoleId, intent: IChangeIntent, risk: ITaskRiskRe
   ];
   if (role === RoleId.AiAgent) {
     out.push('Agent contract requires explicit human approval before apply.');
-    out.push('Always run shrk handoff / shrk brief before first action.');
+    out.push('Always run shrk brief (or its handoff mode) before first action.');
   }
   if (risk.riskLevel === TaskRiskLevel.High || risk.riskLevel === TaskRiskLevel.Critical) {
     out.push(`Risk level is ${risk.riskLevel} — extra approval required.`);
@@ -442,7 +448,7 @@ function buildSafetyNotes(role: RoleId, intent: IChangeIntent, risk: ITaskRiskRe
 
 function buildRecommendedNextCommand(role: RoleId, intent: IChangeIntent): string {
   const t = JSON.stringify(intent.task || '<task>');
-  if (role === RoleId.AiAgent) return `shrk handoff ${t}`;
+  if (role === RoleId.AiAgent) return `shrk brief ${t} --mode handoff`;
   if (role === RoleId.ReleaseManager) return 'shrk release readiness --strict';
   if (role === RoleId.Security) return 'shrk safety audit --deep';
   if (role === RoleId.Architect) return 'shrk architecture map --risk --signals';

@@ -9,7 +9,6 @@ import {
   buildIngestApplyPlan,
   buildPolyglotBoundaryReport,
   buildRepositoryKnowledgeModel,
-  buildStabilityMap,
   inspectSharkcraft,
   IngestAdoptionStatus,
   IngestDepth,
@@ -32,9 +31,6 @@ import {
   renderRepositoryKnowledgeModelJson,
   renderRepositoryKnowledgeModelMarkdown,
   renderRepositoryKnowledgeModelText,
-  renderStabilityMapJson,
-  renderStabilityMapMarkdown,
-  renderStabilityMapText,
   saveIngestApplyPlan,
   signIngestApplyPlan,
   writeIngestAdoption,
@@ -48,6 +44,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 type IngestFormat = 'text' | 'markdown' | 'html' | 'json';
@@ -56,6 +53,22 @@ const INGEST_BASE = nodePath.join('sharkcraft', 'ingestion');
 
 export const ingestCommand: ICommandHandler = {
   name: 'ingest',
+  // An unknown token used to fall through to `repository` and run it.
+  positionals: PositionalMode.None,
+  subverbs: [
+    { name: 'repository', description: 'Build the repository knowledge model (the default).', usage: 'shrk ingest repository [options]' },
+    { name: 'refresh', description: 'Refresh the ingested model.', usage: 'shrk ingest refresh [options]' },
+    { name: 'status', description: 'The ingestion status.', usage: 'shrk ingest status [options]' },
+    { name: 'report', description: 'Render the ingestion report.', usage: 'shrk ingest report [--format text|markdown|html|json]' },
+    {
+      name: 'adopt',
+      description: 'Plan / review / apply the adoption of the ingested drafts.',
+      usage: 'shrk ingest adopt [plan|review|apply] [<plan.json>] [options]',
+      positionals: PositionalMode.Free,
+    },
+    { name: 'diff', description: 'Diff the ingested model against the live config.', usage: 'shrk ingest diff [options]' },
+    { name: 'clean', description: 'Remove the ingestion drafts.', usage: 'shrk ingest clean [options]' },
+  ],
   description:
     'Deeply ingest a repository into a SharkCraft repository knowledge model. Dry-run by default; writes drafts under sharkcraft/ingestion/. `repository` (default sub-verb) builds the knowledge model; `status` / `report` / `diff` / `adopt` / `clean` / `refresh` manage the lifecycle.',
   usage:
@@ -556,6 +569,10 @@ export const generatedProtectCommand: ICommandHandler = {
  */
 export const generatedCommand: ICommandHandler = {
   name: 'generated',
+  // Mixed-mode: its verbs (report / protect / list / check / update / explain)
+  // are trie children, so a bare token reaching this handler names none of
+  // them — it used to run the classifier report at exit 0.
+  positionals: PositionalMode.None,
   description:
     'Generated-code classifier (`report` default, `protect --write-drafts`) + the generated-artifact drift GATE (`list | check | update | explain`, see docs/generated-drift.md). Read-only by default.',
   usage:
@@ -568,40 +585,8 @@ export const generatedCommand: ICommandHandler = {
   },
 };
 
-export const stabilityCommand: ICommandHandler = {
-  name: 'stability',
-  description: 'Stability classification (stable/experimental/deprecated/legacy/generated/internal/public-api/high-risk). Read-only.',
-  usage: 'shrk [--cwd <dir>] stability [map|area <id>] [--format text|markdown|json]',
-  async run(args: ParsedArgs): Promise<number> {
-    const sub = args.positional[0];
-    const cwd = resolveCwd(args);
-    const format = parseFormat(flagString(args, 'format'));
-    const inspection = await inspectSharkcraft({ cwd });
-    const generated = buildGeneratedCodeReport({ inspection });
-    const map = buildStabilityMap({
-      inspection,
-      generatedRoots: generated.generatedRoots.map((r) => r.path),
-    });
-    if (sub === 'area') {
-      const id = args.positional[1];
-      if (!id) {
-        process.stderr.write('Usage: shrk stability area <id>\n');
-        return 1;
-      }
-      const area = map.areas.find((a) => a.id === id || a.path === id);
-      if (!area) {
-        process.stderr.write(`No stability area found for "${id}".\n`);
-        return 1;
-      }
-      if (format === 'json') process.stdout.write(asJson(area) + '\n');
-      else process.stdout.write(`${area.kind} (${area.confidence})\n  path: ${area.path}\n  signals: ${area.signals.join(', ')}\n` + (area.note ? `  note: ${area.note}\n` : ''));
-      return 0;
-    }
-    if (format === 'json') process.stdout.write(renderStabilityMapJson(map) + '\n');
-    else if (format === 'markdown') process.stdout.write(renderStabilityMapMarkdown(map) + '\n');
-    else process.stdout.write(renderStabilityMapText(map) + '\n');
-    return 0;
-  },
-};
+// The unregistered `stabilityCommand` (`shrk stability map|area`) was deleted in
+// round 11 review: nothing registered it, so its usage text named a command that
+// was never callable (`shrk stability area x` → "looks like a task").
 
 void parseFormat;

@@ -13,7 +13,11 @@ shrk explore sharkcraft --format json
 ## Output
 
 - **Inferred area kind** — `core` / `cli` / `mcp` / `plugin` / `tests`
-  / …, drawn from the existing repo-wide area map.
+  / …, drawn from the existing repo-wide area map. The map classifies with
+  the project's `areaMap.patterns` first (see [impact.md](impact.md#area-attribution-coverage)),
+  then its built-in layout table; `shrk repo areas` prints how much of the
+  repo it classified and flags a `degraded` map, so an `unknown` kind here
+  usually means the layout needs a pattern, not that the directory is odd.
 - **Role** — one-line "what is this directory for". Special-cased for
   the well-known SharkCraft directories (e.g.
   `packages/mcp-server/src/tools` → "MCP read-only tools — must never
@@ -30,7 +34,7 @@ shrk explore sharkcraft --format json
 - **Common edit risks** — special callouts for MCP tool dirs,
   CLI write-paths, signed pack assets, missing tests, generated output.
 - **Next commands** — `shrk impact --files`, `shrk check boundaries
-  --files`, `shrk tests missing --area` (when no tests detected).
+  --files`, `shrk tests missing --files <files>` (when no tests detected).
 
 ## Schema
 

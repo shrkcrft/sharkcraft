@@ -49,14 +49,36 @@ Or, use the `--cwd` flag instead of the env var:
 }
 ```
 
-## Future config (after publishing to npm)
+## Installed config (the npm package)
+
+`@shrkcrft/mcp-server` ships a `shrk-mcp` bin (from 0.1.0-alpha.31; earlier
+releases published no bin, so there was nothing for `bunx` / `npx` to run).
+Install it once and point Claude Code at the bin:
+
+```bash
+bun add -g @shrkcrft/mcp-server     # or: npm install -g @shrkcrft/mcp-server
+```
+
+```json
+{
+  "mcpServers": {
+    "sharkcraft": {
+      "command": "shrk-mcp",
+      "args": ["--cwd", "/absolute/path/to/target-repo"]
+    }
+  }
+}
+```
+
+Or run it without a global install — the bin's name differs from the
+package's, so name the package explicitly:
 
 ```json
 {
   "mcpServers": {
     "sharkcraft": {
       "command": "bunx",
-      "args": ["-y", "@shrkcrft/mcp-server"],
+      "args": ["--package", "@shrkcrft/mcp-server", "shrk-mcp"],
       "env": {
         "SHARKCRAFT_PROJECT_ROOT": "/absolute/path/to/target-repo"
       }
@@ -65,8 +87,12 @@ Or, use the `--cwd` flag instead of the env var:
 }
 ```
 
-Use `npx` instead of `bunx` if you don't have Bun installed on the Claude Code
-host. SharkCraft works on Bun and Node 22+; Bun is the supported runtime.
+Use `"command": "npx", "args": ["-y", "--package", "@shrkcrft/mcp-server",
+"shrk-mcp"]` if you don't have Bun installed on the Claude Code host.
+SharkCraft works on Bun and Node 22+; Bun is the supported runtime. If the
+installed tool is broken (a workspace dependency it needs is not linked), the
+bin exits `70` with one line naming the missing package instead of a Node
+resolver stack — see [exit-codes.md](exit-codes.md).
 
 ## Verifying the server is wired correctly
 

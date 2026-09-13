@@ -20,7 +20,7 @@ shrk ci scaffold github-actions --with-coverage --with-agent-tests --write
 | `--with-drift-gate`   | chains `--require-drift-clean` onto the `--with-quality` step | (folded into `sharkcraft-quality`) |
 | `--with-node-compat`  | `bun run compat:node > node-compat.json`          | `sharkcraft-node-compat`       |
 | `--with-safety-audit` | `shrk safety audit --json`                        | `sharkcraft-safety-audit`      |
-| `--with-command-doctor` | `shrk commands doctor --json`                   | `sharkcraft-commands-doctor`   |
+| `--with-command-doctor` | `shrk commands doctor --json` — **SharkCraft repository only**: `commands doctor` maintains SharkCraft itself and exits 78 elsewhere, so outside that repository the flag is refused (exit 2) | `sharkcraft-commands-doctor`   |
 | `--with-pack-tests --pack-paths a,b` | one `shrk packs test <p> --load --json` per comma-separated path | `sharkcraft-pack-<basename>` (one per path) |
 | `--with-impact` (R13)            | `shrk impact --since origin/main --format json` | `.sharkcraft/reports/impact.json` |
 | `--with-policy-snapshot-gate` (R13) | `shrk policy snapshot --all --gate --json`  | `policy-snapshots.json`         |
@@ -36,12 +36,28 @@ The scaffold uploads each artifact via `actions/upload-artifact@v4` with
 `--with-drift-gate` requires `--with-quality` (it modifies that step's
 arguments). The other flags can be combined freely.
 
+### Ratcheting knowledge reference coverage (round 11)
+
+`shrk knowledge stale-check` is strict by default: an entry with no checkable
+reference is UNVERIFIABLE, and any unverifiable entry keeps the step at exit
+`2`. To adopt it on a corpus that is only partly referenced, pin the floor you
+measured and raise it as references are added — the way a lint budget is
+ratcheted:
+
+```yaml
+- name: Knowledge reference coverage
+  run: shrk knowledge stale-check --min-referenced 0.6   # fails below 60%; accepts (and prints) the rest
+```
+
+Or put the floor in `sharkcraft.config.ts` (`knowledgeCheck: { minReferenced:
+0.6 }`) so `shrk quality` and release readiness hold the same line. Once every
+entry declares a reference, switch to `--require-references`.
+
 ```bash
 shrk ci scaffold github-actions \
   --with-quality --with-drift-gate \
   --with-node-compat \
   --with-safety-audit \
-  --with-command-doctor \
   --with-pack-tests --pack-paths ./packs/my-pack \
   --write
 ```

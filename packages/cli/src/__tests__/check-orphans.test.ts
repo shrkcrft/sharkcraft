@@ -139,7 +139,11 @@ describe('shrk check orphans', () => {
       const cap = capture();
       const code = await checkCommand.run(args(root, { since: 'HEAD' }));
       const json = JSON.parse(cap.restore());
-      expect(code).toBe(0);
+      // Round 11: "nothing was deleted" proved nothing, so it is NOT verified
+      // (2) — the skip is loud in the exit code too, not only in the JSON.
+      // `--allow-empty` is the explicit valve for a per-commit hook.
+      expect(code).toBe(2);
+      expect(json.gate.exit).toBe(code);
       // A no-op sub-check is reported as skipped, not silently passed.
       expect(json.skipped).toBe(true);
       expect(json.orphans).toEqual([]);

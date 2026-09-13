@@ -1,3 +1,4 @@
+import type { IUnitMark } from '../liveness/i-unit-mark.ts';
 import type { ScanZone } from '../scan/scan-zone.ts';
 
 /**
@@ -247,6 +248,16 @@ export interface IWiringSource {
    * or `<arrayProperty>: [ … ]` literal in the file.
    */
   readonly arrayProperty?: string;
+  /**
+   * The `expectEmpty` marker ledger of this source's markable lists (round
+   * 13): one mark per `{ pattern, expectEmpty: true }` entry the author wrote
+   * in {@link files} (`list: 'files'`) or {@link IImportEdgeTarget.files}
+   * (`list: 'to.files'`). Filled by the loader / merge seam
+   * (`normalizeWiringSource`); `files` and `to.files` stay plain string lists,
+   * so no reader ever sees an object. `packageName` is stamped from pack
+   * provenance — never authored. Absent when nothing is marked.
+   */
+  readonly expectEmptyUnits?: readonly IUnitMark[];
 }
 
 /**
@@ -256,10 +267,19 @@ export interface IWiringSource {
  * rule actually matched, and the dominant real-world failure is a stale
  * selector that silently matches nothing. These hooks let a rule be TESTED like
  * code instead of trusted like config: `shrk gates coverage` evaluates them
- * across every plane and fails when an expectation breaks.
+ * across every plane and fails when an expectation breaks; `shrk gates try`
+ * evaluates them on a candidate with the same evaluator.
+ *
+ * Every field asserts on ONE thing: the rule's EXTRACTED SET — what its primary
+ * selector matched in the live tree. None of them is ranker-surfaced (the
+ * order-sensitive class agent-contract tests have), so none of them flips on an
+ * unrelated content edit. What a unit and an id are differs per plane (an id on
+ * the policy plane is a pattern match; on a `command` baseline, a watchFiles
+ * path) — `docs/gate-rules.md` has the table, and every failure names the
+ * selector it consulted.
  */
 export interface IRuleSelfTest {
-  /** The rule's primary side must extract at least this many distinct ids. */
+  /** The rule's primary side must match at least this many units (distinct ids on most planes). */
   readonly expectMatchesAtLeast?: number;
   /** Positive fixtures: every id here MUST be extracted. */
   readonly expectIds?: readonly string[];
@@ -336,4 +356,18 @@ export interface IWiringRule {
   readonly hintDeclaredMissing?: string;
   /** Parity hint for a registered token missing from declared (falls back to `hint`). */
   readonly hintRegisteredMissing?: string;
+  /**
+   * Subset mode only: registered tokens the declared selector is KNOWN not to
+   * produce, accepted explicitly.
+   *
+   * A `declared ⊆ registered` rule passes by construction whenever the declared
+   * selector is narrower than reality — a registered member it never produced
+   * is simply never examined. So a registered token with no declared site is a
+   * COVERAGE shortfall: the rule reports `partial` and the verdict is not
+   * verified (`2`), naming the tokens. List them here (literal ids only, so the
+   * acceptance cannot silently widen) or set `'allow'` when the registered side
+   * is legitimately a superset; the acceptance is printed, never silent. If the
+   * two sets should be equal, use `mode: 'parity'` instead.
+   */
+  readonly registeredExtras?: 'allow' | readonly string[];
 }

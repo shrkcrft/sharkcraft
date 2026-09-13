@@ -20,18 +20,29 @@ shrk packs doctor --signature-explain     # per-pack lifecycle states
 
 ## Detection
 
-`stale` = at least one contribution file's mtime is newer than the
-signature's `signedAt` timestamp. Pure timestamp heuristic — the real
-HMAC validation still runs inside `shrk packs doctor`.
+Freshness is **content divergence, never age** (round 11). `shrk packs sign`
+records `sha256` of every contribution file (and each compiled artifact's
+mapped source) on the signature (`signature.contentDigests`). THE pack-asset
+freshness authority, `detectPackAssetFreshness`, compares the files on disk
+with that record — the same answer `packs signature-status`,
+`packs dev-status`, the contributions inventory and `packs doctor` all read.
+(The three mtime heuristics that used to answer it disagreed in both
+directions.) Freshness is not verification: the real HMAC validation still
+runs inside `shrk packs verify` / `shrk packs doctor --verify-signatures`.
 
 ## Behaviour
 
-- `present` = signature exists and no contribution file is newer than
-  the signed timestamp.
-- `stale` = signature exists, some contribution file is newer. The CLI
-  exits 1 in `text` / `markdown` mode when at least one stale pack is
-  present.
+- `present` = signature exists and every recorded contribution file still
+  has the content that was signed.
+- `stale` = signature exists and a recorded contribution file changed (or was
+  deleted) since signing. Exit `1`.
+- `unverified` = signature exists but records no content digest for some file
+  (signed before content digests existed) — freshness is NOT verified. Exit
+  `2` when nothing is stale; re-sign to record the digests.
 - `missing` = no signature block on the manifest.
+
+A dev signature whose content diverged stays `present` (with `dev: true` and a
+"re-sign before release" reason) — local builds re-stale dev packs constantly.
 
 The next-command hint always names the exact `shrk packs sign` command
 to run with the secret. When the secret is not set the CLI says so
@@ -51,10 +62,11 @@ explicitly (`secret env NOT set (no fake-signing — re-sign manually)`).
 | State | Meaning |
 | --- | --- |
 | `valid` | HMAC **verified** at inspection time. Reserved strictly for a real verifier pass — freshness alone never earns `valid`. |
-| `present-unverified` | Signature present and newer than every contribution file, but the HMAC was **not** checked this run. Freshness is not verification — run `shrk packs verify --required`. |
+| `present-unverified` | Signature present and every contribution file still matches its signed content digest, but the HMAC was **not** checked this run. Freshness is not verification — run `shrk packs verify --required`. |
+| `freshness-unverified` | Signature present but it records no content digests (signed before round 11), so freshness could not be verified — re-sign to record them. |
 | `dev-signature` | Manifest carries a dev signature (`sig.dev = true`) — verified only against the well-known public dev secret, NOT release-trusted. |
 | `unsigned` | Manifest has no signature block. |
-| `stale` | Signature exists but at least one contribution file's mtime is newer. |
+| `stale` | Signature exists but a contribution file's content differs from the digest recorded at signing. |
 | `invalid` | Manifest signature failed HMAC verification — pack contents may have been tampered with. |
 | `secret-missing` | `SHARKCRAFT_PACK_SECRET` is unset; cannot verify or re-sign in this session. |
 | `not-required` | Signatures are not required in this run (no `--require-signatures`). |
@@ -73,7 +85,7 @@ session needs to run.
 `shrk pack author pending` (alias: `shrk packs pending`) composes the
 four pending signals into a single report:
 
-- modified pack asset files (mtime > signature),
+- modified pack asset files (content differs from the digest recorded at signing),
 - generated preview drafts under `.sharkcraft/authoring/` and
   `.sharkcraft/fixes/`,
 - stale signature state (delegated to `buildPackSignatureStatusReport`),

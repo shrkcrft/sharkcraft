@@ -12,6 +12,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { planSimulateCommand } from './plan-simulate.command.ts';
 
@@ -137,6 +138,8 @@ export const planReviewCommand: ICommandHandler = {
  */
 export const planParentCommand: ICommandHandler = {
   name: 'plan',
+  // Mixed-mode: review / simulate / check are trie children.
+  positionals: PositionalMode.None,
   description: 'Inspect generation plans. Subcommand required.',
   usage: 'shrk plan review|simulate <plan.json>',
   async run(args: ParsedArgs): Promise<number> {

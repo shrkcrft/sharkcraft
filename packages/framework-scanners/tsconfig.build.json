@@ -13,6 +13,9 @@
       ],
       "@shrkcrft/packs": [
         "../packs/dist/index.d.ts"
+      ],
+      "@shrkcrft/plugin-api": [
+        "../plugin-api/dist/index.d.ts"
       ]
     },
     "tsBuildInfoFile": "./dist/.tsbuildinfo"

@@ -1,11 +1,11 @@
 # Pipeline quality
 
 ```bash
-shrk pipelines lint [<id>]
-shrk pipelines test [<id>]
+shrk check pipelines [--strict] [--min-score <0-100>] [--allow-empty] [--json]
 ```
 
-`lint` checks: step ids, step types, template references resolve, command
-catalog membership, human review markers before write/apply steps.
-
-`test` verifies that template references resolve in the current registry.
+`check pipelines` validates every registered pipeline: a pipeline with no
+steps, or with a duplicate step id, is an error; one with no description is a
+warning (`--strict` makes warnings fail). Zero registered pipelines is NOT
+VERIFIED (exit 2) unless `--allow-empty` accepts it. The former
+`shrk pipelines lint` / `shrk pipelines test` verbs were removed.

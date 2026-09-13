@@ -15,6 +15,7 @@ import {
   type ITaskPacket,
 } from '@shrkcrft/inspector';
 import { SpecStatus } from '@shrkcrft/generator';
+import { templateRemainderSummary } from '@shrkcrft/templates';
 import {
   flagBool,
   flagNumber,
@@ -23,6 +24,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { buildTaskNextReport } from '../task-next/task-next-ranker.ts';
 
@@ -45,7 +47,8 @@ function compactTaskPacket(p: ITaskPacket): Record<string, unknown> {
     })),
     relevantRules: p.relevantRules.map((r) => ({ id: r.id, title: r.title })),
     relevantPaths: p.relevantPaths.map((r) => ({ id: r.id, title: r.title })),
-    relevantTemplates: p.relevantTemplates.map((t) => ({ id: t.id, name: t.name })),
+    // A template's declared remainder rides on its row (R11-GAP-7).
+    relevantTemplates: p.relevantTemplates.map((t) => ({ id: t.id, name: t.name, ...templateRemainderSummary(t) })),
     recommendedMcpTools: p.recommendedMcpTools,
     recommendedCliCommands: p.recommendedCliCommands,
     forbiddenActions: p.forbiddenActions,
@@ -81,6 +84,7 @@ function minimalTaskPacket(p: ITaskPacket): Record<string, unknown> {
       id: t.id,
       name: t.name,
       ...(t.appliesWhen.length > 0 ? { appliesWhen: t.appliesWhen } : {}),
+      ...templateRemainderSummary(t),
     })),
     verificationCommands: p.verificationCommands,
     recommendedMcpTools: p.recommendedMcpTools,
@@ -90,6 +94,16 @@ function minimalTaskPacket(p: ITaskPacket): Record<string, unknown> {
 
 export const taskCommand: ICommandHandler = {
   name: 'task',
+  // The positionals are the free-form task (`task "add a thing"`).
+  positionals: PositionalMode.Free,
+  subverbs: [
+    {
+      name: 'decompose',
+      description: 'Decompose a task into ranked subtasks.',
+      usage: 'shrk task decompose "<task>" [--json]',
+      positionals: PositionalMode.Free,
+    },
+  ],
   description:
     'Build an AI-ready task packet: relevant context, action hints, recommended pipeline, templates, paths, verification commands. Defaults to a compact packet (top-5 rules / top-3 templates / 5 hints per field) to keep agent token cost low. Pass `--full` to get the unrestricted packet, or `--next` to skip the packet and survey the workspace for the highest-leverage next action.',
   usage:
@@ -101,6 +115,8 @@ export const taskCommand: ICommandHandler = {
     // command. Pure ranker over existing JSON outputs.
     if (flagBool(args, 'next')) {
       const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
+      // Warm before the stale report resolves any id (CLAUDE.md "Warm before you resolve").
+      await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
       const [doctorRes, staleRes, driftRes] = await Promise.all([
         runDoctor(inspection),
         Promise.resolve(buildKnowledgeStaleReport(inspection)),
@@ -300,6 +316,9 @@ export const taskCommand: ICommandHandler = {
       process.stdout.write('\nRelevant templates:\n');
       for (const t of packet.relevantTemplates.slice(0, 6)) {
         process.stdout.write(`  • ${t.id}  ${t.name}\n`);
+        const remainder = templateRemainderSummary(t);
+        if (remainder.notScaffolded) process.stdout.write(`      not scaffolded: ${remainder.notScaffolded.join(', ')}\n`);
+        if (remainder.manualSteps) process.stdout.write(`      manual steps: ${remainder.manualSteps.length}\n`);
       }
     }
     if (packet.suggestedGen) {

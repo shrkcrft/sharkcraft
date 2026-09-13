@@ -4,15 +4,17 @@ import {
   type IQualityReport,
 } from '@shrkcrft/inspector';
 import {
-  firstUnknownFlag,
   flagBool,
   flagNumber,
   resolveCwd,
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { GLOBAL_FLAGS } from '../dispatch/global-flags.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { ExitCode } from '../exit-codes.ts';
 import { runQuality, type IQualityItem } from '../quality/run-quality.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { narrowToScope, prepare, resolveScope } from './gates.command.ts';
 
@@ -35,11 +37,12 @@ const QUALITY_FLAGS: ReadonlySet<string> = new Set([
   'since',
   'base',
   'fail-fast',
-  'cwd',
-  'help',
-  'h',
   'no-color',
   'color',
+  // Every dispatcher global (THE list). Quality is a verdict verb, so its piped
+  // non-zero exit prints a note naming `--no-hints` as the way to silence it —
+  // rejecting that very flag with exit 3 would make the advice unfollowable.
+  ...GLOBAL_FLAGS,
 ]);
 
 const STATUS_TAG: Readonly<Record<IQualityItem['status'], string>> = Object.freeze({
@@ -67,17 +70,14 @@ export const qualityCommand: ICommandHandler = {
     'require-context-tests',
     'require-pack-signatures',
   ]),
+  // THE accepted set: the dispatcher refuses any other flag BEFORE `run` (a
+  // mistyped `--changed-only` would otherwise run the UNSCOPED form and exit 0
+  // as though the scoped check had passed). Round 11 moved this out of an
+  // inline guard here, so exactly one checker (`firstUnknownFlag`) judges it.
+  flags: QUALITY_FLAGS,
+  // Flag-driven: a bare token used to be ignored and the whole gate run.
+  positionals: PositionalMode.None,
   async run(args: ParsedArgs): Promise<number> {
-    // A mistyped `--changed-only` would otherwise parse as an unrelated flag,
-    // run the UNSCOPED form, and exit 0 as though the scoped check had passed.
-    const bad = firstUnknownFlag(args, QUALITY_FLAGS);
-    if (bad !== undefined) {
-      const dash = bad.length === 1 ? '-' : '--';
-      process.stderr.write(
-        `unknown option '${dash}${bad}' for 'shrk quality'. Run 'shrk quality --help' for valid flags.\n`,
-      );
-      return ExitCode.UsageError;
-    }
     const cwd = resolveCwd(args);
     const strict = flagBool(args, 'strict');
     const ci = flagBool(args, 'ci');
@@ -88,10 +88,7 @@ export const qualityCommand: ICommandHandler = {
       cwd,
       ...(flagBool(args, 'require-pack-signatures') ? { verifyPackSignatures: true } : {}),
     });
-    const cfgGates: IQualityConfig =
-      ((inspection.config as Record<string, unknown> | null)?.qualityGates as
-        | IQualityConfig
-        | undefined) ?? {};
+    const cfgGates: IQualityConfig = inspection.config?.qualityGates ?? {};
     const config: IQualityConfig = {
       ...cfgGates,
       ...(flagNumber(args, 'min-readiness') !== undefined
@@ -128,18 +125,14 @@ export const qualityCommand: ICommandHandler = {
       excludeDirs: prep.ok ? prep.value.excludeDirs : [],
       ...(scope.files ? { changedFiles: scope.files } : {}),
       skippedByScope: outOfScope,
-      ...(prep.ok ? { planeDiagnostics: prep.value.planeDiagnostics } : {}),
+      ...(prep.ok ? { planeDiagnostics: prep.value.planeDiagnostics, rejectedRules: prep.value.rejectedRules } : {}),
     });
 
     // 0 clean · 1 a blocking gate failed · 2 ran but proved nothing (a gate
-    // errored, or a selector matched nothing). A skip nobody asked for is
-    // never masked by a passing sibling.
-    const exit =
-      run.verdict === 'fail'
-        ? ExitCode.Failure
-        : run.verdict === 'not-verified'
-          ? ExitCode.NotVerified
-          : ExitCode.VerifiedPass;
+    // errored, a required gate examined nothing, or a rule passed over part of
+    // its scope). Settled by the one coverage guard inside `runQuality`, so a
+    // skip nobody asked for is never masked by a passing sibling.
+    const exit = run.exit;
 
     if (wantJson) {
       process.stdout.write(asJson({ ...run, exitCode: exit }) + '\n');
@@ -165,7 +158,10 @@ export const qualityCommand: ICommandHandler = {
     process.stdout.write('\n');
 
     for (const item of run.items) {
-      process.stdout.write(`  ${STATUS_TAG[item.status]}  ${item.label}\n`);
+      // A gate that passed over PART of its scope is not "SKIP" (it ran); it
+      // is labelled for what it is. Its status stays `skipped` (accidental),
+      // so the verdict is unchanged: never a pass.
+      process.stdout.write(`  ${item.partial === true ? 'PART ' : STATUS_TAG[item.status]}  ${item.label}\n`);
       for (const n of item.notes) process.stdout.write(`         ↳ ${n}\n`);
       // Every failure carries the command that reproduces it alone — the whole
       // point of the aggregate is that the next step never needs re-derivation.
@@ -191,6 +187,11 @@ export const qualityCommand: ICommandHandler = {
       process.stdout.write(
         '  Nothing failed, but not everything was measured — an unmeasured gate is not a pass.\n',
       );
+    }
+    // Which gates went unexamined, from the settled verdict itself.
+    if (exit !== ExitCode.VerifiedPass) {
+      const line = verdictLine(run, '');
+      if (line) process.stdout.write(`  ${line}\n`);
     }
     return exit;
   },

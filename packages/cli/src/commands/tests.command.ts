@@ -8,9 +8,11 @@ import {
   suggestTestPathFor,
 } from '@shrkcrft/inspector';
 import {
+  emptySelectionExit,
   flagBool,
   flagString,
   flagList,
+  requireInputSelector,
   resolveCwd,
   type ICommandHandler,
   type ParsedArgs,
@@ -54,15 +56,30 @@ function collectFiles(cwd: string, args: ParsedArgs): string[] {
   return [...new Set(out)];
 }
 
+/** The input selectors `tests impact` / `tests missing` accept — at least one is required. */
+const TEST_SELECTORS: readonly string[] = ['files', 'since', 'staged', 'plan', 'bundle'];
+const TESTS_IMPACT_USAGE =
+  'shrk tests impact [--files a,b] [--since <ref>] [--staged] [--plan <plan>] [--bundle <id>] "<task>"';
+const TESTS_MISSING_USAGE =
+  'shrk tests missing --files a,b | --since <ref> | --staged | --plan <plan> | --bundle <id>';
+
 export const testsImpactCommand: ICommandHandler = {
   name: 'impact',
   description: 'Test impact analysis for changed files / plan / bundle.',
-  usage: 'shrk tests impact [--files a,b] [--since <ref>] [--staged] [--plan <plan>] [--bundle <id>] "<task>"',
+  usage: TESTS_IMPACT_USAGE,
+  booleanFlags: new Set(['json', 'staged']),
   async run(args: ParsedArgs): Promise<number> {
+    const noSelector = requireInputSelector(args, {
+      flags: TEST_SELECTORS,
+      positional: true,
+      usage: TESTS_IMPACT_USAGE,
+    });
+    if (noSelector !== null) return noSelector;
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
     const task = args.positional.join(' ').trim() || undefined;
     const files = collectFiles(cwd, args);
+    if (files.length === 0 && !task) return emptySelectionExit(flagBool(args, 'json'));
     const result = analyzeTestImpact(inspection, {
       ...(task ? { task } : {}),
       files,
@@ -99,15 +116,25 @@ export const testsSuggestCommand: ICommandHandler = {
 export const testsMissingCommand: ICommandHandler = {
   name: 'missing',
   description: 'Show missing test files for the given inputs.',
-  usage: 'shrk tests missing --files a,b',
+  usage: TESTS_MISSING_USAGE,
+  booleanFlags: new Set(['json', 'staged']),
   async run(args: ParsedArgs): Promise<number> {
+    // The selector is REQUIRED: without one this printed zero bytes and exit 0
+    // — "you gave me nothing" rendered as "I found nothing".
+    const noSelector = requireInputSelector(args, { flags: TEST_SELECTORS, usage: TESTS_MISSING_USAGE });
+    if (noSelector !== null) return noSelector;
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
     const files = collectFiles(cwd, args);
+    if (files.length === 0) return emptySelectionExit(flagBool(args, 'json'));
     const r = analyzeTestImpact(inspection, { files });
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson({ missing: r.missingTestFiles }) + '\n');
       return 0;
+    }
+    if (r.missingTestFiles.length === 0) {
+      // Never zero bytes on a verified run.
+      process.stdout.write(`No missing tests for ${files.length} file(s).\n`);
     }
     for (const f of r.missingTestFiles) process.stdout.write(f + '\n');
     return 0;

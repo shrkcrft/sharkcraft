@@ -1,6 +1,10 @@
+import { settleVerdict } from '@shrkcrft/core';
 import {
+  assetDoctorProposedExit,
+  buildScaffoldPatternDoctorReport,
+  contributionFileLabel,
   loadScaffoldPatternsFromInspection,
-  doctorScaffoldPatterns,
+  settledUnitStates,
 } from '@shrkcrft/inspector';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
@@ -49,17 +53,37 @@ export const getScaffoldPatternTool: IToolDefinition = {
 export const getScaffoldPatternDoctorTool: IToolDefinition = {
   name: 'get_scaffold_pattern_doctor',
   description:
-    'Validate every loaded scaffold pattern (templates exist, strategies recognized, confidence valid). Read-only.',
+    'Validate every scaffold pattern (templates exist, strategies recognized, confidence valid) and count the files each matchPaths glob matches — `coverage` / `deadUnits` name every glob or pattern matching nothing; a glob marked { pattern, expectEmpty: true } is intended-empty (`accepted`) until a file matches it (went-live, `units.wentLive`). Carries the patterns the loader REFUSED (`rejected`, each an error) and the settled `verdict` / `exitCode` / `accepted` — the same report and exit `shrk scaffolds doctor` settles (without its flags). Read-only.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   async handler(_input, ctx) {
-    const r = await loadScaffoldPatternsFromInspection(ctx.inspection);
-    const issues = doctorScaffoldPatterns(r.patterns, ctx.inspection);
+    // THE scaffold-pattern doctor `shrk scaffolds doctor` reads (round 13): it
+    // used to drop loader-refused patterns and return no verdict.
+    const report = await buildScaffoldPatternDoctorReport(ctx.inspection);
+    const units = report.measured.liveness.flatMap((s) => s.units);
+    const settled = settleVerdict(
+      assetDoctorProposedExit(
+        { errors: report.errors, warnings: report.warnings, units },
+        { strict: false, failOnDeadUnits: false },
+      ),
+      report.coverage,
+    );
     return {
       data: {
-        patterns: r.patterns.length,
-        errors: issues.filter((i) => i.severity === 'error').length,
-        warnings: issues.filter((i) => i.severity === 'warning').length,
-        issues,
+        patterns: report.patterns.length,
+        errors: report.errors,
+        warnings: report.warnings,
+        dead: report.measured.deadUnits.length,
+        issues: report.issues,
+        rejected: report.rejected.map((r) => ({ ...r, file: contributionFileLabel(ctx.inspection.projectRoot, r.file) })),
+        loadWarnings: report.loadWarnings,
+        patternCoverage: report.patternCoverage,
+        coverage: report.coverage,
+        deadUnits: report.measured.deadUnits,
+        units: settledUnitStates(report.measured.liveness),
+        exitCode: settled.exit,
+        verdict: settled.verdict,
+        shortfalls: settled.shortfalls,
+        accepted: settled.accepted,
         nextCommand: 'shrk scaffolds doctor',
       },
     };

@@ -6,6 +6,8 @@ export const getSelfAuditTool: IToolDefinition = {
   description:
     'Run the SharkCraft self-dogfood audit. Returns a single verdict aggregating release readiness, docs/examples checks, and MCP safety. Read-only.',
   inputSchema: { type: 'object', additionalProperties: false },
+  // Tool-maintenance: gated through the surface summary outside SharkCraft's own repo.
+  cliCommand: 'self audit',
   async handler(_input, ctx) {
     const isRepo = detectSharkcraftRepo(ctx.cwd);
     if (!isRepo) {

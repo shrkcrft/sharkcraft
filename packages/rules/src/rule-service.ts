@@ -1,6 +1,7 @@
 import { KnowledgeIndex, KnowledgeType, type IKnowledgeEntry } from '@shrkcrft/knowledge';
 import type { IRule } from './rule.ts';
 import type { IRuleQuery } from './rule-query.ts';
+import { isRuleEntry } from './is-rule-entry.ts';
 
 export class RuleService {
   private readonly index: KnowledgeIndex;
@@ -10,12 +11,12 @@ export class RuleService {
   }
 
   list(): IRule[] {
-    return this.index.filter((e) => String(e.type) === KnowledgeType.Rule);
+    return this.index.filter((e) => isRuleEntry(e));
   }
 
   get(id: string): IRule | null {
     const entry = this.index.get(id);
-    if (!entry || String(entry.type) !== KnowledgeType.Rule) return null;
+    if (!entry || !isRuleEntry(entry)) return null;
     return entry;
   }
 

@@ -82,43 +82,185 @@ export function argvHasExitTrailer(argv: readonly string[]): boolean {
 }
 
 /**
- * Command paths (space-joined top-level + subverb, as {@link extractCommandPath}
- * emits) whose exit code is a HONEST verdict an agent chains on — the set for
- * which a masked exit is a real hazard. Kept deliberately broad over the gate /
- * verify surface; membership only ever gates whether {@link emitPipeExitSignal}
- * may write a one-line stderr note, never behavior.
+ * THE verdict-verb registry: command paths (space-joined, as `runCli` derives
+ * them with `extractCommandPath(argv, VERDICT_PATH_TOKENS)` — at most THREE
+ * leading positional tokens) whose exit code is an HONEST verdict an agent
+ * chains on — the set for which a masked exit is a real hazard.
+ *
+ * Register the SHORTEST path that is a verdict and nothing wider: `docs
+ * references check` is three tokens because its siblings `docs references
+ * list` / `explain` are informational, and registering `docs references` would
+ * make them verdict verbs too (the trailer would print `shrk-exit: 0` for a
+ * listing). A two-token entry covers every deeper path under it.
+ *
+ * Membership enables {@link emitPipeExitSignal}'s stderr note and the
+ * `--exit-trailer` line, never behaviour. It is also the list the round-11
+ * contract test iterates: every entry must have a row in
+ * `r75-verdict-coverage-contract.test.ts`, every verb that builds a gate
+ * envelope must be in here, and every CLI file that settles a verdict through
+ * `settleVerdict(` names its verbs (each registered) or a reasoned exemption in
+ * that test's two-way settle-site ledger. A NEW verdict verb therefore adds itself here, or
+ * CI fails — the registry and the contract cannot drift apart.
  */
-const GATE_VERB_PATHS: ReadonlySet<string> = new Set([
+export const GATE_VERB_PATHS: ReadonlySet<string> = new Set([
   'finish',
   'gate',
   'arch',
   'doctor',
   'diff-check',
+  // Bare `shrk check` — the SharkCraft-level sweep (doctor / knowledge /
+  // templates / pipelines / packs / action hints) settles 0/1/2 through
+  // settleVerdict; a doctor shortfall is 2 (round 11). Every `check` subverb is
+  // a verdict as well (it has no list/explain siblings), so the one-token entry
+  // is the shortest verdict path and misclassifies nothing. The `check <plane>`
+  // entries stay because the contract matrix records which emit the envelope.
+  'check',
   'check boundaries',
   'check wiring',
   'check orphans',
-  'check policy',
   'check imports',
+  'check registry-lifecycle',
   'wiring unprovided',
   'wiring orphans',
   'wiring chain',
   'registry',
+  // The lifecycle subverb emits the settled gate envelope (the MATRIX row says
+  // so precisely); `registry <name> exists|where|duplicates` keep the plain
+  // exit contract under the `registry` entry above.
+  'registry lifecycle',
   'graph why',
   'graph cycles',
+  // The data-defined gate verbs, the aggregate, and the corpus check — each
+  // exits 0/1/2/3 on purpose, and until round 11 none of them honoured
+  // `--exit-trailer`, although they are the verbs most often piped in CI.
+  'gates check',
+  'gates coverage',
+  'quality',
+  'policy-lint',
+  'baseline check',
+  // The bless step (round 11): a value computed from an incomplete read (a file
+  // over the read cap) is refused and the run settles 2 — a refusal a pipe must
+  // not mask. Its siblings `list` / `diff` / `explain` are informational, so the
+  // entry is two tokens, never `baseline`.
+  'baseline update',
+  'generated check',
+  'docs references check',
+  'knowledge stale-check',
+  'knowledge verify',
+  // Curated reusePrimitives[] vs the public export surface (round 11 §2.4).
+  'reuse coverage',
+  // Helper files loaded + validated — 0/1/2 (+ --allow-empty) (round 11 §3.6).
+  'helper doctor',
+  // The self-config and asset doctors (round 11 §1.3 / §1.6): 0 pass · 1
+  // errors (or warnings under --strict, dead units under --fail-on-dead-units)
+  // · 2 a dead selector or an unverifiable unit — settled against coverage.
+  'self-config doctor',
+  // Broken self-config references (round 11 review): 0 none · 1 a broken
+  // reference · 2 an id that could not be looked up — settled through
+  // settleVerdict; its `2` must survive a pipe, and a bad flag is `3`.
+  'self-config broken-links',
+  // Round 13 (lane A): the report writer settles THE self-config verdict
+  // (`self-config doctor`'s, --strict / --fail-on-dead-units included) — its
+  // `2` must survive a pipe, and a bad flag is `3`, never that `2`.
+  'self-config report',
+  'registrations doctor',
+  'scaffolds doctor',
+  'search tuning doctor',
+  // The pack + template verdicts (round 11 §1.4 / §3.2 / §3.3): each settles
+  // against its coverage (packs discovered, TS files type-checked, compiled
+  // artifacts with a build record, templates whose operations were checked),
+  // so a `2` is real and must survive a pipe.
+  'packs doctor',
+  'packs release-check',
+  'packs signature-status',
+  'packs test',
+  'templates doctor',
+  // The custom-checks and conventions doctors (round 11 §3.2 / §4.6): 0
+  // validated · 1 a declaration that can never run (or a warning under
+  // --strict) · 2 nothing declared (--allow-empty) or a file never read.
+  'checks doctor',
+  'conventions doctor',
+  // Round 13: `conventions check` settles through the gate envelope — 0 no
+  // error-severity hit · 1 an error-severity hit · 2 no file in scope, no
+  // convention declared (--allow-empty accepts either) or a convention file
+  // never read. It printed "ok — no violations" at 0 over an empty scope.
+  'conventions check',
+  // Agent-contract and context tests (round 11, doctor lane): 0 every test
+  // passed · 1 a test failed · 2 a test could not be evaluated, or none are
+  // configured (--allow-empty accepts that) · 3 an `--id` that selects nothing.
+  'test agent',
+  'test context',
+  // The rule-authoring REPL (round 11, dispatcher lane): 0 the candidate's
+  // selfTest held · 1 an expectation failed · 2 the candidate could not be
+  // evaluated · 3 a malformed spec or an unknown flag.
+  'gates try',
+  // The selfTest scaffolder (round 11 review): it refuses to scaffold from a
+  // count read off an incomplete scan and settles 2 (settleVerdict) — like
+  // `baseline update`, a refusal a pipe must not mask. Its siblings `list` /
+  // `explain` are informational, so the entry is two tokens.
+  'gates scaffold-selftest',
+  // Round 11 review (R11-GAP-5 / R11-GAP-3): verdict-shaped verbs this round
+  // changed. Each exits a code an agent chains on, so it must survive a pipe
+  // (`--exit-trailer`) and must never collide with a usage error (now 3):
+  //   - `boundaries suggest`: 2 over zero rules (nothing was checked);
+  //   - `packs contributions`: 1 on an error-severity conflict (a contribution
+  //     file that failed to load, a duplicate id) or an entry a loader
+  //     REJECTED; 2 (round 12) when only references whose kind's registry is
+  //     empty or undeclarable remain — settled through settleVerdict;
+  //   - `self-config resolve`: 0 resolved · 1 unresolved — a lookup verdict,
+  //     like `registry <name> exists`;
+  //   - `recommend`: 0 by default and 2 under `--require-confident` when
+  //     nothing matched with confidence — registered so a bad flag is 3, never
+  //     that 2 (the verdict is flag-keyed, but the collision is not);
+  //   - `drift` (and `drift rules --strict`): 1 on an error finding, 2 when a
+  //     boundary scope it reads was never fully examined;
+  //   - `architecture violations`: 1 on a violation, 2 over zero boundary
+  //     rules or an unexamined scope (the boundary orchestrator's verdict);
+  //   - `checks list`: 1 on a declaration that can never run, 3 on a `--rule`
+  //     naming no rule — its advertised exit contract (the contract test's
+  //     "advertises an exit" ledger found it).
+  'checks list',
+  'boundaries suggest',
+  'packs contributions',
+  'self-config resolve',
+  'recommend',
+  'drift',
+  'architecture violations',
 ]);
 
 /**
+ * How many leading positional tokens `runCli` reads to decide whether a verb is
+ * a verdict verb — the deepest {@link GATE_VERB_PATHS} entry. (Usage logging
+ * keeps its own two-token paths; this only feeds {@link emitPipeExitSignal}.)
+ */
+export const VERDICT_PATH_TOKENS = 3;
+
+/**
  * Is `commandPath` (space-joined, e.g. `check boundaries` / `wiring unprovided`
- * / `finish`) a gate/verify verb whose exit code carries a chained verdict?
- * Matches the exact path, its first-two-token subverb, or its top-level verb —
- * so `check boundaries --json` (2 tokens) and a bare `finish` (1) both resolve.
+ * / `finish` / `docs references check`) a gate/verify verb whose exit code
+ * carries a chained verdict? Matches the exact path or any of its one-, two- or
+ * three-token prefixes — so `check boundaries --json`, a bare `finish` and
+ * `graph why a b` all resolve, while `docs references list` does not.
  */
 export function isGateVerb(commandPath: string): boolean {
   if (GATE_VERB_PATHS.has(commandPath)) return true;
   const parts = commandPath.split(' ').filter((p) => p.length > 0);
-  if (parts.length >= 2 && GATE_VERB_PATHS.has(`${parts[0]} ${parts[1]}`)) return true;
-  if (parts.length >= 1 && GATE_VERB_PATHS.has(parts[0]!)) return true;
+  for (let n = Math.min(parts.length, VERDICT_PATH_TOKENS); n >= 1; n -= 1) {
+    if (GATE_VERB_PATHS.has(parts.slice(0, n).join(' '))) return true;
+  }
   return false;
+}
+
+/**
+ * The exit code for a malformed invocation of `commandPath` — an unknown
+ * subcommand, an unknown flag, a verb-shaped token that is no subverb and no
+ * file, an input the command silently ignored. THE documented split: `3`
+ * (UsageError) on a verdict verb, whose `2` must keep meaning "ran but proved
+ * nothing"; `2` everywhere else. The dispatcher guard and the post-run
+ * unknown-flag detector both read it, so one invocation mistake exits one way.
+ */
+export function usageExitFor(commandPath: string): number {
+  return isGateVerb(commandPath) ? ExitCode.UsageError : ExitCode.NotVerified;
 }
 
 /**

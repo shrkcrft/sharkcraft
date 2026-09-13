@@ -27,11 +27,16 @@ describe('shrk scaffolds + infer templates', () => {
     expect(data.patterns.length).toBe(0);
   });
 
-  test('scaffolds doctor exits 0 when no patterns present', () => {
+  // Round 11 (intentional behaviour change): no pattern declared examined
+  // nothing — NOT VERIFIED (2), the answer every asset doctor gives an empty
+  // input — and `--allow-empty` accepts it explicitly (0).
+  test('scaffolds doctor exits 2 when no patterns present; --allow-empty accepts it (0)', () => {
     const root = mkdtempSync(join(tmpdir(), 'shrk-scaffolds-doctor-'));
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'x', version: '0.0.0' }));
     const r = shrk(['--cwd', root, 'scaffolds', 'doctor', '--json'], root);
-    expect(r.status).toBe(0);
+    expect(r.status).toBe(2);
+    const accepted = shrk(['--cwd', root, 'scaffolds', 'doctor', '--json', '--allow-empty'], root);
+    expect(accepted.status).toBe(0);
   });
 
   test('infer templates --kind service produces JSON candidates', () => {

@@ -18,34 +18,173 @@ so the same logical pack contribution doesn't double-count when
 reachable from multiple paths (`node_modules/...` vs the dev source).
 
 `shrk packs contributions` / `shrk packs conflicts` are the CLI
-surfaces.
+surfaces; MCP `get_pack_contributions` / `get_pack_conflicts` return the same
+async inventory.
 
-| Slot | Default-export shape | Loader |
-|---|---|---|
-| `knowledgeFiles` | `IKnowledgeEntry[]` | `loadKnowledge` |
-| `ruleFiles` | `IRule[]` | `loadRules` |
-| `pathFiles` | `IPathConvention[]` | `loadPaths` |
-| `templateFiles` | `ITemplateDefinition[]` | `loadTemplates` |
-| `pipelineFiles` | `IPipeline[]` | `loadPipelines` |
-| `docsFiles` | doc files (md) | doc indexer |
-| `presetFiles` | `IPreset[]` | preset loader |
-| `boundaryFiles` | `IBoundaryRule[]` | boundary loader |
-| `contextTestFiles` | `IContextTest[]` | context-test loader |
-| `agentTestFiles` | `IAgentContractTest[]` | agent-test loader |
-| `mcpToolFiles` | (reserved) | — |
-| `aiProviderFiles` | (reserved) | — |
-| `scaffoldPatternFiles` | `IScaffoldPattern[]` | scaffold-pattern loader |
-| `policyCheckFiles` | `IPackPolicyCheck[]` | policy loader |
-| `constructFiles` | `IConstructInput[]` | construct loader |
-| `constructFacetFiles` | `IConstructFacet[]` | construct loader |
-| `playbookFiles` | `IPlaybookInput[]` | playbook loader |
-| `searchTuningFiles` | `ISearchTuning[]` | search-tuning loader |
-| `feedbackRuleFiles` (R30+) | `IFeedbackRule[]` | feedback loader |
-| `decisionFiles` (R30+) | `IDecision[]` | decisions loader |
-| `pathConventionFiles` | `IPathConvention[]` | paths loader |
-| `contractTemplateFiles` | `IAgentContractTemplate[]` | `loadAllContractTemplates` |
-| `migrationProfileFiles` (R32) | `IMigrationProfile[]` | `loadMigrationProfiles` |
-| `conventionFiles` (R32) | `IConvention[]` (reserved) | — |
+**Round 12 (12.1e):** every manifest slot that has a loader is a contribution
+kind and is listed STRUCTURALLY — registration hints, presets, boundary rules,
+scaffold patterns, constructs and construct facets, search tuning, decisions,
+policy checks, feedback rules, context / agent tests, delegate recipes,
+framework extractors and the seven gate planes were scraped by regex or not
+listed at all. The registry kinds come from ONE run of THE registry-outcome
+table (`collectRegistryOutcomes`, contribution-load-failures.ts). Regex
+extraction remains only for a file whose loader returned no entry (`warning`)
+or that failed to load (`error`) — a regex id is never `ok`.
+
+### Extraction modes and load failures (round 11)
+
+Every entry carries how its id was derived, and every render prints it — a
+fallback is never invisible:
+
+```
+  extraction    12 structural · 3 regex-fallback (unverified) · 0 file-only
+By kind:
+  knowledge                       3  (structural 1 · regex-fallback 2)
+Load failures (1):
+  ✗ node_modules/@acme/pack/k-broken.ts  [knowledge, @acme/pack] — Expected "]" but found "'b'"
+      regex-scraped ids NOT loaded: pack.broken.one
+```
+
+- A contribution file the module loader **cannot import** is a load failure:
+  its regex-scraped ids are `validation: 'error'` ("does NOT take effect"),
+  and the file is one `invalid-contribution` **error** conflict. The JSON
+  carries `loadFailures[]` (file, kind, pack, first line of the error, scraped
+  ids) and `extractionTotals`. The failure map is one authority,
+  `collectContributionLoadFailures` — the inspection-time loader diagnostics
+  plus the async registries' `load-failed` issues.
+- A regex id of a kind whose loader returned nothing for that file is a
+  `warning` ("regex-derived; the loader returned no entries").
+- The sync `buildPackContributionsInventory` does not consult the loaders:
+  every regex id there is `warning` ("unverified: loader not consulted") unless
+  the inspection-time loader imported the file cleanly. Prefer the async one.
+- `sourceFile` is a pure function of the repo (pack-relative registry paths
+  resolve against the pack root, never `process.cwd()`).
+- `shrk packs contributions` exits **1** when an error-severity conflict exists
+  (a load failure, a duplicate id), like `shrk packs conflicts` — and, since
+  round 12, on an entry a loader rejected, and **2** when only unresolvable
+  references remain (see "The contributions report" below).
+
+Each slot's loader, and what makes it REFUSE one declared entry (round 12,
+12.1 — every refusal is a rejected entry on every surface, never a silent
+drop):
+
+| Slot | Kind | Loader | Refused when |
+|---|---|---|---|
+| `knowledgeFiles` / `ruleFiles` / `pathFiles` / `pathConventionFiles` / `docsFiles` (`.ts`) | knowledge / rule / path / path / docs | the TypeScript knowledge loader | a list member (or the `default` object) carrying a string `id` or `title` lacks a string `id` + `title` + `content`; a different object reuses an id |
+| `templateFiles` | template | `loadTemplatesFromFile` | no string `id` + `name`; a reused id (a missing `tags` / `scope` / `appliesWhen` / `variables` is normalised to `[]`) |
+| `pipelineFiles` | pipeline | `loadPipelinesFromFile` | no string `id` / `title` / `description`, or no `steps` array; a reused id |
+| `presetFiles` | preset | `loadPresetsFromFile` | `validatePreset` fails |
+| `boundaryFiles` | boundary | `loadBoundaryRulesFromFile` | `validateBoundaryRule` fails (also an ERRORED rule on `shrk check boundaries`) |
+| `wiringRuleFiles` / `registryFiles` / `registrationGraphFiles` / `policyRuleFiles` / `reusePrimitiveFiles` / `baselineFiles` / `generatedArtifactFiles` / `docReferenceFiles` | wiring-rule / registry / registration-idiom / policy-rule / reuse-primitive / baseline / generated-artifact / doc-reference | the pack-plane merge seam (`resolveProjectConfig`) | the plane's zod schema fails; a shell `compute.run` / `regen`; a key the local config (or an earlier pack) already provides; an unresolvable `$use` (`docReferenceFiles` is a declared slot since round 13 — its refusals were a diagnostic string only) |
+| `contextTestFiles` / `agentTestFiles` | context-test / agent-test | the test runner's loaders | no non-empty `id`, or no string `task` |
+| `delegateRecipeFiles` | delegate-recipe | `loadDelegateRecipesFromPacks` | `DelegateRecipeSchema` (the config loader's own) fails; a reused id |
+| `scaffoldPatternFiles` | scaffold-pattern | the scaffold-pattern loader | no `id` / `templateId` / non-empty `matchPaths`, or `confidence` not `high` / `medium` / `low`; a reused id |
+| `policyCheckFiles` | policy | the policy registry | no non-empty `id` |
+| `constructFiles` | construct | `loadConstructsWithIssues` | no non-empty `id` or `type` |
+| `constructFacetFiles` | construct-facet | `loadConstructsWithIssues` | no string `id` / `constructId` / `kind` / `value`, or its `constructId` names no loaded construct |
+| `playbookFiles` | playbook | `loadPlaybooksWithIssues` | no non-empty `id`, or `steps` is not an array |
+| `searchTuningFiles` | search-tuning | `loadSearchTuning` | no non-empty `id` |
+| `feedbackRuleFiles` | feedback-rule | `loadFeedbackRulesWithIssues` | no non-empty `id`; a reused id |
+| `decisionFiles` | decision | `loadTsDecisionsWithIssues` | no non-empty `id`; a reused id |
+| `contractTemplateFiles` | contract-template | `loadAllContractTemplates` | no string `id` / `title`, a foreign `schema`, or no `defaultForbiddenFilesDetailed` array; a reused id |
+| `migrationProfileFiles` | migration-profile | `loadMigrationProfiles` | no string `id` / `title`, or no `checks` array; a reused id |
+| `conventionFiles` | convention | `loadConventions` | `validateConvention` errors (a missing `severity`, …); a reused id |
+| `helperFiles` | helper | `loadPackHelpers` → the helper catalog | `validatePackHelper` errors; a reused or built-in id |
+| `taskRoutingHintFiles` | task-routing-hint | `loadTaskRoutingHints` | `validateTaskRoutingHint` fails; a reused id |
+| `registrationHintFiles` | registration-hint | `loadRegistrationHints` | `validateRegistrationHint` fails; a reused id |
+| `frameworkExtractorFiles` | framework-extractor | `loadPackExtractors` (framework-scanners); the inspector reads it through the same shared predicate | no string `framework`, or `fileMatches` / `extract` not functions; a reused framework name (a built-in name is refused by the runtime loader, which alone knows the built-ins) |
+| `mcpToolFiles` / `aiProviderFiles` | — | reserved — no loader | — |
+
+## Rejected entries (round 12)
+
+A declared entry its loader REFUSED used to be a silent `continue`: the file
+compiled (the pack build is a transpile), the `list` verb printed the
+survivors, and every doctor reported zero errors. Every loader now returns the
+refusal next to its entries as an `IRejectedEntry` (`@shrkcrft/core`: `file`,
+`index` — `-1` for a single-object export — `exportName`, `entryId`, EVERY
+`<field>: <message>` reason, and `cause` `invalid` / `duplicate-id`), and ONE
+channel carries them: `collectContributionRejections(inspection,
+(await collectRegistryOutcomes(inspection)).rejections)`. The conservation law
+holds per file: **accepted + rejected = declared**. One wording on every
+surface (`formatEntryRejection`):
+
+```
+'conv.b' (default[8]) — severity: severity must be one of: info, warning, error (got undefined)
+```
+
+Where a rejection shows:
+
+- the kind's `list` verb — after the list, `⚠ 2 entries rejected from
+  node_modules/@acme/pack/conventions.ts: 'conv.b' (default[8]) — severity: …;
+  'conv.j' (default[9]) — … → shrk conventions doctor`. The exit stays `0` (a
+  list is no verdict); under `--json` the stdout array is unchanged and a
+  one-line `note:` goes to stderr. Wired into `knowledge`, `templates`,
+  `pipelines`, `presets`, `boundaries`, `scaffolds`, `policy`, `constructs`,
+  `playbooks`, `search tuning`, `feedback rules`, `contract template`,
+  `profiles`, `conventions`, `helper` and `registrations` list. A contribution
+  FILE that failed to load is named the same way — `⚠ sharkcraft/conventions.ts
+  failed to load (<message>) — nothing in it is listed` (a stderr `note:` under
+  `--json`) — and `conventions list` no longer offers that file as the place to
+  contribute (`knowledge` and `helper` list keep their own load-failure line);
+- `shrk self-config doctor` — `<kind>-invalid` / `<kind>-duplicate-id`, ERROR
+  (exit 1), one finding per failing field;
+- `shrk packs list` / `packs get` — per-kind `entries:` counts and the
+  `REJECTED-ENTRIES` mark (`--json` `entryCounts`);
+- `shrk packs doctor` — `contribution-entries-rejected` per file (error);
+- `shrk packs contributions` — a `Rejected entries (N)` block, the `By file:`
+  report, JSON `rejections[]` and `extractionTotals.rejected`. The regex never
+  runs on a file a loader READ (it accepted or refused an entry of it), so a
+  refused id is never a contribution row, a `totals` count or half of a
+  duplicate; an id scraped from a file that failed to load (`validation:
+  'error'`) is never grouped into a duplicate either — its load failure is the
+  error;
+- `shrk packs test --load` — `asset-entry-rejected`, from the same runtime
+  loader (see docs/pack-authoring.md);
+- MCP — `get_pack_contributions` (`rejections`, `report`), `list_packs` /
+  `get_pack` (`entryCounts`).
+
+Not a rejection: PRECEDENCE — a local knowledge entry, template, pipeline,
+preset or boundary rule overriding a pack one (reported as a shadowing
+warning) — and a module's helper values (`export const TAGS = ['x']`, an
+object with no string `id` or `title`).
+
+## The contributions report (round 12)
+
+`shrk packs contributions` ends with `By file:` — every contributed file,
+local and pack: entries declared · accepted · rejected, each rejected entry
+with its reasons, and the references it declares that cannot be checked
+because their kind's registry is empty here (`registry-empty`) or can never
+be filled (`undeclarable-kind`, from THE declarability table):
+
+```
+By file (3): 12 declared · 10 accepted · 2 rejected · 1 unresolvable reference(s)
+  ✗ node_modules/@acme/pack/conventions.ts  convention [@acme/pack]  10 declared · 8 accepted · 2 rejected
+      rejected      'conv.b' (default[8]) — severity: severity must be one of: info, warning, error (got undefined)
+      rejected      'conv.j' (default[9]) — severity: severity must be one of: info, warning, error (got undefined)
+  ~ node_modules/@acme/pack/registration-hints.ts  registration-hint [@acme/pack]  1 declared · 1 accepted · 1 unresolvable reference(s)
+      unresolvable  reg.x discovery.conventionIds → convention 'conv.web' — this kind's registry is empty here
+  ✓ sharkcraft/playbooks.ts  playbook  1 declared · 1 accepted
+```
+
+- **Exit** — `0` everything accepted and every reference checked · `1` an
+  error-severity conflict, a file that failed to load, or a rejected entry ·
+  `2` only unresolvable references remain (NOT VERIFIED, settled through
+  `settleVerdict`; `--allow-empty` is not a valve for them) · `2` no
+  contributed file is in view — an empty project, or a `--pack` / `--kind`
+  that selects no file — because nothing was examined (`--allow-empty`
+  accepts an empty view explicitly, printed) · `3` an unknown `--kind` (not a
+  contribution kind — `conventions` is a typo of `convention`) or `--pack` (no
+  discovered pack), naming the known values and the nearest. `--pack` /
+  `--kind` narrow the files AND the verdict.
+- **JSON** — `report: { files[], totals, referenceCoverage? }` next to the
+  inventory (`report.totals` is nested because the inventory already carries a
+  per-kind `totals`), plus `exitCode` / `verdict` / `shortfalls` / `accepted`.
+  MCP `get_pack_contributions` returns the same `report`; its `kind` is the
+  contribution-kind enum (inputSchema and the strict wire validator), and an
+  unknown `kind` or `pack` is `invalid-input`, never an empty report.
+- **One authority** — the unresolvable references are the self-config doctor's
+  OWN reference probes (`collectUnresolvableReferences`); the doctor carries
+  the same list as `unresolvableReferences`, so the two cannot disagree.
 
 ## Loading order
 

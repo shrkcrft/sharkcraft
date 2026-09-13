@@ -1,3 +1,4 @@
+import type { IUnitMark } from '../liveness/i-unit-mark.ts';
 import type { ScanZone } from '../scan/scan-zone.ts';
 import type { IRuleSelfTest } from '../wiring/wiring-rule.ts';
 
@@ -89,4 +90,10 @@ export interface IPolicyRule {
   readonly suggest?: string;
   /** `error` (default) fails the check; `warning` reports without failing. */
   readonly severity?: 'error' | 'warning';
+  /**
+   * The `expectEmpty` marker ledger of {@link files} (round 13, `list:
+   * 'files'`): one mark per `{ pattern, expectEmpty: true }` entry. Filled by
+   * the loader / merge seam; `files` stays a plain string list. Never authored.
+   */
+  readonly expectEmptyUnits?: readonly IUnitMark[];
 }

@@ -252,9 +252,14 @@ export function buildDashboardKnowledgeGraph(
     edges.push({ from, to, kind });
   };
 
-  // Semantic edges: explicit cross-references.
+  // Semantic edges: explicit cross-references. One whose target is not an entry
+  // in the drawn set (a dangling id, a non-knowledge id, or an entry outside the
+  // node cap) is not drawn — but it is COUNTED, so the graph never reads as
+  // complete while it silently lost edges.
+  let droppedEdges = 0;
   for (const e of entries) {
     for (const t of [...(e.related ?? []), ...(e.actionHints?.relatedKnowledge ?? [])]) {
+      if (t !== e.id && !ids.has(t)) droppedEdges += 1;
       addEdge(e.id, t, 'related');
     }
   }
@@ -275,7 +280,13 @@ export function buildDashboardKnowledgeGraph(
     }
   }
 
-  return { available: entries.length > 0, nodes, edges, truncated };
+  return {
+    available: entries.length > 0,
+    nodes,
+    edges,
+    truncated,
+    ...(droppedEdges > 0 ? { droppedEdges } : {}),
+  };
 }
 
 /** Relevance-ranked "more like this" for one entry (lexical, deterministic). */

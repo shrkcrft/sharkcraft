@@ -1,4 +1,7 @@
 export * from './model/knowledge-entry.ts';
+export * from './model/knowledge-reference-count.ts';
+export * from './verify/verified-on.ts';
+export * from './format/knowledge-reference-format.ts';
 export * from './model/action-hints.ts';
 export * from './model/knowledge-type.ts';
 export * from './model/knowledge-priority.ts';
@@ -15,5 +18,6 @@ export * from './index/knowledge-index.ts';
 export * from './search/knowledge-search.ts';
 export * from './search/knowledge-filter.ts';
 export * from './format/knowledge-formatter.ts';
+export * from './format/i-knowledge-ref-resolution.ts';
 export * from './format/action-hints-formatter.ts';
 export * from './validate/validate-knowledge-entries.ts';

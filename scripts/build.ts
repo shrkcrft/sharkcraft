@@ -5,8 +5,15 @@
 import { readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { runWorkspaceLinkGate } from './lib/workspace-links.ts';
 
 const root = process.cwd();
+
+// Round 13 (13.2): tsc below resolves every @shrkcrft/* import through the
+// base tsconfig's paths and never consults node_modules, so an unlinked or
+// undeclared workspace dependency typechecks green here and dies under node at
+// runtime. Refuse it first (exit 1, naming the dependency and the fix).
+if (runWorkspaceLinkGate(root, '[build]') !== 0) process.exit(1);
 const packagesDir = join(root, 'packages');
 const packages = readdirSync(packagesDir).filter((d) =>
   statSync(join(packagesDir, d)).isDirectory(),

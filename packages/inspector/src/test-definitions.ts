@@ -13,15 +13,22 @@ export function defineContextTest<T extends IContextTest>(t: T): T {
 export interface IAgentContractTest {
   id: string;
   task: string;
+  // ── Ranker-SURFACED (order-sensitive; may flip on unrelated content edits) ──
+  // Each asserts the id is in THIS task's packet. A failure says whether the id
+  // is registered at all (`unknown-id`) or merely did not rank (`not-surfaced`).
   expectedPipeline?: string;
   expectedTemplates?: readonly string[];
   expectedRules?: readonly string[];
   expectedForbiddenActions?: readonly string[];
   expectedVerificationCommands?: readonly string[];
+  // ── Registry EXISTENCE (stable) ─────────────────────────────────────────
   /**
-   * Additional expectations that fail the test when the ranker /
-   * search drifts. Each field is independent; missing fields are treated
-   * as "no expectation".
+   * Each asserts the id is registered — answered by the shared reference
+   * registry (the set the kind's `list` verb prints), never a private copy.
+   * Each field is independent; missing fields are "no expectation".
+   *
+   * `expectedCommands` is a hybrid: surfaced by the packet OR resolves
+   * against the live command index (injected by the CLI).
    */
   expectedHelpers?: readonly string[];
   expectedPlaybooks?: readonly string[];

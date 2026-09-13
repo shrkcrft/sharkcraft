@@ -5,6 +5,59 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [Unreleased — staged after 0.1.0-alpha.30] — Boundary patterns mean what they say
+
+Staged boundary notes for the next release (rounds 11–12). The full release
+notes are assembled from `packages/cli/src/commands/changelog-data.ts` at the
+version commit; this section carries the boundary behaviour changes a consumer
+upgrading from alpha.30 needs first.
+
+### BEHAVIOUR CHANGE — a bare forbidden pattern also forbids its subpaths (round 11)
+
+```ts
+{ id: 'app.no-scope-pkg', from: ['packages/app/**'], forbiddenImports: ['@scope/pkg', '@scope/pkg-*'] }
+// alpha.30: '@scope/pkg/sub' and '@scope/pkg-a/deep/thing' passed — only the entrypoints matched
+// now:      both are violations, labelled matchKind 'subpath'
+```
+
+`*` still never crosses `/`; package semantics add the `<pattern>/**` half to
+any `forbiddenImports` (and `exceptions[].target`) pattern with no `**` and no
+trailing `/`, at a segment boundary (`@scope/pkg` never matches
+`@scope/pkg-legacy`). Strictly stricter: a new `subpath` violation is a real
+import of a package the rule already forbids. `forbiddenMatch: 'exact'`
+restores entrypoint-only matching. A local helper that expands `pkg` →
+`pkg` + `pkg/**` is now redundant — `check boundaries` notes it and `shrk
+boundaries explain <ruleId>` names the pattern to delete. Locked on every
+surface (`check boundaries`, `--changed-only`, `finish`, `diff-check`, the MCP
+boundary tools), for local and pack-contributed rules alike.
+
+### BEHAVIOUR CHANGE — a specifier pattern that cannot mean what it says is an errored rule (round 12)
+
+An empty pattern, a `!`-prefixed one (negation is `from`-only syntax) and —
+under package semantics — a trailing-`/` one in `forbiddenImports`,
+`allowedImports` or `exceptions[].target` fail validation: an errored rule,
+exit `1`. `forbiddenImports: ['@scope/pkg/']` used to print `Verdict: OK ✓` over
+imports of `@scope/pkg`. Write `pkg` (the package and every subpath) or
+`pkg/**` (subpaths only); `forbiddenMatch: 'exact'` keeps a trailing-slash
+literal such as `buffer/`.
+
+### BEHAVIOUR CHANGE — an allowance a forbidden pattern shadows is a dead unit (round 12)
+
+Forbidden is checked first and `allowedImports` never re-admits, so
+`allowedImports: ['@scope/pkg/public/**']` under `forbiddenImports:
+['@scope/pkg']` can never admit an import (alpha.30 honoured it as a
+carve-out). It is reported (`shadowed by forbidden '@scope/pkg'`), and
+`--fail-on-dead-units` fails on it. Carve subpaths out with `exceptions[{ path,
+target, reason }]` — a bare target also excuses its subpaths — or set
+`forbiddenMatch: 'exact'`.
+
+### Changed — MCP boundary rule reads carry the effective semantics (round 12)
+
+`list_boundary_rules` rows carry the effective `severity` (unset = `error`) and
+`forbiddenMatch`; `get_boundary_rule` adds `severity`, `forbiddenMatch`,
+`failOnEmpty`, `redundantForbidden` and `shadowedAllowed`. Output only — no
+input change.
+
 ## [0.1.0-alpha.30] — The engine taps the import graph, and reads its own prose
 
 Eight rounds of improvements driven by running alpha.29 against real consumer

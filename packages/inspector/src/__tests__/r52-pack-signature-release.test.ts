@@ -21,7 +21,7 @@ import { buildSafetyAuditDeep } from '../safety-audit-deep.ts';
 import { buildPackSignatureReleaseGate } from '../release-readiness.ts';
 
 interface IFakePackManifest {
-  signature?: { signedAt: string; dev?: boolean };
+  signature?: { signedAt: string; dev?: boolean; contentDigests?: Record<string, string> };
   contributions?: Record<string, readonly string[]>;
 }
 interface IFakePack {
@@ -107,11 +107,14 @@ describe('pack signature release-readiness', () => {
     expect(releaseEntry?.dev).toBeUndefined();
   });
 
-  test('a dev pack re-staled by a newer contribution downgrades to Present (R4), but a prod pack stays Stale', () => {
+  test('a dev pack whose signed content diverged downgrades to Present (R4), but a prod pack stays Stale', () => {
     const oldSig = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago
+    // Round 11: freshness is CONTENT divergence (the digest recorded at signing),
+    // never an mtime. The recorded digest below does not match the file on disk.
+    const diverged = { 'knowledge.ts': 'sha256:recorded-at-signing-before-the-edit' };
 
-    // Dev pack: a contribution file newer than the (dev) signature must NOT
-    // surface as Stale — local builds re-stale dev packs constantly.
+    // Dev pack: a contribution whose content changed since the (dev) signature
+    // must NOT surface as Stale — local builds re-stale dev packs constantly.
     const devRoot = mkdtempSync(join(tmpdir(), 'shrk-devpack-'));
     writeFileSync(join(devRoot, 'knowledge.ts'), 'export default {};');
     const devReport = buildPackSignatureStatusReport(
@@ -121,7 +124,7 @@ describe('pack signature release-readiness', () => {
           packageVersion: '0.1.0',
           packageRoot: devRoot,
           manifest: {
-            signature: { signedAt: oldSig, dev: true },
+            signature: { signedAt: oldSig, dev: true, contentDigests: diverged },
             contributions: { knowledgeFiles: ['knowledge.ts'] },
           },
         },
@@ -143,7 +146,7 @@ describe('pack signature release-readiness', () => {
           packageVersion: '0.1.0',
           packageRoot: prodRoot,
           manifest: {
-            signature: { signedAt: oldSig },
+            signature: { signedAt: oldSig, contentDigests: diverged },
             contributions: { knowledgeFiles: ['knowledge.ts'] },
           },
         },

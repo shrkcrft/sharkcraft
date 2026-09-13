@@ -194,6 +194,8 @@ export function extractTsFile(
         // resolver recurses with it (`export { FooImpl as Foo }` → localName
         // `FooImpl`); omitted when it equals the exposed name.
         ...(re.localName && re.localName !== re.name ? { localName: re.localName } : {}),
+        // `export * as ns from` — the name binds the whole target module.
+        ...(re.namespace === true ? { namespace: true } : {}),
         line: re.line,
       }),
     );

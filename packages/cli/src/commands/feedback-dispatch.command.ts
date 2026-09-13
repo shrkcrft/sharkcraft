@@ -8,6 +8,7 @@
  * `ingest`).
  */
 import type { ICommandHandler, ParsedArgs } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import {
   feedbackActionsCommand,
   feedbackBacklogCommand,
@@ -38,6 +39,34 @@ const RULES_VERBS: Record<string, ICommandHandler> = {
 
 export const feedbackCommand: ICommandHandler = {
   name: 'feedback',
+  // positional[0] is a verb or the feedback FILE (`feedback <file>` ingests):
+  // a verb-shaped token that is neither is refused before it becomes a path.
+  positionals: PositionalMode.Path,
+  subverbs: [
+    { name: 'ingest', description: 'Parse a feedback file into structured findings.', usage: 'shrk feedback ingest <file> [--with-pack-rules] [--json]', positionals: PositionalMode.Path },
+    { name: 'summarize', description: 'Summarize a feedback file.', usage: 'shrk feedback summarize <file> [--json]', positionals: PositionalMode.Path },
+    { name: 'actions', description: 'The actions a feedback file implies.', usage: 'shrk feedback actions <file> [--json]', positionals: PositionalMode.Path },
+    {
+      name: 'convert-to-backlog',
+      description: 'Convert a feedback file into backlog items.',
+      usage: 'shrk feedback convert-to-backlog <file> [--output <path>]',
+      positionals: PositionalMode.Path,
+    },
+    { name: 'backlog', description: 'The backlog view of a feedback file.', usage: 'shrk feedback backlog <file>', positionals: PositionalMode.Path },
+    { name: 'prompt', description: 'An agent prompt from a feedback file.', usage: 'shrk feedback prompt <file>', positionals: PositionalMode.Path },
+    { name: 'plan', description: 'A plan from a feedback file.', usage: 'shrk feedback plan <file>', positionals: PositionalMode.Path },
+    {
+      name: 'rules',
+      description: 'The feedback rules (`list` is the default).',
+      usage: 'shrk feedback rules <list|doctor> [--json]',
+      // An unknown token used to fall through to `list` at exit 0.
+      positionals: PositionalMode.None,
+      subverbs: [
+        { name: 'list', description: 'List the feedback rules.', usage: 'shrk feedback rules list [--json]' },
+        { name: 'doctor', description: 'Validate the feedback rules.', usage: 'shrk feedback rules doctor [--json]' },
+      ],
+    },
+  ],
   description:
     'Parse freeform feedback markdown into structured findings. Subcommands: ingest|summarize|actions|convert-to-backlog|rules. Read-only.',
   usage:

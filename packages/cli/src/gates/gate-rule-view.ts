@@ -9,27 +9,16 @@ import {
   type IRuleSelfTest,
   type IWiringRule,
 } from '@shrkcrft/core';
+import { GATE_PLANE_CONFIG_KEY, GATE_PLANE_ORDER, type GatePlane } from '@shrkcrft/config';
 
-/** Which data-defined plane a rule belongs to. */
-export type GatePlane =
-  | 'wiring'
-  | 'policy'
-  | 'registry'
-  | 'registration'
-  | 'baseline'
-  | 'generated'
-  | 'doc-reference';
+/** Which data-defined plane a rule belongs to — THE config-schema type (`@shrkcrft/config`). */
+export type { GatePlane } from '@shrkcrft/config';
 
-/** Every plane, in the order `shrk gates list` prints them. */
-export const GATE_PLANES: readonly GatePlane[] = [
-  'wiring',
-  'policy',
-  'registry',
-  'registration',
-  'baseline',
-  'generated',
-  'doc-reference',
-];
+/**
+ * Every plane, in the order `shrk gates list` prints them — THE list beside
+ * the config schema (`GATE_PLANE_ORDER`), never a CLI copy of it.
+ */
+export const GATE_PLANES: readonly GatePlane[] = GATE_PLANE_ORDER;
 
 /**
  * One data-defined rule, normalized across planes.
@@ -73,92 +62,115 @@ export interface IGatePlanes {
   readonly docReferences?: readonly IDocReferenceRule[];
 }
 
-/** Flatten every declared rule across every plane into one iterable list. */
+/**
+ * One view builder per plane, keyed by {@link GatePlane} so the record is
+ * exhaustive: a plane added to the config list fails the build here until it
+ * has a builder. Each reads its rules under THE config key
+ * (`GATE_PLANE_CONFIG_KEY`) — no plane → key name is spelled in the CLI.
+ */
+const PLANE_VIEWS: { readonly [P in GatePlane]: (planes: IGatePlanes) => IGateRuleView[] } = {
+  wiring: (planes) =>
+    (planes[GATE_PLANE_CONFIG_KEY.wiring] ?? []).map(
+      (r): IGateRuleView => ({
+        id: r.id,
+        plane: 'wiring',
+        ...(r.description ? { description: r.description } : {}),
+        severity: r.severity ?? 'error',
+        failOnEmpty: failsWhenEmpty(r),
+        ...(r.selfTest ? { selfTest: r.selfTest } : {}),
+        raw: r,
+      }),
+    ),
+  policy: (planes) =>
+    (planes[GATE_PLANE_CONFIG_KEY.policy] ?? []).map(
+      (r): IGateRuleView => ({
+        id: r.id,
+        plane: 'policy',
+        ...(r.description ? { description: r.description } : {}),
+        severity: r.severity ?? 'error',
+        failOnEmpty: failsWhenEmpty(r),
+        ...(r.selfTest ? { selfTest: r.selfTest } : {}),
+        raw: r,
+      }),
+    ),
+  registry: (planes) =>
+    (planes[GATE_PLANE_CONFIG_KEY.registry] ?? []).map(
+      (r): IGateRuleView => ({
+        id: r.name,
+        plane: 'registry',
+        ...(r.description ? { description: r.description } : {}),
+        // A registry is an inventory, not a gate — it never fails a build on its
+        // own, so it carries no severity of its own. A `selfTest` still applies:
+        // an inventory whose selector went stale reports an empty registry as
+        // fact, which is worse than a failing gate because nothing looks wrong.
+        // `failOnEmpty` goes through the one shared helper; with no severity the
+        // default stays `false` (a loud skip), and an explicit `true` promotes it.
+        severity: 'warning',
+        failOnEmpty: failsWhenEmpty({
+          ...(r.failOnEmpty !== undefined ? { failOnEmpty: r.failOnEmpty } : {}),
+          severity: 'warning',
+        }),
+        ...(r.selfTest ? { selfTest: r.selfTest } : {}),
+        raw: r,
+      }),
+    ),
+  registration: (planes) =>
+    (planes[GATE_PLANE_CONFIG_KEY.registration] ?? []).map(
+      (r): IGateRuleView => ({
+        id: r.name,
+        plane: 'registration',
+        ...(r.description ? { description: r.description } : {}),
+        severity: 'warning',
+        failOnEmpty: failsWhenEmpty({
+          ...(r.failOnEmpty !== undefined ? { failOnEmpty: r.failOnEmpty } : {}),
+          severity: 'warning',
+        }),
+        ...(r.selfTest ? { selfTest: r.selfTest } : {}),
+        raw: r,
+      }),
+    ),
+  baseline: (planes) =>
+    (planes[GATE_PLANE_CONFIG_KEY.baseline] ?? []).map(
+      (r): IGateRuleView => ({
+        id: r.id,
+        plane: 'baseline',
+        ...(r.description ? { description: r.description } : {}),
+        severity: r.severity ?? 'error',
+        failOnEmpty: failsWhenEmpty(r),
+        ...(r.expectEmpty === true ? { expectEmpty: true } : {}),
+        ...(r.selfTest ? { selfTest: r.selfTest } : {}),
+        raw: r,
+      }),
+    ),
+  generated: (planes) =>
+    (planes[GATE_PLANE_CONFIG_KEY.generated] ?? []).map(
+      (r): IGateRuleView => ({
+        id: r.id,
+        plane: 'generated',
+        ...(r.description ? { description: r.description } : {}),
+        severity: r.severity ?? 'error',
+        failOnEmpty: failsWhenEmpty(r),
+        ...(r.selfTest ? { selfTest: r.selfTest } : {}),
+        raw: r,
+      }),
+    ),
+  'doc-reference': (planes) =>
+    (planes[GATE_PLANE_CONFIG_KEY['doc-reference']] ?? []).map(
+      (r): IGateRuleView => ({
+        id: r.id,
+        plane: 'doc-reference',
+        ...(r.description ? { description: r.description } : {}),
+        severity: r.severity ?? 'error',
+        failOnEmpty: failsWhenEmpty(r),
+        ...(r.selfTest ? { selfTest: r.selfTest } : {}),
+        raw: r,
+      }),
+    ),
+};
+
+/** Flatten every declared rule across every plane into one iterable list, in {@link GATE_PLANES} order. */
 export function collectGateRules(planes: IGatePlanes): IGateRuleView[] {
-  const out: IGateRuleView[] = [];
-  for (const r of planes.wiringRules ?? []) {
-    out.push({
-      id: r.id,
-      plane: 'wiring',
-      ...(r.description ? { description: r.description } : {}),
-      severity: r.severity ?? 'error',
-      failOnEmpty: failsWhenEmpty(r),
-      ...(r.selfTest ? { selfTest: r.selfTest } : {}),
-      raw: r,
-    });
-  }
-  for (const r of planes.policyRules ?? []) {
-    out.push({
-      id: r.id,
-      plane: 'policy',
-      ...(r.description ? { description: r.description } : {}),
-      severity: r.severity ?? 'error',
-      failOnEmpty: failsWhenEmpty(r),
-      ...(r.selfTest ? { selfTest: r.selfTest } : {}),
-      raw: r,
-    });
-  }
-  for (const r of planes.registries ?? []) {
-    out.push({
-      id: r.name,
-      plane: 'registry',
-      ...(r.description ? { description: r.description } : {}),
-      // A registry is an inventory, not a gate — it never fails a build on its
-      // own, so it carries no severity of its own. A `selfTest` still applies:
-      // an inventory whose selector went stale reports an empty registry as
-      // fact, which is worse than a failing gate because nothing looks wrong.
-      severity: 'warning',
-      failOnEmpty: false,
-      ...(r.selfTest ? { selfTest: r.selfTest } : {}),
-      raw: r,
-    });
-  }
-  for (const r of planes.registrationGraph ?? []) {
-    out.push({
-      id: r.name,
-      plane: 'registration',
-      ...(r.description ? { description: r.description } : {}),
-      severity: 'warning',
-      failOnEmpty: false,
-      ...(r.selfTest ? { selfTest: r.selfTest } : {}),
-      raw: r,
-    });
-  }
-  for (const r of planes.baselines ?? []) {
-    out.push({
-      id: r.id,
-      plane: 'baseline',
-      ...(r.description ? { description: r.description } : {}),
-      severity: r.severity ?? 'error',
-      failOnEmpty: failsWhenEmpty(r),
-      ...(r.expectEmpty === true ? { expectEmpty: true } : {}),
-      ...(r.selfTest ? { selfTest: r.selfTest } : {}),
-      raw: r,
-    });
-  }
-  for (const r of planes.docReferences ?? []) {
-    out.push({
-      id: r.id,
-      plane: 'doc-reference',
-      ...(r.description ? { description: r.description } : {}),
-      severity: r.severity ?? 'error',
-      failOnEmpty: failsWhenEmpty(r),
-      ...(r.selfTest ? { selfTest: r.selfTest } : {}),
-      raw: r,
-    });
-  }
-  for (const r of planes.generatedArtifacts ?? []) {
-    out.push({
-      id: r.id,
-      plane: 'generated',
-      ...(r.description ? { description: r.description } : {}),
-      severity: r.severity ?? 'error',
-      failOnEmpty: failsWhenEmpty(r),
-      ...(r.selfTest ? { selfTest: r.selfTest } : {}),
-      raw: r,
-    });
-  }
-  return out;
+  return GATE_PLANES.flatMap((plane) => PLANE_VIEWS[plane](planes));
 }
 
 /**

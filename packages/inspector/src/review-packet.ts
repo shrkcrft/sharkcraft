@@ -1,4 +1,5 @@
-import { evaluateBoundaries, loadTsconfigPaths, scanImports } from '@shrkcrft/boundaries';
+import { ChangedScopeMode } from './boundaries-changed-only.ts';
+import { runBoundaryCheck } from './run-boundary-check.ts';
 import { matchAffectedConventions } from '@shrkcrft/paths';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import { resolveVerificationCommands } from './resolve-verification-commands.ts';
@@ -23,6 +24,8 @@ export interface IReviewPacket {
     severity: string;
     message: string;
   }[];
+  /** Why `boundaryViolations` is not the full answer for the changed files (THE boundary verdict's shortfalls). */
+  boundaryShortfalls?: readonly string[];
   /** Heuristic: missing tests for any changed `src/**` files. */
   missingTestsHeuristic: readonly string[];
   /** Verification commands recommended for the change set. */
@@ -104,14 +107,19 @@ export function buildReviewPacket(
     (p) => p.id,
   );
 
-  // Boundary violations restricted to changed files.
+  // Boundary violations restricted to changed files — through THE boundary
+  // orchestrator in changed-scope mode, the call `check boundaries
+  // --changed-only` makes (round 11 review R11-GAP-3): a governed changed file
+  // it could not read is named in `boundaryShortfalls`, never a silent 0.
   let boundaryViolations: IReviewPacket['boundaryViolations'] = [];
+  let boundaryShortfalls: readonly string[] = [];
   if (inspection.boundaryRegistry.size() > 0 && changedFiles.length > 0) {
-    const scan = scanImports({ projectRoot: inspection.projectRoot });
-    const tsconfigPaths = loadTsconfigPaths(inspection.projectRoot);
-    const evalResult = evaluateBoundaries(scan, inspection.boundaryRegistry.list(), {
-      ...(tsconfigPaths.aliases.size > 0 ? { tsconfigPaths } : {}),
+    const evalResult = runBoundaryCheck(inspection, {
+      changed: { mode: ChangedScopeMode.Files, files: changedFiles },
     });
+    if (evalResult.verdict === 'not-verified' && evalResult.selectedRuleIds.length > 0) {
+      boundaryShortfalls = evalResult.shortfalls;
+    }
     const changedSet = new Set(changedFiles);
     boundaryViolations = evalResult.violations
       .filter((v) => changedSet.has(v.file))
@@ -167,6 +175,7 @@ export function buildReviewPacket(
       title: p.item.title,
     })),
     boundaryViolations,
+    ...(boundaryShortfalls.length > 0 ? { boundaryShortfalls } : {}),
     missingTestsHeuristic: missingTestsHeuristic(changedFiles),
     verificationCommands,
     reviewerInstructions,

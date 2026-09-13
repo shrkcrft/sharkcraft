@@ -1,12 +1,21 @@
 import { readFileSync } from 'node:fs';
 import {
   buildUniversalSearch,
+  classifyQueryIntent,
+  countsTowardConfidence,
+  describeSuppression,
   entrypointBanner,
-  explainTaskRouting,
   inspectSharkcraft,
-  rankAll,
-  recommendCommands,
+  pickNextCommand,
+  rankRecommendationCandidates,
+  recommendationReportFromRanking,
+  RECOMMEND_SOURCE_FLOORS,
+  RecommendationSource,
   renderUncertaintyReportText,
+  type ICommandRecommendation,
+  type ICommandRecommendationReport,
+  type IQueryIntentResult,
+  type IRecommendationCandidate,
 } from '@shrkcrft/inspector';
 import {
   flagBool,
@@ -16,20 +25,39 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { ExitCode } from '../exit-codes.ts';
 import { asJson } from '../output/format-output.ts';
 import { loadSurfaceContext } from '../surface/load-surface-context.ts';
-import {
-  buildSurfaceSummary,
-  findCommandInSummary,
-  type ISurfaceCommandView,
-} from '../surface/surface-summary.ts';
+import { catalogCommandSafety } from '../surface/catalog-command-safety.ts';
+import { dropNotApplicable, notApplicableHere, surfaceViewForCommand } from '../surface/audience-applicability.ts';
+import { buildSurfaceSummary } from '../surface/surface-summary.ts';
 
+/**
+ * `shrk recommend` renders THE ranked list (`rankRecommendationCandidates`,
+ * inspector). It used to re-rank it: a CLI-only grounding prepend, a
+ * routing-hint "R1" promotion gated on create/build wording, and a separate
+ * "engine match" block — three code paths answering "what do I run first?",
+ * each with its own thresholds, none reachable from MCP or `shrk context`.
+ * Now every row, its attribution, `nextCommand`, the confidence and the
+ * coverage-gap verdict come from the one list; the CLI only gates rows by
+ * surface tier and re-picks `nextCommand` over what it renders, by THE rule.
+ */
 export const recommendCommand: ICommandHandler = {
   name: 'recommend',
   description:
     'Recommend commands based on a free-form query, role, or stderr blob. Deterministic — no AI.',
   usage:
-    'shrk recommend "<what I want to do>" [--from-error <stderr-file>] [--role developer|reviewer|architect|release-manager|security|ai-agent] [--json]',
+    'shrk recommend "<what I want to do>" [--from-error <stderr-file>] [--role developer|reviewer|architect|release-manager|security|ai-agent] [--min-score <n>] [--require-confident] [--verbose] [--json]',
+  booleanFlags: new Set([
+    'json',
+    'machine-json',
+    'verbose',
+    'full',
+    'include-gated',
+    'commands-first',
+    'actions-only',
+    'require-confident',
+  ]),
   async run(args: ParsedArgs): Promise<number> {
     const query = args.positional.join(' ').trim();
     const fromErrorFile = flagString(args, 'from-error');
@@ -48,235 +76,187 @@ export const recommendCommand: ICommandHandler = {
       process.stderr.write('Usage: shrk recommend "<query>" or --from-error <file>\n');
       return 2;
     }
+    let minScore: number | undefined;
+    if (args.flags.has('min-score')) {
+      minScore = flagNumber(args, 'min-score');
+      if (minScore === undefined || !(minScore > 0)) {
+        process.stderr.write(
+          `--min-score takes a number > 0 (the floor multiplier; 1 = each source's own floor), got "${String(args.flags.get('min-score'))}".\n`,
+        );
+        return ExitCode.UsageError;
+      }
+    }
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
     const role = flagString(args, 'role');
-    const reportRaw = await recommendCommands(inspection, query || fromError, {
+    const ranked = await rankRecommendationCandidates(inspection, query || fromError, {
       ...(fromError ? { fromError } : {}),
-      ...(role ? { role } : {}),
+      ...(minScore !== undefined ? { minScore } : {}),
+      // THE declared safety (the command catalog) — labels and withholds a
+      // writer by what its row declares, never by the fallback regex.
+      safetyOf: (command) => catalogCommandSafety(command),
     });
-    // DX#2 — when the task text looks like a planning thread (planning
-    // verb at the start, or a "plan/design/review for X" shape), prepend
-    // `shrk grounding "<task>"` as the top recommendation. The existing
-    // recommender output slides down. Pure-text classifier; no LLM.
-    if (query.length > 0 && looksLikePlanning(query)) {
-      const groundingRec = {
-        command: `shrk grounding "${query.replace(/"/g, '\\"')}" --json`,
-        why: 'DX#2: query looks like planning — start with grounding (task-relevant rules / knowledge / templates / verification IDs) before picking a write verb.',
-        safetyLevel: 'read-only' as const,
-      };
-      // Avoid duplicating if the recommender already surfaced grounding.
-      const alreadyHasGrounding = reportRaw.recommendations.some((r) =>
-        r.command.startsWith('shrk grounding') || r.command.startsWith('bun run shrk grounding'),
-      );
-      if (!alreadyHasGrounding) {
-        (reportRaw as { recommendations: typeof reportRaw.recommendations }).recommendations = [
-          groundingRec,
-          ...reportRaw.recommendations,
-        ];
-      }
-    }
+    const reportRaw = recommendationReportFromRanking(ranked, role ? { role } : {});
     // Gate by surface tier. Recommendations whose underlying command is
     // experimental + not enabled get moved to a "gated" bucket with an
     // enable hint. Callable ones stay in `recommendations`.
     const { context: surfaceContext } = await loadSurfaceContext({ cwd, inspection });
     const surface = buildSurfaceSummary(surfaceContext);
     const includeGated = flagBool(args, 'include-gated');
-    const { keep, gated } = partitionByCallable(reportRaw.recommendations, surface, includeGated);
-    const report = { ...reportRaw, recommendations: keep };
-    // Combine recommender output with routing hints + universal search.
-    const wantsCommandsFirst = flagBool(args, 'commands-first');
+    const { keep, gated, notApplicable } = partitionByCallable(reportRaw.recommendations, surface, includeGated);
+    // `nextCommand` is re-picked over the rows actually rendered — by THE rule,
+    // so it is row 1 whenever the answer is confident.
+    // THE audience filter (`dropNotApplicable`, shared with `shrk context`)
+    // reaches every row this command prints or emits — the ranked list and the
+    // uncertainty block's suggested commands (a recipe may name `release
+    // readiness`), not only the recommendations — and re-picks `nextCommand`
+    // over the rows actually rendered, by THE rule.
+    const report: ICommandRecommendationReport = dropNotApplicable({ ...reportRaw, recommendations: keep }, surface);
+    const requireConfident = flagBool(args, 'require-confident');
+    // `recommend` is not a gate: 0 by default. `--require-confident` makes "no
+    // confident match" a branchable 2 (ran, proved nothing); global `--strict`
+    // then promotes it to 1.
+    const exit = requireConfident && !report.confident ? ExitCode.NotVerified : ExitCode.VerifiedPass;
     const actionsOnly = flagBool(args, 'actions-only');
     const machineJson = flagBool(args, 'json') || flagBool(args, 'machine-json');
-    let routingMatches: Awaited<ReturnType<typeof explainTaskRouting>> = [];
-    let searchReport: Awaited<ReturnType<typeof buildUniversalSearch>> | null = null;
-    // Reconcile with `brief`/`task`: those route through the SAME shared ranker
-    // (`rankAll`). Consult it here so `recommend` never claims a "coverage gap"
-    // for a task the rest of the engine confidently matches to a template/pipeline.
-    let ranking: ReturnType<typeof rankAll> | null = null;
-    if (query.length > 0) {
-      try {
-        routingMatches = await explainTaskRouting(inspection, query);
-      } catch {
-        // ignore
-      }
-      try {
-        searchReport = await buildUniversalSearch(inspection, query, {});
-      } catch {
-        searchReport = null;
-      }
-      try {
-        ranking = rankAll(inspection, query);
-      } catch {
-        ranking = null;
-      }
-    }
-    const topTemplate = ranking?.templates[0];
-    const topPipeline = ranking?.pipelines[0];
-    const engineHasMatch =
-      (topTemplate?.score ?? 0) >= TEMPLATE_MATCH_THRESHOLD ||
-      (topPipeline?.score ?? 0) >= PIPELINE_MATCH_THRESHOLD;
-    // R1 — promote a strongly-matched task-routing hint's recommends.commands
-    // into the HEADLINE for create/build intents. Routing hints are scored by
-    // explainTaskRouting but were previously only shown under --verbose, so the
-    // headline fell back to generic review/report/impact commands even when the
-    // pack declared the right `shrk gen <template>` playbook. When the top hint
-    // clears the threshold AND the query looks like create/build work, its
-    // commands lead and the generic defaults slide to the tail. Deterministic.
-    const topHint = routingMatches[0];
-    const hintCommands = topHint?.hint.recommends.commands ?? [];
-    if (
-      query.length > 0 &&
-      looksLikeCreateBuild(query) &&
-      topHint &&
-      topHint.score >= ROUTING_HINT_PROMOTE_THRESHOLD &&
-      hintCommands.length > 0
-    ) {
-      const promoted = hintCommands.map((command) => ({
-        command,
-        why: `Routing hint "${topHint.hint.id}" matched (score ${topHint.score}) — project playbook for this create/build task.`,
-        safetyLevel: promotedSafetyLevel(command),
-      }));
-      const promotedSet = new Set(promoted.map((p) => p.command));
-      const isGenericDefault = (c: string): boolean =>
-        /^(bun run )?shrk (review|report|impact)\b/i.test(c);
-      // The recommender (inspector) already arbitrates the keyword recipe
-      // against the shared ranker and may have promoted a `shrk gen <template>`
-      // / `shrk task` headline (its `why` starts with "Ranker matched"). That
-      // ranker-confirmed scaffold is the engine's corrected route — keep it
-      // ahead of even the routing-hint promotion so the headline survives.
-      const isRankerPromoted = (r: { why: string }): boolean => /^Ranker matched /.test(r.why);
-      const existing = report.recommendations;
-      const keptRankerPromoted = existing.filter(
-        (r) => !promotedSet.has(r.command) && isRankerPromoted(r),
-      );
-      const keptNonGeneric = existing.filter(
-        (r) => !promotedSet.has(r.command) && !isRankerPromoted(r) && !isGenericDefault(r.command),
-      );
-      const keptGeneric = existing.filter(
-        (r) => !promotedSet.has(r.command) && !isRankerPromoted(r) && isGenericDefault(r.command),
-      );
-      (report as { recommendations: typeof report.recommendations }).recommendations = [
-        ...keptRankerPromoted,
-        ...promoted,
-        ...keptNonGeneric,
-        ...keptGeneric,
-      ];
-    }
+
     if (machineJson) {
+      let searchReport: Awaited<ReturnType<typeof buildUniversalSearch>> | null = null;
+      if (query.length > 0) {
+        try {
+          searchReport = await buildUniversalSearch(inspection, query, {});
+        } catch {
+          searchReport = null;
+        }
+      }
       process.stdout.write(
         asJson({
           ...report,
-          routingMatches,
+          routingMatches: ranked.routingMatches,
           search: searchReport,
           gated,
-          rankerMatch: ranking
-            ? {
-                topTemplate: topTemplate ? { id: topTemplate.item.id, score: topTemplate.score } : null,
-                topPipeline: topPipeline ? { id: topPipeline.item.id, score: topPipeline.score } : null,
-              }
-            : null,
+          ...(notApplicable.length > 0 ? { notApplicable } : {}),
+          rankerMatch: ranked.rankerTop,
+          ...(requireConfident ? { exitCode: exit } : {}),
         }) + '\n',
       );
-      return 0;
+      return exit;
     }
+
+    const write = (s: string): void => {
+      process.stdout.write(s);
+    };
     // Default human output: verdict + top 3 commands + next command +
     // details flag. `--verbose` / `--full` brings back the long form.
     const verbose = flagBool(args, 'verbose') || flagBool(args, 'full');
     const topN = flagNumber(args, 'top') ?? (verbose ? report.recommendations.length : 3);
     const visibleRecs = report.recommendations.slice(0, topN);
+    const suppressed = report.ranked.filter((c) => c.suppressedReason !== undefined);
     if (!actionsOnly) {
       // Entrypoint banner: promote shrk recommend as the human entrypoint.
-      process.stdout.write(`(${entrypointBanner('recommend')})\n\n`);
-      process.stdout.write(`=== Recommended commands (top ${visibleRecs.length}) ===\n`);
-      for (const r of visibleRecs) {
-        if (verbose) {
-          process.stdout.write(`  $ ${r.command}\n    why: ${r.why}\n    safety: ${r.safetyLevel}\n`);
-          if (r.docsLink) process.stdout.write(`    docs: ${r.docsLink}\n`);
-        } else {
-          process.stdout.write(`  $ ${r.command}  [${r.safetyLevel}] — ${r.why}\n`);
-        }
+      write(`(${entrypointBanner('recommend')})\n\n`);
+      if (report.confident) {
+        write(`=== Recommended commands (top ${visibleRecs.length}) ===\n`);
+      } else {
+        write(`=== ${noConfidentHeadline(report)} ===\n`);
+        if (visibleRecs.length > 0) write('Weak candidates (not routed — verify before acting):\n');
       }
+      for (const r of visibleRecs) write(renderRow(r, report.confident, verbose));
       if (report.recommendations.length > visibleRecs.length) {
-        process.stdout.write(
-          `  … (${report.recommendations.length - visibleRecs.length} more — pass --verbose to see all)\n`,
-        );
+        write(`  … (${report.recommendations.length - visibleRecs.length} more — pass --verbose to see all)\n`);
+      }
+      write(renderSuppressed(suppressed, ranked.intent, verbose));
+    }
+    if (ranked.routingMatches.length > 0 && !actionsOnly && verbose) {
+      const hintFloor = RECOMMEND_SOURCE_FLOORS[RecommendationSource.RoutingHint];
+      write('\nRouting hints:\n');
+      for (const m of ranked.routingMatches.slice(0, 5)) {
+        write(`  • ${m.hint.id}  (score ${m.score}, floor ${hintFloor} → ${(m.score / hintFloor).toFixed(2)})  ${m.hint.title}\n`);
+        if (m.reasons.length > 0) write(`      matched: ${m.reasons.join(', ')}\n`);
+        const commands = m.hint.recommends?.commands ?? [];
+        write(`      commands: ${commands.length > 0 ? commands.join(' · ') : '(none — this hint recommends no command)'}\n`);
       }
     }
-    if (routingMatches.length > 0 && !actionsOnly && verbose) {
-      process.stdout.write('\nRouting hints:\n');
-      for (const m of routingMatches.slice(0, 5)) {
-        process.stdout.write(`  • ${m.hint.id}  (score=${m.score})  ${m.hint.title}\n`);
-      }
-    }
-    if (searchReport && !actionsOnly && verbose) {
-      const top = (searchReport.sections.bestActions ?? []).slice(0, 5);
-      if (top.length > 0) {
-        process.stdout.write('\nBest actions (from universal search):\n');
-        for (const a of top) {
-          const action = (a as { action?: string; command?: string }).action ?? (a as { command?: string }).command;
-          if (action) process.stdout.write(`  • ${action}\n`);
-        }
-      }
-    }
-    // Coverage gap — explicit if recommendations look thin AND no routing hint
-    // fired AND the shared ranker (the engine `brief`/`task` use) also found no
-    // template/pipeline. The last clause stops `recommend` from contradicting
-    // `task`/`brief`, which would confidently route the same task.
-    const thinResult =
-      report.recommendations.length <= 1 && routingMatches.length === 0 && query.length > 0;
-    if (thinResult && !engineHasMatch) {
-      process.stdout.write(
-        `\n⚠ Coverage gap — no recipe, no routing hint, and no helper/template matched "${query}".\n` +
-        `  Suggest:\n` +
-        `    shrk coverage scaffolds --task "${query}"\n` +
-        `    shrk feedback actions\n` +
-        `    (or contribute a pack template / helper / routing hint)\n`,
+    // Coverage gap — exactly when nothing cleared its floor (THE confidence
+    // verdict). It used to key on "no routing hint fired", so any weak spurious
+    // hint hid it, and a strong one never lifted the verdict.
+    if (!report.confident && query.length > 0) {
+      write(
+        `\n⚠ Coverage gap — nothing matched "${query}" with confidence (no routing hint, recipe or template cleared its floor).\n` +
+          `  Suggest:\n` +
+          `    shrk coverage scaffolds --task "${query}"\n` +
+          `    shrk feedback actions\n` +
+          `    (or contribute a pack template / helper / routing hint)\n`,
       );
-    } else if (thinResult && engineHasMatch && !actionsOnly) {
-      // The recipe/routing surface was thin, but the shared ranker DID match —
-      // surface that concrete next step instead of a misleading gap.
-      process.stdout.write('\nEngine match (shared ranker — same as `shrk task` / `shrk brief`):\n');
-      if (topTemplate && topTemplate.score >= TEMPLATE_MATCH_THRESHOLD) {
-        process.stdout.write(
-          `  $ shrk gen ${topTemplate.item.id} <name> --dry-run  [writes-source] — template "${topTemplate.item.name}" matched (score ${topTemplate.score}).\n`,
-        );
-      }
-      if (topPipeline && topPipeline.score >= PIPELINE_MATCH_THRESHOLD) {
-        process.stdout.write(
-          `  Pipeline: ${topPipeline.item.id} — run \`shrk task "${query}"\` for the full packet.\n`,
-        );
-      }
     }
     if (gated.length > 0 && !actionsOnly) {
-      process.stdout.write(`\nGated (experimental, not enabled in this repo):\n`);
+      write(`\nGated (experimental, not enabled in this repo):\n`);
       for (const g of gated.slice(0, 3)) {
-        process.stdout.write(`  $ ${g.command}  — ${g.why}\n`);
-        process.stdout.write(`      Enable: shrk surface enable ${g.viewCommand} --write\n`);
+        write(`  $ ${g.command}  — ${g.why}\n`);
+        write(`      Enable: shrk surface enable ${g.viewCommand} --write\n`);
       }
       if (gated.length > 3) {
-        process.stdout.write(`  … (${gated.length - 3} more — pass --include-gated --json to inspect)\n`);
+        write(`  … (${gated.length - 3} more — pass --include-gated --json to inspect)\n`);
       }
     }
-    process.stdout.write(`\nNext command:\n  $ ${report.nextCommand}\n`);
+    write(`\nNext command:\n  $ ${report.nextCommand}\n`);
     if (!actionsOnly && verbose) {
-      process.stdout.write('\n' + renderUncertaintyReportText(report.uncertainty) + '\n');
+      write('\n' + renderUncertaintyReportText(report.uncertainty) + '\n');
     } else if (!actionsOnly) {
-      // Tighten the default — show count + one-liner pointer to detail.
+      // Built from THE confidence authority only — never a second label.
       const u = report.uncertainty;
       const issues = u.missingSignals.length + u.conflictingSignals.length;
       if (issues > 0) {
-        process.stdout.write(
-          `\nUncertainty: ${u.confidence} confidence, ${issues} signal(s) — pass --verbose for the full report.\n`,
-        );
+        write(`\nUncertainty: ${u.confidence} confidence, ${issues} signal(s) — pass --verbose for the full report.\n`);
       }
     }
-    if (wantsCommandsFirst) {
-      // commands-first formatting was the default — nothing more to do.
+    if (requireConfident && !report.confident) {
+      write('\n(--require-confident: no confident match — exit 2)\n');
     }
-    return 0;
+    return exit;
   },
 };
+
+/** "No confident match (best 0.67 of floor 1.00 — routing hint "x" (score 2, floor 3))". */
+function noConfidentHeadline(report: ICommandRecommendationReport): string {
+  const best = report.ranked.find((c) => !c.suppressedReason && countsTowardConfidence(c.source));
+  const floor = report.floor.toFixed(2);
+  if (!best) {
+    return report.ranked.some((c) => countsTowardConfidence(c.source))
+      ? `No confident match (every matching candidate was suppressed; floor ${floor})`
+      : `No confident match (nothing matched; floor ${floor})`;
+  }
+  return `No confident match (best ${report.bestScore.toFixed(2)} of floor ${floor} — ${best.attribution})`;
+}
+
+function renderRow(r: ICommandRecommendation, confident: boolean, verbose: boolean): string {
+  // `?` marks a weak candidate — below its floor, or nothing is confident.
+  const mark = !confident || r.weak === true ? '?' : '$';
+  const attribution = r.attribution ?? r.why;
+  if (!verbose) return `  ${mark} ${r.command}  [${r.safetyLevel}] — ${attribution}\n`;
+  let out = `  ${mark} ${r.command}\n    why: ${r.why}\n    source: ${attribution}${r.weak ? ' — weak (below the floor)' : ''}\n    safety: ${r.safetyLevel}\n`;
+  if (r.docsLink) out += `    docs: ${r.docsLink}\n`;
+  return out;
+}
+
+/** Suppressed candidates are never silent: one line by default, every one under --verbose. */
+function renderSuppressed(
+  suppressed: readonly IRecommendationCandidate[],
+  intent: IQueryIntentResult,
+  verbose: boolean,
+): string {
+  if (suppressed.length === 0) return '';
+  if (verbose) {
+    let out = `\nSuppressed (${suppressed.length}):\n`;
+    for (const c of suppressed) {
+      out += `  ✗ ${c.command}  [${c.safetyLevel}] — ${c.attribution}: ${describeSuppression(c, intent)}\n`;
+    }
+    return out;
+  }
+  const first = suppressed[0]!;
+  const more = suppressed.length > 1 ? `; +${suppressed.length - 1} more` : '';
+  return `  (${suppressed.length} suppressed: ${first.command} — ${describeSuppression(first, intent)}${more}; --verbose)\n`;
+}
 
 interface IGatedRecommendation {
   command: string;
@@ -305,13 +285,23 @@ function partitionByCallable<T extends IRawRecommendation>(
   recs: readonly T[],
   summary: ReturnType<typeof buildSurfaceSummary>,
   includeGated: boolean,
-): { keep: T[]; gated: IGatedRecommendation[] } {
+): { keep: T[]; gated: IGatedRecommendation[]; notApplicable: string[] } {
   const keep: T[] = [];
   const gated: IGatedRecommendation[] = [];
+  const notApplicable: string[] = [];
   for (const r of recs) {
-    const view = resolveView(r.command, summary);
+    const view = surfaceViewForCommand(r.command, summary);
     if (!view || view.callable) {
       keep.push(r);
+      continue;
+    }
+    // A tool-maintenance command outside SharkCraft's own repository (THE host
+    // authority behind the surface gate) is not "experimental, not enabled": it
+    // does not apply here, and enabling it would run SharkCraft's own docs /
+    // release contract on this repository. Never recommended, never offered an
+    // `Enable:` hint — only listed, in `--json`, as not applicable.
+    if (notApplicableHere(r.command, summary)) {
+      notApplicable.push(r.command);
       continue;
     }
     if (includeGated) keep.push(r);
@@ -322,125 +312,28 @@ function partitionByCallable<T extends IRawRecommendation>(
       enableHint: `shrk surface enable ${view.command} --write`,
     });
   }
-  return { keep, gated };
+  return { keep, gated, notApplicable };
 }
 
-function resolveView(
-  rawCommand: string,
-  summary: ReturnType<typeof buildSurfaceSummary>,
-): ISurfaceCommandView | undefined {
-  const tokens = rawCommand.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return undefined;
-  // Drop leading `shrk` / `bun run shrk` / `$`
-  let i = 0;
-  if (tokens[i] === '$') i += 1;
-  if (tokens[i] === 'bun' && tokens[i + 1] === 'run') i += 2;
-  if (tokens[i] === 'shrk') i += 1;
-  const verbTokens: string[] = [];
-  for (let j = i; j < tokens.length; j += 1) {
-    const t = tokens[j]!;
-    if (t.startsWith('-') || t.startsWith('<') || t.startsWith('"')) break;
-    verbTokens.push(t);
-    if (verbTokens.length >= 2) break;
-  }
-  if (verbTokens.length === 0) return undefined;
-  const fullPath = verbTokens.join(' ');
-  return findCommandInSummary(summary, fullPath) ?? findCommandInSummary(summary, verbTokens[0]!);
+// The surface-view lookup and the audience rule live in
+// `surface/audience-applicability.ts` — one authority for `recommend` and
+// `context`.
+
+/**
+ * DX#2 — does the query read like planning (a planning verb leading the query
+ * or in slots 1–3)? A thin wrapper over THE query-intent classifier
+ * (`classifyQueryIntent`, inspector), kept for its callers; the planning verb
+ * set lives there now.
+ */
+export function looksLikePlanning(query: string): boolean {
+  return classifyQueryIntent(query).planVerb !== undefined;
 }
 
 /**
- * DX#2 — detect "planning" intent in a task string.
- *
- * Triggers on:
- *   - a leading verb from the planning set (plan/design/review/audit/…)
- *   - the same verb appearing in "plan for X" / "design X" patterns
- *
- * Pure heuristic. No LLM. Conservative — false negatives are fine
- * (the original ranker still fires); false positives just push an extra
- * read-only suggestion that the user can ignore.
- */
-const PLANNING_VERBS: ReadonlySet<string> = new Set([
-  'plan',
-  'design',
-  'propose',
-  'review',
-  'audit',
-  'analyze',
-  'analyse',
-  'explore',
-  'consider',
-  'investigate',
-  'survey',
-  'compare',
-  'evaluate',
-  'assess',
-]);
-
-/**
- * Minimum routing-hint score (from `explainTaskRouting`: +2 per keyword, +3 per
- * phrase, +2 per regex, + confidenceBoost) required to promote a hint's
- * commands into the recommend headline. 3 ⇒ at least one phrase match or two
- * keyword/regex hits — a real match, not a single weak keyword.
- */
-const ROUTING_HINT_PROMOTE_THRESHOLD = 3;
-
-/**
- * Minimum `rankAll` score for a template / pipeline to count as a real engine
- * match — used only to suppress a false "coverage gap" verdict (and surface the
- * match) when the recipe/routing surface is thin but the shared ranker, which
- * `brief`/`task` also use, found project coverage. Conservative: a single weak
- * token hit scores below this.
- */
-const TEMPLATE_MATCH_THRESHOLD = 3;
-const PIPELINE_MATCH_THRESHOLD = 3;
-
-const CREATE_BUILD_VERBS: ReadonlySet<string> = new Set([
-  'create', 'build', 'add', 'generate', 'scaffold', 'implement', 'make', 'new', 'introduce', 'write',
-]);
-
-/**
- * Does the query look like create/build work (a routing hint's `shrk gen`
- * playbook is most useful here)? Mirrors {@link looksLikePlanning}: a
- * create/build verb leading the query or in slots 1–3.
+ * Does the query read like create/build work? A thin wrapper over THE
+ * query-intent classifier — which now also refuses a create word used as a
+ * noun or adjective in a repair query ("fix the broken build").
  */
 export function looksLikeCreateBuild(query: string): boolean {
-  const tokens = query
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((t) => t.length > 0);
-  if (tokens.length === 0) return false;
-  if (CREATE_BUILD_VERBS.has(tokens[0]!)) return true;
-  for (let i = 1; i < Math.min(4, tokens.length); i++) {
-    if (CREATE_BUILD_VERBS.has(tokens[i]!)) return true;
-  }
-  return false;
-}
-
-/** Conservative safety classification for a promoted routing-hint command. */
-function promotedSafetyLevel(
-  command: string,
-): 'read-only' | 'writes-source' | 'writes-drafts' | 'runs-shell' {
-  if (/^(bun run )?shrk (gen|init|apply|import)\b/i.test(command)) return 'writes-source';
-  if (/^(bun run )?shrk (brief|dev|onboard|simulate|orchestrate|spec)\b/i.test(command)) {
-    return 'writes-drafts';
-  }
-  if (/^(bun|bunx|npm|pnpm|node|git|nx) /i.test(command)) return 'runs-shell';
-  return 'read-only';
-}
-
-export function looksLikePlanning(query: string): boolean {
-  const tokens = query
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((t) => t.length > 0);
-  if (tokens.length === 0) return false;
-  // Leading verb form: "plan a thing", "design the system".
-  if (PLANNING_VERBS.has(tokens[0]!)) return true;
-  // "Help me plan X" / "I want to design Y" — verb in slots 1–3.
-  for (let i = 1; i < Math.min(4, tokens.length); i++) {
-    if (PLANNING_VERBS.has(tokens[i]!)) return true;
-  }
-  return false;
+  return classifyQueryIntent(query).createVerb !== undefined;
 }

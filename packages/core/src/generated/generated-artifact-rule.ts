@@ -1,3 +1,4 @@
+import type { IUnitMark } from '../liveness/i-unit-mark.ts';
 import type { IRuleSelfTest } from '../wiring/wiring-rule.ts';
 
 /**
@@ -145,4 +146,10 @@ export interface IGeneratedArtifactRule {
   readonly timeoutMs?: number;
   /** Remediation hint shown on drift (defaults to the `shrk generated update` line). */
   readonly hint?: string;
+  /**
+   * The `expectEmpty` marker ledger of {@link generatedGlob} (round 13, `list:
+   * 'generatedGlob'`): a generated tree that does not exist yet. Filled by the
+   * loader / merge seam; `generatedGlob` stays a plain string list. Never authored.
+   */
+  readonly expectEmptyUnits?: readonly IUnitMark[];
 }

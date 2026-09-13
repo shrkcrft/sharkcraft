@@ -50,6 +50,27 @@ export interface IChangedScopeFilterResult<TViolation extends IBoundaryLikeViola
   includedViolations: ReadonlyArray<TViolation>;
   ignoredLegacyCount: number;
   ignoredLegacyByRule: Readonly<Record<string, number>>;
+  /**
+   * Violations included because their RULE was escalated — its definition (or
+   * the config / alias map it is evaluated under) changed, so every violation
+   * it produces is new to this changeset, whatever file it sits in.
+   */
+  escalatedCount?: number;
+}
+
+/** Extra inputs to {@link filterViolationsToChangedScope}. */
+export interface IChangedScopeFilterOptions {
+  /**
+   * Rules whose violations are included regardless of their file (round 11,
+   * 6.3 / closing#d). A rule edit can create violations only in UNCHANGED
+   * files — the filter used to file every one of them as "legacy", so
+   * `--changed-only` and `finish` read green over the violation the edit just
+   * introduced. The caller computes the set with
+   * `resolveBoundaryRuleInvalidation`.
+   */
+  readonly escalatedRuleIds?: ReadonlySet<string> | readonly string[];
+  /** A changed-file set the caller already resolved — skips a second git call. */
+  readonly resolved?: { readonly mode: ChangedScopeMode; readonly files: readonly string[] };
 }
 
 function normalisePath(input: string, projectRoot: string): string {
@@ -87,12 +108,22 @@ export function resolveChangedFiles(opts: IChangedScopeOptions): {
 export function filterViolationsToChangedScope<TViolation extends IBoundaryLikeViolation>(
   violations: ReadonlyArray<TViolation>,
   opts: IChangedScopeOptions,
+  filterOptions: IChangedScopeFilterOptions = {},
 ): IChangedScopeFilterResult<TViolation> {
-  const { mode, files } = resolveChangedFiles(opts);
+  const { mode, files } = filterOptions.resolved ?? resolveChangedFiles(opts);
   const changedSet = new Set(files.map((f) => f.split(/[\\/]/).join('/')));
+  const escalated = new Set(filterOptions.escalatedRuleIds ?? []);
   const included: TViolation[] = [];
   const ignoredByRule: Record<string, number> = {};
+  let escalatedCount = 0;
   for (const v of violations) {
+    // A rule whose definition changed produced this violation in THIS
+    // changeset, whatever file it sits in — never "legacy".
+    if (escalated.has(v.ruleId)) {
+      included.push(v);
+      escalatedCount += 1;
+      continue;
+    }
     const candidate = v.file ?? v.fromFile ?? '';
     const norm = normalisePath(candidate, opts.projectRoot);
     if (changedSet.has(norm)) {
@@ -119,6 +150,7 @@ export function filterViolationsToChangedScope<TViolation extends IBoundaryLikeV
     includedViolations: included,
     ignoredLegacyCount,
     ignoredLegacyByRule: ignoredByRule,
+    ...(escalated.size > 0 ? { escalatedCount } : {}),
   };
 }
 

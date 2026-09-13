@@ -117,7 +117,14 @@ stale-selector detector — so the shape lives here instead.
   enforces.
 - **An empty compute is still a loud skip.** `0 ≤ 200` is not a pass when the
   extractor produced nothing; that is how a broken selector greens a ratchet
-  forever.
+  forever. Round 13 (P1) decides it on the compute's UNIT count — an extractor
+  serialises its empty set as `[]`, so the old text test never fired for one,
+  and `baseline check` / `gates check` printed `✓ (0 at-most 200)` while `gates
+  coverage` failed the same rule. All three now agree: `FAILED — the compute
+  produced nothing — a ceiling over an empty measurement proves nothing` (`1`,
+  or `2` with `failOnEmpty: false`). A ceiling whose empty measurement IS the
+  passing state says so with `expectEmpty: true` (below): it stays legal on a
+  ceiling and is honoured.
 - The two vocabularies are **disjoint**: a ledger takes `two-way` /
   `additions-only` / `no-shrink`, a ceiling takes `at-most` / `at-least`. Mixing
   them fails the config load rather than silently falling back to a default.
@@ -185,7 +192,11 @@ total wipe.
 `update` is a **separate, explicit verb** — a drift can never be blessed as a
 side effect of running the gate. It refuses to write an empty baseline for a
 `failOnEmpty` rule (fix the compute first), and `--dry-run` reports what it would
-write.
+write. "Empty" is the compute's UNIT count, decided by the same rule-emptiness
+settle `check` reads — an extractor's empty set serialises as `[]`, so a text
+test never refused one: a dead or unmarked input selector is refused (naming
+it), while a fence (`expectEmpty: true`) over live inputs, or an input marked
+intended-empty, is blessed.
 
 ## `--changed-only`, honestly
 
@@ -193,6 +204,15 @@ write.
 extractor, whose `source.files`) intersect the diff. A `command` baseline with no
 `watchFiles` **cannot** be scoped, so it is reported as `skipped` — never
 quietly passed.
+
+Both lists take a leading `!` as an exclusion (round 12 — see
+[negation globs](gate-rules.md#negation-globs-round-12)): an extractor's
+`source.files: ['src/**/*.ts', '!src/**/*.spec.ts']` never reads a spec file,
+and a changed file a list excludes does not select the rule. Before round 12 a
+`!` was silently ignored, so a ledger committed then may hold ids that only
+excluded files declare: after upgrading they read as LOST (two-way drift,
+exit `1`). Review them with `shrk baseline diff`, then re-bless with
+`shrk baseline update`.
 
 ## Exit codes
 

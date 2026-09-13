@@ -1,3 +1,11 @@
+import {
+  detectGraphFreshness,
+  GraphStore,
+  graphFreshnessBehind,
+  graphFreshnessCoverage,
+  graphFreshnessRemedy,
+  type IGraphFreshness,
+} from '@shrkcrft/graph';
 import { apiDiffGate, type IApiDiffGateOptions } from '../gates/api-diff-gate.ts';
 import { archGate } from '../gates/arch-gate.ts';
 import type { IArchGateOptions } from '../schema/arch-gate-options.ts';
@@ -67,6 +75,32 @@ export interface IRunGatesOptions {
   disable?: readonly string[];
 }
 
+/** The gates whose answer is DERIVED from the persisted code-graph index. */
+const INDEX_DERIVED_GATES: ReadonlySet<string> = new Set(['arch', 'impact', 'graph-cycles', 'graph-unresolved']);
+
+/**
+ * The loud skip of a gate derived from an index behind the working tree: it is
+ * not run over the stale input (a cycle count, an arch verdict or a blast
+ * radius from it misses real findings and reports fixed ones), and it carries
+ * the shared freshness coverage record, so the run settles NOT VERIFIED (2).
+ * `undefined` when the index is current (or there is none — each gate reports
+ * a missing store itself).
+ */
+function staleIndexSkip(id: string, label: string, freshness: IGraphFreshness | undefined): IGateResult | undefined {
+  if (freshness === undefined) return undefined;
+  const coverage = graphFreshnessCoverage(freshness, id);
+  if (coverage === undefined) return undefined;
+  return {
+    id,
+    label,
+    status: 'skipped',
+    message: `Skipped — derived from the code-graph index, which is behind the working tree (${graphFreshnessBehind(freshness)} change(s) since it was built) — NOT VERIFIED.`,
+    nextCommands: [graphFreshnessRemedy(freshness)],
+    coverage: [coverage],
+    durationMs: 0,
+  };
+}
+
 /**
  * Run the quality-gate aggregator over a project.
  *
@@ -95,21 +129,34 @@ export function runQualityGates(options: IRunGatesOptions): IQualityGateReport {
   const diagnostics: string[] = [];
   const gates: IGateResult[] = [];
 
+  // THE freshness answer (`detectGraphFreshness`, the authority `graph status`
+  // reads), measured ONCE for graph-fresh and every gate derived from the index
+  // (round 11 review R11-GAP-2): a digest-valid store can be behind the tree.
+  const wantsIndex = ['graph-fresh', ...INDEX_DERIVED_GATES].some((id) => !disabled.has(id));
+  const freshness =
+    wantsIndex && new GraphStore(options.projectRoot).exists() ? detectGraphFreshness(options.projectRoot) : undefined;
+
   // graph-fresh is always first — other gates depend on it.
   if (!disabled.has('graph-fresh')) {
-    gates.push(graphFreshGate(options.projectRoot));
+    gates.push(graphFreshGate(options.projectRoot, freshness));
   }
   if (!disabled.has('arch')) {
-    gates.push(archGate(options.projectRoot, options.arch ?? {}));
+    gates.push(staleIndexSkip('arch', 'Architecture', freshness) ?? archGate(options.projectRoot, options.arch ?? {}));
   }
   if (!disabled.has('impact')) {
-    gates.push(impactGate(options.projectRoot, options.impact ?? {}));
+    gates.push(staleIndexSkip('impact', 'Impact', freshness) ?? impactGate(options.projectRoot, options.impact ?? {}));
   }
   if (!disabled.has('graph-cycles')) {
-    gates.push(graphCyclesGate(options.projectRoot, options.graphCycles ?? {}));
+    gates.push(
+      staleIndexSkip('graph-cycles', 'Graph cycles', freshness) ??
+        graphCyclesGate(options.projectRoot, options.graphCycles ?? {}),
+    );
   }
   if (!disabled.has('graph-unresolved')) {
-    gates.push(graphUnresolvedGate(options.projectRoot, options.graphUnresolved ?? {}));
+    gates.push(
+      staleIndexSkip('graph-unresolved', 'Graph unresolved imports', freshness) ??
+        graphUnresolvedGate(options.projectRoot, options.graphUnresolved ?? {}),
+    );
   }
   if (!disabled.has('impact-baseline')) {
     gates.push(impactBaselineGate(options.projectRoot, options.impactBaseline ?? {}));

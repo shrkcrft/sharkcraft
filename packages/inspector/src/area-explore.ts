@@ -2,8 +2,8 @@
  * Workspace-aware "explore this directory".
  *
  * Answers "explain this *specific* directory" with one deterministic
- * call. Built on top of `buildAreaMap` (whole-repo) and the registries
- * already in `ISharkcraftInspection`.
+ * call. Classifies through THE file → area classifier (`createAreaClassifier`)
+ * and reads the registries already in `ISharkcraftInspection`.
  *
  * Output:
  *   - inferred area kind + role,
@@ -21,7 +21,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
-import { AreaKind, buildAreaMap } from './area-map.ts';
+import { AreaKind, createAreaClassifier } from './area-map.ts';
 
 export const AREA_EXPLORE_SCHEMA = 'sharkcraft.area-explore/v1';
 
@@ -125,15 +125,41 @@ function walkLimited(root: string, base: string, maxFiles = 4000): string[] {
   return out;
 }
 
-function inferKindForPath(relPath: string, areaMap: ReturnType<typeof buildAreaMap>): AreaKind {
-  for (const a of areaMap.areas) {
-    if (a.paths.some((p) => relPath === p || relPath.startsWith(p + '/'))) return a.kind;
+/**
+ * The area kind of an explored path, through THE file → area classifier
+ * (`createAreaClassifier`, the one the area map, impact and the changes
+ * summary use). This used to prefix-match the area map's `paths`, which hold
+ * only a top segment, so a config pattern for part of `libs/` gave EVERY
+ * `libs/…` path that area's kind.
+ *
+ *   - A FILE is classified directly.
+ *   - A DIRECTORY has no area of its own. Its kind is the most common kind
+ *     among the files under it (the explore walk's files), ties broken by kind
+ *     name so the answer is total. It is `unknown` only when none of them
+ *     classifies.
+ */
+function inferKindForPath(
+  relPath: string,
+  isDir: boolean,
+  filesUnder: readonly string[],
+  classify: ReturnType<typeof createAreaClassifier>,
+): AreaKind {
+  if (!isDir) return classify(relPath).kind;
+  const counts = new Map<AreaKind, number>();
+  for (const f of filesUnder) {
+    const kind = classify(f).kind;
+    if (kind === AreaKind.Unknown) continue;
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
   }
-  // fallback heuristics: match against AreaPatterns through area-map
-  if (/^packages\//.test(relPath) || /^apps\//.test(relPath)) {
-    if (/\/__tests__\//.test(relPath)) return AreaKind.Tests;
+  let best: AreaKind = AreaKind.Unknown;
+  let bestCount = 0;
+  for (const [kind, n] of [...counts].sort(([a], [b]) => a.localeCompare(b))) {
+    if (n > bestCount) {
+      best = kind;
+      bestCount = n;
+    }
   }
-  return AreaKind.Unknown;
+  return best;
 }
 
 function describeRole(relPath: string, kind: AreaKind): string {
@@ -291,7 +317,7 @@ export function exploreArea(input: IExploreAreaInput): IAreaExploreReport {
       boundaryRuleIds: [],
       pathConventionIds: [],
       risks: [],
-      nextCommands: [`shrk map  # repo-wide map`],
+      nextCommands: [`shrk explore .  # repo-wide map`],
     };
   }
   const stat = statSync(absPath);
@@ -320,8 +346,12 @@ export function exploreArea(input: IExploreAreaInput): IAreaExploreReport {
   // otherwise be ranked by filesystem order (non-deterministic).
   files.sort((a, b) => b.sizeBytes - a.sizeBytes || a.relPath.localeCompare(b.relPath));
 
-  const areaMap = buildAreaMap(input.inspection);
-  const inferredKind = inferKindForPath(relPath, areaMap);
+  const inferredKind = inferKindForPath(
+    relPath,
+    isDir,
+    files.map((f) => f.relPath),
+    createAreaClassifier(input.inspection.config?.areaMap),
+  );
   const role = describeRole(relPath, inferredKind);
 
   const topFiles = input.topFiles ?? 10;

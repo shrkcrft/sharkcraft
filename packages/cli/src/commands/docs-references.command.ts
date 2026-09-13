@@ -14,11 +14,12 @@
  * nothing is spawned.
  */
 import * as nodePath from 'node:path';
-import type { IDocReferenceRule } from '@shrkcrft/core';
+import { formatEmptyRuleAdvice, type IDocReferenceRule } from '@shrkcrft/core';
+import { planeScanExcludeDirs, readScopeCoverage } from '@shrkcrft/boundaries';
+import { warmCliReferenceRegistries } from '../surface/cli-command-resolver.ts';
 import {
   checkDocReferences,
   inspectSharkcraft,
-  warmReferenceRegistries,
   resolveProjectConfig,
   type IDocReferenceResult,
   type ISharkcraftInspection,
@@ -30,11 +31,61 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { ExitCode } from '../exit-codes.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 import { buildGateEnvelope } from '../gates/gate-envelope.ts';
+import { verdictLine } from '../gates/verdict-line.ts';
+import { acceptedEmptyNote } from '../gates/accepted-empty-note.ts';
+import { emptyRuleAdviceLines } from '../gates/empty-rule-advice-lines.ts';
+import { qualifyCleanForUnits } from '../gates/qualify-clean-for-units.ts';
+import { unitStateNotes } from '../gates/unit-state-notes.ts';
+import { planeVerdictForExit } from '../gates/plane-verdict.ts';
+import { seamRejectedRules } from '../gates/seam-rejected-rules.ts';
+import type { IGateRuleResult } from '../gates/gate-envelope.ts';
+import type { IVerdictCoverage } from '@shrkcrft/core';
 
 const SCHEMA = 'sharkcraft.doc-references/v1';
+
+/**
+ * What one doc-reference rule examined — shared by `docs references check` and
+ * the aggregate (`gates check`, `quality`), so both report the same scope.
+ *
+ * The unit is the id-shaped tokens the rule matched. Tokens it did NOT check
+ * were skipped by the rule's own config — an `exempt` id, an in-file
+ * `exemptMarker`, the `requireContext` gate — which is a deliberate narrowing,
+ * so it is accepted by that config and printed as such rather than silently
+ * shrinking the denominator.
+ */
+export function docReferenceCoverage(r: IDocReferenceResult): IVerdictCoverage {
+  // An intended-empty rule (round 13: every `files` inclusion glob marked
+  // `expectEmpty`, no document matched) is covered by its acceptance — the
+  // settle's own record, printed at exit 0.
+  if (r.emptyCoverage !== undefined) return r.emptyCoverage;
+  // A document the reader could not read (over the read cap) folds in through
+  // the one rule every plane uses: `examined N of M files`, named.
+  return readScopeCoverage(planeDocReferenceCoverage(r), r.readScope);
+}
+
+function planeDocReferenceCoverage(r: IDocReferenceResult): IVerdictCoverage {
+  if (r.error !== undefined) {
+    return { unit: 'references', expected: 0, examined: 0, reason: 'the rule could not run' };
+  }
+  const expected = r.tokensChecked + r.tokensSkipped;
+  return {
+    unit: 'references',
+    expected,
+    examined: r.tokensChecked,
+    ...(r.skipReason !== undefined
+      ? { reason: r.skipReason }
+      : r.tokensSkipped > 0
+        ? { reason: "skipped by the rule's own exempt / exemptMarker / requireContext config" }
+        : {}),
+    ...(r.tokensSkipped > 0 && r.tokensChecked > 0
+      ? { acceptedBy: 'the rule config (exempt / exemptMarker / requireContext)' }
+      : {}),
+  };
+}
 
 interface IPrepared {
   readonly cwd: string;
@@ -42,10 +93,18 @@ interface IPrepared {
   readonly all: readonly IDocReferenceRule[];
   readonly excludeDirs: string[];
   readonly planeDiagnostics: readonly string[];
+  /**
+   * Pack doc-reference rules the merge seam REJECTED (`seamRejectedRules`, the
+   * rows `gates check` fails on) — configured rules that never ran, narrowed
+   * by `--id` (round 13, P3 review).
+   */
+  readonly rejected: readonly IGateRuleResult[];
 }
 
 async function prepare(
   args: ParsedArgs,
+  /** `rejectedKnown`: the verdict verb may select a rejected rule by `--id` (its errored row). */
+  opts: { readonly rejectedKnown?: boolean } = {},
 ): Promise<{ ok: true; value: IPrepared } | { ok: false; code: number }> {
   const cwd = resolveCwd(args);
   const json = flagBool(args, 'json');
@@ -57,13 +116,22 @@ async function prepare(
     return { ok: false, code: ExitCode.UsageError };
   }
   const all = loaded.value.config.docReferences ?? [];
-  const rel = nodePath.relative(cwd, loaded.value.sharkcraftDir).split(nodePath.sep).join('/');
+  // A pack doc-reference rule the merge seam REJECTED is a configured rule
+  // that never ran — an ERRORED row on this verb exactly as on `gates check`
+  // (round 13, P3 review). It was one `! … invalid docReference element … —
+  // skipped` line under a ✓ at exit 0 (or "No doc-reference rules declared"
+  // at 2 when it was the only rule) while `gates check` exited 1 on the tree.
+  const rejectedAll = seamRejectedRules(loaded.value, ['doc-reference']);
 
   let rules = all;
+  let rejected: readonly IGateRuleResult[] = rejectedAll;
   const id = flagString(args, 'id');
   if (id) {
     const wanted = id.split(',').map((s) => s.trim()).filter(Boolean);
-    const known = new Set(all.map((r) => r.id));
+    const known = new Set([
+      ...all.map((r) => r.id),
+      ...(opts.rejectedKnown === true ? rejectedAll.map((r) => r.id) : []),
+    ]);
     const unknown = wanted.filter((w) => !known.has(w));
     if (unknown.length > 0) {
       process.stderr.write(
@@ -72,6 +140,7 @@ async function prepare(
       return { ok: false, code: ExitCode.UsageError };
     }
     rules = all.filter((r) => wanted.includes(r.id));
+    rejected = rejectedAll.filter((r) => wanted.includes(r.id));
   }
 
   return {
@@ -80,7 +149,9 @@ async function prepare(
       cwd,
       rules,
       all,
-      excludeDirs: rel && !rel.startsWith('..') ? [rel] : [],
+      rejected,
+      // THE plane scan scope — the same authority `gates check` reads.
+      excludeDirs: planeScanExcludeDirs(cwd, loaded.value.sharkcraftDir),
       planeDiagnostics: loaded.value.planeDiagnostics,
     },
   };
@@ -98,14 +169,43 @@ async function inspectionFor(cwd: string): Promise<ISharkcraftInspection> {
   // resolver is sync. Warming here is what makes a correct pack playbook cited
   // in prose actually resolve.
   const inspection = await inspectSharkcraft({ cwd });
-  await warmReferenceRegistries(inspection);
+  // WITH the command resolver: a `resolvesAs: ['command']` rule resolves
+  // against the live command index (without it, `command` is unverifiable
+  // and the rule refuses loudly).
+  await warmCliReferenceRegistries(inspection);
   return inspection;
 }
 
-function writeNoRules(json: boolean): number {
+/**
+ * The "no rules declared" landing. A VERDICT verb passes its name so its JSON
+ * still carries the settled `gate` envelope — nothing declared is `2`.
+ */
+function writeNoRules(json: boolean, verb?: string): number {
+  // A VERDICT verb settles first and renders second, in text AND JSON: nothing
+  // declared proposes 0 and the run coverage (expected 0) settles it to 2. The
+  // exit comes from the envelope — never a hard-coded code — so text, JSON and
+  // gate.exit cannot disagree. List / explain subverbs stay informational.
+  const gate =
+    verb !== undefined
+      ? buildGateEnvelope(verb, ExitCode.VerifiedPass, [], {
+          unit: 'doc-reference rules',
+          expected: 0,
+          examined: 0,
+          reason: 'no docReferences[] declared',
+        })
+      : undefined;
+  const exit = gate?.exit ?? ExitCode.NotVerified;
   if (json) {
-    process.stdout.write(asJson({ schema: SCHEMA, results: [], evaluated: 0, verdict: 'not-verified' }) + '\n');
-    return ExitCode.NotVerified;
+    process.stdout.write(
+      asJson({
+        schema: SCHEMA,
+        results: [],
+        evaluated: 0,
+        verdict: gate ? planeVerdictForExit(gate.exit) : 'not-verified',
+        ...(gate ? { exitCode: gate.exit, gate } : {}),
+      }) + '\n',
+    );
+    return exit;
   }
   process.stdout.write(header('Doc references'));
   process.stdout.write(
@@ -113,7 +213,11 @@ function writeNoRules(json: boolean): number {
       '  catch ids cited in prose (READMEs, docs, agent skill files) that no longer resolve\n' +
       '  (see docs/doc-references.md).\n',
   );
-  return ExitCode.NotVerified;
+  if (gate) {
+    const line = verdictLine(gate, 'Nothing declared — accepted.');
+    if (line) process.stdout.write(`\n${line}\n`);
+  }
+  return exit;
 }
 
 function resultJson(r: IDocReferenceResult): Record<string, unknown> {
@@ -131,6 +235,17 @@ function resultJson(r: IDocReferenceResult): Record<string, unknown> {
   };
 }
 
+/**
+ * The round-12 list-verb rejection note (K10): one line per pack doc-reference
+ * rule the merge seam REJECTED — the rows `baseline list` / `gates list` print.
+ */
+function writeRejectedDocRules(rejected: readonly IGateRuleResult[]): void {
+  if (rejected.length === 0) return;
+  process.stdout.write(`\n  rejected at the pack-plane merge seam — never checked (${rejected.length}):\n`);
+  for (const r of rejected) process.stdout.write(`  ✗ ${r.id}  REJECTED — ${r.error ?? 'failed validation'}\n`);
+  process.stdout.write('  `shrk packs contributions` names every rejected entry.\n');
+}
+
 export const docsReferencesCheckCommand: ICommandHandler = {
   name: 'check',
   description:
@@ -138,15 +253,17 @@ export const docsReferencesCheckCommand: ICommandHandler = {
   usage: 'shrk docs references check [--id <ids>] [--json]',
   booleanFlags: new Set(['json']),
   async run(args: ParsedArgs): Promise<number> {
-    const prep = await prepare(args);
+    const prep = await prepare(args, { rejectedKnown: true });
     if (!prep.ok) return prep.code;
     const json = flagBool(args, 'json');
-    if (prep.value.rules.length === 0) return writeNoRules(json);
+    const rejected = prep.value.rejected;
+    if (prep.value.rules.length === 0 && rejected.length === 0) return writeNoRules(json, 'docs references check');
 
-    const inspection = await inspectionFor(prep.value.cwd);
-    const results = prep.value.rules.map((r) =>
-      checkDocReferences(prep.value.cwd, r, inspection, prep.value.excludeDirs),
-    );
+    // The resolver's inspection is paid for only when a rule will run.
+    const inspection = prep.value.rules.length > 0 ? await inspectionFor(prep.value.cwd) : undefined;
+    const results = inspection
+      ? prep.value.rules.map((r) => checkDocReferences(prep.value.cwd, r, inspection, prep.value.excludeDirs))
+      : [];
 
     // A rule that ERRORED proved nothing — it never got as far as checking an
     // id. So it is not `evaluated`, whatever its severity: a warning-severity
@@ -158,12 +275,52 @@ export const docsReferencesCheckCommand: ICommandHandler = {
     const blocking = [...failed, ...errored].filter((r) => r.severity === 'error');
     const evaluated = results.filter((r) => r.status !== 'skipped' && r.status !== 'error').length;
     const skipped = results.length - evaluated;
-    const exit =
-      blocking.length > 0
+    // A rejected pack rule is a configured rule that never ran: 1, as on
+    // `gates check` (its ERRORED row, `failed validation — NOT evaluated`).
+    const proposed =
+      blocking.length > 0 || rejected.length > 0
         ? ExitCode.Failure
         : evaluated === 0 || skipped > 0
           ? ExitCode.NotVerified
           : ExitCode.VerifiedPass;
+    // Settle first, render second: the envelope is built for text AND JSON, so
+    // both return the same settled exit and the ✓ line is printed only from it.
+    const unexamined = [
+      ...results.filter((r) => r.status === 'skipped' || r.status === 'error').map((r) => r.ruleId),
+      ...rejected.map((r) => r.id),
+    ];
+    const env = buildGateEnvelope(
+      'docs references check',
+      proposed,
+      [...results.map((r): IGateRuleResult => ({
+        id: r.ruleId,
+        type: 'doc-reference' as const,
+        status: r.status,
+        severity: r.severity,
+        counts: { files: r.filesScanned, tokens: r.tokensChecked, skipped: r.tokensSkipped },
+        violations: r.findings.map((f) => ({
+          id: f.token,
+          file: f.file,
+          line: f.line,
+          message: f.message,
+          ...(f.didYouMean.length > 0 ? { hint: `did you mean: ${f.didYouMean.join(', ')}` } : {}),
+        })),
+        ...(r.skipReason ? { skipReason: r.skipReason } : {}),
+        ...(r.error ? { error: r.error } : {}),
+        coverage: docReferenceCoverage(r),
+        // The rule's `expectEmpty` acceptance and unit lines (round 13),
+        // folded into the envelope's one settle — the accepted line comes from it.
+        ...(r.unitAcceptance !== undefined ? { unitAcceptance: r.unitAcceptance } : {}),
+        ...(r.units !== undefined ? { units: r.units } : {}),
+      })), ...rejected],
+      {
+        unit: 'doc-reference rules',
+        expected: results.length + rejected.length,
+        examined: results.length + rejected.length - unexamined.length,
+        ...(unexamined.length > 0 ? { unexamined, reason: 'checked nothing or could not run' } : {}),
+      },
+    );
+    const exit = env.exit;
 
     if (json) {
       process.stdout.write(
@@ -172,36 +329,34 @@ export const docsReferencesCheckCommand: ICommandHandler = {
           results: results.map(resultJson),
           evaluated,
           skipped,
-          verdict: blocking.length > 0 ? 'errors' : evaluated === 0 ? 'not-verified' : 'pass',
+          verdict: exit === ExitCode.Failure ? 'errors' : exit === ExitCode.VerifiedPass ? 'pass' : 'not-verified',
+          rejected: rejected.map((r) => ({ id: r.id, error: r.error ?? null })),
           diagnostics: prep.value.planeDiagnostics,
           exitCode: exit,
-          gate: buildGateEnvelope(
-            'docs references check',
-            exit,
-            results.map((r) => ({
-              id: r.ruleId,
-              type: 'doc-reference' as const,
-              status: r.status,
-              severity: r.severity,
-              counts: { files: r.filesScanned, tokens: r.tokensChecked, skipped: r.tokensSkipped },
-              violations: r.findings.map((f) => ({
-                id: f.token,
-                file: f.file,
-                line: f.line,
-                message: f.message,
-                ...(f.didYouMean.length > 0 ? { hint: `did you mean: ${f.didYouMean.join(', ')}` } : {}),
-              })),
-              ...(r.skipReason ? { skipReason: r.skipReason } : {}),
-              ...(r.error ? { error: r.error } : {}),
-            })),
-          ),
+          gate: env,
         }) + '\n',
       );
       return exit;
     }
 
     process.stdout.write(header('Doc references'));
-    process.stdout.write(kv('evaluated', `${evaluated} of ${prep.value.rules.length}`) + '\n');
+    // Round 13 (K6): the printed count is the envelope's (`gate.evaluated`), which
+    // never counts a rule accepted as intended-empty — it is named apart. The
+    // local `evaluated` keeps counting it for the "nothing ran" proposal above.
+    process.stdout.write(
+      kv('evaluated', `${env.evaluated} of ${prep.value.rules.length + rejected.length}${acceptedEmptyNote(env.acceptedEmpty)}`) +
+        '\n',
+    );
+    // THE shared unit-state block (round 13, K2): a dead `files` glob of a rule
+    // that still matched, and a LOCAL expectEmpty marker whose target appeared,
+    // withhold the ✓ (exit unchanged); a pack marker is INFO.
+    const unitNotes = unitStateNotes(
+      results.map((r) => ({
+        id: r.ruleId,
+        ...(r.unitLiveness !== undefined ? { unitLiveness: r.unitLiveness } : {}),
+        reportedEmpty: r.status === 'skipped' || r.skipReason !== undefined,
+      })),
+    );
     for (const r of results) {
       if (r.status === 'skipped') {
         process.stdout.write(`  – ${r.ruleId}  SKIPPED — ${r.skipReason}\n`);
@@ -212,8 +367,13 @@ export const docsReferencesCheckCommand: ICommandHandler = {
         continue;
       }
       if (r.status === 'passed') {
+        // Rendered from the SETTLED rule: a pass over part of its scope is
+        // `partial`, never a ✓ (the keystone emitter pattern, step 5).
+        const settledRule = env.rules.find((x) => x.id === r.ruleId);
         process.stdout.write(
-          `  ✓ ${r.ruleId}  (${r.tokensChecked} reference(s) across ${r.filesScanned} doc(s) all resolve)\n`,
+          settledRule?.status === 'partial'
+            ? `  ~ ${r.ruleId}  PARTIAL — ${settledRule.shortfall ?? 'part of its scope was not examined'}\n`
+            : `  ✓ ${r.ruleId}  (${r.tokensChecked} reference(s) across ${r.filesScanned} doc(s) all resolve)\n`,
         );
         continue;
       }
@@ -224,8 +384,8 @@ export const docsReferencesCheckCommand: ICommandHandler = {
       if (r.skipReason) {
         process.stdout.write(`  ✗ ${r.ruleId}  FAILED — ${r.skipReason}\n`);
         process.stdout.write(
-          '      Nothing was checked, so nothing was enforced. Fix the glob, or set\n' +
-            '      `failOnEmpty: false` if this rule may legitimately cover no docs.\n',
+          '      Nothing was checked, so nothing was enforced.\n' +
+            `      → ${formatEmptyRuleAdvice({ fails: true })}\n`,
         );
         continue;
       }
@@ -244,26 +404,34 @@ export const docsReferencesCheckCommand: ICommandHandler = {
       const hint = r.findings.find((f) => f.hint)?.hint;
       if (hint) process.stdout.write(`      → ${hint}\n`);
     }
+    for (const r of rejected) process.stdout.write(`  ✗ ${r.id}  REJECTED — ${r.error ?? 'failed validation'}\n`);
     for (const d of prep.value.planeDiagnostics) process.stdout.write(`  ! ${d}\n`);
+    // THE empty-rule advice (round 13, K8) for a rule that matched nothing and
+    // does not fail on it: only a FAILING empty rule was advised (inline,
+    // above), so a soft skip was never told how to make it fail or to mark a
+    // planned unit.
+    for (const a of emptyRuleAdviceLines(results.filter((r) => r.status === 'skipped').map(() => ({ fails: false })))) {
+      process.stdout.write(`  ${a}.\n`);
+    }
+    process.stdout.write(unitNotes.text);
     // A warning-severity rule reports without blocking, but the banner must
     // still say it FIRED. "Every id resolves ✓" printed under a list of
     // unresolved ids is the kind of half-truth that trains people to stop
     // reading the output.
     const warned = failed.filter((r) => r.severity !== 'error');
-    if (exit === ExitCode.VerifiedPass && warned.length > 0) {
-      const count = warned.reduce((n, r) => n + r.findings.length, 0);
-      process.stdout.write(
-        `\n${count} unresolved reference(s) reported by ${warned.length} warning rule(s) — not blocking.\n`,
-      );
-    } else if (exit === ExitCode.VerifiedPass) {
-      process.stdout.write('\nEvery id cited in prose resolves. ✓\n');
-    } else if (exit === ExitCode.NotVerified) {
-      process.stdout.write(
-        errored.length > 0
-          ? `\n${errored.length} rule(s) could not run — nothing was proved. This is NOT a pass.\n`
-          : '\nNothing was checked — this is NOT a pass.\n',
-      );
-    }
+    const warnedCount = warned.reduce((n, r) => n + r.findings.length, 0);
+    const line = verdictLine(
+      env,
+      warned.length > 0
+        ? `${warnedCount} unresolved reference(s) reported by ${warned.length} warning rule(s) — not blocking.`
+        : qualifyCleanForUnits('Every id cited in prose resolves. ✓', unitNotes),
+      proposed === ExitCode.NotVerified
+        ? errored.length > 0
+          ? `${errored.length} rule(s) could not run — nothing was proved. This is NOT a pass.`
+          : 'Nothing was checked — this is NOT a pass.'
+        : undefined,
+    );
+    if (line) process.stdout.write(`\n${line}\n`);
     return exit;
   },
 };
@@ -282,10 +450,31 @@ export const docsReferencesExplainCommand: ICommandHandler = {
     }
     const forwarded: ParsedArgs = { ...args, flags: new Map(args.flags) };
     forwarded.flags.set('id', id);
-    const prep = await prepare(forwarded);
+    // A rejected pack rule's id is a DECLARED one (K10): `explain` names its
+    // rejection — it called the id unknown (a usage error, 3).
+    const prep = await prepare(forwarded, { rejectedKnown: true });
     if (!prep.ok) return prep.code;
     const rule = prep.value.rules[0];
-    if (!rule) return writeNoRules(flagBool(args, 'json'));
+    if (!rule) {
+      const rejectedRule = prep.value.rejected[0];
+      if (rejectedRule === undefined) return writeNoRules(flagBool(args, 'json'));
+      if (flagBool(args, 'json')) {
+        process.stdout.write(
+          asJson({
+            schema: 'sharkcraft.doc-references-explain/v1',
+            id: rejectedRule.id,
+            rejected: true,
+            error: rejectedRule.error ?? null,
+          }) + '\n',
+        );
+      } else {
+        process.stdout.write(header(`Doc references: ${rejectedRule.id}`));
+        writeRejectedDocRules([rejectedRule]);
+      }
+      // A rule that never loaded cannot be explained: a failure, as every
+      // registry verb answers a rejected pack registry.
+      return ExitCode.Failure;
+    }
 
     const inspection = await inspectionFor(prep.value.cwd);
     const result = checkDocReferences(prep.value.cwd, rule, inspection, prep.value.excludeDirs);
@@ -339,9 +528,19 @@ export const docsReferencesListCommand: ICommandHandler = {
     const prep = await prepare(args);
     if (!prep.ok) return prep.code;
     const json = flagBool(args, 'json');
-    if (prep.value.all.length === 0) return writeNoRules(json);
+    // Round 13 (K10): a pack doc-reference rule the merge seam REJECTED is a
+    // declared rule that never runs — listed, as `baseline list` / `gates
+    // list` list theirs (it was absent from `list` and unknown to `explain`).
+    const rejected = prep.value.rejected;
+    if (prep.value.all.length === 0 && rejected.length === 0) return writeNoRules(json);
     if (json) {
-      process.stdout.write(asJson({ schema: SCHEMA, rules: prep.value.all }) + '\n');
+      process.stdout.write(
+        asJson({
+          schema: SCHEMA,
+          rules: prep.value.all,
+          rejected: rejected.map((r) => ({ id: r.id, error: r.error ?? null })),
+        }) + '\n',
+      );
       return ExitCode.VerifiedPass;
     }
     process.stdout.write(header(`Doc-reference rules (${prep.value.all.length})`));
@@ -353,6 +552,7 @@ export const docsReferencesListCommand: ICommandHandler = {
       process.stdout.write(`      context  ${r.requireContext ?? 'backtick'}\n`);
       if (r.description) process.stdout.write(`      ${r.description}\n`);
     }
+    writeRejectedDocRules(rejected);
     return ExitCode.VerifiedPass;
   },
 };
@@ -363,6 +563,32 @@ export const docsReferencesCommand: ICommandHandler = {
   description:
     'Prose-reference linter: assert every id cited in free text (READMEs, docs, agent skill files) still resolves to a registered id.',
   usage: 'shrk docs references check | explain --id <id> | list',
+  // Declared (round 11 review): the dispatcher guard refuses any other token
+  // with the closest subverb, `help` and the index see the three verbs, and
+  // the declared walk reaches the verdict path — so a bad flag on `docs
+  // references check` is a usage error of `docs references check` (3), never
+  // one of `docs references` (2).
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: docsReferencesCheckCommand.name,
+      description: docsReferencesCheckCommand.description,
+      usage: docsReferencesCheckCommand.usage,
+      positionals: PositionalMode.None,
+    },
+    {
+      name: docsReferencesExplainCommand.name,
+      description: docsReferencesExplainCommand.description,
+      usage: docsReferencesExplainCommand.usage,
+      positionals: PositionalMode.Free,
+    },
+    {
+      name: docsReferencesListCommand.name,
+      description: docsReferencesListCommand.description,
+      usage: docsReferencesListCommand.usage,
+      positionals: PositionalMode.None,
+    },
+  ],
   booleanFlags: new Set(['json']),
   async run(args: ParsedArgs): Promise<number> {
     const sub = args.positional[0];
@@ -370,10 +596,9 @@ export const docsReferencesCommand: ICommandHandler = {
     if (sub === 'check') return docsReferencesCheckCommand.run(rest);
     if (sub === 'explain') return docsReferencesExplainCommand.run(rest);
     if (sub === 'list') return docsReferencesListCommand.run(rest);
-    process.stderr.write(
-      (sub ? `Unknown subcommand "${sub}". ` : '') +
-        'Usage: shrk docs references check | explain --id <id> | list\n',
-    );
+    // Only a bare `shrk docs references` lands here: the guard refused any
+    // other token before this body ran.
+    process.stderr.write('Usage: shrk docs references check | explain --id <id> | list\n');
     return ExitCode.UsageError;
   },
 };

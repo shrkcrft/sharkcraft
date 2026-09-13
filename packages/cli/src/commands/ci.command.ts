@@ -3,6 +3,7 @@ import * as nodePath from 'node:path';
 import {
   auditCiWorkflow,
   buildCiIntegrityReport,
+  detectSharkcraftRepo,
   GateStatus,
   renderAzureCiWorkflow,
   renderBitbucketCiWorkflow,
@@ -21,6 +22,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 /**
@@ -121,7 +123,9 @@ function buildSteps(inputs: IScaffoldInputs): IStep[] {
     steps.push({ name: 'Drift report', command: 'bun run shrk drift --json > drift.json', artifact: 'drift.json' });
   }
   if (inputs.withBaseline) {
-    steps.push({ name: 'Quality baseline compare', command: 'bun run shrk quality baseline-compare --fail-on-regression --json > baseline-compare.json', artifact: 'baseline-compare.json' });
+    // `quality baseline …` was removed; the committed-ledger drift gate is
+    // `baseline check` (two-way: a lost entry fails like a gained one).
+    steps.push({ name: 'Baseline check', command: 'bun run shrk baseline check --json > baseline-check.json', artifact: 'baseline-check.json' });
   }
   if (inputs.withPolicy) {
     steps.push({ name: 'Policy check', command: 'bun run shrk policy check --json > policy.json', artifact: 'policy.json' });
@@ -508,6 +512,27 @@ function buildGateExplanations(
 
 export const ciCommand: ICommandHandler = {
   name: 'ci',
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: 'scaffold',
+      description: 'Scaffold a CI workflow for a provider (dry-run unless --write).',
+      usage:
+        'shrk ci scaffold <provider> [--with-quality] [--with-review] [--with-boundaries] [--with-coverage] [--with-drift-gate] [--with-drift] [--with-baseline] [--with-policy] [--with-owners] [--with-test-impact] [--with-dashboard-e2e] [--with-node-compat] [--with-safety-audit] [--with-command-doctor] [--with-pack-tests --pack-paths <p1,p2>] [--with-knowledge-check] [--with-template-drift] [--with-integrity] [--output <path>] [--write] [--force] [--json]',
+      positionals: PositionalMode.Free,
+    },
+    {
+      name: 'permissions',
+      description: 'Audit a CI workflow file’s permissions.',
+      usage: 'shrk ci permissions <workflow-file> [--provider github-actions|gitlab|bitbucket|azure|jenkins] [--json]',
+      positionals: PositionalMode.Path,
+    },
+    {
+      name: 'report',
+      description: 'Aggregate CI reports into one verdict.',
+      usage: 'shrk ci report [--reports-dir <dir>] [--format text|markdown|html|json] [--fail-on error|warning|none]',
+    },
+  ],
   description: 'Scaffold CI configurations for SharkCraft (github-actions, gitlab, circleci, bitbucket, azure-pipelines, jenkins, azure). `shrk ci permissions` audits a workflow file. Supports --with-knowledge-check / --with-template-drift / --with-integrity.',
   usage:
     'shrk ci scaffold <provider> [--with-quality] [--with-review] [--with-boundaries] [--with-coverage] [--with-drift-gate] [--with-drift] [--with-baseline] [--with-policy] [--with-owners] [--with-test-impact] [--with-dashboard-e2e] [--with-node-compat] [--with-safety-audit] [--with-command-doctor] [--with-pack-tests --pack-paths <p1,p2>] [--with-knowledge-check] [--with-template-drift] [--with-integrity] [--output <path>] [--write] [--force] [--json]\n  shrk ci permissions <workflow-file> [--provider github-actions|gitlab|bitbucket|azure|jenkins] [--json]',
@@ -532,6 +557,18 @@ export const ciCommand: ICommandHandler = {
       return 2;
     }
     const cwd = resolveCwd(args);
+    // `--with-command-doctor` emits `shrk commands doctor`, which maintains
+    // SharkCraft itself: outside SharkCraft's own repository it exits 78 through
+    // the surface gate, so the generated step would fail every CI run. THE host
+    // authority (`detectSharkcraftRepo`, the one the surface gate reads) decides.
+    if (flagBool(args, 'with-command-doctor') && !detectSharkcraftRepo(cwd)) {
+      process.stderr.write(
+        '--with-command-doctor adds `shrk commands doctor`, which maintains SharkCraft itself and does not apply to ' +
+          'this repository — it exits 78 here, so the generated step would fail every CI run. Drop the flag ' +
+          '(it is for the SharkCraft repository only).\n',
+      );
+      return 2;
+    }
     const packPathsList = flagList(args, 'pack-paths');
     const withIntegrity = flagBool(args, 'with-integrity');
 

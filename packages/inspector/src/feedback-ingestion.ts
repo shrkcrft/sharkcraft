@@ -14,7 +14,8 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { importModuleViaLoader } from '@shrkcrft/core';
+import { importModuleViaLoader, RejectionCause, type IRejectedEntry } from '@shrkcrft/core';
+import type { IContributionFileIssue } from './i-contribution-file-issue.ts';
 
 export const FEEDBACK_INGESTION_SCHEMA = 'sharkcraft.feedback-ingestion/v1';
 
@@ -197,7 +198,7 @@ const KEYWORD_RULES: IKeywordRule[] = [
     pattern: /\b(mcp|tool[s]?)\b/i,
     tags: ['mcp'],
     targetArea: 'mcp',
-    suggestedCommands: ['shrk commands list --filter mcp'],
+    suggestedCommands: ['shrk commands search mcp'],
   },
   {
     pattern: /\b(helper[s]?)\b/i,
@@ -375,42 +376,109 @@ export function ingestFeedbackFile(
  * `sharkcraft/feedback-rules.ts` exporting an `IFeedbackRule[]` default.
  * Packs contribute via `feedbackRuleFiles[]` in their manifest.
  */
-export async function loadFeedbackRules(inspection: {
+export async function loadFeedbackRules(inspection: IFeedbackRuleLoadScope): Promise<readonly IFeedbackRule[]> {
+  return (await loadFeedbackRulesWithIssues(inspection)).rules;
+}
+
+/** What {@link loadFeedbackRules} reads off an inspection (a structural subset, so a caller need not build one). */
+type IFeedbackRuleLoadScope = {
   projectRoot: string;
   sharkcraftDir: string | null;
-  packs?: { validPacks?: readonly { packageRoot: string; manifest?: { contributions?: unknown } | null }[] };
-}): Promise<readonly IFeedbackRule[]> {
+  packs?: {
+    validPacks?: readonly {
+      packageRoot: string;
+      packageName?: string;
+      manifest?: { contributions?: unknown } | null;
+    }[];
+  };
+};
+
+/**
+ * THE feedback-rule acceptance predicate (round 12, 12.1): a non-empty string
+ * `id` — `[]` means accepted. An id-less rule used to be dropped with no signal.
+ */
+export function feedbackRuleRejectionReasons(raw: unknown): readonly string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return ['(entry): must be an object'];
+  const id = (raw as { id?: unknown }).id;
+  return typeof id === 'string' && id.length > 0 ? [] : ['id: must be a non-empty string'];
+}
+
+/**
+ * {@link loadFeedbackRules} WITH what did not take effect (round 12, 12.1): a
+ * rules file that failed to import (it was swallowed to `[]`), and every
+ * declared rule the loader refused — invalid, or a duplicate id.
+ */
+export async function loadFeedbackRulesWithIssues(inspection: IFeedbackRuleLoadScope): Promise<{
+  readonly rules: readonly IFeedbackRule[];
+  readonly entries: readonly { readonly id: string; readonly file: string; readonly packageName?: string }[];
+  readonly issues: readonly IContributionFileIssue[];
+  readonly rejected: readonly IRejectedEntry[];
+}> {
   const out: IFeedbackRule[] = [];
-  const seen = new Set<string>();
-  const add = (r: IFeedbackRule): void => {
-    if (!r?.id || seen.has(r.id)) return;
-    seen.add(r.id);
-    out.push(r);
+  const entries: { readonly id: string; readonly file: string; readonly packageName?: string }[] = [];
+  const issues: IContributionFileIssue[] = [];
+  const rejected: IRejectedEntry[] = [];
+  const seen = new Map<string, string>();
+  const readInto = async (file: string, packageName?: string): Promise<void> => {
+    const r = await importDefaultArray(file);
+    if (r.error !== undefined) {
+      const rel = nodePath.relative(inspection.projectRoot, file) || file;
+      issues.push({
+        severity: 'warning',
+        code: 'load-failed',
+        message: `${packageName ? `Pack ${packageName} (${rel})` : `Failed to load ${rel}`}: ${r.error}`,
+        source: file,
+        ...(packageName ? { packageName } : {}),
+      });
+      return;
+    }
+    r.items.forEach((item, index) => {
+      const reasons = feedbackRuleRejectionReasons(item);
+      if (reasons.length > 0) {
+        rejected.push({ file, index, exportName: 'default', reasons, cause: RejectionCause.Invalid });
+        return;
+      }
+      const rule = item as IFeedbackRule;
+      const prev = seen.get(rule.id);
+      if (prev !== undefined) {
+        rejected.push({
+          file,
+          index,
+          exportName: 'default',
+          entryId: rule.id,
+          reasons: [`id: "${rule.id}" is already declared in ${prev}`],
+          cause: RejectionCause.DuplicateId,
+        });
+        return;
+      }
+      seen.set(rule.id, nodePath.relative(inspection.projectRoot, file) || file);
+      out.push(rule);
+      entries.push({ id: rule.id, file, ...(packageName ? { packageName } : {}) });
+    });
   };
   // Local file.
   if (inspection.sharkcraftDir) {
-    const local = nodePath.join(inspection.sharkcraftDir, 'feedback-rules.ts');
-    for (const r of await importDefaultArray<IFeedbackRule>(local)) add(r);
+    await readInto(nodePath.join(inspection.sharkcraftDir, 'feedback-rules.ts'));
   }
   // Pack contributions.
   const packs = inspection.packs?.validPacks ?? [];
   for (const pack of packs) {
     const c = (pack.manifest?.contributions ?? {}) as { feedbackRuleFiles?: readonly string[] };
     for (const rel of c.feedbackRuleFiles ?? []) {
-      const full = nodePath.resolve(pack.packageRoot, rel);
-      for (const r of await importDefaultArray<IFeedbackRule>(full)) add(r);
+      await readInto(nodePath.resolve(pack.packageRoot, rel), pack.packageName);
     }
   }
-  return out;
+  return { rules: out, entries, issues, rejected };
 }
 
-async function importDefaultArray<T>(absPath: string): Promise<readonly T[]> {
+/** A rules file's default array; `error` (first line) when the import threw. A missing file is `[]`. */
+async function importDefaultArray(absPath: string): Promise<{ items: readonly unknown[]; error?: string }> {
+  if (!existsSync(absPath)) return { items: [] };
   try {
-    if (!existsSync(absPath)) return [];
     const mod = (await importModuleViaLoader(absPath)) as { default?: unknown };
-    return Array.isArray(mod.default) ? (mod.default as T[]) : [];
-  } catch {
-    return [];
+    return { items: Array.isArray(mod.default) ? (mod.default as unknown[]) : [] };
+  } catch (e) {
+    return { items: [], error: ((e as Error).message ?? String(e)).split('\n')[0]!.trim() };
   }
 }
 

@@ -38,4 +38,11 @@ export interface IReusePrimitive {
   readonly description?: string;
   /** Extra free-text keywords to widen intent matching. */
   readonly keywords?: readonly string[];
+  /**
+   * Exported names this primitive deliberately REPLACES — "use me instead of
+   * these". `shrk reuse` never offers a superseded name as an uncurated
+   * export-surface candidate (it is listed under `superseded` instead), and
+   * `shrk reuse coverage` does not count it as a curation gap.
+   */
+  readonly supersedes?: readonly string[];
 }

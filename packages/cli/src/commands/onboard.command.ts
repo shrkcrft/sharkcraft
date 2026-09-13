@@ -52,10 +52,31 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 export const onboardCommand: ICommandHandler = {
   name: 'onboard',
+  positionals: PositionalMode.None,
+  subverbs: [
+    {
+      name: 'adopt',
+      description: 'Build / review / check the onboarding adoption plan (dry-run unless --write-patch).',
+      usage:
+        'shrk onboard adopt [status|regenerate|merge-preview|report|check|diff|review] [--confidence high|medium|low] [--include <kinds>] [--exclude <kinds>] [--dry-run|--write-patch] [--json]',
+      // An unknown token used to fall through to the adoption plan at exit 0.
+      positionals: PositionalMode.None,
+      subverbs: [
+        { name: 'status', description: 'Adoption status.', usage: 'shrk onboard adopt status [--json]' },
+        { name: 'regenerate', description: 'Regenerate the adoption drafts.', usage: 'shrk onboard adopt regenerate [options]' },
+        { name: 'merge-preview', description: 'Preview merging the drafts into the live config.', usage: 'shrk onboard adopt merge-preview [options]' },
+        { name: 'report', description: 'The adoption report.', usage: 'shrk onboard adopt report [options]' },
+        { name: 'check', description: 'Check the adoption state.', usage: 'shrk onboard adopt check [options]' },
+        { name: 'diff', description: 'Diff the adoption plan against the live config.', usage: 'shrk onboard adopt diff [options]' },
+        { name: 'review', description: 'Review the adoption plan.', usage: 'shrk onboard adopt review [--json]' },
+      ],
+    },
+  ],
   description:
     'Analyze an existing repository and produce a SharkCraft onboarding plan (rules / paths / templates / boundaries / pipelines + readiness estimate). Default is dry-run; `--write-drafts` writes advisory drafts under sharkcraft/onboarding/ (never overwrites rules.ts / paths.ts / templates.ts). `--scaffold-templates` drafts runnable template bodies. `--import-agents` parses AGENTS.md / CLAUDE.md / .cursor/rules into a draft. `--diff` compares the plan against the live config.',
   usage:

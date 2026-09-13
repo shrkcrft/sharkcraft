@@ -13,7 +13,7 @@
  *   6. Uncertainty / no-match explanation
  *   7. Why these ranked
  */
-import { buildPackContributionsInventory } from './pack-contributions-inventory.ts';
+import { buildPackContributionsInventoryAsync } from './pack-contributions-inventory.ts';
 import { listConventions } from './convention-registry.ts';
 import { listPackHelpers } from './pack-helper-registry.ts';
 import { explainTaskRouting } from './task-routing-hint-registry.ts';
@@ -139,7 +139,9 @@ export async function buildUniversalSearch(
   const limit = options.limit ?? 8;
 
   // Pull pieces we'll rank against.
-  const inv = buildPackContributionsInventory(inspection);
+  // The async inventory: loader-backed ids (never the sync regex scrape's
+  // "unverified" guesses), so a search hit is an id the registry really holds.
+  const inv = await buildPackContributionsInventoryAsync(inspection);
   const conventions = await listConventions(inspection);
   const helpers = await listPackHelpers(inspection);
   const routing = await explainTaskRouting(inspection, q);
@@ -335,7 +337,7 @@ export async function buildUniversalSearch(
       `shrk coverage scaffolds --task "${q}"`,
       `shrk feedback ingest <file>`,
       `shrk why <id> --for-task "${q}"`,
-      `shrk commands suggest "${q}"`,
+      `shrk commands search "${q}"`,
     );
   }
 

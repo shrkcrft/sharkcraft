@@ -5,9 +5,12 @@
 // against the current source tree: both rules are passing.
 //
 // The glob matcher in `packages/boundaries/src/scan/glob.ts` supports `**`,
-// `*`, `?` only (no extglob `!(...)`). `from` patterns match file paths
-// relative to the project root; `forbiddenImports` patterns match the
-// literal import specifier.
+// `*`, `?` only (no extglob `!(...)`); `*` never crosses `/`. `from` patterns
+// match file paths relative to the project root (a `!` entry is an
+// exemption). `forbiddenImports` use PACKAGE semantics (round 11): a pattern
+// with no `**` and no trailing `/` also covers every subpath, so
+// `@shrkcrft/*` below forbids `@shrkcrft/inspector/x` too, and each bare name
+// covers its deep imports. See docs/boundaries.md → pattern semantics.
 //
 // Plain default-exported array (no `@shrkcrft/boundaries` import — see
 // sharkcraft.config.ts).

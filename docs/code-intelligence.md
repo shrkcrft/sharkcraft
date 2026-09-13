@@ -247,6 +247,28 @@ rule:no-relative-cross-package
 template:cli-command
 ```
 
+A **package** node's `data` carries `entry` (the raw package.json `main ??
+module ?? types`) and, since round 11, `entryFile`: the project-relative file a
+bare `import … from '<package>'` actually resolves to — the same resolver every
+consumer import goes through (the entry when that file exists, else a
+`src/index.*` probe) — or `null` when nothing resolves. Both the full and the
+incremental builder write it through one builder (`buildPackageNode`), and the
+incremental updater refreshes it on every run, so a `src/index.ts` added later
+is picked up. An index built before round 11 has no `entryFile`: re-run `shrk
+graph index`.
+
+`GraphQueryApi.publicExportSurface()` enumerates the **public export surface**
+from those roots: every construct reachable from a package entry through
+`export *` / `export { A as B }` chains (ESM semantics — `export *` never
+forwards a default), with the barrel chain each was reached through
+(`via`). Names are followed by the one barrel-chain resolver
+(`buildReExportIndex`, also behind the reference-edge rewriter and
+`GraphQueryApi.resolveExportedName(file, name)`), so the surface cannot disagree
+with `graph callers`. A package that cannot be rooted is listed under
+`packagesWithoutEntry` with a reason; package.json `exports` subpath maps are
+not walked. Consumed by `shrk reuse` and `shrk reuse coverage` (see
+[reuse.md](reuse.md)).
+
 ### 5.2 Edge kinds
 
 ```ts
@@ -572,7 +594,7 @@ patterns because they all start with a distinct keyword.
 | Command | Purpose |
 |---|---|
 | `shrk graph index` | Build / rebuild the on-disk index. `--changed`, `--since <ref>`, `--full`, `--json`. |
-| `shrk graph status` | Print index health: lastIndexedAt, files counted, dirty count (mtime drift), digest, stale flags. `--json`. |
+| `shrk graph status` | Print index health: lastIndexedAt, files counted, dirty count (mtime drift), digest, stale flags. Also stale when a workspace package's entry diverged from the index (a package.json `main`/`module`/`types` edit, a package added/removed/moved — `packagesChanged`; remedy: a full `shrk graph index`). `--json`. |
 | `shrk graph search <query>` | Search nodes by name, file path glob, or symbol prefix. Filters: `--kind file|symbol|package`, `--package <name>`, `--limit N`. `--json`. |
 | `shrk graph context <fileOrSymbol>` | "What's relevant here?" — neighbours, declared symbols, importers up to depth 2, applicable rules / templates / paths, likely tests. `--depth N`, `--json`. |
 | `shrk graph impact <fileOrSymbol\|--since <ref>\|--files a,b>` | Reverse closure of importers + bridge edges (boundary risks, owners, affected templates / pipelines). Backs `shrk impact`. `--max-depth`, `--limit`, `--json`. |

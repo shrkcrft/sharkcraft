@@ -62,13 +62,18 @@ export const getRoleViewTool: IToolDefinition = {
 export const recommendCommandsTool: IToolDefinition = {
   name: 'recommend_commands',
   description:
-    'Recommend SharkCraft commands for a free-form query or stderr blob. Deterministic — no AI. **For agent first-task grounding prefer `prepare_agent_task`**; this tool is the underlying ranker exposed for ad-hoc lookups.',
+    'Recommend SharkCraft commands for a free-form query or stderr blob. Deterministic — no AI. Returns ONE ranked list — matched routing hints, the shared ranker, built-in recipes, diagnostics and planning — each row attributed (`source`, `sourceId`, `score`, `weak`), the SAME list `shrk recommend` and `shrk context` render. Branch on `confident`: false means `verdict` "no-confident-match" and every row is a weak candidate, never a route; `floor` / `bestScore` say by how much. Suppressed rows (a scaffold on a non-create query, a one-word ranker match) stay in `ranked` with `suppressedReason`. `minScore` sets the floor multiplier (1 = each source\'s own floor; default: config `recommend.minScore`, else 1). **For agent first-task grounding prefer `prepare_agent_task`**; this tool is the underlying ranker exposed for ad-hoc lookups.',
   inputSchema: {
     type: 'object',
     properties: {
       query: { type: 'string' },
       fromError: { type: 'string' },
       role: { type: 'string' },
+      minScore: {
+        type: 'number',
+        exclusiveMinimum: 0,
+        description: 'Confidence floor multiplier (> 0). 1 = each signal source\'s own floor.',
+      },
     },
     additionalProperties: false,
   },
@@ -76,9 +81,13 @@ export const recommendCommandsTool: IToolDefinition = {
     const query = typeof input['query'] === 'string' ? (input['query'] as string) : '';
     const fromError = typeof input['fromError'] === 'string' ? (input['fromError'] as string) : undefined;
     const role = typeof input['role'] === 'string' ? (input['role'] as string) : undefined;
+    const rawMinScore = input['minScore'];
+    const minScore =
+      typeof rawMinScore === 'number' && Number.isFinite(rawMinScore) && rawMinScore > 0 ? rawMinScore : undefined;
     const r = await recommendCommands(ctx.inspection, query, {
       ...(fromError ? { fromError } : {}),
       ...(role ? { role } : {}),
+      ...(minScore !== undefined ? { minScore } : {}),
     });
     return { data: r };
   },

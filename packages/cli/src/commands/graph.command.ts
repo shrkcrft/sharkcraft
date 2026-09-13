@@ -9,38 +9,27 @@ import {
 } from '@shrkcrft/inspector';
 import type { GraphNodeKind, IKnowledgeGraph } from '@shrkcrft/inspector';
 import {
-  firstUnknownFlag,
   flagBool,
   flagString,
   resolveCwd,
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
-import { ExitCode } from '../exit-codes.ts';
+import { nearest } from '../dispatch/closest-match.ts';
+import { isVerbShaped } from '../dispatch/guard-invocation.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
+import type { ISubverbSpec } from '../dispatch/subverb-spec.ts';
+import { usageExitFor } from '../exit-codes.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
 
 /**
- * The code-intelligence subverbs that share one arg parser. Each is guarded so
- * an unrecognized/misspelled flag is rejected loudly instead of parsing as a
- * silent `true` that reads as a confident opt-in (a25 §2.1). The allow-set is
- * the UNION of every flag any code-graph subverb reads, plus the global flags,
- * so a real flag is never false-rejected — only a genuinely unknown token is.
+ * The flags the code-intelligence subverbs accept — the UNION of every flag
+ * any of them reads, plus the global / meta flags, so a real flag is never
+ * false-rejected (a25 §2.1). Declared as each code subverb's `flags`
+ * (`GRAPH_SUBVERBS`): the dispatcher refuses any other flag BEFORE the subverb
+ * runs, exiting `usageExitFor` — 3 on the verdict verb `graph cycles`, 2
+ * elsewhere. (Round 11 moved this out of an inline guard in `run`.)
  */
-const CODE_GRAPH_SUBVERBS: ReadonlySet<string> = new Set([
-  'index',
-  'status',
-  'search',
-  'context',
-  'impact',
-  'path',
-  'hubs',
-  'callers',
-  'importers',
-  'cycles',
-  'unresolved',
-  'deps',
-]);
-
 const CODE_GRAPH_ALLOWED_FLAGS: ReadonlySet<string> = new Set([
   // code-subverb flags (union across index/status/search/context/impact/path/
   // hubs/callers/importers/cycles/unresolved/deps)
@@ -90,6 +79,106 @@ import {
   runGraphUnresolved,
 } from './graph-code-subverbs.ts';
 
+function codeGraphSubverb(
+  name: string,
+  description: string,
+  usage: string,
+  positionals?: PositionalMode,
+): ISubverbSpec {
+  return {
+    name,
+    description,
+    usage,
+    flags: CODE_GRAPH_ALLOWED_FLAGS,
+    ...(positionals !== undefined ? { positionals } : {}),
+  };
+}
+
+/**
+ * Every subverb `graph` dispatches from `positional[0]` — the code-intelligence
+ * family (each with the code-graph flag set) plus the knowledge-graph `why` /
+ * `export` / `imports`. Any other token is an asset-graph node id (Free).
+ * Declared so `help graph importers` prints real usage and the command index
+ * lists them (they have no catalog rows of their own).
+ */
+const GRAPH_SUBVERBS: readonly ISubverbSpec[] = [
+  codeGraphSubverb(
+    'index',
+    'Build or refresh the code graph (`--changed` for incremental; `--watch` keeps it fresh).',
+    'shrk graph index [--changed] [--since <ref>] [--full] [--watch [--paths a,b] [--debounce N] [--once]] [--json]',
+  ),
+  codeGraphSubverb('status', 'Code-graph freshness, counts, and the unresolved-import summary.', 'shrk graph status [--json]'),
+  codeGraphSubverb(
+    'search',
+    'Find files / symbols / packages in the code graph.',
+    'shrk graph search <query> [--kind file|symbol|package] [--limit N] [--json]',
+    PositionalMode.Free,
+  ),
+  codeGraphSubverb(
+    'context',
+    'Inspect one file or symbol with bridge enrichment.',
+    'shrk graph context <fileOrSymbol> [--depth N] [--limit N|0] [--no-bridge] [--no-framework] [--json]',
+    PositionalMode.Free,
+  ),
+  codeGraphSubverb(
+    'impact',
+    'The reverse dependent closure of a file or symbol.',
+    'shrk graph impact <fileOrSymbol> [--max-depth N] [--limit N|0] [--full] [--json]',
+    PositionalMode.Free,
+  ),
+  codeGraphSubverb(
+    'path',
+    'Is code A wired to code B? The shortest import / call path.',
+    'shrk graph path <from> <to> [--max-depth N] [--no-refresh] [--json]',
+    PositionalMode.Free,
+  ),
+  codeGraphSubverb(
+    'hubs',
+    'The most-depended-on symbols / files (load-bearing code; scope it to a subsystem).',
+    'shrk graph hubs [--limit N] [--path <dir>] [--mode <mode>] [--json]',
+  ),
+  codeGraphSubverb(
+    'callers',
+    'The files that call / reference a symbol, as path:line.',
+    'shrk graph callers <symbol> [--mode call|reference] [--limit N|0] [--no-refresh] [--json]',
+    PositionalMode.Free,
+  ),
+  codeGraphSubverb(
+    'importers',
+    'Every module that imports a module — alias / type-only / re-export aware.',
+    'shrk graph importers <file|module-specifier> [--mode import|reexport|type-only|all] [--limit N|0] [--no-refresh] [--json]',
+    PositionalMode.Free,
+  ),
+  codeGraphSubverb(
+    'cycles',
+    'The import cycles (type-only edges excluded unless --include-type-edges).',
+    'shrk graph cycles [--include-type-edges] [--min-size N] [--limit N] [--json]',
+  ),
+  codeGraphSubverb('unresolved', 'The unresolved imports, grouped by file.', 'shrk graph unresolved [--json]'),
+  codeGraphSubverb(
+    'deps',
+    'Inbound / outbound package dependencies.',
+    'shrk graph deps <package-name> [--json]',
+    PositionalMode.Free,
+  ),
+  {
+    name: 'why',
+    description: 'The shortest-path explanation between two knowledge-graph nodes.',
+    usage: 'shrk graph why <fromId> <toId> [--json]',
+    positionals: PositionalMode.Free,
+  },
+  {
+    name: 'export',
+    description: 'Write the knowledge graph as dot / mermaid / json.',
+    usage: 'shrk graph export --format dot|mermaid|json --output <file>',
+  },
+  {
+    name: 'imports',
+    description: 'Import-graph analysis: cycles, fan-in / fan-out, orphans.',
+    usage: 'shrk graph imports [--cycles] [--fan-in] [--fan-out] [--orphans] [--json]',
+  },
+];
+
 const KNOWN_KINDS: GraphNodeKind[] = [
   'knowledge',
   'rule',
@@ -104,6 +193,9 @@ const KNOWN_KINDS: GraphNodeKind[] = [
 
 export const graphCommand: ICommandHandler = {
   name: 'graph',
+  // Free: any token that names no subverb is an asset-graph node id.
+  positionals: PositionalMode.Free,
+  subverbs: GRAPH_SUBVERBS,
   description:
     'Show the SharkCraft knowledge graph and the code-intelligence graph surface. Use `shrk graph <id>` for asset-graph nodes and `shrk graph index|status|search|context|impact|path|hubs|callers|importers|cycles|unresolved|deps|why|export` for code-graph workflows.',
   usage:
@@ -113,22 +205,9 @@ export const graphCommand: ICommandHandler = {
     'shrk graph hubs [--limit N] [--path <dir>]   — most-depended-on symbols/files (load-bearing code; scope to a subsystem)',
   async run(args: ParsedArgs): Promise<number> {
     // Code-intelligence subverbs (R65) don't need the knowledge graph —
-    // dispatch them before the expensive inspection so they stay fast.
+    // dispatch them before the expensive inspection so they stay fast. Their
+    // flags were already judged by the dispatcher (GRAPH_SUBVERBS `flags`).
     const earlySub = args.positional[0];
-    // Reject unknown/misspelled flags on the code-graph family BEFORE dispatch:
-    // an unrecognized flag must never parse as a silent success (a25 §2.1). Any
-    // real flag is in the union allow-set, so this only fires on a genuine typo.
-    if (typeof earlySub === 'string' && CODE_GRAPH_SUBVERBS.has(earlySub)) {
-      const unknown = firstUnknownFlag(args, CODE_GRAPH_ALLOWED_FLAGS);
-      if (unknown) {
-        const dash = unknown.length === 1 ? '-' : '--';
-        process.stderr.write(
-          `unknown option '${dash}${unknown}' for 'shrk graph ${earlySub}'. ` +
-            `Run 'shrk graph --help' for valid flags.\n`,
-        );
-        return ExitCode.NotVerified;
-      }
-    }
     if (earlySub === 'index') return runGraphIndex(args);
     if (earlySub === 'status') return runGraphStatus(args);
     if (earlySub === 'search') return runGraphSearch(args);
@@ -247,6 +326,19 @@ export const graphCommand: ICommandHandler = {
     if (id) {
       const node = getGraphNode(graph, typeFlag ? { kind: typeFlag, id } : { id });
       if (!node) {
+        // A verb-shaped id one typo from a graph subverb (`graph statsu`,
+        // `graph importrs foo`) is a mistyped verb, not a missing node: name
+        // the closest subverb and exit as the usage error it is — never the
+        // failure verdict 1 of an absent node.
+        const sub = isVerbShaped(id) ? nearest(id, GRAPH_SUBVERBS.map((s) => s.name)) : undefined;
+        if (sub !== undefined) {
+          process.stderr.write(
+            `\`shrk graph\` has no \`${id}\` subcommand, and no graph node is named "${id}".\n` +
+              `  Did you mean \`shrk graph ${sub}\`?\n` +
+              '  Run `shrk help graph` for usage.\n',
+          );
+          return usageExitFor('graph');
+        }
         process.stderr.write(`No graph node for "${id}".\n`);
         return 1;
       }

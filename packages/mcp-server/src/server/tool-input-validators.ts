@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ContributionKind, ProfileKind } from '@shrkcrft/inspector';
 
 /**
  * Zod schemas for MCP tool inputs that have structured arguments. The schemas
@@ -129,7 +130,36 @@ const depsAuditSchema = z
   })
   .strict();
 
+// get_self_config_doctor advertises `schema: 'v1' | 'v2'` — mirrored here, or
+// the strict wire validator rejects the documented input (schema-parity guard).
+const getSelfConfigDoctorSchema = z
+  .object({ schema: z.enum(['v1', 'v2']).optional() })
+  .strict();
+
+// list_profiles / get_profile advertise `kind` as the ProfileKind enum —
+// mirrored here (round 12), so an unknown kind is rejected on the wire instead
+// of silently listing every kind.
+const profileKindSchema = z.enum(Object.values(ProfileKind) as [ProfileKind, ...ProfileKind[]]);
+const listProfilesSchema = z.object({ kind: profileKindSchema.optional() }).strict();
+const getProfileSchema = z
+  .object({ id: z.string().min(1, 'id is required'), kind: profileKindSchema.optional() })
+  .strict();
+
+// get_pack_contributions advertises `kind` as the ContributionKind enum —
+// mirrored here (round 12 review, A-1), so an unknown kind is rejected on the
+// wire instead of narrowing the report to nothing.
+const getPackContributionsSchema = z
+  .object({
+    pack: z.string().optional(),
+    kind: z.enum(Object.values(ContributionKind) as [ContributionKind, ...ContributionKind[]]).optional(),
+  })
+  .strict();
+
 export const TOOL_INPUT_SCHEMAS: Readonly<Record<string, z.ZodTypeAny>> = Object.freeze({
+  get_self_config_doctor: getSelfConfigDoctorSchema,
+  list_profiles: listProfilesSchema,
+  get_profile: getProfileSchema,
+  get_pack_contributions: getPackContributionsSchema,
   create_generation_plan: createGenerationPlanSchema,
   render_template_preview: renderTemplatePreviewSchema,
   explain_generation_target: explainGenerationTargetSchema,
@@ -151,6 +181,12 @@ export const TOOL_INPUT_SCHEMAS: Readonly<Record<string, z.ZodTypeAny>> = Object
   restore_cache: restoreCacheSchema,
   get_knowledge_graph: getKnowledgeGraphSchema,
   deps_audit: depsAuditSchema,
+  // Round 13 (lane B): check_boundaries takes `failOnDeadUnits` beside its
+  // original `ruleId` — both declared, or the strict schema would reject the
+  // tool's only pre-existing input on the wire.
+  check_boundaries: z
+    .object({ ruleId: z.string().optional(), failOnDeadUnits: z.boolean().optional() })
+    .strict(),
 });
 
 export interface IToolValidationFailure {

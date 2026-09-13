@@ -6,7 +6,13 @@ import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { type IMigrationProfile } from './migration-readiness.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
-import { importModuleViaLoader } from '@shrkcrft/core';
+import {
+  importModuleViaLoader,
+  readContributionExport,
+  RejectionCause,
+  type IContributionExport,
+  type IRejectedEntry,
+} from '@shrkcrft/core';
 
 export const MIGRATION_PROFILE_REGISTRY_SCHEMA = 'sharkcraft.migration-profile-registry/v1';
 
@@ -30,15 +36,8 @@ export interface IMigrationProfileRegistryIssue {
   readonly source?: string;
 }
 
-async function importDefault<T>(file: string): Promise<readonly T[]> {
-  const mod = (await importModuleViaLoader(file)) as {
-    default?: readonly T[] | T;
-    migrationProfiles?: readonly T[];
-  };
-  if (Array.isArray(mod.default)) return mod.default;
-  if (mod.default && typeof mod.default === 'object') return [mod.default as T];
-  if (Array.isArray(mod.migrationProfiles)) return mod.migrationProfiles;
-  return [];
+async function importProfiles(file: string): Promise<IContributionExport> {
+  return readContributionExport(await importModuleViaLoader(file), { namedKeys: ['migrationProfiles'] });
 }
 
 function localFiles(inspection: ISharkcraftInspection): string[] {
@@ -49,17 +48,26 @@ function localFiles(inspection: ISharkcraftInspection): string[] {
     const full = nodePath.join(dir, name);
     if (existsSync(full)) out.push(full);
   }
-  const cfg = inspection.config as { migrationProfileFiles?: readonly string[] } | null;
-  for (const rel of cfg?.migrationProfileFiles ?? []) {
-    out.push(nodePath.isAbsolute(rel) ? rel : nodePath.join(dir, rel));
-  }
+  // More profile files come from pack manifests (`migrationProfileFiles`,
+  // loaded below) — there is no local-config key for them; the strict config
+  // schema rejects one, so a local read here could never be reached.
   return out;
 }
 
-function looksValid(raw: unknown): raw is IMigrationProfile {
-  if (!raw || typeof raw !== 'object') return false;
+/**
+ * THE migration-profile acceptance predicate (round 12, 12.1): one
+ * `<field>: <message>` per failing field — `[]` means accepted. A refused
+ * profile used to read `Invalid migration profile at <file>; skipped.`
+ * with no id and no field.
+ */
+export function migrationProfileRejectionReasons(raw: unknown): readonly string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return ['(entry): must be an object'];
   const o = raw as Record<string, unknown>;
-  return typeof o.id === 'string' && typeof o.title === 'string' && Array.isArray(o.checks);
+  const out: string[] = [];
+  if (typeof o.id !== 'string') out.push('id: must be a string');
+  if (typeof o.title !== 'string') out.push('title: must be a string');
+  if (!Array.isArray(o.checks)) out.push('checks: must be an array');
+  return out;
 }
 
 export async function loadMigrationProfiles(
@@ -67,50 +75,82 @@ export async function loadMigrationProfiles(
 ): Promise<{
   entries: readonly IMigrationProfileEntry[];
   issues: readonly IMigrationProfileRegistryIssue[];
+  /** Every declared profile the loader refused — invalid or a duplicate id (round 12, 12.1). */
+  rejected: readonly IRejectedEntry[];
 }> {
   const entries: IMigrationProfileEntry[] = [];
   const issues: IMigrationProfileRegistryIssue[] = [];
-  const seen = new Set<string>();
+  const rejected: IRejectedEntry[] = [];
+  const seen = new Map<string, string>();
 
   const ingest = (
     raw: unknown,
     source: MigrationProfileSource,
     packageName: string | undefined,
     sourceFile: string,
+    at: Pick<IRejectedEntry, 'file' | 'index' | 'exportName'>,
   ): void => {
-    if (!looksValid(raw)) {
+    const rawId = raw && typeof raw === 'object' ? (raw as { id?: unknown }).id : undefined;
+    const id = typeof rawId === 'string' ? rawId : undefined;
+    const reasons = migrationProfileRejectionReasons(raw);
+    if (reasons.length > 0) {
       issues.push({
         severity: 'warning',
         code: 'invalid-profile',
-        message: `Invalid migration profile at ${sourceFile}; skipped.`,
+        message: `Invalid migration profile${id ? ` "${id}"` : ''} at ${sourceFile} (${at.exportName ?? 'default'}[${at.index}]); skipped — ${reasons.join('; ')}.`,
+        ...(id ? { profileId: id } : {}),
         source: sourceFile,
       });
+      rejected.push({ ...at, ...(id ? { entryId: id } : {}), reasons, cause: RejectionCause.Invalid });
       return;
     }
-    if (seen.has(raw.id)) {
+    const profile = raw as IMigrationProfile;
+    const prev = seen.get(profile.id);
+    if (prev !== undefined) {
       issues.push({
         severity: 'error',
         code: 'duplicate-id',
-        message: `Migration profile id "${raw.id}" already loaded; skipping ${sourceFile}.`,
-        profileId: raw.id,
+        message: `Migration profile id "${profile.id}" already loaded; skipping ${sourceFile}.`,
+        profileId: profile.id,
         source: sourceFile,
+      });
+      rejected.push({
+        ...at,
+        entryId: profile.id,
+        reasons: [`id: "${profile.id}" is already declared in ${prev}`],
+        cause: RejectionCause.DuplicateId,
       });
       return;
     }
-    seen.add(raw.id);
+    seen.set(profile.id, sourceFile);
     entries.push({
-      profile: raw,
+      profile,
       source,
       ...(packageName ? { packageName } : {}),
       sourceFile,
     });
   };
+  const ingestAll = (
+    exp: IContributionExport,
+    file: string,
+    source: MigrationProfileSource,
+    packageName: string | undefined,
+    sourceFile: string,
+  ): void => {
+    exp.items.forEach((raw, i) =>
+      ingest(raw, source, packageName, sourceFile, {
+        file,
+        index: exp.single ? -1 : i,
+        ...(exp.exportName ? { exportName: exp.exportName } : {}),
+      }),
+    );
+  };
 
   for (const file of localFiles(inspection)) {
     try {
-      const list = await importDefault<unknown>(file);
+      const exp = await importProfiles(file);
       const rel = nodePath.relative(inspection.projectRoot, file) || file;
-      for (const raw of list) ingest(raw, MigrationProfileSource.Local, undefined, rel);
+      ingestAll(exp, file, MigrationProfileSource.Local, undefined, rel);
     } catch (e) {
       issues.push({
         severity: 'warning',
@@ -136,8 +176,7 @@ export async function loadMigrationProfiles(
         continue;
       }
       try {
-        const list = await importDefault<unknown>(file);
-        for (const raw of list) ingest(raw, MigrationProfileSource.Pack, pack.packageName, rel);
+        ingestAll(await importProfiles(file), file, MigrationProfileSource.Pack, pack.packageName, rel);
       } catch (e) {
         issues.push({
           severity: 'warning',
@@ -148,7 +187,7 @@ export async function loadMigrationProfiles(
       }
     }
   }
-  return { entries, issues };
+  return { entries, issues, rejected };
 }
 
 export async function listMigrationProfilesFromPacks(

@@ -60,6 +60,31 @@ describe('pipe-safe exit signal (a26 §2.1)', () => {
     expect(isGateVerb('gen')).toBe(false);
   });
 
+  test('round 11: the data-defined gate verbs, quality and the corpus check are verdict verbs', () => {
+    for (const path of [
+      'gates check',
+      'gates coverage',
+      'quality',
+      'policy-lint',
+      'baseline check',
+      'generated check',
+      'docs references check',
+      'knowledge stale-check',
+      'check registry-lifecycle',
+      // Round 11 final integration + review: the bless step, the bare sweep,
+      // broken self-config links and the selfTest scaffolder settle a real `2`.
+      'baseline update',
+      'check',
+      'self-config broken-links',
+      'gates scaffold-selftest',
+    ]) {
+      expect(isGateVerb(path)).toBe(true);
+    }
+    // A list/explain verb is still not a verdict verb.
+    expect(isGateVerb('gates list')).toBe(false);
+    expect(isGateVerb('baseline list')).toBe(false);
+  });
+
   function collect(): { write: (s: string) => void; lines: () => string } {
     let body = '';
     return { write: (s) => void (body += s), lines: () => body };

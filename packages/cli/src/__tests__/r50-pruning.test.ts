@@ -179,7 +179,15 @@ describe('surface lockdown holds', () => {
     // `policy-lint explain` and `registry duplicates`. Ceiling 442.
     // alpha.29 adds ONE: `check wiring --fix`, the deterministic autofix for
     // the mechanically-unambiguous declared-but-not-registered case. Ceiling 443.
-    expect(COMMAND_CATALOG.length).toBeLessThan(443);
+    // Round 11 (prompts/round11-checks-that-cannot-fail.md) adds 6: the audience
+    // gate's escape hatches `surface deny`/`surface allow`; the curated-vs-public
+    // export ledger `reuse coverage`; the declared cross-reference views
+    // `self-config resolve`/`self-config xrefs`; and `helper doctor` (helper
+    // files loaded + validated, 0/1/2). Ceiling 449.
+    // Round 11 review: `commands docs-check` and `commands retirement-plan`
+    // (declared subverbs that read SharkCraft's own docs / overlaps view) gain
+    // catalog rows so they can carry the tool-maintenance audience tag — +2.
+    expect(COMMAND_CATALOG.length).toBeLessThan(451);
     // Sanity: not absurdly small.
     expect(COMMAND_CATALOG.length).toBeGreaterThan(250);
   });

@@ -6,6 +6,7 @@ import {
   type ISharkCraftPackManifest,
 } from '@shrkcrft/plugin-api';
 import { importModuleViaLoader } from '@shrkcrft/core';
+import { typecheckPackAssets } from './pack-typecheck.ts';
 
 export const PACK_RELEASE_CHECK_SCHEMA = 'sharkcraft.pack-release-check/v1';
 
@@ -31,6 +32,12 @@ export interface IPackReleaseCheck {
   contributionsFound: number;
   findings: readonly IPackReleaseFinding[];
   passed: boolean;
+  /**
+   * Present only when the check ran with `typecheck: true`: how many TS files
+   * the in-process check examined. `ran: false` means nothing was type-checked
+   * — a caller must not read the release check as typecheck-verified.
+   */
+  typecheck?: { readonly ran: boolean; readonly checkedFiles: number; readonly errors: number; readonly note?: string };
 }
 
 function findManifest(packPath: string): { manifestFile: string | null; pkgFile: string | null } {
@@ -108,7 +115,10 @@ function checkFilesWhitelist(
   return null;
 }
 
-export async function runPackReleaseCheck(packPath: string): Promise<IPackReleaseCheck> {
+export async function runPackReleaseCheck(
+  packPath: string,
+  options: { readonly typecheck?: boolean } = {},
+): Promise<IPackReleaseCheck> {
   const findings: IPackReleaseFinding[] = [];
   const absPath = nodePath.resolve(packPath);
   if (!existsSync(absPath)) {
@@ -278,6 +288,27 @@ export async function runPackReleaseCheck(packPath: string): Promise<IPackReleas
   const filesFinding = checkFilesWhitelist(pkgFile, manifestFile);
   if (filesFinding) findings.push(filesFinding);
 
+  // Opt-in typecheck of the pack's own TS assets (the one in-process check).
+  let typecheck: IPackReleaseCheck['typecheck'];
+  if (options.typecheck) {
+    const tc = typecheckPackAssets({ packageRoot: absPath, manifestPath: manifestFile, manifest });
+    typecheck = {
+      ran: tc.ran,
+      checkedFiles: tc.ran ? tc.checkedFiles.length : 0,
+      errors: tc.errors.length,
+      ...(tc.note ? { note: tc.note } : {}),
+    };
+    for (const e of tc.errors) {
+      findings.push({
+        code: 'typecheck-error',
+        severity: 'error',
+        message: `${nodePath.relative(absPath, e.file) || e.file}:${e.line}:${e.column} TS${e.code} ${e.message}`,
+        file: e.file,
+        suggestedFix: 'Fix the type error in the asset; `shrk packs test <pack> --typecheck` reproduces it.',
+      });
+    }
+  }
+
   const passed = findings.every((f) => f.severity !== 'error');
   return {
     schema: PACK_RELEASE_CHECK_SCHEMA,
@@ -287,5 +318,6 @@ export async function runPackReleaseCheck(packPath: string): Promise<IPackReleas
     contributionsFound,
     findings,
     passed,
+    ...(typecheck ? { typecheck } : {}),
   };
 }

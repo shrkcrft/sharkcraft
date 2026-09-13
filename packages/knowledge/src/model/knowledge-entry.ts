@@ -1,3 +1,4 @@
+import { ASSET_REFERENCE_KINDS, type AssetReferenceKind, type IAssetReference } from '@shrkcrft/core';
 import type { KnowledgeType } from './knowledge-type.ts';
 import type { KnowledgePriority } from './knowledge-priority.ts';
 import type { IActionHints } from './action-hints.ts';
@@ -17,42 +18,27 @@ export interface IKnowledgeSource {
 }
 
 /**
+ * What a knowledge reference points at — core's {@link AssetReferenceKind},
+ * the one vocabulary boundary rules and policy checks share.
+ */
+export type KnowledgeReferenceKind = AssetReferenceKind;
+
+/**
+ * Every valid {@link KnowledgeReferenceKind}. The validator, the stale-check
+ * and the authoring grammar all read this list, so a kind cannot be accepted
+ * by one and unknown to another.
+ */
+export const KNOWLEDGE_REFERENCE_KINDS: readonly KnowledgeReferenceKind[] = ASSET_REFERENCE_KINDS;
+
+/**
  * Structured reference attached to a knowledge entry.
  *
  * References make the entry verifiable: stale-check confirms each target
- * still exists; rename advisory reports affected entries when a target is
- * renamed.
+ * still exists — and, with `contains` / `matches` / `count`, that it still
+ * says what the entry claims; rename advisory reports affected entries when a
+ * target is renamed. The shape is core's {@link IAssetReference}.
  */
-export type KnowledgeReferenceKind =
-  | 'file'
-  | 'directory'
-  | 'symbol'
-  | 'command'
-  | 'template'
-  | 'playbook'
-  | 'construct'
-  | 'helper'
-  | 'policy'
-  | 'boundary-rule'
-  | 'path-convention'
-  | 'package'
-  | 'url';
-
-export interface IKnowledgeReference {
-  kind: KnowledgeReferenceKind;
-  /** Project-relative path for `file` / `directory`. */
-  path?: string;
-  /** Symbol name for `symbol` references (function, class, type). */
-  symbol?: string;
-  /** Id for `command` / `template` / `playbook` / `construct` / `helper` / `policy` / `boundary-rule` / `path-convention` / `package`. */
-  id?: string;
-  /** Raw command line for `command` (alternative to `id`). */
-  command?: string;
-  /** Whether the stale-check treats a missing target as an error (default false). */
-  required?: boolean;
-  /** Free-form note carried verbatim. */
-  note?: string;
-}
+export type IKnowledgeReference = IAssetReference;
 
 /**
  * Anchor — a named point inside or related to an entry. Anchors are what
@@ -119,4 +105,25 @@ export interface IKnowledgeEntry {
    * Anchors get updated by `shrk knowledge rename-symbol|rename-file`.
    */
   anchors?: readonly IKnowledgeAnchor[];
+  /**
+   * `YYYY-MM-DD` — the day an author last checked this entry's claims against
+   * the code. Author attestation, not index freshness: it answers "what has
+   * nobody looked at in N months" (`stale-check --stale-after 6m`), which
+   * reference existence alone cannot.
+   */
+  verifiedOn?: string;
+  /**
+   * Ids — of ANY registered kind — a reader should also look at: the
+   * structured form of prose "see also `<id>`". Resolved by the declared
+   * cross-reference collector (`shrk self-config doctor`) and rendered by
+   * `shrk knowledge get` with the namespace each id resolved into.
+   */
+  seeAlso?: readonly string[];
+  /**
+   * Knowledge ids that replace this entry; non-empty means SUPERSEDED.
+   * `shrk knowledge get` prints a banner routing the reader to the current
+   * entry (`--follow` renders it). A successor that resolves to no knowledge
+   * entry is an error, not prose that points into a dead id.
+   */
+  supersededBy?: readonly string[];
 }

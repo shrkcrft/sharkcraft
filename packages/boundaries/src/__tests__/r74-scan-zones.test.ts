@@ -167,3 +167,29 @@ describe('an inapplicable zone is loud', () => {
     expect(res.error).toContain('code-and-templates');
   });
 });
+
+describe('a stray quote in a regex literal ends its phantom string at the end of the line (round 11)', () => {
+  // The lexer cannot recognise a regex literal, so the `"` inside `/[&<>"']/g`
+  // opens a string. It used to run to the next `"` ANYWHERE in the file,
+  // swallowing every real construct in between; a `'` / `"` literal now ends
+  // at an unescaped newline (JS semantics), bounding the mis-lex to one line.
+  const CONTENT = [
+    "export const esc = (s: string) => s.replace(/[&<>\"']/g, '');",
+    'const node = mk<Foo>();',
+    'const x = "a real string";',
+  ].join('\n');
+
+  test('code on the next line is still code under scan: code', () => {
+    expect(sites('code', CONTENT)).toEqual([{ token: 'mk<Foo>', line: 2 }]);
+  });
+
+  test('blanking keeps the next line intact', () => {
+    const blanked = blankOutsideZone(CONTENT, 'code').content.split('\n');
+    expect(blanked[1]).toBe('const node = mk<Foo>();');
+  });
+
+  test('a template literal still spans lines', () => {
+    const tpl = 'const t = `line one\nmk<Foo>() inside the template`;\nconst node = mk<Foo>();';
+    expect(sites('code', tpl)).toEqual([{ token: 'mk<Foo>', line: 3 }]);
+  });
+});

@@ -8,6 +8,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
+  ContributionKind,
   FeedbackBucket,
   ingestFeedbackFile,
   inspectSharkcraft,
@@ -24,6 +25,7 @@ import {
 } from '../command-registry.ts';
 import { asJson, header } from '../output/format-output.ts';
 import { feedbackRulesDoctorHints, renderFailureHints } from '../output/failure-hints.ts';
+import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
 
 function ingestPositional(args: ParsedArgs): string | undefined {
   return args.positional[0];
@@ -212,8 +214,11 @@ export const feedbackRulesListCommand: ICommandHandler = {
     const cwd = resolveCwd(args);
     const inspection = await inspectSharkcraft({ cwd });
     const rules = await loadFeedbackRules(inspection);
+    // A rule its loader refused (no id, a reused id) is named (round 12, 12.1).
+    const note = { next: 'shrk packs contributions' };
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson({ count: rules.length, rules }) + '\n');
+      await writeRejectedEntriesNote(inspection, [ContributionKind.FeedbackRule], { ...note, json: true });
       return 0;
     }
     process.stdout.write(header(`Feedback rules (${rules.length})`));
@@ -223,6 +228,7 @@ export const feedbackRulesListCommand: ICommandHandler = {
       if (kws) process.stdout.write(`       keywords: ${kws}\n`);
       if (r.targetArea) process.stdout.write(`       target:   ${r.targetArea}\n`);
     }
+    await writeRejectedEntriesNote(inspection, [ContributionKind.FeedbackRule], note);
     return 0;
   },
 };

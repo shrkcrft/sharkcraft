@@ -13,7 +13,7 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { loadTsconfigPaths, scanImports } from '@shrkcrft/boundaries';
+import { boundaryRuleSeverity, loadTsconfigPaths, scanImports } from '@shrkcrft/boundaries';
 import { listConstructs, loadConstructs } from './construct-registry.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
@@ -304,7 +304,8 @@ export async function buildRepositoryIntelligenceGraph(
       id: `boundary:${b.id}`,
       kind: RepoNodeKind.BoundaryRule,
       label: b.id,
-      meta: { severity: (b as { severity?: string }).severity ?? 'warning' },
+      // The ENFORCED severity — an unset one is `error` (one authority).
+      meta: { severity: boundaryRuleSeverity(b) },
     });
   }
 

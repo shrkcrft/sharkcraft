@@ -1,8 +1,29 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import type { ISearchTuning } from '@shrkcrft/plugin-api';
+import type { ISearchTaskHint, ISearchTuning, ISearchTuningInput } from '@shrkcrft/plugin-api';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
-import { importModuleViaLoader } from '@shrkcrft/core';
+import {
+  describeEntryValue,
+  importModuleViaLoader,
+  indexListPath,
+  isMarkerObject,
+  MARKABLE_UNIT_LISTS,
+  MarkableUnitList,
+  normalizeUnitMap,
+  readContributionExport,
+  RejectionCause,
+  stampUnitMarks,
+  unitProblemsOf,
+  type IContributionExport,
+  type IRejectedEntry,
+  type IUnitMark,
+} from '@shrkcrft/core';
+import {
+  isSearchDocumentPrefix,
+  parseSearchDocumentId,
+  SEARCH_DOCUMENT_PREFIXES,
+  searchKindForPrefix,
+} from './search-document-id.ts';
 
 export const SEARCH_TUNING_SCHEMA = 'sharkcraft.search-tuning-registry/v1';
 
@@ -18,27 +39,143 @@ export interface ISearchTuningDoctorIssue {
   message: string;
   tuningId?: string;
   source?: string;
+  /** `boost-clamped`: the boost key that was clamped. */
+  key?: string;
+  /**
+   * `boost-clamped`: the map the key came from — `boostIds`, `boostTags`,
+   * `boostSources`, `taskHints[<i>].boostIds|boostTags|boostKinds`. Only a
+   * `boostIds` key is a search-document id; the rest are tag / source / kind
+   * names, which no id registry lists.
+   */
+  field?: string;
+  /** `boost-clamped`: the declared value. */
+  original?: number;
+  /** `boost-clamped`: the value applied. */
+  clamped?: number;
 }
 
 interface ICacheEntry {
   cacheKey: string;
   entries: ISearchTuningEntry[];
   issues: ISearchTuningDoctorIssue[];
+  rejected: IRejectedEntry[];
 }
 
 const CACHE = new Map<string, ICacheEntry>();
 
 const MAX_BOOST = 5;
 
-async function importDefault<T>(file: string): Promise<readonly T[]> {
-  const mod = (await importModuleViaLoader(file)) as {
-    default?: readonly T[] | T;
-    searchTuning?: readonly T[];
-  };
-  if (Array.isArray(mod.default)) return mod.default;
-  if (mod.default && typeof mod.default === 'object') return [mod.default as T];
-  if (Array.isArray(mod.searchTuning)) return mod.searchTuning as readonly T[];
-  return [];
+/** The per-boost clamp: every single boost value is clamped to ±this. */
+export const SEARCH_TUNING_BOOST_CLAMP = MAX_BOOST;
+
+/** The global cap: the total tuning delta on ONE document is clamped to ±this. */
+export const SEARCH_TUNING_TOTAL_CAP = MAX_BOOST * 2;
+
+async function importTunings(file: string): Promise<IContributionExport> {
+  return readContributionExport(await importModuleViaLoader(file), { namedKeys: ['searchTuning'] });
+}
+
+/** THE list paths of the markable boost maps — the loader's marks and the lint's observations share them. */
+export const SEARCH_TUNING_BOOST_IDS = MARKABLE_UNIT_LISTS[MarkableUnitList.SearchTuningBoostIds].listPath;
+const TASK_HINT_BOOST_IDS = MARKABLE_UNIT_LISTS[MarkableUnitList.SearchTuningTaskHintBoostIds].listPath;
+
+/** `taskHints[<i>].boostIds` — THE path a task hint's marks and observations are keyed by. */
+export function searchTuningTaskHintBoostIdsPath(index: number): string {
+  return indexListPath(TASK_HINT_BOOST_IDS, index);
+}
+
+/**
+ * A markable boost map (`boostIds`, `taskHints[i].boostIds`): THE core parser's
+ * problems (a value neither a number nor a `{ weight, expectEmpty: true }`
+ * marker — alpha.30 silently clamped such a value to 0), plus a marker on a key
+ * that can NEVER fire (no `<kind>:` search-document prefix, or a kind the
+ * entry's `appliesToKinds` excludes): those are defects, and an expectEmpty
+ * marker accepts only a target that does not exist yet.
+ */
+function markableBoostProblems(record: unknown, listPath: string, appliesToKinds: unknown): string[] {
+  const n = normalizeUnitMap(record, listPath);
+  if (!n.ok) return [...unitProblemsOf(n.error)];
+  const out: string[] = [];
+  for (const m of n.value.marks) {
+    const at = `${listPath}[${JSON.stringify(m.unit)}]`;
+    const parsed = parseSearchDocumentId(m.unit);
+    if (!parsed || !isSearchDocumentPrefix(parsed.prefix)) {
+      out.push(
+        `${at}: an expectEmpty marker on a key that can never fire — a boost key is a search-document id \`<kind>:<id>\` (${SEARCH_DOCUMENT_PREFIXES.join(', ')}); fix the key (a marker accepts only a target that does not exist yet)`,
+      );
+      continue;
+    }
+    const kind = searchKindForPrefix(parsed.prefix) ?? parsed.prefix;
+    if (Array.isArray(appliesToKinds) && !appliesToKinds.includes(kind)) {
+      out.push(
+        `${at}: an expectEmpty marker on a ${kind} key its entry's appliesToKinds [${appliesToKinds.join(', ')}] excludes, so the boost can never fire — fix the key or appliesToKinds`,
+      );
+    }
+  }
+  return out;
+}
+
+/** A plain boost map (`boostTags`, `boostSources`, `taskHints[i].boostTags|boostKinds`): numbers only. */
+function plainBoostProblems(record: unknown, field: string): string[] {
+  if (!isMarkerObject(record)) return [`${field}: must be a map of name → number (got ${describeEntryValue(record)})`];
+  const out: string[] = [];
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === 'number') continue;
+    out.push(
+      `${field}[${JSON.stringify(key)}]: must be a number (got ${describeEntryValue(value)})${
+        isMarkerObject(value)
+          ? ' — an expectEmpty marker is accepted only in boostIds and taskHints[].boostIds, whose keys name documents'
+          : ''
+      }`,
+    );
+  }
+  return out;
+}
+
+/**
+ * THE search-tuning acceptance predicate (round 12, 12.1; round 13): a
+ * non-empty string `id`, and — so an older engine's silent clamp-to-0 can never
+ * recur here — every boost value a number (or, in `boostIds` /
+ * `taskHints[].boostIds`, a well-formed `{ weight, expectEmpty: true, reason? }`
+ * marker on a key that can fire), `taskHints` an array of objects with string
+ * `whenTokens`, and no authored `expectEmptyUnits` (the loader derives it).
+ * `[]` means accepted.
+ */
+export function searchTuningRejectionReasons(raw: unknown): readonly string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return ['(entry): must be an object'];
+  const o = raw as Record<string, unknown>;
+  const out: string[] = [];
+  if (!(typeof o.id === 'string' && o.id.length > 0)) out.push('id: must be a non-empty string');
+  if ('expectEmptyUnits' in o) {
+    out.push(`expectEmptyUnits: derived by the loader — mark the boost itself: boostIds: { '<kind>:<id>': { weight, expectEmpty: true } }`);
+  }
+  if (o.boostIds !== undefined) out.push(...markableBoostProblems(o.boostIds, SEARCH_TUNING_BOOST_IDS, o.appliesToKinds));
+  for (const field of ['boostTags', 'boostSources'] as const) {
+    if (o[field] !== undefined) out.push(...plainBoostProblems(o[field], field));
+  }
+  if (o.taskHints !== undefined) {
+    if (!Array.isArray(o.taskHints)) {
+      out.push(`taskHints: must be an array (got ${describeEntryValue(o.taskHints)})`);
+    } else {
+      o.taskHints.forEach((h: unknown, i: number) => {
+        if (!isMarkerObject(h)) {
+          out.push(`taskHints[${i}]: must be an object (got ${describeEntryValue(h)})`);
+          return;
+        }
+        const tokens = h['whenTokens'];
+        if (tokens !== undefined && (!Array.isArray(tokens) || tokens.some((t) => typeof t !== 'string'))) {
+          out.push(`taskHints[${i}].whenTokens: must be an array of strings (got ${describeEntryValue(tokens)})`);
+        }
+        if (h['boostIds'] !== undefined) {
+          out.push(...markableBoostProblems(h['boostIds'], searchTuningTaskHintBoostIdsPath(i), o.appliesToKinds));
+        }
+        for (const field of ['boostTags', 'boostKinds'] as const) {
+          if (h[field] !== undefined) out.push(...plainBoostProblems(h[field], `taskHints[${i}].${field}`));
+        }
+      });
+    }
+  }
+  return out;
 }
 
 function localTuningFiles(inspection: ISharkcraftInspection): string[] {
@@ -49,10 +186,9 @@ function localTuningFiles(inspection: ISharkcraftInspection): string[] {
     const full = nodePath.join(dir, f);
     if (existsSync(full)) out.push(full);
   }
-  const cfg = inspection.config as { searchTuningFiles?: readonly string[] } | null;
-  for (const rel of cfg?.searchTuningFiles ?? []) {
-    out.push(nodePath.join(dir, rel));
-  }
+  // More tuning files come from pack manifests (`contributions.searchTuningFiles`,
+  // loaded below; docs/search-tuning.md) — there is no local-config key for
+  // them; the strict config schema rejects one, so a local read could never run.
   return out;
 }
 
@@ -64,19 +200,71 @@ function clampBoost(value: number): number {
 }
 
 function sanitize(
-  raw: ISearchTuning,
+  input: unknown,
   source: ISearchTuningEntry['source'],
   packageName: string | undefined,
   sourceFile: string,
   issues: ISearchTuningDoctorIssue[],
+  rejected: IRejectedEntry[],
+  at: Pick<IRejectedEntry, 'file' | 'index' | 'exportName'>,
 ): ISearchTuningEntry | null {
-  if (typeof raw.id !== 'string' || raw.id.length === 0) {
+  const reasons = searchTuningRejectionReasons(input);
+  if (reasons.length > 0) {
+    // `search tuning doctor` keeps its `missing-id` warning; THE rejection
+    // channel carries the structured record every other surface reads. An
+    // entry refused for anything else (round 13: a boost value that is neither
+    // a number nor a well-formed marker, a marker on a key that can never
+    // fire) is an ERROR — it used to load with the value clamped to 0.
+    const rawId = (input as { id?: unknown }).id;
+    const entryId = typeof rawId === 'string' && rawId.length > 0 ? rawId : undefined;
+    const where = `${sourceFile} (${at.exportName ?? 'default'}[${at.index}])`;
+    issues.push(
+      entryId === undefined
+        ? { severity: 'warning', code: 'missing-id', message: `Tuning entry ${where} has no id; skipped.`, source: sourceFile }
+        : {
+            severity: 'error',
+            code: 'invalid-entry',
+            message: `Tuning entry "${entryId}" in ${where} was rejected — ${reasons.join('; ')}.`,
+            tuningId: entryId,
+            source: sourceFile,
+          },
+    );
+    rejected.push({ ...at, ...(entryId !== undefined ? { entryId } : {}), reasons, cause: RejectionCause.Invalid });
+    return null;
+  }
+  const raw = input as ISearchTuningInput;
+  // THE value-form parser BEFORE the clamp (round 13): a `{ weight, expectEmpty }`
+  // value keeps its weight and joins the ledger — it is never clamped to 0 again.
+  const marks: IUnitMark[] = [];
+  const idMaps: (Record<string, number> | undefined)[] = [];
+  const idMapProblems: string[] = [];
+  for (const [record, listPath] of [
+    [raw.boostIds, SEARCH_TUNING_BOOST_IDS] as const,
+    ...(raw.taskHints ?? []).map((h, i) => [h.boostIds, searchTuningTaskHintBoostIdsPath(i)] as const),
+  ]) {
+    if (record === undefined) {
+      idMaps.push(undefined);
+      continue;
+    }
+    const n = normalizeUnitMap(record, listPath);
+    if (!n.ok) {
+      idMapProblems.push(...unitProblemsOf(n.error));
+      idMaps.push(undefined);
+      continue;
+    }
+    marks.push(...n.value.marks);
+    idMaps.push({ ...n.value.values });
+  }
+  if (idMapProblems.length > 0) {
+    // Unreachable past the predicate; a refusal, never a silent clamp.
     issues.push({
-      severity: 'warning',
-      code: 'missing-id',
-      message: 'Tuning entry has no id; skipped.',
+      severity: 'error',
+      code: 'invalid-entry',
+      message: `Tuning entry "${raw.id}" in ${sourceFile} was rejected — ${idMapProblems.join('; ')}.`,
+      tuningId: raw.id,
       source: sourceFile,
     });
+    rejected.push({ ...at, entryId: raw.id, reasons: idMapProblems, cause: RejectionCause.Invalid });
     return null;
   }
   const out: ISearchTuningEntry = {
@@ -85,11 +273,18 @@ function sanitize(
     ...(packageName ? { packageName } : {}),
     sourceFile,
   };
+  const stamped = stampUnitMarks(marks, packageName);
+  if (stamped.length > 0) out.expectEmptyUnits = stamped;
   if (raw.appliesToKinds) out.appliesToKinds = raw.appliesToKinds;
   if (raw.mergeStrategy === 'sum' || raw.mergeStrategy === 'max') {
     out.mergeStrategy = raw.mergeStrategy;
   }
-  const sanitizeRecord = (rec: Record<string, number> | undefined): Record<string, number> | undefined => {
+  // `field` names the map a clamped key came from, so a consumer can tell a
+  // search-document id (`boostIds`) from a tag / source / kind name.
+  const sanitizeRecord = (
+    rec: Record<string, number> | undefined,
+    field: string,
+  ): Record<string, number> | undefined => {
     if (!rec) return undefined;
     const result: Record<string, number> = {};
     for (const [k, v] of Object.entries(rec)) {
@@ -101,49 +296,74 @@ function sanitize(
           message: `Boost for "${k}" clamped to ${clamped} (was ${v}).`,
           tuningId: raw.id,
           source: sourceFile,
+          key: k,
+          field,
+          original: v,
+          clamped,
         });
       }
       result[k] = clamped;
     }
     return result;
   };
-  const boostTags = sanitizeRecord(raw.boostTags);
+  const boostTags = sanitizeRecord(raw.boostTags, 'boostTags');
   if (boostTags) out.boostTags = boostTags;
-  const boostIds = sanitizeRecord(raw.boostIds);
+  const boostIds = sanitizeRecord(idMaps[0], SEARCH_TUNING_BOOST_IDS);
   if (boostIds) out.boostIds = boostIds;
-  const boostSources = sanitizeRecord(raw.boostSources);
+  const boostSources = sanitizeRecord(raw.boostSources, 'boostSources');
   if (boostSources) out.boostSources = boostSources;
   if (raw.taskHints) {
-    out.taskHints = raw.taskHints.map((h) => ({
-      ...(h.whenTokens ? { whenTokens: h.whenTokens.map((t) => t.toLowerCase()) } : {}),
-      ...(h.boostTags ? { boostTags: sanitizeRecord(h.boostTags)! } : {}),
-      ...(h.boostKinds ? { boostKinds: sanitizeRecord(h.boostKinds)! } : {}),
-      ...(h.boostIds ? { boostIds: sanitizeRecord(h.boostIds)! } : {}),
-    }));
+    out.taskHints = raw.taskHints.map((h, i): ISearchTaskHint => {
+      const ids = idMaps[i + 1];
+      return {
+        ...(h.whenTokens ? { whenTokens: h.whenTokens.map((t) => t.toLowerCase()) } : {}),
+        ...(h.boostTags ? { boostTags: sanitizeRecord(h.boostTags, `taskHints[${i}].boostTags`)! } : {}),
+        ...(h.boostKinds ? { boostKinds: sanitizeRecord(h.boostKinds, `taskHints[${i}].boostKinds`)! } : {}),
+        ...(ids ? { boostIds: sanitizeRecord(ids, searchTuningTaskHintBoostIdsPath(i))! } : {}),
+      };
+    });
   }
   return out;
 }
 
 export async function loadSearchTuning(
   inspection: ISharkcraftInspection,
-): Promise<{ entries: readonly ISearchTuningEntry[]; issues: readonly ISearchTuningDoctorIssue[] }> {
+): Promise<{
+  entries: readonly ISearchTuningEntry[];
+  issues: readonly ISearchTuningDoctorIssue[];
+  /** Every declared tuning entry the loader refused (round 12, 12.1). */
+  rejected: readonly IRejectedEntry[];
+}> {
   const cacheKey = `${inspection.projectRoot}:${inspection.packs.validPacks
     .map((p) => p.packageName + '@' + p.packageVersion)
     .join(',')}`;
   const cached = CACHE.get(inspection.projectRoot);
   if (cached && cached.cacheKey === cacheKey) {
-    return { entries: cached.entries, issues: cached.issues };
+    return { entries: cached.entries, issues: cached.issues, rejected: cached.rejected };
   }
   const entries: ISearchTuningEntry[] = [];
   const issues: ISearchTuningDoctorIssue[] = [];
+  const rejected: IRejectedEntry[] = [];
+  const ingestAll = (
+    exp: IContributionExport,
+    file: string,
+    source: ISearchTuningEntry['source'],
+    packageName: string | undefined,
+    sourceFile: string,
+  ): void => {
+    exp.items.forEach((raw, i) => {
+      const ent = sanitize(raw, source, packageName, sourceFile, issues, rejected, {
+        file,
+        index: exp.single ? -1 : i,
+        ...(exp.exportName ? { exportName: exp.exportName } : {}),
+      });
+      if (ent) entries.push(ent);
+    });
+  };
 
   for (const file of localTuningFiles(inspection)) {
     try {
-      const list = await importDefault<ISearchTuning>(file);
-      for (const raw of list) {
-        const ent = sanitize(raw, 'local', undefined, nodePath.relative(inspection.projectRoot, file), issues);
-        if (ent) entries.push(ent);
-      }
+      ingestAll(await importTunings(file), file, 'local', undefined, nodePath.relative(inspection.projectRoot, file));
     } catch (e) {
       issues.push({
         severity: 'warning',
@@ -169,11 +389,7 @@ export async function loadSearchTuning(
         continue;
       }
       try {
-        const list = await importDefault<ISearchTuning>(file);
-        for (const raw of list) {
-          const ent = sanitize(raw, 'pack', pack.packageName, rel, issues);
-          if (ent) entries.push(ent);
-        }
+        ingestAll(await importTunings(file), file, 'pack', pack.packageName, rel);
       } catch (e) {
         issues.push({
           severity: 'warning',
@@ -184,8 +400,8 @@ export async function loadSearchTuning(
       }
     }
   }
-  CACHE.set(inspection.projectRoot, { cacheKey, entries, issues });
-  return { entries, issues };
+  CACHE.set(inspection.projectRoot, { cacheKey, entries, issues, rejected });
+  return { entries, issues, rejected };
 }
 
 export function listSearchTuning(inspection: ISharkcraftInspection): readonly ISearchTuningEntry[] {
@@ -203,6 +419,12 @@ export interface ISearchTuningBoost {
   reasons: string[];
   /** Per-key contributors and the merge strategy applied to each key. */
   composition?: readonly ISearchTuningComposition[];
+  /**
+   * Set when the global ±{@link SEARCH_TUNING_TOTAL_CAP} cap discarded part of
+   * the composed delta (`raw` → `applied`). The cap used to apply silently
+   * while the per-boost clamp emitted a diagnostic.
+   */
+  capped?: { readonly raw: number; readonly applied: number };
 }
 
 export interface ISearchTuningContribution {
@@ -346,8 +568,15 @@ export function tuningBoostFor(
       );
     }
   }
-  // Global cap so tuning can't dominate the natural signal.
-  if (delta > MAX_BOOST * 2) delta = MAX_BOOST * 2;
-  if (delta < -MAX_BOOST * 2) delta = -MAX_BOOST * 2;
+  // Global cap so tuning can't dominate the natural signal — reported, never
+  // silent: the reason names what was discarded.
+  const raw = delta;
+  if (delta > SEARCH_TUNING_TOTAL_CAP) delta = SEARCH_TUNING_TOTAL_CAP;
+  if (delta < -SEARCH_TUNING_TOTAL_CAP) delta = -SEARCH_TUNING_TOTAL_CAP;
+  if (delta !== raw) {
+    const signed = (n: number): string => `${n > 0 ? '+' : ''}${n}`;
+    reasons.push(`tuning-cap: raw ${signed(raw)} -> ${signed(delta)}`);
+    return { delta, reasons, composition, capped: { raw, applied: delta } };
+  }
   return { delta, reasons, composition };
 }

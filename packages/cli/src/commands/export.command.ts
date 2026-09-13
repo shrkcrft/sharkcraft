@@ -15,6 +15,7 @@ import {
   type ICommandHandler,
   type ParsedArgs,
 } from '../command-registry.ts';
+import { PositionalMode } from '../dispatch/positional-mode.ts';
 import { asJson, bullet, header } from '../output/format-output.ts';
 import {
   exportBundleCommand,
@@ -32,10 +33,31 @@ const ARCHIVE_SUBCOMMANDS: Record<string, ICommandHandler> = {
 
 export const exportCommand: ICommandHandler = {
   name: 'export',
+  // positional[0] is the FORMAT (or an archive verb): every other token is
+  // refused with the list, as `run` already did — now before anything runs.
+  positionals: PositionalMode.None,
+  subverbs: [
+    ...ALL_EXPORT_FORMATS.map((format) => ({
+      name: format,
+      description: `Render the ${format} export (dry-run unless --write).`,
+      usage: `shrk export ${format} [--write [--force]] [--output <path>] [--task "<task>"] [--max-rules N] [--max-paths N] [--json]`,
+    })),
+    {
+      name: 'claude-commands',
+      description: 'Per-project slash commands under .claude/commands/ (dry-run unless --write).',
+      usage: 'shrk export claude-commands [--write [--force]] [--output <path>] [--json]',
+    },
+    ...Object.entries(ARCHIVE_SUBCOMMANDS).map(([name, handler]) => ({
+      name,
+      description: handler.description,
+      usage: handler.usage,
+      positionals: PositionalMode.Free,
+    })),
+  ],
   description:
     'Inversion — pull SharkCraft rules into the agent\'s prompt instead of the agent calling back to shrk. Single-file outputs: claude-skill (.claude/skills/<name>/SKILL.md, recommended), agents-md (AGENTS.md), claude-md (CLAUDE.md), cursor-rules (.cursor/rules/*.mdc), copilot-instructions. Multi-file output: claude-commands (.claude/commands/*.md — per-project slash commands like /new-service, /check-changes, /follow-shrk). Dry-run by default; pass --write to save.',
   usage:
-    'shrk [--cwd <dir>] export <format> [--write] [--output <path>] [--task "<task>"] [--max-rules N] [--max-paths N] [--json]',
+    'shrk [--cwd <dir>] export <format> [--write [--force]] [--output <path>] [--task "<task>"] [--max-rules N] [--max-paths N] [--json]',
   async run(args: ParsedArgs): Promise<number> {
     const format = args.positional[0];
     if (!format) {

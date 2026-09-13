@@ -178,7 +178,7 @@ export const NPM_PACKAGE: IPreset = definePreset({
     pipelines: [],
     docs: { 'overview.md': OVERVIEW_DOC('npm package', 'Re-export through `src/index.ts`. Avoid leaking internals. Keep the public surface intentional.') },
   },
-  recommendedNextCommands: ['shrk api report', 'bun x tsc -p . --noEmit'],
+  recommendedNextCommands: ['shrk api-diff capture --output .sharkcraft/api-baseline.json', 'bun x tsc -p . --noEmit'],
 });
 
 // ─── Modern Angular family ─────────────────────────────────────────────────

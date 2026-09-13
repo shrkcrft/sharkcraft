@@ -26,14 +26,14 @@ export const getPackDevStatusTool: IToolDefinition = {
       consumerPath: { type: 'string' },
     },
   },
-  handler(input, ctx) {
+  async handler(input, ctx) {
     const packPath = String(input.packPath ?? '');
     const consumerPath = typeof input.consumerPath === 'string' ? input.consumerPath : undefined;
     const abs = isAbsolute(packPath) ? packPath : resolve(ctx.cwd, packPath);
     const consumerAbs = consumerPath
       ? (isAbsolute(consumerPath) ? consumerPath : resolve(ctx.cwd, consumerPath))
       : undefined;
-    const status = buildPackDevStatus({
+    const status = await buildPackDevStatus({
       packPath: abs,
       ...(consumerAbs ? { consumerPath: consumerAbs } : {}),
     });

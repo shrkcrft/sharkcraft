@@ -1,4 +1,5 @@
 import type { ITemplateVariable, TemplateVariableValues } from './template-variable.ts';
+import type { TemplateRemainder } from './template-remainder.ts';
 
 /**
  * Subset of @shrkcrft/generator's `IPlannedChange` re-declared here to
@@ -143,6 +144,22 @@ export interface ITemplateDefinition {
   changes?: ChangesResolver;
   /** Post-generation notes shown to the user. */
   postGenerationNotes?: readonly string[];
+  /**
+   * Work this template deliberately does NOT perform (build config, a path
+   * alias, workspace registration, …). Machine-readable, so a generator whose
+   * output needs a follow-up reads as a documented remainder, not a bug.
+   * Printed after generation; checked by template lint.
+   */
+  notScaffolded?: readonly (TemplateRemainder | `${TemplateRemainder}`)[];
+  /**
+   * Manual steps the human performs after generation. `covers` names the
+   * remainder(s) a step handles, so lint can tell a covered remainder from an
+   * undeclared one.
+   */
+  manualSteps?: readonly {
+    readonly description: string;
+    readonly covers?: readonly (TemplateRemainder | `${TemplateRemainder}`)[];
+  }[];
   /** Related knowledge entry IDs. */
   related?: readonly string[];
   /**
@@ -154,7 +171,12 @@ export interface ITemplateDefinition {
   metadata?: {
     /** Files that must NOT be produced by this template (regex fragments). */
     forbiddenPathFragments?: readonly string[];
-    /** Profile ids this template depends on. */
+    /**
+     * WorkspaceProfile ids this template depends on (`has-typescript`,
+     * `is-library`, … — `shrk profiles list --kind workspace`). Resolved by the
+     * self-config doctor (`template-profile-missing`); not evaluated as a
+     * filter by the renderer.
+     */
     requiredProfileIds?: readonly string[];
     /** Convention ids this template's outputs are expected to satisfy. */
     requiredConventionIds?: readonly string[];
@@ -197,6 +219,14 @@ export function defineTemplate(input: ITemplateDefinition): ITemplateDefinition 
     variables: Object.freeze([...input.variables]),
     postGenerationNotes: input.postGenerationNotes
       ? Object.freeze([...input.postGenerationNotes])
+      : undefined,
+    notScaffolded: input.notScaffolded ? Object.freeze([...input.notScaffolded]) : undefined,
+    manualSteps: input.manualSteps
+      ? Object.freeze(
+          input.manualSteps.map((s) =>
+            Object.freeze({ ...s, ...(s.covers ? { covers: Object.freeze([...s.covers]) } : {}) }),
+          ),
+        )
       : undefined,
     related: input.related ? Object.freeze([...input.related]) : undefined,
   };

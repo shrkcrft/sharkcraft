@@ -56,6 +56,98 @@ export interface ISharkCraftConfig {
   agentTestFiles?: readonly string[];
 
   /**
+   * Local task-routing-hint and playbook registry files, relative to
+   * `sharkcraftDir`, loaded in addition to the conventional
+   * `task-routing-hints.ts` / `playbooks.ts`. See docs/task-routing-hints.md
+   * and docs/playbooks.md.
+   */
+  taskRoutingHintFiles?: readonly string[];
+  playbookFiles?: readonly string[];
+
+  /**
+   * Local convention files, relative to `sharkcraftDir`, loaded in addition to
+   * the conventional `conventions.ts` / `conventions/index.ts`. Packs contribute
+   * the same shape via their manifest's `conventionFiles`.
+   */
+  conventionFiles?: readonly string[];
+
+  /**
+   * Ownership rule files for `shrk owners` / `shrk ownership` and the MCP
+   * ownership tools. Default: `sharkcraft/ownership.ts` + CODEOWNERS.
+   */
+  ownershipFiles?: readonly string[];
+
+  /**
+   * Knowledge stale-check folded into `shrk release readiness`
+   * (docs/knowledge-integrity.md).
+   */
+  knowledgeCheck?: {
+    readonly enabled?: boolean;
+    readonly strict?: boolean;
+    readonly failOn?: readonly (
+      | 'required'
+      | 'stale'
+      | 'missing'
+      | 'all'
+      | 'unverifiable'
+      | 'path-missing'
+      | 'anchor-missing'
+      | 'content'
+      | 'count'
+      | 'aged'
+      | 'implicit'
+      | 'invalid'
+    )[];
+    /**
+     * Minimum share (0..1) of in-scope entries the check can examine. Both an
+     * explicit acceptance of the remaining unverifiable entries (printed, never
+     * silent) and a ratchet: below it `knowledge stale-check` fails.
+     */
+    readonly minReferenced?: number;
+    /** Every in-scope entry must declare a checkable reference. */
+    readonly requireReferences?: boolean;
+  };
+
+  /**
+   * Project-wide quality-gate thresholds for `shrk quality`; the matching CLI
+   * flags override them (docs/quality-gates.md).
+   */
+  qualityGates?: {
+    readonly minReadiness?: number;
+    readonly requireBoundaryClean?: boolean;
+    readonly requireDriftClean?: boolean;
+    readonly requireAgentTests?: boolean;
+    readonly requireContextTests?: boolean;
+    readonly requirePackSignatures?: boolean;
+  };
+
+  /**
+   * Recommender tuning for `shrk recommend`, MCP `recommend_commands` and
+   * `shrk context` (docs/command-entrypoints.md).
+   *   - `minScore` — the confidence floor multiplier (> 0), in normalised units
+   *     where 1.0 is each signal source's own floor. `--min-score` (CLI) and
+   *     `minScore` (MCP) override it.
+   *   - `scaffoldRequiresCreateIntent` — default true: a source-writing command
+   *     (`shrk gen …`) is never recommended for a query that is not
+   *     create/build work.
+   */
+  recommend?: {
+    readonly minScore?: number;
+    readonly scaffoldRequiresCreateIntent?: boolean;
+  };
+
+  /**
+   * Per-policy severity / enable overrides, each with a reason
+   * (docs/policy-checks.md).
+   */
+  policyOverrides?: readonly {
+    readonly policyId: string;
+    readonly severity?: 'info' | 'warning' | 'error' | 'critical';
+    readonly enabled?: boolean;
+    readonly reason?: string;
+  }[];
+
+  /**
    * Named, reusable extraction selectors — the DRY guarantee for the one thing
    * that must never disagree: WHICH SET are we talking about.
    *
@@ -146,13 +238,39 @@ export interface ISharkCraftConfig {
   reusePrimitives?: readonly IReusePrimitive[];
 
   /**
-   * `check registry-lifecycle` scan tuning. `skipDirs` OVERRIDES the default
-   * source-only skip set (build artefacts + examples/e2e/scripts/tools/…) so a
-   * repo that genuinely registers code under `tools/` or a non-standard root is
-   * not silently blinded by a baked-in exclusion.
+   * `check registry-lifecycle` scan tuning.
+   *
+   *   - `skipDirsAdd` EXTENDS the default source-only skip set (build artefacts
+   *     + examples/e2e/scripts/tools/…). This is the one to reach for: adding a
+   *     project directory never un-skips `node_modules` or `dist`.
+   *   - `skipDirs` REPLACES the default set — an advanced escape hatch for a
+   *     repo that genuinely registers code under `tools/` or a non-standard
+   *     root. A replacing list that drops a dependency/VCS/build default
+   *     (`node_modules`, `dist`, `build`, …) is reported by the scan and by
+   *     `shrk doctor`, never silently.
    */
   registryLifecycle?: {
     readonly skipDirs?: readonly string[];
+    readonly skipDirsAdd?: readonly string[];
+  };
+
+  /**
+   * Project-declared area patterns for the repository area map (`shrk repo
+   * areas`, and every view derived from it — impact, review packets, the
+   * report site). Patterns are evaluated FIRST, in declared order, then the
+   * built-in table (unless `replaceDefaults`). `match` globs are
+   * project-relative (e.g. `libs/<group>/core/**` with `*` for the group).
+   * `minClassificationRate` (0..1,
+   * default 0.5) is the rate below which the map reports itself `degraded`.
+   */
+  areaMap?: {
+    readonly patterns?: readonly {
+      readonly kind: AreaKind;
+      readonly match: readonly string[];
+      readonly id?: string;
+    }[];
+    readonly replaceDefaults?: boolean;
+    readonly minClassificationRate?: number;
   };
 
   /**
@@ -220,6 +338,8 @@ export type {
   IRuleSelfTest,
 } from '@shrkcrft/core';
 import type { IBaselineRule, IGeneratedArtifactRule, IDocReferenceRule } from '@shrkcrft/core';
+import type { AreaKind } from '@shrkcrft/core';
+import type { ISharkCraftConfigInput } from './i-sharkcraft-config-input.ts';
 export type { IDocReferenceRule, DocReferenceContext } from '@shrkcrft/core';
 
 /**
@@ -259,6 +379,16 @@ export interface ISurfaceConfig {
   profile?: string;
   enabled?: readonly string[];
   hidden?: readonly string[];
+  /**
+   * Deny list (round 11): commands that are NOT callable in this repository
+   * (the surface gate refuses them with exit 78) and never appear in `--help`.
+   * Entries are exact command paths or group selectors (`'bundle *'` names
+   * `bundle` and every command below it) — the same selector syntax
+   * `enabled` / `hidden` accept. Core commands cannot be disabled (a warning).
+   * A profile's deny is overridden by an explicit `enabled` entry here; a deny
+   * declared here wins over `enabled` (warning `enable-disable-conflict`).
+   */
+  disabled?: readonly string[];
 }
 
 export interface IUsageConfig {
@@ -289,6 +419,13 @@ export const DEFAULT_DOC_FILES = [
   'docs/quick-start.md',
 ];
 
-export function defineSharkCraftConfig(config: ISharkCraftConfig): ISharkCraftConfig {
+/**
+ * Type the authored config. Takes the AUTHORED shape (round 13,
+ * {@link ISharkCraftConfigInput}): a gate plane's markable lists accept `{
+ * pattern, expectEmpty: true, reason? }` entries, which the loader validates
+ * and normalises into the loaded {@link ISharkCraftConfig}. Returns its
+ * argument unchanged.
+ */
+export function defineSharkCraftConfig<T extends ISharkCraftConfigInput>(config: T): T {
   return config;
 }

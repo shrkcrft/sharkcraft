@@ -1,4 +1,5 @@
 import {
+  ContributionKind,
   inspectSharkcraft,
   buildProjectOverview,
   renderOverviewText,
@@ -24,6 +25,7 @@ import {
   type ParsedArgs,
 } from '../command-registry.ts';
 import { asJson, header, kv } from '../output/format-output.ts';
+import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
 
 export const pipelinesListCommand: ICommandHandler = {
   name: 'list',
@@ -32,6 +34,9 @@ export const pipelinesListCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const list = inspection.pipelineRegistry.list();
+    // A pipeline its loader refused (no `description`, a duplicate id) is named
+    // (round 12, 12.1) — it used to vanish from every surface.
+    const note = { next: 'shrk packs contributions' };
     if (flagBool(args, 'json')) {
       process.stdout.write(
         asJson(
@@ -46,10 +51,12 @@ export const pipelinesListCommand: ICommandHandler = {
           })),
         ) + '\n',
       );
+      await writeRejectedEntriesNote(inspection, [ContributionKind.Pipeline], { ...note, json: true });
       return 0;
     }
     process.stdout.write(header(`Pipelines (${list.length})`));
     for (const p of list) process.stdout.write(formatPipelineCompact(p) + '\n');
+    await writeRejectedEntriesNote(inspection, [ContributionKind.Pipeline], note);
     return 0;
   },
 };

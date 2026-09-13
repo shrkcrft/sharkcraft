@@ -122,7 +122,7 @@ export async function runComplianceCheck(
           profileId,
           ruleId: 'unknown-profile',
           severity: 'error',
-          message: `Compliance profile "${profileId}" not found. Use \`shrk compliance profiles\`.`,
+          message: `Compliance profile "${profileId}" not found. Known profiles: ${listComplianceProfiles().map((p) => p.id).join(', ')}.`,
         },
       ],
       summary: { errors: 1, warnings: 0, info: 0 },

@@ -2,12 +2,21 @@
 // Build script: emits compiled JS + declaration files into packages/<name>/dist/.
 //
 // Strategy:
+//   0. Refuse an unlinked or undeclared workspace dependency first
+//      (scripts/lib/workspace-links.ts, round 13 / 13.2). tsc below never
+//      consults node_modules for a declared dep (see step 2), so without this a
+//      tree built before `bun install` emits a complete dist that dies under
+//      node at load time, on every verb.
 //   1. Topologically sort packages by their @shrkcrft/* workspace deps.
 //   2. For each package, write a fresh tsconfig.build.json that:
-//        - extends the repo-level tsconfig.publish.json (no @shrkcrft/* paths)
+//        - extends the repo-level tsconfig.publish.json, which INHERITS the
+//          base tsconfig's @shrkcrft/* → src paths; the `paths` written here
+//          REPLACE them wholesale
 //        - sets rootDir = ./src, outDir = ./dist
 //        - sets paths so cross-package imports of @shrkcrft/<dep> resolve to
-//          ../<dep>/dist/index.d.ts (already built thanks to topo order)
+//          ../<dep>/dist/index.d.ts (already built thanks to topo order) — for
+//          the deps in `dependencies` only; any other import falls through to
+//          node_modules, which is why step 0 also checks declarations
 //   3. Run tsc per package. TypeScript 5.7+ rewrites relative .ts imports to
 //      .js on emit so the dist tree is consumable by Node and Bun.
 import {
@@ -22,6 +31,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { runWorkspaceLinkGate } from './lib/workspace-links.ts';
 
 const ROOT = process.cwd();
 const PACKAGES_DIR = join(ROOT, 'packages');
@@ -182,6 +192,9 @@ function buildDashboard(): boolean {
   return true;
 }
 
+// Step 0 — before anything is emitted, and before any existing dist/ is wiped.
+if (runWorkspaceLinkGate(ROOT, '[build-dist]') !== 0) process.exit(1);
+
 const all = discoverPackages();
 const ordered = topoSort(all);
 
@@ -200,11 +213,16 @@ if (!buildDashboard()) {
 // publish from the `bin` field, but a local dist rebuild does not). Restore
 // +x so the bin runs directly / via `bunx` without EACCES — otherwise bunx
 // falls through to a registry lookup for the non-existent `shrk` package.
+// The bins are the round-13 bootstraps (dist/shrk.js, dist/shrk-mcp.js). A
+// package with a bin also keeps dist/main.js executable: it was the bin target
+// before round 13, and an existing link (`bun link`, ~/.bun/bin/shrk) still
+// points at it.
 for (const pkg of ordered) {
   const pkgJsonPath = join(pkg.dir, 'package.json');
   if (!existsSync(pkgJsonPath)) continue;
   const bin = readJson<{ bin?: Record<string, string> | string }>(pkgJsonPath).bin;
   const binPaths = typeof bin === 'string' ? [bin] : bin ? Object.values(bin) : [];
+  if (binPaths.length > 0) binPaths.push('./dist/main.js');
   for (const rel of binPaths) {
     const abs = join(pkg.dir, rel);
     if (existsSync(abs)) chmodSync(abs, 0o755);
