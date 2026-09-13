@@ -5,12 +5,51 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
-## [Unreleased — staged after 0.1.0-alpha.30] — Boundary patterns mean what they say
+## [0.1.0-alpha.31] — Checks that cannot pass over what they did not examine
 
-Staged boundary notes for the next release (rounds 11–12). The full release
-notes are assembled from `packages/cli/src/commands/changelog-data.ts` at the
-version commit; this section carries the boundary behaviour changes a consumer
-upgrading from alpha.30 needs first.
+Three rounds driven by running the staged tree against a large consumer
+monorepo. The full, per-item notes are in `shrk changelog` (sourced from
+`packages/cli/src/commands/changelog-data.ts`). This section lists the
+behaviour changes you need to know first when upgrading from alpha.30.
+
+### BEHAVIOUR CHANGE — coverage is part of every verdict (round 11)
+
+A gate that examined less than it was asked to no longer prints a pass. That
+covers a capped scan, an empty scope, an unread file and a partially wired
+rule. Such a gate exits `2` NOT VERIFIED, and every `--json` `gate` envelope
+carries `coverage`. An explicit, printed valve such as `--allow-empty` accepts
+a gap.
+
+### BEHAVIOUR CHANGE — rejected contributions are reported, and `!` excludes (round 12)
+
+A contributed entry that a loader refuses is reported on every surface.
+`shrk packs contributions` lists each contributed file with its accepted and
+rejected entries, and exits `1` when any entry is rejected. A leading `!` in a
+gate-plane glob list now excludes. Before, it matched nothing, so the
+exclusion never happened.
+
+### Added — an empty result can be the intended one (round 13)
+
+`{ pattern, expectEmpty: true, reason? }` marks a unit whose target does not
+exist yet, such as a fence written before the package it forbids. It works on
+every list that can report a dead unit: boundary patterns, gate-plane globs,
+registration-hint targets, scaffold `matchPaths` and search-tuning boosts.
+
+- The unit is printed as an acceptance, so `--fail-on-dead-units` stays green.
+- Once the target appears, the unit is reported as went-live.
+- On a boundary rule, a rule-level `expectEmpty` or `allowDead`, or any
+  unknown key, now makes the rule an errored rule.
+
+See [docs/intended-empty.md](docs/intended-empty.md).
+
+### BEHAVIOUR CHANGE — a build never ships a CLI that cannot load (round 13)
+
+`bun run build` and `build:dist` fail when a workspace dependency is not
+linked or a `@shrkcrft/*` import is undeclared.
+
+The `shrk` bin is now `dist/shrk.js`, and `@shrkcrft/mcp-server` ships a
+`shrk-mcp` bin. A missing link now exits `70` with one line that names it,
+instead of a raw `ERR_MODULE_NOT_FOUND`.
 
 ### BEHAVIOUR CHANGE — a bare forbidden pattern also forbids its subpaths (round 11)
 

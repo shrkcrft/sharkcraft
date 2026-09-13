@@ -41,7 +41,9 @@ describe('MCP tool: get_diff_check_report', () => {
     };
     expect(data.schema).toBe('sharkcraft.diff-check/v1');
     expect(typeof data.verdict).toBe('string');
-    expect(['ok', 'warnings', 'errors']).toContain(data.verdict as string);
+    // Round 11: an empty diff (or one nothing examined) is `not-verified`, so a
+    // clean checkout lands here — every documented verdict is a valid shape.
+    expect(['ok', 'warnings', 'errors', 'not-verified']).toContain(data.verdict as string);
     expect(typeof data.summary).toBe('string');
     expect(typeof data.nextAction).toBe('string');
     expect(typeof data.scope?.fileCount).toBe('number');
