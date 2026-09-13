@@ -5,6 +5,45 @@ follows [Keep a Changelog](https://keepachangelog.com/) and SharkCraft uses
 [semver](https://semver.org/). During alpha, breaking changes can land in
 any release — pin exact versions.
 
+## [0.1.0-alpha.32] — An input the tool accepts is an input it honours
+
+Round 15 fixes two defects found by re-verifying rounds 11–14 in a consumer
+monorepo, along with their follow-ups. The full, per-item notes are in
+`shrk changelog`. This section lists the behaviour changes you need to know
+first when upgrading from alpha.31.
+
+### BEHAVIOUR CHANGE — every convention `appliesTo` filter now scopes (15.1)
+
+- **Filters.** `profileIds` and `frameworks` are checked against what the
+  workspace detects, and `languages` is checked per file. `fileGlobs` goes
+  through the shared glob matcher: `src/**/*.ts` now matches `src/a.ts`, and
+  `!` excludes.
+- **Hit counts change.** A convention can fire less, because a filter that
+  used to be ignored now applies. It can also fire more, because globs that
+  missed files now match them.
+- **Conventions that do not apply.** Each is printed with its reason and
+  accepted. When no convention applies, `conventions check` exits `2` unless
+  `--allow-empty` is passed.
+- **Refused and changed inputs.**
+  - An unknown `appliesTo` key such as `fileGlob` is refused, with a
+    did-you-mean suggestion.
+  - `constructKinds` is reserved and prints a warning.
+  - `expectMatch` is evaluated.
+  - A convention the loader rejects is an errored row, exit `1`.
+
+### Added — Markdown knowledge can declare references (15.2)
+
+- **`references:` in frontmatter.** A Markdown knowledge entry accepts a
+  `references:` list of maps or `kind:value` strings. It is checked the same
+  way as a TypeScript entry, so `knowledge stale-check` and `quality` can
+  pass. An entry that declares none stays unverifiable (exit `2`), and the
+  message names the key and the `knowledgeCheck.minReferenced` valve.
+- **Pack-relative paths.** `root: pack` on a pack entry's reference resolves
+  the path inside the pack.
+- **Rejected entries and crashes.** A knowledge entry the loader rejects is
+  reported on `stale-check`, `quality` and `doctor`, so it can never produce
+  a clean pass. A non-list `references` value no longer crashes inspection.
+
 ## [0.1.0-alpha.31] — Checks that cannot pass over what they did not examine
 
 Three rounds driven by running the staged tree against a large consumer

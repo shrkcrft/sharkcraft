@@ -65,7 +65,8 @@ describe('r78 F11 — the slot decides, not the extension', () => {
     () => {
       const root = pack('@r78/slot-a', { knowledgeFiles: ['./notes.txt', './guide.md'] }, {
         'notes.txt': 'plain text, not knowledge\n',
-        'guide.md': '---\nid: p.guide\ntitle: [A, B]\n---\n# Guide\n',
+        // A BLOCK list: an inline `title: [A, B]` is the title text since round 15 closing.
+        'guide.md': '---\nid: p.guide\ntitle:\n  - A\n  - B\n---\n# Guide\n',
       });
       const { status, out } = packsTestLoad(root);
       expect(status).toBe(1);

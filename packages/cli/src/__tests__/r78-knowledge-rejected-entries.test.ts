@@ -62,7 +62,8 @@ function localFixture(): string {
       "  { id: 'k.ok', title: 'Ok', type: 'technical', priority: 'low', scope: [], tags: [], appliesWhen: [], content: 'About a.', references: [{ kind: 'file', path: 'src/a.ts' }] },\n" +
       "  { id: 'k.bad', title: 'Bad', type: 'technical', priority: 'low', scope: [], tags: [], appliesWhen: [] },\n" +
       '];\n',
-    'sharkcraft/broken.md': '---\nid: doc.broken\ntitle: [A, B]\n---\n# Broken\n',
+    // A BLOCK list: an inline `title: [A, B]` is the title text since round 15 closing.
+    'sharkcraft/broken.md': '---\nid: doc.broken\ntitle:\n  - A\n  - B\n---\n# Broken\n',
   });
 }
 
