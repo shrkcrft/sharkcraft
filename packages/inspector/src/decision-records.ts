@@ -6,12 +6,31 @@
  * these — `decisions new` produces a dry-run preview unless
  * `--write-draft` is passed.
  *
+ * The frontmatter is read by THE parser (`splitFrontmatter` +
+ * `parseFrontmatter`, @shrkcrft/core — round 15 follow-up, F6) in its `Text`
+ * scalar mode: a decision's `id` / `title` / `status` / `date` are strings by
+ * contract, read verbatim as the old line splitter read them (`id: 0001`
+ * stays `0001`, `title: Fix #12` keeps its `#12`). A record whose frontmatter
+ * cannot be read as declared is REJECTED through the round-12 channel
+ * ({@link loadTsDecisionsWithIssues} `rejected`) — never listed from a partial
+ * reading, never dropped silently.
+ *
  * Read-only operations: list, get, link (preview).
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
-import { importModuleViaLoader, RejectionCause, type IRejectedEntry } from '@shrkcrft/core';
+import {
+  formatFrontmatterScalar,
+  FrontmatterScalarMode,
+  importModuleViaLoader,
+  parseFrontmatter,
+  RejectionCause,
+  splitFrontmatter,
+  type FrontmatterValue,
+  type IParseFrontmatterOptions,
+  type IRejectedEntry,
+} from '@shrkcrft/core';
 import type { IContributionFileIssue } from './i-contribution-file-issue.ts';
 
 export const DECISION_RECORD_SCHEMA = 'sharkcraft.decision/v1';
@@ -57,18 +76,141 @@ export interface IDecisionDraftInput {
 
 const DECISION_DIRS = ['sharkcraft/decisions', 'docs/adr'] as const;
 
-function frontmatterAndBody(text: string): { fm: Record<string, string>; body: string } {
-  const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(text);
-  if (!m) return { fm: {}, body: text };
-  const fm: Record<string, string> = {};
-  for (const line of (m[1] ?? '').split('\n')) {
-    const idx = line.indexOf(':');
-    if (idx <= 0) continue;
-    const k = line.slice(0, idx).trim();
-    const v = line.slice(idx + 1).trim().replace(/^"(.*)"$/, '$1');
-    fm[k] = v;
+/**
+ * A decision's frontmatter values are strings by contract — read verbatim
+ * (`Text` scalars), exactly as {@link previewDecisionDraft} writes them. Only
+ * the four keys a record reads are parsed (`keys`): any other key — MADR's
+ * `decision makers:`, a `summary:` wrapped onto an indented line, a map nested
+ * two levels — is skipped unparsed. The old splitter never read those lines
+ * either, and YAML the parser does not speak under a key nobody reads must not
+ * cost the record (the Markdown knowledge loader skips a key it drops the same
+ * way). No key is read as a list (`listKeys: []`, round 15 closing A1): an
+ * inline `title: [WIP]` is the title `[WIP]`, verbatim, as the old splitter
+ * read it — it used to REJECT the record as "a list".
+ */
+const DECISION_FRONTMATTER: IParseFrontmatterOptions = Object.freeze({
+  scalars: FrontmatterScalarMode.Text,
+  keys: Object.freeze(['id', 'title', 'status', 'date']),
+  listKeys: Object.freeze([]),
+});
+
+/** One Markdown decision file, read: its record, or why it was refused. */
+type MarkdownDecisionRead = { readonly record: IDecisionRecord } | { readonly rejected: IRejectedEntry };
+
+function shapeOf(value: FrontmatterValue): string {
+  if (!Array.isArray(value)) return 'a map';
+  return (value as readonly unknown[]).some((v) => v !== null && typeof v === 'object') ? 'a list of maps' : 'a list';
+}
+
+/**
+ * Read one Markdown decision record through THE frontmatter parser. Frontmatter
+ * the parser refuses in its top-level structure (a stray line naming no key)
+ * or under a key the record reads (`title:` wrapped onto an indented line), or
+ * an `id` / `title` / `status` / `date` that is not a single value (a block
+ * list under `title:`; an inline `title: [WIP]` is text) REJECTS the record, every reason named: the
+ * old line splitter skipped such a line silently and let an indented `  id:`
+ * under any block overwrite the record's own id. A key the record does not
+ * read is never parsed ({@link DECISION_FRONTMATTER}).
+ */
+function readMarkdownDecision(full: string, fileName: string): MarkdownDecisionRead {
+  const split = splitFrontmatter(readFileSync(full, 'utf8'));
+  const problems: string[] = [];
+  // A decision record opening with `---` and never closing it is broken
+  // frontmatter, not a thematic break: its `id:` would silently become the
+  // file name (the old splitter did exactly that).
+  if (split.unterminated) problems.push('frontmatter: an opening --- line has no closing --- line');
+  let fields: Readonly<Record<string, FrontmatterValue>> = {};
+  if (split.frontmatter !== undefined) {
+    const parsed = parseFrontmatter(split.frontmatter, { ...DECISION_FRONTMATTER, lineOffset: split.lineOffset });
+    if (parsed.ok) fields = parsed.value;
+    else problems.push(`frontmatter: ${parsed.error.message}`);
   }
-  return { fm, body: m[2] ?? '' };
+  const text = (key: string): string | undefined => {
+    const v = fields[key];
+    if (v === undefined || v === null) return undefined;
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    problems.push(`${key}: must be a single value (got ${shapeOf(v)}) — quote it if it is text`);
+    return undefined;
+  };
+  const declaredId = text('id')?.trim();
+  const title = text('title');
+  const status = text('status');
+  const date = text('date');
+  if (problems.length > 0) {
+    return {
+      rejected: {
+        file: full,
+        index: -1,
+        ...(declaredId ? { entryId: declaredId } : {}),
+        reasons: problems,
+        cause: RejectionCause.Invalid,
+      },
+    };
+  }
+  // A key with no value (`id:`, `title:`, `status:`) is absent and falls back to
+  // its default — the old splitter read `id:` as the id "" and `title:` as the
+  // title "". An id that is empty after trimming falls back too: "" can never
+  // be referenced.
+  const id = declaredId || nodePath.basename(fileName, nodePath.extname(fileName)).trim();
+  const body = split.body;
+  return {
+    record: {
+      schema: DECISION_RECORD_SCHEMA,
+      id,
+      title: title ?? id,
+      status: (status as DecisionStatus | undefined) ?? DecisionStatus.Proposed,
+      context: sectionFromBody(body, 'Context'),
+      decision: sectionFromBody(body, 'Decision'),
+      consequences: sectionFromBody(body, 'Consequences'),
+      relatedRules: listLinesUnder(body, 'Related rules'),
+      relatedPolicies: listLinesUnder(body, 'Related policies'),
+      relatedConstructs: listLinesUnder(body, 'Related constructs'),
+      relatedFiles: listLinesUnder(body, 'Related files'),
+      date: date ?? '',
+      sourceFile: full,
+    },
+  };
+}
+
+/**
+ * Every Markdown decision record under {@link DECISION_DIRS}, in a
+ * deterministic order: the records read, and every file refused. THE one pass
+ * both {@link listDecisions} (records) and {@link loadTsDecisionsWithIssues}
+ * (rejected) read, so what is listed and what is reported cannot disagree.
+ */
+function scanMarkdownDecisions(projectRoot: string): {
+  readonly records: readonly IDecisionRecord[];
+  readonly rejected: readonly IRejectedEntry[];
+} {
+  const records: IDecisionRecord[] = [];
+  const rejected: IRejectedEntry[] = [];
+  for (const rel of DECISION_DIRS) {
+    const dir = nodePath.join(projectRoot, rel);
+    if (!existsSync(dir)) continue;
+    let entries: string[] = [];
+    try {
+      // Sort so the decision-record list (and the doctor findings derived from
+      // it) is deterministic, not filesystem-order-dependent.
+      entries = readdirSync(dir).sort();
+    } catch {
+      continue;
+    }
+    for (const f of entries) {
+      if (!/\.(md|markdown)$/i.test(f)) continue;
+      const full = nodePath.join(dir, f);
+      try {
+        const st = statSync(full);
+        if (!st.isFile()) continue;
+      } catch {
+        continue;
+      }
+      const read = readMarkdownDecision(full, f);
+      if ('record' in read) records.push(read.record);
+      else rejected.push(read.rejected);
+    }
+  }
+  return { records, rejected };
 }
 
 function sectionFromBody(body: string, header: string): string {
@@ -107,49 +249,9 @@ export function listDecisions(inspection: ISharkcraftInspection): readonly IDeci
     seenIds.add(rec.id);
     out.push(rec);
   };
-  for (const rel of DECISION_DIRS) {
-    const dir = nodePath.join(inspection.projectRoot, rel);
-    if (!existsSync(dir)) continue;
-    let entries: string[] = [];
-    try {
-      // Sort so the decision-record list (and the doctor findings derived from
-      // it) is deterministic, not filesystem-order-dependent.
-      entries = readdirSync(dir).sort();
-    } catch {
-      continue;
-    }
-    for (const f of entries) {
-      if (!/\.(md|markdown)$/i.test(f)) continue;
-      const full = nodePath.join(dir, f);
-      try {
-        const st = statSync(full);
-        if (!st.isFile()) continue;
-      } catch {
-        continue;
-      }
-      const text = readFileSync(full, 'utf8');
-      const { fm, body } = frontmatterAndBody(text);
-      const id = (fm['id'] ?? nodePath.basename(f, nodePath.extname(f))).trim();
-      const title = fm['title'] ?? id;
-      const status = (fm['status'] as DecisionStatus) ?? DecisionStatus.Proposed;
-      const date = fm['date'] ?? '';
-      addMd({
-        schema: DECISION_RECORD_SCHEMA,
-        id,
-        title,
-        status,
-        context: sectionFromBody(body, 'Context'),
-        decision: sectionFromBody(body, 'Decision'),
-        consequences: sectionFromBody(body, 'Consequences'),
-        relatedRules: listLinesUnder(body, 'Related rules'),
-        relatedPolicies: listLinesUnder(body, 'Related policies'),
-        relatedConstructs: listLinesUnder(body, 'Related constructs'),
-        relatedFiles: listLinesUnder(body, 'Related files'),
-        date,
-        sourceFile: full,
-      });
-    }
-  }
+  // A Markdown record whose frontmatter cannot be read as declared is not
+  // listed — `loadTsDecisionsWithIssues` reports it rejected (same scan).
+  for (const rec of scanMarkdownDecisions(inspection.projectRoot).records) addMd(rec);
   // Also include sync-cached TS decisions if present (loaded by
   // listDecisionsTsCached on prior async warm-up). Best-effort sync read.
   for (const r of getTsDecisionsCached(inspection.projectRoot)) {
@@ -210,6 +312,10 @@ export async function loadTsDecisions(
  * {@link loadTsDecisions} with what did not take effect (round 12, 12.1): a
  * decision file that failed to import (it used to be swallowed to `[]`), and
  * every declared decision the loader refused — invalid, or a duplicate id.
+ * `rejected` also carries every Markdown record (`sharkcraft/decisions/*.md`,
+ * `docs/adr/*.md`) whose frontmatter THE parser cannot read as declared (round
+ * 15 follow-up, F6) — the same scan {@link listDecisions} reads, so a record is
+ * either listed or reported here, never neither.
  */
 export async function loadTsDecisionsWithIssues(inspection: ISharkcraftInspection): Promise<{
   readonly decisions: readonly IDecisionRecord[];
@@ -218,7 +324,7 @@ export async function loadTsDecisionsWithIssues(inspection: ISharkcraftInspectio
 }> {
   const out: IDecisionRecord[] = [];
   const issues: IContributionFileIssue[] = [];
-  const rejected: IRejectedEntry[] = [];
+  const rejected: IRejectedEntry[] = [...scanMarkdownDecisions(inspection.projectRoot).rejected];
   const seen = new Map<string, string>();
   const addInput = (raw: unknown, source: string, index: number): void => {
     const reasons = decisionRejectionReasons(raw);
@@ -305,12 +411,16 @@ export function getDecision(inspection: ISharkcraftInspection, id: string): IDec
 
 export function previewDecisionDraft(input: IDecisionDraftInput): string {
   const id = input.id.trim();
+  // Each value is written so THE parser reads it back as written (round 15
+  // follow-up, F6): a raw `title: [WIP]` reads as a list, `title: "Quoted"` as
+  // `Quoted`. A value that already reads back stays bare.
+  const value = (v: string): string => formatFrontmatterScalar(v, DECISION_FRONTMATTER);
   const lines: string[] = [];
   lines.push('---');
-  lines.push(`id: ${id}`);
-  lines.push(`title: ${input.title}`);
-  lines.push(`status: ${input.status ?? DecisionStatus.Proposed}`);
-  lines.push(`date: ${input.date ?? new Date().toISOString().slice(0, 10)}`);
+  lines.push(`id: ${value(id)}`);
+  lines.push(`title: ${value(input.title)}`);
+  lines.push(`status: ${value(input.status ?? DecisionStatus.Proposed)}`);
+  lines.push(`date: ${value(input.date ?? new Date().toISOString().slice(0, 10))}`);
   lines.push('---');
   lines.push('');
   lines.push(`# ${input.title}`);

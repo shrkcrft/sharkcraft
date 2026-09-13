@@ -21,6 +21,7 @@ export * from './playbook.ts';
 export * from './policy-check.ts';
 export * from './search-tuning.ts';
 export * from './convention.ts';
+export * from './convention-applies-to-filter.ts';
 export * from './pack-helper.ts';
 export * from './task-routing-hint.ts';
 export * from './term-match-mode.ts';

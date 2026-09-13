@@ -11,7 +11,15 @@ import {
 } from '../model/knowledge-entry.ts';
 import { ALL_KNOWLEDGE_TYPES } from '../model/knowledge-type.ts';
 import { KnowledgePriority } from '../model/knowledge-priority.ts';
+import { declaredAnchorItems } from '../model/knowledge-anchors.ts';
+import { declaredReferenceItems } from '../model/knowledge-references.ts';
+import { knowledgeSourceFormat } from '../model/knowledge-source-format-of.ts';
 import { isValidVerifiedOn } from '../verify/verified-on.ts';
+import { anchorShapeProblem, anchorsListProblem } from './anchor-shape-problem.ts';
+import { referenceShapeProblem, referencesListProblem } from './reference-shape-problem.ts';
+import { referenceRootProblem } from './reference-root-problem.ts';
+import type { IKnowledgeValidationOptions } from './i-knowledge-validation-options.ts';
+import { KnowledgeIssueSeverity } from './knowledge-issue-severity.ts';
 
 export interface IKnowledgeValidationIssue {
   /** Stable identifier for the issue category. */
@@ -26,6 +34,12 @@ export interface IKnowledgeValidationIssue {
     | 'invalid-priority'
     /** A reference with an unknown kind, a missing required field, or a field its kind cannot carry. */
     | 'invalid-reference'
+    /**
+     * A non-list `anchors` value, or an anchor item that is not an object (or
+     * holds a non-string `path` / `symbol` / `targetId`). The entry is kept —
+     * the stale-check crashed on it (round 15 review).
+     */
+    | 'invalid-anchor'
     /**
      * A reference `path` written absolute (`/src/a.ts`, `C:\\src\\a.ts`).
      * Reference paths are repo-relative; the stale-check resolves the leading
@@ -52,8 +66,8 @@ export interface IKnowledgeValidationIssue {
   source?: string;
   /** Human-readable message. */
   message: string;
-  /** Severity hint. */
-  severity: 'error' | 'warning';
+  /** Severity hint — THE knowledge-issue enum, shared with `IReferenceRootProblem` (round 15 lane B, B3). */
+  severity: KnowledgeIssueSeverity;
 }
 
 export interface IKnowledgeValidationResult {
@@ -73,9 +87,12 @@ const VALID_TYPES = new Set<string>(ALL_KNOWLEDGE_TYPES);
  *   - missing title/content/type
  *   - unknown type (warning — custom types are allowed but get flagged)
  *   - unknown priority (error)
+ *   - a reference `root: pack` on an entry no pack contributes (error —
+ *     `options.isPackContributed` is the provenance; round 15 follow-up)
  */
 export function validateKnowledgeEntries(
   entries: readonly IKnowledgeEntry[],
+  options: IKnowledgeValidationOptions = {},
 ): IKnowledgeValidationResult {
   const issues: IKnowledgeValidationIssue[] = [];
   const seen = new Map<string, IKnowledgeEntry>();
@@ -91,7 +108,7 @@ export function validateKnowledgeEntries(
         entryId: '?',
         source,
         message: 'Knowledge entry is missing an `id`.',
-        severity: 'error',
+        severity: KnowledgeIssueSeverity.Error,
       });
       continue;
     }
@@ -102,7 +119,7 @@ export function validateKnowledgeEntries(
         entryId: id,
         source,
         message: `Entry id "${id}" does not match /^[a-z0-9]+([.-][a-z0-9]+)*$/`,
-        severity: 'error',
+        severity: KnowledgeIssueSeverity.Error,
       });
       continue;
     }
@@ -113,7 +130,7 @@ export function validateKnowledgeEntries(
         entryId: id,
         source,
         message: `Entry "${id}" is missing a title.`,
-        severity: 'error',
+        severity: KnowledgeIssueSeverity.Error,
       });
     }
     if (typeof entry.content !== 'string') {
@@ -122,7 +139,7 @@ export function validateKnowledgeEntries(
         entryId: id,
         source,
         message: `Entry "${id}" is missing content.`,
-        severity: 'error',
+        severity: KnowledgeIssueSeverity.Error,
       });
     }
     if (!entry.type) {
@@ -131,7 +148,7 @@ export function validateKnowledgeEntries(
         entryId: id,
         source,
         message: `Entry "${id}" is missing a type.`,
-        severity: 'error',
+        severity: KnowledgeIssueSeverity.Error,
       });
     } else if (!VALID_TYPES.has(String(entry.type)) && entry.type !== 'custom') {
       issues.push({
@@ -139,7 +156,7 @@ export function validateKnowledgeEntries(
         entryId: id,
         source,
         message: `Entry "${id}" uses unknown type "${entry.type}". Use KnowledgeType or set type:'custom'.`,
-        severity: 'warning',
+        severity: KnowledgeIssueSeverity.Warning,
       });
     }
     if (entry.priority && !VALID_PRIORITIES.has(String(entry.priority))) {
@@ -148,7 +165,7 @@ export function validateKnowledgeEntries(
         entryId: id,
         source,
         message: `Entry "${id}" has invalid priority "${entry.priority}". Allowed: critical|high|medium|low.`,
-        severity: 'error',
+        severity: KnowledgeIssueSeverity.Error,
       });
     }
     if (entry.verifiedOn !== undefined && !isValidVerifiedOn(entry.verifiedOn)) {
@@ -157,12 +174,52 @@ export function validateKnowledgeEntries(
         entryId: id,
         source,
         message: `Entry "${id}" has verifiedOn "${String(entry.verifiedOn)}" — expected a real YYYY-MM-DD date.`,
-        severity: 'error',
+        severity: KnowledgeIssueSeverity.Error,
       });
     }
-    (entry.references ?? []).forEach((ref, index) => {
-      for (const found of validateReference(ref, index)) {
+    // A non-list `references` (TypeScript or Markdown) is an issue that KEEPS the
+    // entry — `.forEach` on it crashed here and took every inspection-backed
+    // verb down with it, a pack's entry included (round 15).
+    const listProblem = referencesListProblem(entry.references, knowledgeSourceFormat(entry));
+    if (listProblem) {
+      issues.push({
+        code: 'invalid-reference',
+        entryId: id,
+        source,
+        message: `Entry "${id}" ${listProblem}.`,
+        severity: KnowledgeIssueSeverity.Error,
+      });
+    }
+    // EVERY declared item is judged — a string or a null is an issue, never skipped.
+    const packContributed = options.isPackContributed?.(entry) === true;
+    declaredReferenceItems(entry).forEach((ref, index) => {
+      for (const found of validateReference(ref as IKnowledgeReference, index, packContributed)) {
         issues.push({ ...found, entryId: id, source, message: `Entry "${id}" ${found.message}` });
+      }
+    });
+    // The same for `anchors` (round 15 review): a non-list value or a malformed
+    // item is an issue that KEEPS the entry — `(entry.anchors ?? [])` crashed
+    // the stale-check, `knowledge anchors` and `ide symbol` on it.
+    const anchorsProblem = anchorsListProblem(entry.anchors);
+    if (anchorsProblem) {
+      issues.push({
+        code: 'invalid-anchor',
+        entryId: id,
+        source,
+        message: `Entry "${id}" ${anchorsProblem}.`,
+        severity: KnowledgeIssueSeverity.Error,
+      });
+    }
+    declaredAnchorItems(entry).forEach((anchor, index) => {
+      const shape = anchorShapeProblem(anchor);
+      if (shape) {
+        issues.push({
+          code: 'invalid-anchor',
+          entryId: id,
+          source,
+          message: `Entry "${id}" anchor #${index + 1} ${shape}.`,
+          severity: KnowledgeIssueSeverity.Error,
+        });
       }
     });
     for (const found of validateCrossReferenceFields(entry, id)) {
@@ -175,7 +232,7 @@ export function validateKnowledgeEntries(
         entryId: id,
         source,
         message: `Duplicate knowledge id "${id}" — first occurrence wins, later ones ignored.`,
-        severity: 'warning',
+        severity: KnowledgeIssueSeverity.Warning,
       });
       continue;
     }
@@ -183,7 +240,7 @@ export function validateKnowledgeEntries(
     uniqueEntries.push(entry);
   }
 
-  const hasErrors = issues.some((i) => i.severity === 'error');
+  const hasErrors = issues.some((i) => i.severity === KnowledgeIssueSeverity.Error);
   return { valid: !hasErrors, issues, uniqueEntries };
 }
 
@@ -196,12 +253,20 @@ type IReferenceIssue = Pick<IKnowledgeValidationIssue, 'code' | 'message' | 'sev
  */
 const CROSS_REFERENCE_FIELDS: readonly {
   readonly field: 'supersededBy' | 'seeAlso' | 'related';
-  readonly shape: 'error' | 'warning';
-  readonly self?: { readonly severity: 'error' | 'warning'; readonly why: string };
+  readonly shape: KnowledgeIssueSeverity;
+  readonly self?: { readonly severity: KnowledgeIssueSeverity; readonly why: string };
 }[] = [
-  { field: 'supersededBy', shape: 'error', self: { severity: 'error', why: 'an entry cannot replace itself' } },
-  { field: 'seeAlso', shape: 'error', self: { severity: 'warning', why: 'it points the reader back at the entry they are reading' } },
-  { field: 'related', shape: 'warning' },
+  {
+    field: 'supersededBy',
+    shape: KnowledgeIssueSeverity.Error,
+    self: { severity: KnowledgeIssueSeverity.Error, why: 'an entry cannot replace itself' },
+  },
+  {
+    field: 'seeAlso',
+    shape: KnowledgeIssueSeverity.Error,
+    self: { severity: KnowledgeIssueSeverity.Warning, why: 'it points the reader back at the entry they are reading' },
+  },
+  { field: 'related', shape: KnowledgeIssueSeverity.Warning },
 ];
 
 /** Shape-only checks of the cross-reference lists (existence is the doctor's job). */
@@ -267,17 +332,18 @@ function requiredFieldFor(ref: IKnowledgeReference): string | undefined {
  * load silently and surface (if at all) as an `unknown` row, which reads as
  * "checked" to anyone skimming the counts.
  */
-function validateReference(ref: IKnowledgeReference, index: number): IReferenceIssue[] {
+function validateReference(ref: IKnowledgeReference, index: number, packContributed = false): IReferenceIssue[] {
   const at = `reference #${index + 1}`;
-  if (!ref || typeof ref !== 'object') {
-    return [{ code: 'invalid-reference', severity: 'error', message: `${at} is not an object.` }];
-  }
+  // THE item-shape predicate the stale-check applies too (a string, a number, a
+  // non-string path), so a Markdown item and a TypeScript item fail alike.
+  const shape = referenceShapeProblem(ref);
+  if (shape) return [{ code: 'invalid-reference', severity: KnowledgeIssueSeverity.Error, message: `${at} ${shape}.` }];
   const kind = String((ref as { kind?: unknown }).kind);
   if (!KNOWN_REFERENCE_KINDS.has(kind)) {
     return [
       {
         code: 'invalid-reference',
-        severity: 'error',
+        severity: KnowledgeIssueSeverity.Error,
         message: `${at} has unknown kind "${kind}" — expected one of: ${KNOWLEDGE_REFERENCE_KINDS.join(', ')}.`,
       },
     ];
@@ -287,37 +353,43 @@ function validateReference(ref: IKnowledgeReference, index: number): IReferenceI
   if (missing) {
     out.push({
       code: 'invalid-reference',
-      severity: 'warning',
+      severity: KnowledgeIssueSeverity.Warning,
       message: `${at} (${kind}) has no \`${missing}\` — the stale-check cannot verify it.`,
     });
   }
   if (typeof ref.path === 'string' && ABSOLUTE_PATH_RE.test(ref.path)) {
     out.push({
       code: 'reference-absolute-path',
-      severity: 'warning',
+      severity: KnowledgeIssueSeverity.Warning,
       message:
         `${at} (${kind}) path "${ref.path}" is absolute — reference paths are repo-relative; ` +
         `write "${ref.path.replace(ABSOLUTE_PATH_RE, '')}".`,
     });
   }
+  // THE `root` predicate the stale-check applies too (round 15 follow-up):
+  // `root: pack` on a local entry is an error here and an INVALID row there.
+  const rootProblem = referenceRootProblem(ref, packContributed);
+  if (rootProblem) {
+    out.push({ code: 'invalid-reference', severity: rootProblem.severity, message: `${at} (${kind}) ${rootProblem.message}.` });
+  }
   const hasContent = ref.contains !== undefined || ref.matches !== undefined;
   if (hasContent && !CONTENT_KINDS.has(kind)) {
     out.push({
       code: 'invalid-reference',
-      severity: 'error',
+      severity: KnowledgeIssueSeverity.Error,
       message:
         `${at} (${kind}) sets contains/matches, which apply to file and symbol references only` +
         (kind === 'directory' ? ' — assert on a directory with `count` instead.' : '.'),
     });
   }
   if (ref.contains !== undefined && (typeof ref.contains !== 'string' || ref.contains.length === 0)) {
-    out.push({ code: 'invalid-reference', severity: 'error', message: `${at} has an empty or non-string \`contains\`.` });
+    out.push({ code: 'invalid-reference', severity: KnowledgeIssueSeverity.Error, message: `${at} has an empty or non-string \`contains\`.` });
   }
   if (ref.matches !== undefined) {
     if (typeof ref.matches !== 'string' || ref.matches.length === 0) {
       out.push({
         code: 'invalid-reference-pattern',
-        severity: 'error',
+        severity: KnowledgeIssueSeverity.Error,
         message: `${at} has an empty or non-string \`matches\`.`,
       });
     } else {
@@ -326,7 +398,7 @@ function validateReference(ref: IKnowledgeReference, index: number): IReferenceI
       } catch (e) {
         out.push({
           code: 'invalid-reference-pattern',
-          severity: 'error',
+          severity: KnowledgeIssueSeverity.Error,
           message: `${at} \`matches\` does not compile: ${(e as Error).message}`,
         });
       }
@@ -336,13 +408,13 @@ function validateReference(ref: IKnowledgeReference, index: number): IReferenceI
     if (!SCAN_ZONES.includes(ref.scan)) {
       out.push({
         code: 'invalid-reference',
-        severity: 'error',
+        severity: KnowledgeIssueSeverity.Error,
         message: `${at} has scan "${String(ref.scan)}" — expected one of: ${SCAN_ZONES.join(', ')}.`,
       });
     } else if (!hasContent) {
       out.push({
         code: 'invalid-reference',
-        severity: 'warning',
+        severity: KnowledgeIssueSeverity.Warning,
         message: `${at} sets \`scan\` without \`contains\` / \`matches\`, so it has no effect (a count zones through \`count.source.scan\`).`,
       });
     }
@@ -354,7 +426,7 @@ function validateReference(ref: IKnowledgeReference, index: number): IReferenceI
 function validateReferenceCount(count: unknown, at: string): IReferenceIssue[] {
   const issue = (message: string): IReferenceIssue => ({
     code: 'invalid-reference-count',
-    severity: 'error',
+    severity: KnowledgeIssueSeverity.Error,
     message: `${at} ${message}`,
   });
   if (!count || typeof count !== 'object') {

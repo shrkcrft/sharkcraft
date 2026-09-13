@@ -2,6 +2,15 @@
 // These are embedded verbatim into the synthesized sharkcraft/*.ts files,
 // using `defineKnowledgeEntry` from @shrkcrft/knowledge.
 
+import type { IAssetReference } from '@shrkcrft/core';
+import {
+  renderSeedReferences,
+  SEED_REF_ANGULAR_JSON,
+  SEED_REF_NEST_CLI_JSON,
+  SEED_REF_PACKAGE_JSON,
+  SEED_REF_SHARKCRAFT_CONFIG,
+} from './seed-references.ts';
+
 export function ruleSnippet(opts: {
   id: string;
   title: string;
@@ -9,8 +18,11 @@ export function ruleSnippet(opts: {
   tags: readonly string[];
   appliesWhen: readonly string[];
   content: string;
+  /** What makes the seeded rule verifiable from the first run (round 15 follow-up, F5/F13). */
+  references?: readonly IAssetReference[];
 }): string {
   const prio = opts.priority.charAt(0).toUpperCase() + opts.priority.slice(1);
+  const refs = opts.references && opts.references.length > 0 ? `\n    ${renderSeedReferences(opts.references)}` : '';
   return `defineKnowledgeEntry({
     id: ${JSON.stringify(opts.id)},
     title: ${JSON.stringify(opts.title)},
@@ -18,13 +30,35 @@ export function ruleSnippet(opts: {
     priority: KnowledgePriority.${prio},
     tags: ${JSON.stringify(opts.tags)},
     appliesWhen: ${JSON.stringify(opts.appliesWhen)},
-    content: ${JSON.stringify(opts.content)},
+    content: ${JSON.stringify(opts.content)},${refs}
   })`;
+}
+
+type RuleSnippetOptions = Omit<Parameters<typeof ruleSnippet>[0], 'references'>;
+
+/** A rule seeded for a JS / TS package — verified against its package.json (round 15 follow-up). */
+export function packageRuleSnippet(opts: RuleSnippetOptions): string {
+  return ruleSnippet({ ...opts, references: [SEED_REF_PACKAGE_JSON] });
+}
+
+/** An Angular rule — verified against the workspace's angular.json. */
+export function angularRuleSnippet(opts: RuleSnippetOptions): string {
+  return ruleSnippet({ ...opts, references: [SEED_REF_ANGULAR_JSON] });
+}
+
+/** A NestJS rule — verified against the project's nest-cli.json. */
+export function nestRuleSnippet(opts: RuleSnippetOptions): string {
+  return ruleSnippet({ ...opts, references: [SEED_REF_NEST_CLI_JSON] });
+}
+
+/** An agent-workflow rule for any kind of repo — verified against the SharkCraft config init creates. */
+export function sharkcraftRuleSnippet(opts: RuleSnippetOptions): string {
+  return ruleSnippet({ ...opts, references: [SEED_REF_SHARKCRAFT_CONFIG] });
 }
 
 // ─── Strict TypeScript rules ───────────────────────────────────────────────
 
-export const TS_NO_ANY = ruleSnippet({
+export const TS_NO_ANY = packageRuleSnippet({
   id: 'ts.no-any',
   title: 'Avoid `any` in public surfaces',
   priority: 'critical',
@@ -33,7 +67,7 @@ export const TS_NO_ANY = ruleSnippet({
   content: 'Avoid `any` unless isolated and justified. Prefer `unknown` for external input and narrow it explicitly. Use type assertions only when no other option exists.',
 });
 
-export const TS_PREFER_SATISFIES = ruleSnippet({
+export const TS_PREFER_SATISFIES = packageRuleSnippet({
   id: 'ts.prefer-satisfies',
   title: 'Prefer `satisfies` over object casts',
   priority: 'high',
@@ -42,7 +76,7 @@ export const TS_PREFER_SATISFIES = ruleSnippet({
   content: 'Use `satisfies` for object-shape validation to preserve narrowed literal types instead of `as` casts.',
 });
 
-export const TS_DISCRIMINATED_UNIONS = ruleSnippet({
+export const TS_DISCRIMINATED_UNIONS = packageRuleSnippet({
   id: 'ts.discriminated-unions',
   title: 'Use discriminated unions for state machines',
   priority: 'high',
@@ -51,7 +85,7 @@ export const TS_DISCRIMINATED_UNIONS = ruleSnippet({
   content: 'Model finite-state shapes as discriminated unions (`type T = { kind: "a"; … } | { kind: "b"; … }`), not booleans + optional fields.',
 });
 
-export const TS_READONLY_DEFAULT = ruleSnippet({
+export const TS_READONLY_DEFAULT = packageRuleSnippet({
   id: 'ts.readonly-default',
   title: 'Prefer `readonly` for immutable data',
   priority: 'medium',
@@ -60,7 +94,7 @@ export const TS_READONLY_DEFAULT = ruleSnippet({
   content: 'Use `readonly` arrays/properties whenever mutation is not part of the contract — it documents intent and unlocks safer call sites.',
 });
 
-export const TS_PUBLIC_RETURN_TYPES = ruleSnippet({
+export const TS_PUBLIC_RETURN_TYPES = packageRuleSnippet({
   id: 'ts.public-return-types',
   title: 'Annotate public function return types',
   priority: 'high',
@@ -69,7 +103,7 @@ export const TS_PUBLIC_RETURN_TYPES = ruleSnippet({
   content: 'Public/exported functions must declare an explicit return type — TS infers internally, but the signature is part of the contract.',
 });
 
-export const TS_NO_FLOATING_PROMISES = ruleSnippet({
+export const TS_NO_FLOATING_PROMISES = packageRuleSnippet({
   id: 'ts.no-floating-promises',
   title: 'Never let a Promise float',
   priority: 'critical',
@@ -78,7 +112,7 @@ export const TS_NO_FLOATING_PROMISES = ruleSnippet({
   content: 'Always `await` or explicitly `.catch()` rejected promises. Floating promises hide errors and produce nondeterministic ordering.',
 });
 
-export const TS_ERROR_HANDLING = ruleSnippet({
+export const TS_ERROR_HANDLING = packageRuleSnippet({
   id: 'ts.error-handling',
   title: 'Model expected failures, do not swallow errors',
   priority: 'critical',
@@ -87,16 +121,18 @@ export const TS_ERROR_HANDLING = ruleSnippet({
   content: 'Throw typed errors (or use Result types) for expected failure paths. Preserve `cause` when wrapping. Never `catch (e) { /* ignore */ }`.',
 });
 
-export const TS_NO_DEEP_IMPORTS = ruleSnippet({
+const NO_DEEP_IMPORTS_RULE: RuleSnippetOptions = {
   id: 'ts.no-deep-imports',
   title: 'No deep imports across package boundaries',
   priority: 'critical',
   tags: ['typescript', 'monorepo'],
   appliesWhen: ['generate-code', 'review'],
   content: 'Import only from a package\'s public entrypoint (`@scope/pkg`), never from internal files (`@scope/pkg/src/internal/...`).',
-});
+};
 
-export const TS_VALIDATE_BOUNDARY_INPUT = ruleSnippet({
+export const TS_NO_DEEP_IMPORTS = packageRuleSnippet(NO_DEEP_IMPORTS_RULE);
+
+export const TS_VALIDATE_BOUNDARY_INPUT = packageRuleSnippet({
   id: 'ts.validate-boundary-input',
   title: 'Validate untrusted input at boundaries',
   priority: 'high',
@@ -105,7 +141,7 @@ export const TS_VALIDATE_BOUNDARY_INPUT = ruleSnippet({
   content: 'External payloads (HTTP, IPC, files) must be parsed/validated (e.g. zod, custom guard) before crossing into the typed domain.',
 });
 
-export const TS_BRANDED_IDS = ruleSnippet({
+export const TS_BRANDED_IDS = packageRuleSnippet({
   id: 'ts.branded-ids',
   title: 'Brand critical identifiers',
   priority: 'medium',
@@ -114,16 +150,28 @@ export const TS_BRANDED_IDS = ruleSnippet({
   content: 'For ids that travel widely (UserId, OrderId, etc.) use branded types so they cannot be accidentally swapped with raw strings/numbers.',
 });
 
-export const TS_NO_CIRCULAR_IMPORTS = ruleSnippet({
+const NO_CIRCULAR_IMPORTS_RULE: RuleSnippetOptions = {
   id: 'ts.no-circular-imports',
   title: 'No circular imports',
   priority: 'critical',
   tags: ['typescript', 'monorepo'],
   appliesWhen: ['generate-code', 'review'],
   content: 'Cycles produce unpredictable initialisation order. If you need bidirectional knowledge, split into a shared types module both sides depend on.',
-});
+};
 
-export const TS_AGENT_SMALL_DIFFS = ruleSnippet({
+export const TS_NO_CIRCULAR_IMPORTS = packageRuleSnippet(NO_CIRCULAR_IMPORTS_RULE);
+
+// A kind-agnostic governance preset (enterprise-review-gated — "large org
+// repositories", no profile, no stack) seeds these two rules on a repo of ANY
+// stack, where a fresh Java or Go repo has no package.json: its copies point at
+// the config init writes instead (round 15 follow-up review — the package.json
+// copies read STALE on a fresh non-JS repo). Same ids, same text; a resolved
+// composition keeps one per id (first contributor wins).
+export const TS_NO_DEEP_IMPORTS_ANY_REPO = sharkcraftRuleSnippet(NO_DEEP_IMPORTS_RULE);
+
+export const TS_NO_CIRCULAR_IMPORTS_ANY_REPO = sharkcraftRuleSnippet(NO_CIRCULAR_IMPORTS_RULE);
+
+export const TS_AGENT_SMALL_DIFFS = sharkcraftRuleSnippet({
   id: 'ts.agent.small-diffs',
   title: 'Prefer small incremental changes',
   priority: 'high',
@@ -134,7 +182,7 @@ export const TS_AGENT_SMALL_DIFFS = ruleSnippet({
 
 // ─── Modern Angular rules ──────────────────────────────────────────────────
 
-export const NG_STANDALONE_COMPONENTS = ruleSnippet({
+export const NG_STANDALONE_COMPONENTS = angularRuleSnippet({
   id: 'angular.standalone-components',
   title: 'Prefer standalone components',
   priority: 'high',
@@ -143,7 +191,7 @@ export const NG_STANDALONE_COMPONENTS = ruleSnippet({
   content: 'New components, directives and pipes should be standalone unless an existing NgModule contract requires otherwise.',
 });
 
-export const NG_ON_PUSH = ruleSnippet({
+export const NG_ON_PUSH = angularRuleSnippet({
   id: 'angular.on-push',
   title: 'Use OnPush change detection',
   priority: 'high',
@@ -152,7 +200,7 @@ export const NG_ON_PUSH = ruleSnippet({
   content: 'Components default to `ChangeDetectionStrategy.OnPush` unless they intentionally rely on default CD. Combine with signals/observables for explicit reactivity.',
 });
 
-export const NG_SIGNALS_FIRST = ruleSnippet({
+export const NG_SIGNALS_FIRST = angularRuleSnippet({
   id: 'angular.signals-first',
   title: 'Prefer signals for local reactive state',
   priority: 'high',
@@ -161,7 +209,7 @@ export const NG_SIGNALS_FIRST = ruleSnippet({
   content: 'Use `signal()` for local state and `computed()` for derived values. Use `effect()` only for side effects (DOM/I/O). Do not write to signals inside effects.',
 });
 
-export const NG_RXJS_NO_NESTED_SUBSCRIBE = ruleSnippet({
+export const NG_RXJS_NO_NESTED_SUBSCRIBE = angularRuleSnippet({
   id: 'angular.rxjs.no-nested-subscribe',
   title: 'No nested `subscribe`',
   priority: 'critical',
@@ -170,7 +218,7 @@ export const NG_RXJS_NO_NESTED_SUBSCRIBE = ruleSnippet({
   content: 'Use `switchMap` / `concatMap` / `mergeMap` / `exhaustMap` deliberately to compose streams. A second `.subscribe()` inside a `.subscribe()` body is almost always a bug.',
 });
 
-export const NG_LIFECYCLE_SAFE_CLEANUP = ruleSnippet({
+export const NG_LIFECYCLE_SAFE_CLEANUP = angularRuleSnippet({
   id: 'angular.rxjs.lifecycle-cleanup',
   title: 'Use lifecycle-safe cleanup for subscriptions',
   priority: 'high',
@@ -179,7 +227,7 @@ export const NG_LIFECYCLE_SAFE_CLEANUP = ruleSnippet({
   content: 'Wire subscriptions through `takeUntilDestroyed()` (Angular 16+) or a destroy `Subject` so observables tear down with the component.',
 });
 
-export const NG_TRACK_BY = ruleSnippet({
+export const NG_TRACK_BY = angularRuleSnippet({
   id: 'angular.track-by',
   title: 'Use `trackBy` / `@for track`',
   priority: 'high',
@@ -188,7 +236,7 @@ export const NG_TRACK_BY = ruleSnippet({
   content: 'Always supply a `trackBy` function (or `track` expression in the new control flow) for lists to avoid full DOM re-rendering on every change.',
 });
 
-export const NG_NO_BUSINESS_LOGIC_IN_TEMPLATE = ruleSnippet({
+export const NG_NO_BUSINESS_LOGIC_IN_TEMPLATE = angularRuleSnippet({
   id: 'angular.no-business-logic-in-template',
   title: 'Keep business logic out of templates',
   priority: 'medium',
@@ -197,7 +245,7 @@ export const NG_NO_BUSINESS_LOGIC_IN_TEMPLATE = ruleSnippet({
   content: 'Templates should bind to fields, signals, getters and pipes. Complex predicates or transformations belong in the component class or a pure pipe.',
 });
 
-export const NG_TYPED_REACTIVE_FORMS = ruleSnippet({
+export const NG_TYPED_REACTIVE_FORMS = angularRuleSnippet({
   id: 'angular.typed-reactive-forms',
   title: 'Use typed reactive forms',
   priority: 'high',
@@ -206,7 +254,7 @@ export const NG_TYPED_REACTIVE_FORMS = ruleSnippet({
   content: 'Prefer typed `FormGroup<T>` / `FormControl<T>` so the form value matches the domain model. Avoid `any` form values.',
 });
 
-export const NG_LAZY_ROUTES = ruleSnippet({
+export const NG_LAZY_ROUTES = angularRuleSnippet({
   id: 'angular.lazy-routes',
   title: 'Lazy-load feature routes',
   priority: 'high',
@@ -215,7 +263,7 @@ export const NG_LAZY_ROUTES = ruleSnippet({
   content: 'Use `loadComponent` / `loadChildren` for feature routes so the initial bundle stays small. Heavy components should not be eager-loaded.',
 });
 
-export const NG_GUARDS_SMALL = ruleSnippet({
+export const NG_GUARDS_SMALL = angularRuleSnippet({
   id: 'angular.guards-small',
   title: 'Keep guards / resolvers small',
   priority: 'medium',
@@ -224,7 +272,7 @@ export const NG_GUARDS_SMALL = ruleSnippet({
   content: 'Guards/resolvers should make a decision quickly. Business logic belongs in a service called by the guard, not inline.',
 });
 
-export const NG_NO_DEEP_LIB_IMPORTS = ruleSnippet({
+export const NG_NO_DEEP_LIB_IMPORTS = angularRuleSnippet({
   id: 'angular.no-deep-lib-imports',
   title: 'No deep imports across libraries',
   priority: 'critical',
@@ -233,7 +281,7 @@ export const NG_NO_DEEP_LIB_IMPORTS = ruleSnippet({
   content: 'Import from a library\'s `index.ts` barrel only. Deep paths break Nx boundaries and the public API contract.',
 });
 
-export const NG_FEATURE_FOLDERS = ruleSnippet({
+export const NG_FEATURE_FOLDERS = angularRuleSnippet({
   id: 'angular.feature-folders',
   title: 'Prefer feature-oriented folders',
   priority: 'medium',
@@ -242,7 +290,7 @@ export const NG_FEATURE_FOLDERS = ruleSnippet({
   content: 'Group component + service + tests by feature, not by file kind. Avoid `components/`, `services/`, etc. as top-level grab-bags.',
 });
 
-export const NG_NO_GOD_SERVICES = ruleSnippet({
+export const NG_NO_GOD_SERVICES = angularRuleSnippet({
   id: 'angular.no-god-services',
   title: 'Avoid god services',
   priority: 'high',
@@ -251,7 +299,7 @@ export const NG_NO_GOD_SERVICES = ruleSnippet({
   content: 'A service should own a focused concern. If a service mixes UI state, API calls, and business rules, split it.',
 });
 
-export const NG_DOMAIN_NO_UI_IMPORTS = ruleSnippet({
+export const NG_DOMAIN_NO_UI_IMPORTS = angularRuleSnippet({
   id: 'angular.domain.no-ui-imports',
   title: 'Domain services must not import UI',
   priority: 'critical',
@@ -260,7 +308,7 @@ export const NG_DOMAIN_NO_UI_IMPORTS = ruleSnippet({
   content: 'Domain / data services live below the UI layer. They must not import components, templates, or anything from `@angular/animations`/`@angular/router`.',
 });
 
-export const NG_ACCESSIBLE = ruleSnippet({
+export const NG_ACCESSIBLE = angularRuleSnippet({
   id: 'angular.accessible',
   title: 'Semantic HTML + keyboard support',
   priority: 'high',
@@ -269,7 +317,7 @@ export const NG_ACCESSIBLE = ruleSnippet({
   content: 'Interactive elements must be reachable by keyboard, have visible focus, and use semantic HTML. Use ARIA only where semantic HTML is insufficient.',
 });
 
-export const NG_AVOID_BYPASS_SECURITY = ruleSnippet({
+export const NG_AVOID_BYPASS_SECURITY = angularRuleSnippet({
   id: 'angular.security.no-bypass',
   title: 'Avoid `bypassSecurityTrust*`',
   priority: 'critical',

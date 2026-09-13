@@ -17,6 +17,7 @@ import { formatEntryFull, projectKnowledgeEntryForJson } from '../format/knowled
 import { MarkdownKnowledgeLoader } from '../load/markdown-knowledge-loader.ts';
 import type { IKnowledgeEntry } from '../model/knowledge-entry.ts';
 import { validateKnowledgeEntries } from '../validate/validate-knowledge-entries.ts';
+import { KnowledgeIssueSeverity } from '../validate/knowledge-issue-severity.ts';
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -79,7 +80,7 @@ describe('load-time validation (shape only)', () => {
       entry({ id: 'app.self', supersededBy: ['app.self'], seeAlso: ['app.self'] }),
     ]);
     const xref = r.issues.filter((i) => i.code === 'invalid-cross-reference');
-    expect(xref.map((i) => i.severity).sort()).toEqual(['error', 'warning']);
+    expect(xref.map((i) => i.severity).sort()).toEqual([KnowledgeIssueSeverity.Error, KnowledgeIssueSeverity.Warning]);
     expect(xref.find((i) => i.severity === 'error')?.message).toContain('supersededBy');
     expect(r.valid).toBe(false);
   });

@@ -17,6 +17,7 @@
  */
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { knowledgeReferences } from '@shrkcrft/knowledge';
 import {
   coverageShortfall,
   DEAD_SELECTOR_CAUSES,
@@ -33,7 +34,7 @@ import {
 import type { ISearchTuningKeyProbe } from './i-search-tuning-key-probe.ts';
 import { searchTuningKeyProbes } from './search-tuning-key-probes.ts';
 import { ContributionKind } from './contribution-kind.ts';
-import { resolveEntryFile } from './contribution-load-failures.ts';
+import { MARKDOWN_FILE_SLOT, rejectedEntrySlot, resolveEntryFile } from './contribution-load-failures.ts';
 import type { IUnresolvableReference } from './i-unresolvable-reference.ts';
 import type { IUnresolvableReferenceScan } from './i-unresolvable-reference-scan.ts';
 import { UnresolvableReason } from './unresolvable-reason.ts';
@@ -65,7 +66,9 @@ import {
 } from './reference-kind-declarations.ts';
 import { PROBED_ID_FIELDS } from './probed-id-fields.ts';
 import { ProbedIdSource } from './probed-id-source.ts';
-import { listConventions } from './convention-registry.ts';
+import { listConventions, type IConventionEntry } from './convention-registry.ts';
+import { isFrameworkId, listFrameworkIds } from '@shrkcrft/workspace';
+import { fileLanguageForExtension, fileLanguageIds } from './file-languages.ts';
 import {
   ROUTING_RECOMMENDS_CHANNEL_KEYS,
   ROUTING_RECOMMENDS_CHANNELS,
@@ -124,6 +127,10 @@ export enum SelfConfigSeverityV2 {
  *     produces it (a source lock holds that; round 12, 12.4).
  */
 export type SelfConfigKind =
+  // Round 15: the two builtin vocabularies a convention's `appliesTo` names
+  // with no reference kind — `FrameworkId` and the file-language table.
+  | 'framework'
+  | 'language'
   | 'knowledge'
   | 'command'
   | 'helper'
@@ -702,10 +709,16 @@ function idProbeCoverage(subject: string, unit: string, probe: IIdProbe): IVerdi
       unit,
       expected: probe.probed,
       examined: probe.probed - probe.unverified,
+      // The empty-registry reason explains a GAP, so it rides only with one
+      // (round 15): a fully examined record printed "could not be checked
+      // (their kind's registry is empty …)" beside examined === expected.
       ...(probe.unverified > 0
-        ? { unexamined: probe.unverifiedLabels.slice(0, 20), unexaminedTotal: probe.unverified }
+        ? {
+            unexamined: probe.unverifiedLabels.slice(0, 20),
+            unexaminedTotal: probe.unverified,
+            reason: emptyRegistryReason(probe),
+          }
         : {}),
-      reason: emptyRegistryReason(probe),
     },
   ];
 }
@@ -717,7 +730,7 @@ function checkKnowledgeFileRefs(
   findings: ISelfConfigFindingV2[],
 ): void {
   for (const k of inspection.knowledgeEntries) {
-    for (const ref of k.references ?? []) {
+    for (const ref of knowledgeReferences(k)) {
       if (ref.kind !== 'file' || !ref.path) continue;
       const abs = nodePath.isAbsolute(ref.path)
         ? ref.path
@@ -1433,11 +1446,61 @@ async function probeRegistrationHintIds(
 // ─── 8b. Conventions → applicability profile ids ──────────────────────────
 
 /**
+ * The two builtin vocabularies a convention's `appliesTo` names without a
+ * reference kind (round 15, 15.1): `frameworks` → THE `FrameworkId` list
+ * (`@shrkcrft/workspace`), `languages` → THE file-language table (the `shrk
+ * stats` vocabulary). Neither is ever empty, so a miss is a real miss — an
+ * info `convention-<framework|language>-missing` finding with a did-you-mean,
+ * like `convention-profile-missing`: that value can never match.
+ */
+function checkConventionVocabularies(e: IConventionEntry, findings: ISelfConfigFindingV2[]): void {
+  const frameworks = listFrameworkIds();
+  for (const id of readIdList(e.convention, 'appliesTo.frameworks') ?? []) {
+    if (typeof id !== 'string' || id.length === 0 || isFrameworkId(id)) continue;
+    const nearest = nearestIds(id, frameworks, 1)[0]?.id;
+    pushFinding(findings, {
+      severity: SelfConfigSeverityV2.Info,
+      code: 'convention-framework-missing',
+      sourceKind: 'convention',
+      sourceId: e.convention.id,
+      targetKind: 'framework',
+      targetId: id,
+      relation: 'related',
+      file: e.sourceFile,
+      message: `Convention "${e.convention.id}" appliesTo.frameworks names framework "${id}", which is not a framework id the detector reports (${frameworks.join(', ')}) — that value can never match.`,
+      ...(nearest ? { suggestedFix: `Did you mean "${nearest}"?` } : {}),
+      nextCommand: 'shrk inspect',
+    });
+  }
+  const languages = fileLanguageIds();
+  for (const id of readIdList(e.convention, 'appliesTo.languages') ?? []) {
+    if (typeof id !== 'string' || id.length === 0 || languages.includes(id)) continue;
+    // `ts` is an extension, not a language — name the language that owns it.
+    const nearest = fileLanguageForExtension(id)?.id ?? nearestIds(id, languages, 1)[0]?.id;
+    pushFinding(findings, {
+      severity: SelfConfigSeverityV2.Info,
+      code: 'convention-language-missing',
+      sourceKind: 'convention',
+      sourceId: e.convention.id,
+      targetKind: 'language',
+      targetId: id,
+      relation: 'related',
+      file: e.sourceFile,
+      message: `Convention "${e.convention.id}" appliesTo.languages names language "${id}", which is not a language id (the \`shrk stats\` vocabulary, by file extension) — that value can never match.`,
+      ...(nearest ? { suggestedFix: `Did you mean "${nearest}"?` } : {}),
+      nextCommand: 'shrk stats',
+    });
+  }
+}
+
+/**
  * A convention's `appliesTo` id fields, per THE binding table — today
- * `appliesTo.profileIds` → `workspace-profile`. It was never probed at all, so
- * a typo'd profile id could never surface. Resolution only: `conventions
- * check` does not yet FILTER on profileIds (making a firing gate fire less is
- * not strictly more honest), which the field's JSDoc says.
+ * `appliesTo.profileIds` → `workspace-profile` — plus the framework and
+ * language vocabularies ({@link checkConventionVocabularies}). Round 15: these
+ * filters now SCOPE `conventions check` (`conventionApplicability`), so a
+ * value that resolves nowhere is a filter that can never match; this family
+ * names it. Applicability itself (detected or not) is not a doctor finding —
+ * `conventions check` prints a not-applicable convention with its reason.
  */
 async function checkConventionApplicability(
   inspection: ISharkcraftInspection,
@@ -1483,6 +1546,7 @@ async function checkConventionApplicability(
         },
       );
     }
+    checkConventionVocabularies(e, findings);
   }
   return {
     coverage: idProbeCoverage('conventions', 'applicability profile ids', probe),
@@ -1799,14 +1863,17 @@ function checkContributionRejections(
 ): void {
   for (const r of rejections) {
     const f = rejectionFindingOf(r.kind, r.cause);
-    const where = r.index >= 0 ? `${r.exportName ?? ''}[${r.index}]` : (r.exportName ?? 'default');
-    const who = r.entryId !== undefined ? `"${r.entryId}"` : `at ${where}`;
+    // THE slot label (round 15 closing, A5): a whole Markdown document reads
+    // `(Markdown file)` — it read `decision at default in <file>.md (default)`.
+    const where = rejectedEntrySlot(r);
+    const markdownFile = where === MARKDOWN_FILE_SLOT;
+    const who = r.entryId !== undefined ? `"${r.entryId}"` : markdownFile ? '(no id)' : `at ${where}`;
     for (const reason of r.reasons) {
       pushFinding(findings, {
         severity: SelfConfigSeverityV2.Error,
         code: f.code,
         sourceKind: f.kind,
-        sourceId: r.entryId ?? `${r.file}:${where}`,
+        sourceId: r.entryId ?? (markdownFile ? r.file : `${r.file}:${where}`),
         targetKind: 'schema',
         targetId: validatorField(reason),
         relation: 'validates',
@@ -1953,7 +2020,7 @@ async function collectCommandSites(inspection: ISharkcraftInspection): Promise<I
   for (const k of inspection.knowledgeEntries) {
     const origin = k.source?.origin ?? undefined;
     add('knowledge', k.id, 'actionHints.commands', k.actionHints?.commands, W, 'references', origin);
-    const refCommands = (k.references ?? [])
+    const refCommands = knowledgeReferences(k)
       .filter((r) => r.kind === 'command')
       .map((r) => r.id ?? r.command)
       .filter((c): c is string => typeof c === 'string' && c.length > 0);

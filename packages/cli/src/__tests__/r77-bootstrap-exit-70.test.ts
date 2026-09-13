@@ -62,7 +62,12 @@ function fakeInstall(which: (typeof ENTRIES)[number], main: string): { root: str
 }
 
 function run(runtime: 'node' | 'bun', file: string, args: readonly string[] = []): { status: number | null; stdout: string; stderr: string } {
-  const res = spawnSync(runtime, [file, ...args], {
+  // The fake install has no node_modules, so a plain `bun` would try to
+  // auto-install the missing package from the registry and hang offline. A real
+  // tool install always has node_modules (which turns auto-install off), so
+  // `--no-install` keeps the test hermetic without changing what it proves.
+  const argv = runtime === 'bun' ? ['--no-install', file, ...args] : [file, ...args];
+  const res = spawnSync(runtime, argv, {
     cwd: tempDir('r77-consumer-'),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],

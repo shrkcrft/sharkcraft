@@ -25,9 +25,18 @@
 import { existsSync, readdirSync, readFileSync, statSync, type Stats } from 'node:fs';
 import * as nodePath from 'node:path';
 import { globListSelects, globToRegex } from '@shrkcrft/boundaries';
-import type { IAssetReference } from '@shrkcrft/core';
+import { KnowledgeReferenceRoot, type IAssetReference } from '@shrkcrft/core';
 import {
   KNOWLEDGE_REFERENCE_KINDS,
+  referenceRootProblem,
+  anchorShapeProblem,
+  anchorsListProblem,
+  declaredAnchorItems,
+  declaredReferenceItems,
+  knowledgeAnchors,
+  knowledgeSourceFormat,
+  referenceShapeProblem,
+  referencesListProblem,
   todayUtcIso,
   verifiedOnAgeDays,
   type IKnowledgeAnchor,
@@ -60,15 +69,36 @@ import type { IKnowledgeReferenceKindBucket } from './knowledge-reference-kind-b
 import type { IKnowledgeStaleAdvisory } from './knowledge-stale-advisory.ts';
 import type { IKnowledgeAgedEntry } from './knowledge-aged-entry.ts';
 import { KnowledgeAdvisoryCode } from './knowledge-advisory-code.ts';
+import { knowledgeRejectedEntries } from './knowledge-entry-rejections.ts';
+import type { IKnowledgeRejectedEntry } from './knowledge-rejected-entry.ts';
 import { ReferenceAssetKind } from './reference-asset-kind.ts';
 import type { IReferenceSubject } from './reference-subject.ts';
+import { stalePathHint } from './stale-path-hint.ts';
+import type { IStalePathHintInput } from './i-stale-path-hint-input.ts';
 import { buildSymbolIndex, type ISymbolIndex } from './symbol-index.ts';
 // The `command` reference case (and its anchor twin) — one injected resolver.
 import { COMMAND_INDEX_NOT_INJECTED, resolveShrkCommandReference } from './reference-registry.ts';
 import { CommandResolutionStatus } from './command-resolution-status.ts';
 import { resolveSymbolInFile, SymbolResolution } from './symbol-index.ts';
+// Round 15 follow-up (F7): a pack's `root: pack` reference resolves against its package directory.
+import type { IReferencePackOrigin } from './i-reference-pack-origin.ts';
+import { packOriginByName, packOriginOfFile } from './reference-pack-origin.ts';
 
 export const KNOWLEDGE_STALE_SCHEMA = 'sharkcraft.knowledge-stale/v1';
+
+/** The `byReferenceKind` bucket of an item with no kind to bucket under (a string, a non-list value). */
+const MALFORMED_KIND_BUCKET = '(malformed)';
+
+/**
+ * A declared value as a check row carries it: `null` / `undefined` become their
+ * text, so no renderer dereferences them; anything else as declared
+ * (`formatKnowledgeReference` renders a non-object as written). The CHECK reads
+ * the original, so a `null` item says "is not an object (got null)" — the
+ * validator's words — not "is the string \"null\"".
+ */
+function displayedReference(value: unknown): IKnowledgeReference {
+  return (value === null || value === undefined ? String(value) : value) as IKnowledgeReference;
+}
 
 export enum ReferenceCheckOutcome {
   Ok = 'ok',
@@ -204,6 +234,15 @@ export interface IKnowledgeStaleReport {
   entryVerdicts: ReadonlyArray<IKnowledgeEntryVerdictRecord>;
   /** Every unverifiable entry id in scope (renderers cap; this never does). */
   unverifiableIds: ReadonlyArray<string>;
+  /**
+   * Round 15 follow-up (F3): knowledge-family entries the LOADER REFUSED (THE
+   * rejection channel, `knowledgeRejectedEntries`). Never in {@link entries} or
+   * {@link entryVerdicts} — nothing they claim was read, let alone checked — so
+   * the verdict counts each one UNEXAMINED (an INVALID-class row; `--fail-on
+   * invalid` makes it a failure). Never narrowed by `changedFiles`: a refused
+   * entry's references were never read, so no changeset can prove it untouched.
+   */
+  rejectedEntries: ReadonlyArray<IKnowledgeRejectedEntry>;
   /** Non-ok checks per {@link ReferenceFailure} — knowledge references, anchors and other assets. */
   failureCounts: Readonly<Record<ReferenceFailure, number>>;
   /** Per asset kind. `scanned: 0` means NOT IN SWEEP — say so, never render it as clean zeros. */
@@ -503,10 +542,23 @@ function workspacePackages(inspection: ISharkcraftInspection): ReadonlyMap<strin
   return out;
 }
 
-function checkPackageReference(inspection: ISharkcraftInspection, id: string): IRefResult {
+function checkPackageReference(
+  inspection: ISharkcraftInspection,
+  id: string,
+  origin?: IReferencePackOrigin,
+): IRefResult {
   const dir = workspacePackages(inspection).get(id);
   if (dir) {
     return { outcome: ReferenceCheckOutcome.Ok, message: `Package exists: ${id} (${dir})` };
+  }
+  // A pack's entry naming the pack that ships it (round 15 follow-up): the
+  // consumer's root package.json names neither its installed packs nor their
+  // names, but the contributing pack is installed by definition.
+  if (origin && origin.packageName === id) {
+    return {
+      outcome: ReferenceCheckOutcome.Ok,
+      message: `Package exists: ${id} (the contributing pack, installed at ${origin.displayRoot})`,
+    };
   }
   // Last-resort backstop for repos without a `workspaces` field — reported as
   // probable, because a directory name is not a package name.
@@ -728,14 +780,114 @@ function checkReference(
   ref: IKnowledgeReference,
   graph?: ISymbolGraphResolver,
   excludeDirs: readonly string[] = [],
+  origin?: IReferencePackOrigin,
+  subject?: Pick<IStalePathHintInput, 'sourceFormat' | 'source'>,
 ): IRefResult {
-  const base = checkReferenceTarget(inspection, ref, graph);
+  // THE item-shape predicate the validator applies (a string the grammar
+  // refused, a number, a non-string `path`): MALFORMED here — never a crash in a
+  // path join, never a silent row.
+  const shape = referenceShapeProblem(ref);
+  if (shape) {
+    return {
+      outcome: ReferenceCheckOutcome.Invalid,
+      failure: ReferenceFailure.Malformed,
+      message: `malformed reference: ${shape}.`,
+    };
+  }
+  // THE `root` predicate the validator applies (round 15 follow-up): `root:
+  // pack` on an asset no pack contributes is MALFORMED — never a silent
+  // fallback to the project root, which would read a different file.
+  const rootProblem = referenceRootProblem(ref, origin !== undefined);
+  if (rootProblem?.severity === 'error') {
+    return {
+      outcome: ReferenceCheckOutcome.Invalid,
+      failure: ReferenceFailure.Malformed,
+      message: `malformed reference: ${rootProblem.message}.`,
+    };
+  }
+  // A `root: pack` that has an effect (the predicate's warning means none)
+  // moves every path read — the target, `contains` / `matches`, a `count`
+  // source — into the contributing pack's directory. The consumer's code graph
+  // never indexes a pack's files, and its count exclusions are consumer paths.
+  const pack = origin !== undefined && rootProblem === undefined && isPackRooted(ref) ? origin : undefined;
+  const rootDir = pack ? pack.packageRoot : inspection.projectRoot;
+  const base = checkReferenceTarget(inspection, ref, pack ? undefined : graph, rootDir, origin);
+  const asserted =
+    base.outcome === ReferenceCheckOutcome.Ok ? applyAssertions(rootDir, ref, base, pack ? [] : excludeDirs) : base;
   const result =
-    base.outcome === ReferenceCheckOutcome.Ok
-      ? applyAssertions(inspection.projectRoot, ref, base, excludeDirs)
-      : base;
-  if (result.outcome === ReferenceCheckOutcome.Ok || result.failure !== undefined) return result;
-  return { ...result, failure: defaultFailure(ref.kind, result.outcome) };
+    asserted.outcome === ReferenceCheckOutcome.Ok || asserted.failure !== undefined
+      ? asserted
+      : { ...asserted, failure: defaultFailure(ref.kind, asserted.outcome) };
+  const labelled = pack ? packRootedResult(result, pack) : result;
+  return withStalePathHint(labelled, ref, origin, pack !== undefined, subject);
+}
+
+/** A reference whose path resolves against its contributing pack's directory (`root: pack`). */
+function isPackRooted(ref: unknown): boolean {
+  return ref !== null && typeof ref === 'object' && (ref as { root?: unknown }).root === KnowledgeReferenceRoot.Pack;
+}
+
+/**
+ * Every row of a pack-rooted reference names the root it resolved against —
+ * the renderers (text, gate violations, markdown, MCP) all print the message.
+ * A missing path is fixed in the pack, never by a consumer-side rename (the
+ * hint is {@link stalePathHint}'s).
+ */
+function packRootedResult(result: IRefResult, pack: IReferencePackOrigin): IRefResult {
+  return { ...result, message: `${result.message} (root: pack — ${pack.packageName} at ${pack.displayRoot})` };
+}
+
+/**
+ * A missing path's hint, from THE authority ({@link stalePathHint}, round 15
+ * closing A3): who declared the reference decides who fixes it — a pack (the
+ * round-15 repro: a pack doc referencing its own file read STALE, with a hint
+ * to rename a file the consumer does not own), a Markdown entry's frontmatter,
+ * or a rename. No other code path sets a missing path's `suggestion`.
+ */
+function withStalePathHint(
+  result: IRefResult,
+  ref: IKnowledgeReference,
+  origin: IReferencePackOrigin | undefined,
+  packRooted: boolean,
+  subject: Pick<IStalePathHintInput, 'sourceFormat' | 'source'> | undefined,
+): IRefResult {
+  if (result.failure !== ReferenceFailure.PathMissing || typeof ref.path !== 'string' || ref.path === '') return result;
+  const suggestion = stalePathHint({
+    kind: String(ref.kind),
+    path: normalizeRel(ref.path),
+    packRooted,
+    ...(origin !== undefined ? { pack: origin } : {}),
+    ...(subject?.sourceFormat !== undefined ? { sourceFormat: subject.sourceFormat } : {}),
+    ...(subject?.source !== undefined ? { source: subject.source } : {}),
+  });
+  return suggestion === undefined ? result : { ...result, suggestion };
+}
+
+/**
+ * A reference as the changeset scope sees it: a pack-rooted path — and a
+ * pack-rooted `count` source's globs, the tree the count is MEASURED over —
+ * made project-relative. Unprefixed, a count over the pack's `src/*.ts` was
+ * scoped in by a change to the CONSUMER's `src/` and never by the pack's.
+ */
+function scopedReference(ref: IAssetReference, origin: IReferencePackOrigin | undefined): IAssetReference {
+  if (!origin || !isPackRooted(ref) || origin.displayRoot === '.') return ref;
+  const at = (rel: string): string => `${origin.displayRoot}/${normalizeRel(rel)}`;
+  const globs = ref.count?.source?.files;
+  return {
+    ...ref,
+    ...(typeof ref.path === 'string' ? { path: at(ref.path) } : {}),
+    ...(ref.count && Array.isArray(globs)
+      ? {
+          count: {
+            ...ref.count,
+            source: {
+              ...ref.count.source,
+              files: globs.map((g) => (typeof g === 'string' && g.startsWith('!') ? `!${at(g.slice(1))}` : at(String(g)))),
+            },
+          },
+        }
+      : {}),
+  };
 }
 
 /** The failure mode of a non-ok check that did not name one. */
@@ -803,8 +955,12 @@ function checkReferenceTarget(
   inspection: ISharkcraftInspection,
   ref: IKnowledgeReference,
   graph?: ISymbolGraphResolver,
+  rootDir: string = inspection.projectRoot,
+  origin?: IReferencePackOrigin,
 ): IRefResult {
-  const projectRoot = inspection.projectRoot;
+  // The directory a path resolves against: the project root, or the
+  // contributing pack's directory for a `root: pack` reference.
+  const projectRoot = rootDir;
   switch (ref.kind) {
     case 'file': {
       if (!ref.path) return missingField('file', 'path');
@@ -822,7 +978,7 @@ function checkReferenceTarget(
         outcome: ReferenceCheckOutcome.Stale,
         failure: ReferenceFailure.PathMissing,
         message: `Directory missing: ${ref.path}`,
-        suggestion: 'Move the directory or update the knowledge reference.',
+        // The hint is {@link stalePathHint}'s — who declared it decides (A3).
       };
     }
     case 'symbol': {
@@ -864,7 +1020,7 @@ function checkReferenceTarget(
     }
     case 'package': {
       if (!ref.id) return missingField('package', 'id');
-      return checkPackageReference(inspection, ref.id);
+      return checkPackageReference(inspection, ref.id, origin);
     }
     case 'url': {
       // We never fetch URLs. Mark them unknown unless we can resolve to a
@@ -894,12 +1050,12 @@ function missingField(kind: KnowledgeReferenceKind, field: string): IRefResult {
   };
 }
 
+/** A missing file — its hint is {@link stalePathHint}'s, who declared the reference decides (A3). */
 function staleFile(rel: string): IRefResult {
   return {
     outcome: ReferenceCheckOutcome.Stale,
     failure: ReferenceFailure.PathMissing,
     message: `File missing: ${rel}`,
-    suggestion: 'Restore the file or run `shrk knowledge rename-file <old> <new> --dry-run`.',
   };
 }
 
@@ -959,7 +1115,9 @@ function subjectTouchesChangedFiles(
   const changedList = changed.map(normalizeScopePath);
   if (changedList.includes(normalizeScopePath(subject.source))) return true;
   for (const ref of subject.references ?? []) {
-    if (pathTouched(ref.path, changedList)) return true;
+    // A malformed item (a string, a number) points at no path.
+    if (ref === null || typeof ref !== 'object') continue;
+    if (pathTouched(typeof ref.path === 'string' ? ref.path : undefined, changedList)) return true;
     // The scope the count is MEASURED over (`inspectSource` selects through
     // `globListSelects`), so a change to a file its `!` excludes is no touch.
     const globs = ref.count?.source?.files;
@@ -1082,9 +1240,16 @@ function pathOnlyAdvisories(
   refs: readonly IKnowledgeReference[],
   cache: Map<string, ISymbolIndex | null>,
 ): IKnowledgeStaleAdvisory[] {
-  if (refs.length === 0 || !refs.every((r) => r.kind === 'file' || r.kind === 'directory')) return [];
+  // A malformed item (a string, a null, a non-string path) earns no advisory — it is an INVALID row.
+  if (
+    refs.length === 0 ||
+    !refs.every((r) => referenceShapeProblem(r) === undefined && (r.kind === 'file' || r.kind === 'directory'))
+  ) {
+    return [];
+  }
   const files = refs
-    .filter((r) => r.kind === 'file' && r.path !== undefined && TS_SOURCE.test(r.path))
+    // A pack-rooted path names a file in the pack, not in this tree (round 15 follow-up).
+    .filter((r) => r.kind === 'file' && r.path !== undefined && TS_SOURCE.test(r.path) && !isPackRooted(r))
     .map((r) => r.path!);
   if (files.length === 0) return [];
   const names = new Set<string>();
@@ -1175,12 +1340,14 @@ export function buildKnowledgeStaleReport(
     subjectId: string,
     ref: IAssetReference,
     assetKind?: ReferenceAssetKind,
+    origin?: IReferencePackOrigin,
+    subject?: Pick<IStalePathHintInput, 'sourceFormat' | 'source'>,
   ): IKnowledgeReferenceCheck => {
-    const result = checkReference(inspection, ref, options.graph, excludeDirs);
+    const result = checkReference(inspection, ref, options.graph, excludeDirs, origin, subject);
     const outcome = result.outcome;
     const check: IKnowledgeReferenceCheck = {
       entryId: subjectId,
-      reference: ref,
+      reference: displayedReference(ref),
       outcome,
       message: result.message,
       ...(result.confidence ? { symbolConfidence: result.confidence } : {}),
@@ -1190,13 +1357,20 @@ export function buildKnowledgeStaleReport(
       ...(result.actual !== undefined ? { actual: result.actual } : {}),
       ...(assetKind ? { assetKind } : {}),
     };
+    // A malformed item (a string, a number) has no kind to bucket under.
+    const kindKey =
+      ref !== null && typeof ref === 'object' && typeof ref.kind === 'string' ? ref.kind : MALFORMED_KIND_BUCKET;
     tallyOutcome(
-      (byReferenceKind[ref.kind] ??= { checked: 0, ok: 0, stale: 0, missing: 0, unknown: 0, invalid: 0 }),
+      (byReferenceKind[kindKey] ??= { checked: 0, ok: 0, stale: 0, missing: 0, unknown: 0, invalid: 0 }),
       outcome,
     );
     if (result.failure) failureCounts[result.failure] += 1;
     const isStaleOrMissing =
       outcome === ReferenceCheckOutcome.Stale || outcome === ReferenceCheckOutcome.Missing;
+    // A pack's reference is fixed in the pack (round 15 follow-up): a candidate
+    // from THIS tree is never its rename — `fix --knowledge-stale` would point
+    // a pack's entry at a consumer file. Its hint names `root: pack` instead.
+    const findRename = isStaleOrMissing && origin === undefined;
     // A bare MEMBER name: the qualified spelling resolves in the same file, so
     // it is the replacement (`shrk fix --knowledge-stale` applies it).
     if (isStaleOrMissing && result.suggestedSymbol) {
@@ -1210,7 +1384,7 @@ export function buildKnowledgeStaleReport(
     // only for the single unambiguous candidate. Wide mode also
     // emits scored candidate lists for the multi-candidate cases that
     // strict silently drops.
-    if (isStaleOrMissing && ref.kind === 'symbol' && ref.symbol && !check.replaceWith) {
+    if (findRename && ref.kind === 'symbol' && ref.symbol && !check.replaceWith) {
       const all = (getSymbolIndex().get(ref.symbol) ?? []).filter((p) => p !== ref.path);
       if (all.length === 1) {
         check.replaceWith = {
@@ -1227,7 +1401,7 @@ export function buildKnowledgeStaleReport(
       }
     }
     // File rename detection (directory move, basename match).
-    if (isStaleOrMissing && ref.kind === 'file' && ref.path && !check.replaceWith) {
+    if (findRename && ref.kind === 'file' && ref.path && !check.replaceWith) {
       const indexed = getFileBasenameIndex();
       const uniq = pickUniqueRenameCandidate(ref.path, indexed);
       if (uniq) {
@@ -1250,7 +1424,7 @@ export function buildKnowledgeStaleReport(
       }
     }
     // Directory rename detection.
-    if (isStaleOrMissing && ref.kind === 'directory' && ref.path && !check.replaceWith) {
+    if (findRename && ref.kind === 'directory' && ref.path && !check.replaceWith) {
       const indexed = getDirBasenameIndex();
       const uniq = pickUniqueRenameCandidate(ref.path, indexed);
       if (uniq) {
@@ -1276,26 +1450,70 @@ export function buildKnowledgeStaleReport(
   };
 
   for (const entry of inspection.knowledgeEntries as IKnowledgeEntry[]) {
+    // EVERY declared item is judged (`declaredReferenceItems` /
+    // `declaredAnchorItems`): a non-list `references` or `anchors` is never
+    // iterated (it crashed every inspection-backed verb) — each is reported
+    // below as one INVALID row — and a malformed item is checked into an
+    // INVALID row carrying the validator's words (`displayedReference`).
+    const refs = declaredReferenceItems(entry) as readonly IKnowledgeReference[];
+    const anchorItems = declaredAnchorItems(entry);
+    // The contributing pack (round 15 follow-up) — what a `root: pack` reference resolves against.
+    const entrySource = inspection.entrySources?.get(entry.id);
+    const packOrigin =
+      entrySource?.type === 'pack' ? packOriginByName(inspection, entrySource.packageName) : undefined;
     if (
       options.changedFiles &&
       !subjectTouchesChangedFiles(
         {
           source: relativeSource(projectRoot, entry.source?.origin),
-          references: entry.references ?? [],
-          anchors: entry.anchors ?? [],
+          references: refs.map((r) => scopedReference(r, packOrigin)),
+          anchors: knowledgeAnchors(entry),
         },
         options.changedFiles,
       )
     ) {
       continue;
     }
-    const refs = entry.references ?? [];
-    const anchors = entry.anchors ?? [];
+    const sourceFormat = knowledgeSourceFormat(entry);
     let checkable = 0;
     let failing = 0;
+    // A non-list `references` / `anchors` value (TypeScript or Markdown), or a
+    // malformed anchor item: declared, never checkable — MALFORMED, the same
+    // problem the validator reports. One INVALID row each.
+    const malformedRow = (declaredValue: unknown, message: string): void => {
+      counts.invalid += 1;
+      failureCounts[ReferenceFailure.Malformed] += 1;
+      tallyOutcome(
+        (byReferenceKind[MALFORMED_KIND_BUCKET] ??= { checked: 0, ok: 0, stale: 0, missing: 0, unknown: 0, invalid: 0 }),
+        ReferenceCheckOutcome.Invalid,
+      );
+      referenceChecks.push({
+        entryId: entry.id,
+        // As declared: a string renders as written, a map as `kind:value`.
+        reference: displayedReference(declaredValue),
+        outcome: ReferenceCheckOutcome.Invalid,
+        failure: ReferenceFailure.Malformed,
+        message,
+      });
+    };
+    const listProblem = referencesListProblem(entry.references, sourceFormat);
+    if (listProblem) {
+      totalReferences += 1;
+      malformedRow(entry.references, `malformed reference: ${listProblem}.`);
+    }
+    // An anchor row names WHICH anchor (`anchors`, `anchor #N` — the doctor's
+    // spelling): rendered through the reference grammar, an anchor object read
+    // `undefined:<id>`.
+    const anchorsProblem = anchorsListProblem(entry.anchors);
+    if (anchorsProblem) {
+      totalAnchors += 1;
+      malformedRow('anchors', `malformed anchor: ${anchorsProblem}.`);
+    }
+    // Who fixes a missing path (A3): a Markdown entry names its `references:` frontmatter.
+    const hintSubject = { sourceFormat, source: relativeSource(projectRoot, entry.source?.origin) };
     for (const ref of refs) {
       totalReferences += 1;
-      const check = checkOne(entry.id, ref);
+      const check = checkOne(entry.id, ref, undefined, packOrigin, hintSubject);
       if (check.outcome === ReferenceCheckOutcome.Ok) counts.ok += 1;
       else if (check.outcome === ReferenceCheckOutcome.Stale) counts.stale += 1;
       else if (check.outcome === ReferenceCheckOutcome.Missing) counts.missing += 1;
@@ -1307,8 +1525,16 @@ export function buildKnowledgeStaleReport(
       }
       referenceChecks.push(check);
     }
-    for (const anchor of anchors) {
+    for (const [i, item] of anchorItems.entries()) {
       totalAnchors += 1;
+      // THE anchor item-shape predicate the validator applies: a `null` item
+      // crashed `checkAnchor` (`anchor.kind`), a non-string path its path join.
+      const shape = anchorShapeProblem(item);
+      if (shape) {
+        malformedRow(`anchor #${i + 1}`, `malformed anchor: ${shape}.`);
+        continue;
+      }
+      const anchor = item as IKnowledgeAnchor;
       const inspected = checkAnchor(inspection, anchor, options.graph);
       const failure =
         inspected.outcome === ReferenceCheckOutcome.Ok
@@ -1328,7 +1554,7 @@ export function buildKnowledgeStaleReport(
       });
     }
     const verdict = classifyChecks(checkable, failing);
-    const declared = refs.length + anchors.length;
+    const declared = refs.length + anchorItems.length + (listProblem ? 1 : 0) + (anchorsProblem ? 1 : 0);
     const reason =
       verdict !== KnowledgeEntryVerdict.Unverifiable
         ? undefined
@@ -1336,11 +1562,14 @@ export function buildKnowledgeStaleReport(
           ? KnowledgeUnverifiableReason.NoReferences
           : KnowledgeUnverifiableReason.OnlyUnverifiableReferences;
     const type = String(entry.type);
+    const origin = inspection.entrySources?.get(entry.id);
     entryVerdicts.push({
       entryId: entry.id,
       verdict,
       ...(reason ? { reason } : {}),
       source: relativeSource(projectRoot, entry.source?.origin),
+      sourceFormat,
+      ...(origin?.type === 'pack' && origin.packageName ? { pack: origin.packageName } : {}),
       type,
       checkable,
       failing,
@@ -1376,11 +1605,25 @@ export function buildKnowledgeStaleReport(
       references: p.references ?? [],
     })),
   ];
+  // The contributing pack of a boundary rule / policy check a pack declares
+  // (round 15 follow-up) — the same `root: pack` resolution a knowledge entry gets.
+  const subjectPackOrigin = (subject: IReferenceSubject): IReferencePackOrigin | undefined => {
+    if (subject.assetKind === ReferenceAssetKind.BoundaryRule) {
+      const src = inspection.boundarySources?.get(subject.id);
+      return src?.type === 'pack' ? packOriginByName(inspection, src.packageName) : undefined;
+    }
+    const decl = policyDecls.find((p) => p.qualifiedId === subject.id);
+    return decl?.source === 'pack' ? packOriginOfFile(inspection, decl.sourceFile) : undefined;
+  };
   for (const subject of subjects) {
+    const packOrigin = subjectPackOrigin(subject);
     if (
       options.changedFiles &&
       !subjectTouchesChangedFiles(
-        { source: subject.source ?? '(unknown source)', references: subject.references },
+        {
+          source: subject.source ?? '(unknown source)',
+          references: subject.references.map((r) => scopedReference(r, packOrigin)),
+        },
         options.changedFiles,
       )
     ) {
@@ -1389,7 +1632,7 @@ export function buildKnowledgeStaleReport(
     let checkable = 0;
     let failing = 0;
     for (const ref of subject.references) {
-      const check = checkOne(subject.id, ref, subject.assetKind);
+      const check = checkOne(subject.id, ref, subject.assetKind, packOrigin);
       if (isCheckableOutcome(check.outcome)) {
         checkable += 1;
         if (isFailingOutcome(check.outcome)) failing += 1;
@@ -1494,6 +1737,7 @@ export function buildKnowledgeStaleReport(
     coverage,
     entryVerdicts,
     unverifiableIds,
+    rejectedEntries: knowledgeRejectedEntries(inspection),
     failureCounts,
     byAssetKind,
     byEntryType,

@@ -1,5 +1,6 @@
 import type { IPackageJson } from './package-json-reader.ts';
 import type { IFrameworkInfo } from './framework-detector.ts';
+import { FrameworkId } from './framework-id.ts';
 
 export enum WorkspaceProfile {
   HasBun = 'has-bun',
@@ -42,6 +43,14 @@ export interface IDetectProfilesInput {
   frameworks: readonly IFrameworkInfo[];
   topLevelDirs: readonly string[];
   hasTsConfig: boolean;
+  /**
+   * Every entry name directly under the project root — files AND directories,
+   * nothing ignored (round 15). `topLevelDirs` lists directories only and
+   * drops ignored ones (`.turbo`), so a marker FILE (`turbo.json`) or an
+   * ignored marker dir could never be seen through it: `has-turborepo` was
+   * detectable only through a `turbo` dependency.
+   */
+  rootEntries?: readonly string[];
 }
 
 function hasDep(pkg: IPackageJson | null, name: string): boolean {
@@ -57,7 +66,8 @@ function hasAnyDep(pkg: IPackageJson | null, names: readonly string[]): boolean 
   return names.some((n) => hasDep(pkg, n));
 }
 
-function hasFramework(frameworks: readonly IFrameworkInfo[], id: string): boolean {
+/** Only a {@link FrameworkId} — a literal outside the detector's vocabulary (`'next'`) never compiles. */
+function hasFramework(frameworks: readonly IFrameworkInfo[], id: FrameworkId): boolean {
   return frameworks.some((f) => f.id === id);
 }
 
@@ -77,6 +87,7 @@ function hasScriptIncluding(pkg: IPackageJson | null, ...needles: string[]): boo
  */
 export function detectProfiles(input: IDetectProfilesInput): IProfileDetectionResult {
   const { packageJson: pkg, frameworks, topLevelDirs, hasTsConfig } = input;
+  const rootEntries = input.rootEntries ?? [];
   const evidence: IProfileEvidence[] = [];
   const add = (profile: WorkspaceProfile, reason: string): void => {
     if (!evidence.some((e) => e.profile === profile)) {
@@ -85,29 +96,33 @@ export function detectProfiles(input: IDetectProfilesInput): IProfileDetectionRe
   };
 
   // ── Language / runtime ────────────────────────────────────────────────
-  if (hasFramework(frameworks, 'bun') || hasDep(pkg, 'bun') || hasDep(pkg, '@types/bun')) {
+  if (hasFramework(frameworks, FrameworkId.Bun) || hasDep(pkg, 'bun') || hasDep(pkg, '@types/bun')) {
     add(WorkspaceProfile.HasBun, 'bun runtime detected via deps or framework signal');
   }
-  if (hasTsConfig || hasDep(pkg, 'typescript') || hasFramework(frameworks, 'typescript')) {
+  if (hasTsConfig || hasDep(pkg, 'typescript') || hasFramework(frameworks, FrameworkId.TypeScript)) {
     add(WorkspaceProfile.HasTypeScript, 'tsconfig.json or typescript dependency present');
   }
 
   // ── Build / workspace tooling ─────────────────────────────────────────
-  if (hasFramework(frameworks, 'nx') || hasDep(pkg, 'nx') || hasDep(pkg, '@nx/workspace')) {
+  if (hasFramework(frameworks, FrameworkId.Nx) || hasDep(pkg, 'nx') || hasDep(pkg, '@nx/workspace')) {
     add(WorkspaceProfile.HasNx, 'nx workspace detected');
   }
-  if (
-    hasDep(pkg, 'turbo') ||
-    topLevelDirs.includes('turbo.json') ||
-    topLevelDirs.includes('.turbo')
-  ) {
-    add(WorkspaceProfile.HasTurborepo, 'turbo dependency or turbo.json present');
+  // Round 15: the markers are read from `rootEntries` — `topLevelDirs` holds
+  // directories only and drops the ignored `.turbo`, so neither marker could
+  // ever be seen and a Turborepo without a `turbo` dependency read undetected.
+  if (hasDep(pkg, 'turbo')) {
+    add(WorkspaceProfile.HasTurborepo, 'turbo dependency');
+  } else if (rootEntries.includes('turbo.json') || rootEntries.includes('.turbo')) {
+    add(
+      WorkspaceProfile.HasTurborepo,
+      rootEntries.includes('turbo.json') ? 'turbo.json present' : '.turbo cache directory present',
+    );
   }
   if (Array.isArray((pkg as { workspaces?: unknown })?.workspaces)) {
     add(WorkspaceProfile.HasPackageWorkspaces, 'package.json workspaces array');
   }
   if (
-    hasFramework(frameworks, 'nx') ||
+    hasFramework(frameworks, FrameworkId.Nx) ||
     Array.isArray((pkg as { workspaces?: unknown })?.workspaces) ||
     topLevelDirs.includes('packages') ||
     topLevelDirs.includes('libs') ||
@@ -118,27 +133,29 @@ export function detectProfiles(input: IDetectProfilesInput): IProfileDetectionRe
 
   // ── UI frameworks ─────────────────────────────────────────────────────
   if (
-    hasFramework(frameworks, 'react') ||
+    hasFramework(frameworks, FrameworkId.React) ||
     hasAnyDep(pkg, ['react', 'react-dom', 'next', '@remix-run/react'])
   ) {
     add(WorkspaceProfile.HasReact, 'react family dependency or framework signal');
   }
-  if (hasFramework(frameworks, 'next') || hasDep(pkg, 'next')) {
+  // The detector's id is `nextjs` — this tested `'next'`, a branch that could
+  // never fire (the `next` dependency fallback masked it).
+  if (hasFramework(frameworks, FrameworkId.NextJs) || hasDep(pkg, 'next')) {
     add(WorkspaceProfile.HasNext, 'next dependency or framework signal');
   }
   if (
-    hasFramework(frameworks, 'angular') ||
+    hasFramework(frameworks, FrameworkId.Angular) ||
     hasAnyDep(pkg, ['@angular/core', '@angular/cli'])
   ) {
     add(WorkspaceProfile.HasAngular, '@angular/* dependency detected');
   }
-  if (hasFramework(frameworks, 'vue') || hasAnyDep(pkg, ['vue', 'nuxt'])) {
+  if (hasFramework(frameworks, FrameworkId.Vue) || hasAnyDep(pkg, ['vue', 'nuxt'])) {
     add(WorkspaceProfile.HasVue, 'vue / nuxt dependency');
   }
 
   // ── Backend ───────────────────────────────────────────────────────────
   if (
-    hasFramework(frameworks, 'nestjs') ||
+    hasFramework(frameworks, FrameworkId.NestJs) ||
     hasAnyDep(pkg, ['@nestjs/core', '@nestjs/common'])
   ) {
     add(WorkspaceProfile.HasNestJS, '@nestjs/* dependency');

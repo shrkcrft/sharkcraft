@@ -19,6 +19,8 @@
  */
 import type { IKnowledgeEntry } from '@shrkcrft/knowledge';
 import type { ICustomCheckReport } from './custom-checks.ts';
+import { knowledgeRenameCommand } from './knowledge-rename-command.ts';
+import { KnowledgeRenameVerb } from './knowledge-rename-verb.ts';
 
 export const CODEMOD_ASSIST_SCHEMA = 'sharkcraft.codemod-assist/v1';
 
@@ -102,7 +104,7 @@ function defaultExternalTool(rule: IKnowledgeEntry, fallback?: string): string {
     return 'eslint custom rule + autofix (when safe)';
   }
   if (tagsLower.has('boundaries') || tagsLower.has('architecture')) {
-    return 'manual review + targeted rename via shrk knowledge rename-symbol';
+    return `manual review + targeted rename via ${knowledgeRenameCommand(KnowledgeRenameVerb.RenameSymbol)}`;
   }
   return 'ts-morph (or manual edits when scope is small)';
 }

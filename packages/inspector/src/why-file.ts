@@ -18,6 +18,7 @@ import { existsSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { boundaryRuleCovers, boundaryRuleSeverity, matchesAny } from '@shrkcrft/boundaries';
 import { deriveApplicability } from '@shrkcrft/rules';
+import { knowledgeAnchors, knowledgeReferences } from '@shrkcrft/knowledge';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
 export const WHY_FILE_SCHEMA = 'sharkcraft.why/v1';
@@ -202,14 +203,14 @@ function ruleReasonForFile(
 ): string | undefined {
   const rel = target.relativePath;
   // 1. Explicit file/directory references that cover the target.
-  for (const ref of r.references ?? []) {
+  for (const ref of knowledgeReferences(r)) {
     const p = (ref.path ?? '').replace(/^\.\//, '');
     if ((ref.kind === 'file' || ref.kind === 'directory') && p && pathCovers(rel, p)) {
       return ref.kind === 'directory' ? `directory reference ${p}` : `file reference ${p}`;
     }
   }
   // 1b. Anchors that point at a covering path.
-  for (const a of r.anchors ?? []) {
+  for (const a of knowledgeAnchors(r)) {
     const p = (a.path ?? '').replace(/^\.\//, '');
     if (p && pathCovers(rel, p)) return `anchor path ${p}`;
   }
@@ -233,7 +234,7 @@ function ruleReasonForFile(
   // 3. Package reference / scope-or-tag equal to the inferred package or layer.
   const labels = [...(r.scope ?? []), ...(r.tags ?? [])];
   if (inferredPackage) {
-    for (const ref of r.references ?? []) {
+    for (const ref of knowledgeReferences(r)) {
       if (ref.kind === 'package' && ref.id && samePath(ref.id, inferredPackage)) {
         return `package reference ${ref.id}`;
       }
@@ -315,7 +316,7 @@ function matchKnowledge(
   const rel = target.relativePath.toLowerCase();
   const out: IWhyKnowledge[] = [];
   for (const k of inspection.knowledgeEntries) {
-    const refs = ((k as { references?: readonly { path?: string }[] }).references ?? []).map((r) => r.path ?? '');
+    const refs = knowledgeReferences(k).map((r) => r.path ?? '');
     const refMatch = refs.some(
       (p) => p.toLowerCase() === rel || p.toLowerCase().endsWith(`/${basename}`),
     );

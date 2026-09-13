@@ -9,6 +9,7 @@ import {
   describeInspectionDiscovery,
   warmReferenceRegistries,
 } from '@shrkcrft/inspector';
+import { knowledgeReferenceListing } from '@shrkcrft/knowledge';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
 function nextHint(cmd: string): string {
@@ -44,9 +45,12 @@ export const getKnowledgeStaleReportTool: IToolDefinition = {
     });
     const c = report.coverage;
     const pct = c.entriesInScope > 0 ? Math.round((c.unverifiable / c.entriesInScope) * 1000) / 10 : 0;
+    // Round 15 follow-up (F3): entries the loader refused — outside the three
+    // buckets, never checked (`data.rejectedEntries` names each).
+    const refused = report.rejectedEntries.length > 0 ? ` · rejected at load: ${report.rejectedEntries.length}` : '';
     return {
       text:
-        `entries in scope: ${c.entriesInScope} · verified: ${c.verified} · stale: ${c.stale} · unverifiable: ${c.unverifiable} (${pct}%)\n` +
+        `entries in scope: ${c.entriesInScope} · verified: ${c.verified} · stale: ${c.stale} · unverifiable: ${c.unverifiable} (${pct}%)${refused}\n` +
         nextHint('shrk knowledge stale-check'),
       data: { ...report, discovery: describeInspectionDiscovery(ctx.inspection) },
     };
@@ -74,14 +78,12 @@ export const getKnowledgeReferencesTool: IToolDefinition = {
         data: null,
       };
     }
+    // THE listing `shrk knowledge references --json` prints (round 15 review):
+    // the usable references + anchors and every malformed item with why. This
+    // returned the raw value while the CLI listed a filtered one.
     return {
       text: nextHint(`shrk knowledge references ${id}`),
-      data: {
-        id: entry.id,
-        title: entry.title,
-        references: entry.references ?? [],
-        anchors: entry.anchors ?? [],
-      },
+      data: knowledgeReferenceListing(entry),
     };
   },
 };

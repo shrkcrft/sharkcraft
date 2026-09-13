@@ -5,6 +5,8 @@ import {
   buildAnchorUpdatePlan,
   buildRenameFilePlan,
   buildRenameSymbolPlan,
+  knowledgeRenameCommand,
+  KnowledgeRenameVerb,
 } from '@shrkcrft/inspector';
 import type { IToolDefinition } from '../server/tool-definition.ts';
 
@@ -32,17 +34,19 @@ export const previewKnowledgeRenameTool: IToolDefinition = {
   },
   async handler(input, ctx) {
     const kind = String(input.kind ?? '');
-    if (kind === 'rename-symbol') {
+    // The next step is built by THE rename-command helper (round 15 lane B,
+    // B1), so a value with a space is quoted and the command always runs.
+    if (kind === KnowledgeRenameVerb.RenameSymbol) {
       const from = String(input.from ?? '');
       const to = String(input.to ?? '');
       const plan = buildRenameSymbolPlan(ctx.inspection, { from, to });
-      return { text: nextHint(`shrk knowledge rename-symbol ${from} ${to}`), data: plan };
+      return { text: nextHint(knowledgeRenameCommand(KnowledgeRenameVerb.RenameSymbol, from, to)), data: plan };
     }
-    if (kind === 'rename-file') {
+    if (kind === KnowledgeRenameVerb.RenameFile) {
       const from = String(input.from ?? '');
       const to = String(input.to ?? '');
       const plan = buildRenameFilePlan(ctx.inspection, { from, to });
-      return { text: nextHint(`shrk knowledge rename-file ${from} ${to}`), data: plan };
+      return { text: nextHint(knowledgeRenameCommand(KnowledgeRenameVerb.RenameFile, from, to)), data: plan };
     }
     if (kind === 'update-anchor') {
       const anchorId = String(input.anchorId ?? '');

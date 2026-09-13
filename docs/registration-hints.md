@@ -22,7 +22,7 @@ interface IRegistrationHint {
   discovery: {
     targetFile?: string | { pattern; expectEmpty: true; reason? };        // fixed relative path
     targetGlobs?: readonly (string | { pattern; expectEmpty: true; reason? })[]; // glob candidates
-    conventionIds?: readonly string[];      // additional filter
+    conventionIds?: readonly string[];      // convention ids the target should satisfy — a cross-reference the doctor resolves, NOT a filter
     profileIds?: readonly string[];         // WorkspaceProfile ids (`shrk profiles list --kind workspace`)
   };
   operations: ReadonlyArray<IRegistrationHintOperation>;

@@ -13,6 +13,7 @@ import {
   type INode,
 } from '@shrkcrft/graph';
 import {
+  conventionScope,
   inspectSharkcraft,
   listConventions,
   type ISharkcraftInspection,
@@ -140,17 +141,24 @@ export async function buildBridge(
     }
   }
 
-  // ── Conventions (IConvention.appliesTo.fileGlobs) ──────────────────
+  // ── Conventions (IConvention.appliesTo, via THE applicability authority) ──
   // Conventions are the richest file-anchored policy a pack ships (the
   // knowledge rules are task-intent / file-agnostic, so they almost never
-  // anchor files). Count their fileGlobs toward `filesWithRule` so the
+  // anchor files). Count their covered files toward `filesWithRule` so the
   // "files covered by rules" metric reflects the real file-anchored policy
   // surface (boundaries + conventions), not a misleading 0.
+  //
+  // Round 15 (15.1): WHICH files a convention covers is `conventionScope` —
+  // the one answer `conventions check` reads too. The bridge used to read
+  // `fileGlobs` alone and skip a convention without them (which check enforces
+  // on every file), and to ignore every other filter.
   const conventions = await listConventions(inspection);
+  const filePaths = files.map((f) => f.path!);
   for (const entry of conventions) {
     const c = entry.convention;
-    const globs = c.appliesTo?.fileGlobs ?? [];
-    if (globs.length === 0) continue;
+    const scope = conventionScope(c, inspection, filePaths);
+    if (!scope.applicable) continue;
+    const covered = new Set(scope.files);
     nodes.push({
       id: `convention:${c.id}`,
       kind: NodeKind.Rule,
@@ -161,10 +169,9 @@ export async function buildBridge(
         ...(c.tags ? { tags: [...c.tags] } : {}),
       },
     });
-    const regexes = globs.map((g) => globToRegex(g));
     const severity = c.severity === 'error' ? 'error' : 'warning';
     for (const f of files) {
-      if (!regexes.some((re) => re.test(f.path!))) continue;
+      if (!covered.has(f.path!)) continue;
       edges.push(
         edge(f.id, `convention:${c.id}`, EdgeKind.AppliesRule, {
           source: 'convention',

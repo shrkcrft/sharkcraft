@@ -245,7 +245,7 @@ export function renderContributionsByFileText(report: IContributionsReport): str
   );
   for (const f of report.files) {
     lines.push(`  ${fileMark(f)} ${f.file}  ${f.kind}${f.packageName ? ` [${f.packageName}]` : ''}  ${fileSummary(f)}`);
-    for (const r of f.rejected) lines.push(`      rejected      ${formatEntryRejection(r)}`);
+    for (const r of f.rejected) lines.push(`      rejected      ${formatEntryRejection({ ...r, file: f.file })}`);
     for (const g of f.unresolvableReferences) {
       lines.push(
         `      unresolvable  ${g.sourceId} ${g.field} → ${g.kind} ${g.ids.map((id) => `'${id}'`).join(', ')} — ${
@@ -277,7 +277,7 @@ export function renderContributionsByFileMarkdown(report: IContributionsReport):
     lines.push('');
     for (const f of detail) {
       lines.push(`- \`${f.file}\``);
-      for (const r of f.rejected) lines.push(`  - rejected: ${formatEntryRejection(r)}`);
+      for (const r of f.rejected) lines.push(`  - rejected: ${formatEntryRejection({ ...r, file: f.file })}`);
       for (const g of f.unresolvableReferences) {
         lines.push(`  - unresolvable: ${g.sourceId} ${g.field} → ${g.kind} ${g.ids.join(', ')} (${g.reason})`);
       }

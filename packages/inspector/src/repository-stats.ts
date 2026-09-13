@@ -14,6 +14,9 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { CommentSyntax } from './comment-syntax.ts';
+import { fileLanguageOf } from './file-languages.ts';
+import type { IFileLanguage } from './i-file-language.ts';
 
 export const REPOSITORY_STATS_SCHEMA = 'sharkcraft.repository-stats/v1';
 
@@ -95,77 +98,9 @@ const IGNORED_DIR_NAMES: ReadonlySet<string> = new Set([
   '.mvn',
 ]);
 
-enum CommentSyntax {
-  CFamily = 'c-family',
-  Hash = 'hash',
-  Html = 'html',
-  Sql = 'sql',
-  Lua = 'lua',
-  Lisp = 'lisp',
-  None = 'none',
-}
-
-interface ILanguageDef {
-  id: string;
-  extensions: readonly string[];
-  comment: CommentSyntax;
-}
-
-const LANGUAGES: readonly ILanguageDef[] = [
-  { id: 'typescript', extensions: ['.ts', '.tsx', '.mts', '.cts'], comment: CommentSyntax.CFamily },
-  { id: 'javascript', extensions: ['.js', '.jsx', '.mjs', '.cjs'], comment: CommentSyntax.CFamily },
-  { id: 'java', extensions: ['.java'], comment: CommentSyntax.CFamily },
-  { id: 'kotlin', extensions: ['.kt', '.kts'], comment: CommentSyntax.CFamily },
-  { id: 'scala', extensions: ['.scala'], comment: CommentSyntax.CFamily },
-  { id: 'groovy', extensions: ['.groovy'], comment: CommentSyntax.CFamily },
-  { id: 'csharp', extensions: ['.cs'], comment: CommentSyntax.CFamily },
-  { id: 'cpp', extensions: ['.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'], comment: CommentSyntax.CFamily },
-  { id: 'c', extensions: ['.c', '.h'], comment: CommentSyntax.CFamily },
-  { id: 'go', extensions: ['.go'], comment: CommentSyntax.CFamily },
-  { id: 'rust', extensions: ['.rs'], comment: CommentSyntax.CFamily },
-  { id: 'swift', extensions: ['.swift'], comment: CommentSyntax.CFamily },
-  { id: 'php', extensions: ['.php'], comment: CommentSyntax.CFamily },
-  { id: 'dart', extensions: ['.dart'], comment: CommentSyntax.CFamily },
-  { id: 'python', extensions: ['.py', '.pyi'], comment: CommentSyntax.Hash },
-  { id: 'ruby', extensions: ['.rb'], comment: CommentSyntax.Hash },
-  { id: 'shell', extensions: ['.sh', '.bash', '.zsh', '.fish'], comment: CommentSyntax.Hash },
-  { id: 'perl', extensions: ['.pl', '.pm'], comment: CommentSyntax.Hash },
-  { id: 'r', extensions: ['.r', '.R'], comment: CommentSyntax.Hash },
-  { id: 'yaml', extensions: ['.yaml', '.yml'], comment: CommentSyntax.Hash },
-  { id: 'toml', extensions: ['.toml'], comment: CommentSyntax.Hash },
-  { id: 'ini', extensions: ['.ini', '.cfg', '.conf'], comment: CommentSyntax.Hash },
-  { id: 'dockerfile', extensions: ['.dockerfile'], comment: CommentSyntax.Hash },
-  { id: 'makefile', extensions: ['.mk'], comment: CommentSyntax.Hash },
-  { id: 'html', extensions: ['.html', '.htm'], comment: CommentSyntax.Html },
-  { id: 'xml', extensions: ['.xml', '.xsd', '.xsl'], comment: CommentSyntax.Html },
-  { id: 'vue', extensions: ['.vue'], comment: CommentSyntax.Html },
-  { id: 'svelte', extensions: ['.svelte'], comment: CommentSyntax.Html },
-  { id: 'sql', extensions: ['.sql'], comment: CommentSyntax.Sql },
-  { id: 'css', extensions: ['.css', '.scss', '.sass', '.less'], comment: CommentSyntax.CFamily },
-  { id: 'lua', extensions: ['.lua'], comment: CommentSyntax.Lua },
-  { id: 'elixir', extensions: ['.ex', '.exs'], comment: CommentSyntax.Hash },
-  { id: 'clojure', extensions: ['.clj', '.cljs'], comment: CommentSyntax.Lisp },
-  { id: 'lisp', extensions: ['.lisp', '.lsp', '.el'], comment: CommentSyntax.Lisp },
-  { id: 'json', extensions: ['.json', '.jsonc'], comment: CommentSyntax.None },
-  { id: 'markdown', extensions: ['.md', '.mdx'], comment: CommentSyntax.None },
-  { id: 'text', extensions: ['.txt'], comment: CommentSyntax.None },
-];
-
-const EXTENSION_INDEX: ReadonlyMap<string, ILanguageDef> = (() => {
-  const m = new Map<string, ILanguageDef>();
-  for (const def of LANGUAGES) {
-    for (const ext of def.extensions) {
-      m.set(ext.toLowerCase(), def);
-    }
-  }
-  return m;
-})();
-
-const BASENAME_OVERRIDES: ReadonlyMap<string, string> = new Map([
-  ['dockerfile', 'dockerfile'],
-  ['makefile', 'makefile'],
-  ['gnumakefile', 'makefile'],
-]);
+// The extension → language table this module classified with is THE per-file
+// language authority now (`file-languages.ts`, round 15): `appliesTo.languages`
+// and the self-config doctor read the same rows `shrk stats` prints.
 
 interface IWalkResult {
   files: readonly string[];
@@ -213,18 +148,6 @@ function walkRepository(root: string, maxFiles: number): IWalkResult {
     }
   }
   return { files: out, truncated };
-}
-
-function classify(absPath: string): ILanguageDef | null {
-  const base = nodePath.basename(absPath).toLowerCase();
-  const override = BASENAME_OVERRIDES.get(base);
-  if (override) {
-    const def = LANGUAGES.find((d) => d.id === override);
-    if (def) return def;
-  }
-  const ext = nodePath.extname(absPath).toLowerCase();
-  if (!ext) return null;
-  return EXTENSION_INDEX.get(ext) ?? null;
 }
 
 interface ILineCounts {
@@ -297,7 +220,7 @@ function opensBlockComment(trimmed: string, syntax: CommentSyntax): boolean {
 }
 
 interface ILanguageAccumulator {
-  def: ILanguageDef;
+  def: IFileLanguage;
   files: number;
   bytes: number;
   totalLines: number;
@@ -320,7 +243,7 @@ export async function buildRepositoryStats(
   const allFiles: IRepositoryStatsTopFile[] = [];
 
   for (const abs of walk.files) {
-    const def = classify(abs);
+    const def = fileLanguageOf(abs);
     if (!def) continue;
     if (filter && def.id !== filter) continue;
 

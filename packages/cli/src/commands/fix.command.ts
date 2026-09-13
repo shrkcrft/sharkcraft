@@ -72,6 +72,13 @@ function parseKinds(args: ParsedArgs): FixKind[] | undefined {
 async function runFixPreview(args: ParsedArgs): Promise<number> {
   const cwd = resolveCwd(args);
   const inspection = await inspectSharkcraft({ cwd });
+  // The preview folds in the knowledge stale report — warm before it resolves
+  // any id (round 15 follow-up, F4): unwarmed, a `command:` reference read
+  // "command index not injected — NOT VERIFIED" (titled "Unverifiable", with a
+  // hint to run the check through the CLI it was already run through) where
+  // `knowledge stale-check` reads it STALE, and a playbook / policy / construct
+  // id was unverifiable instead of checked.
+  await (await import('../surface/cli-command-resolver.ts')).warmCliReferenceRegistries(inspection);
   const kinds = parseKinds(args);
   // Use the async extended builder so the new kinds resolve.
   const { buildFixPreviewExtended } = await import('@shrkcrft/inspector');

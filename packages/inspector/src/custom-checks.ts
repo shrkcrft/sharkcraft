@@ -28,7 +28,12 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import { type IKnowledgeEntry, unsupportedFrontmatterKeys } from '@shrkcrft/knowledge';
+import {
+  KnowledgeSourceFormat,
+  knowledgeSourceFormat,
+  type IKnowledgeEntry,
+  unsupportedFrontmatterKeys,
+} from '@shrkcrft/knowledge';
 import { isRuleEntry } from '@shrkcrft/rules';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
@@ -222,8 +227,10 @@ export function buildCustomChecksRegistry(
       continue;
     }
     scannedRules += 1;
-    if (e.source?.loader === 'markdown') {
-      if (markdownDroppedChecks(e.source.origin)) {
+    // THE source-format authority (round 15) — the one the stale-check remedy
+    // and the validator read, so "is this a Markdown entry?" has one answer.
+    if (knowledgeSourceFormat(e) === KnowledgeSourceFormat.Markdown) {
+      if (markdownDroppedChecks(e.source?.origin)) {
         ignored.push({
           entryId: e.id,
           entryType: String(e.type),
@@ -336,7 +343,7 @@ export function customCheckScanSurface(inspection: ISharkcraftInspection): ICust
     }
   }
   const markdownRules = inspection.knowledgeEntries.filter(
-    (e) => isRuleEntry(e) && e.source?.loader === 'markdown',
+    (e) => isRuleEntry(e) && knowledgeSourceFormat(e) === KnowledgeSourceFormat.Markdown,
   ).length;
   return { files, markdownFiles, markdownRules };
 }

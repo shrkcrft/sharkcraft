@@ -14,11 +14,11 @@
 // `KnowledgePriority` are provided by the local-mirror preamble the
 // synthesizer prepends.
 
-import { ruleSnippet } from './r26-snippets.ts';
+import { angularRuleSnippet } from './r26-snippets.ts';
 
 // ─── Signal-based reactivity (Angular 16+, fully baked by 19/20) ──────────
 
-export const NG21_SIGNAL_STATE = ruleSnippet({
+export const NG21_SIGNAL_STATE = angularRuleSnippet({
   id: 'angular21.signal-state',
   title: 'Local component state lives in signals',
   priority: 'critical',
@@ -28,7 +28,7 @@ export const NG21_SIGNAL_STATE = ruleSnippet({
     'Use signal() for every piece of component-local mutable state. Derive read-only values with computed(). Reserve effect() for side effects only (DOM imperative code, logging, external I/O) — never write to a signal from inside an effect.',
 });
 
-export const NG21_LINKED_SIGNAL = ruleSnippet({
+export const NG21_LINKED_SIGNAL = angularRuleSnippet({
   id: 'angular21.linked-signal',
   title: 'Use linkedSignal for writable derived state',
   priority: 'high',
@@ -38,7 +38,7 @@ export const NG21_LINKED_SIGNAL = ruleSnippet({
     'When you need a writable signal that resets whenever a source signal changes (e.g. a selection that follows a filtered list), use linkedSignal({ source, computation }) instead of an effect that pokes a writable signal — that pattern is officially discouraged.',
 });
 
-export const NG21_NO_EFFECT_FOR_DERIVED = ruleSnippet({
+export const NG21_NO_EFFECT_FOR_DERIVED = angularRuleSnippet({
   id: 'angular21.no-effect-for-derived',
   title: 'Never derive state inside an effect()',
   priority: 'critical',
@@ -50,7 +50,7 @@ export const NG21_NO_EFFECT_FOR_DERIVED = ruleSnippet({
 
 // ─── Signal-based queries (Angular 17.2+) ─────────────────────────────────
 
-export const NG21_SIGNAL_VIEW_CHILD = ruleSnippet({
+export const NG21_SIGNAL_VIEW_CHILD = angularRuleSnippet({
   id: 'angular21.signal-view-child',
   title: 'Use viewChild() / viewChildren() functions, not @ViewChild',
   priority: 'critical',
@@ -60,7 +60,7 @@ export const NG21_SIGNAL_VIEW_CHILD = ruleSnippet({
     'Replace @ViewChild and @ViewChildren with the viewChild() / viewChildren() functions. The signal form is reactive (you can pipe it through computed()/effect()), avoids the "expression has changed after it was checked" class of bug, and integrates with OnPush + zoneless out of the box. Use viewChild.required<ElementRef>("name") when the element is guaranteed.',
 });
 
-export const NG21_SIGNAL_CONTENT_CHILD = ruleSnippet({
+export const NG21_SIGNAL_CONTENT_CHILD = angularRuleSnippet({
   id: 'angular21.signal-content-child',
   title: 'Use contentChild() / contentChildren() functions, not @ContentChild',
   priority: 'critical',
@@ -72,7 +72,7 @@ export const NG21_SIGNAL_CONTENT_CHILD = ruleSnippet({
 
 // ─── Signal-based inputs / outputs (Angular 17.1+ / 17.3+) ───────────────
 
-export const NG21_SIGNAL_INPUTS = ruleSnippet({
+export const NG21_SIGNAL_INPUTS = angularRuleSnippet({
   id: 'angular21.signal-inputs',
   title: 'Use input() and input.required(), not @Input()',
   priority: 'critical',
@@ -82,7 +82,7 @@ export const NG21_SIGNAL_INPUTS = ruleSnippet({
     'Declare inputs as `readonly user = input<User>()` or `readonly id = input.required<string>()` instead of @Input(). Signal inputs are read-only signals — call them as a function in the template (`{{ user() }}`) or pipe them through computed() in the class. Use the transform option for coerced inputs: `input(false, { transform: booleanAttribute })`.',
 });
 
-export const NG21_SIGNAL_OUTPUTS = ruleSnippet({
+export const NG21_SIGNAL_OUTPUTS = angularRuleSnippet({
   id: 'angular21.signal-outputs',
   title: 'Use output(), not @Output() EventEmitter',
   priority: 'critical',
@@ -92,7 +92,7 @@ export const NG21_SIGNAL_OUTPUTS = ruleSnippet({
     'Declare outputs as `readonly select = output<UserId>()` instead of `@Output() select = new EventEmitter<UserId>()`. The output() helper drops the RxJS dependency, is fully typed, and emits via `this.select.emit(id)`. It still composes with `outputToObservable()` when a stream is needed.',
 });
 
-export const NG21_MODEL_TWO_WAY = ruleSnippet({
+export const NG21_MODEL_TWO_WAY = angularRuleSnippet({
   id: 'angular21.model-two-way',
   title: 'Use model() for two-way bindings',
   priority: 'high',
@@ -104,7 +104,7 @@ export const NG21_MODEL_TWO_WAY = ruleSnippet({
 
 // ─── Zoneless change detection (stable in Angular 21) ─────────────────────
 
-export const NG21_ZONELESS = ruleSnippet({
+export const NG21_ZONELESS = angularRuleSnippet({
   id: 'angular21.zoneless',
   title: 'Configure zoneless change detection',
   priority: 'critical',
@@ -114,7 +114,7 @@ export const NG21_ZONELESS = ruleSnippet({
     'Bootstrap with provideZonelessChangeDetection() and remove `zone.js` from polyfills + angular.json. Once zoneless, change detection runs only when a signal changes, an input updates, an event handler fires, or a marked component opts in via markForCheck(). Verify by reading the platform: ApplicationRef.componentTypes should not include any zone-aware regressions.',
 });
 
-export const NG21_NO_ZONE_APIS = ruleSnippet({
+export const NG21_NO_ZONE_APIS = angularRuleSnippet({
   id: 'angular21.no-zone-apis',
   title: 'Do not call NgZone APIs in zoneless code',
   priority: 'high',
@@ -126,7 +126,7 @@ export const NG21_NO_ZONE_APIS = ruleSnippet({
 
 // ─── New template control flow (Angular 17+) ──────────────────────────────
 
-export const NG21_CONTROL_FLOW = ruleSnippet({
+export const NG21_CONTROL_FLOW = angularRuleSnippet({
   id: 'angular21.control-flow',
   title: 'Use @if / @for / @switch, not *ngIf / *ngFor / [ngSwitch]',
   priority: 'critical',
@@ -136,7 +136,7 @@ export const NG21_CONTROL_FLOW = ruleSnippet({
     'Built-in control flow is the canonical form. `@if`, `@else if`, `@else`; `@for (item of items; track item.id)` — track is REQUIRED, not optional; `@switch (x) { @case (\'a\') { … } @default { … } }`. Migrate legacy structural directives with `ng generate @angular/core:control-flow`.',
 });
 
-export const NG21_DEFER = ruleSnippet({
+export const NG21_DEFER = angularRuleSnippet({
   id: 'angular21.defer',
   title: 'Use @defer for non-critical UI',
   priority: 'high',
@@ -146,7 +146,7 @@ export const NG21_DEFER = ruleSnippet({
     'Wrap heavy, below-the-fold, or interaction-gated UI in `@defer (on viewport)` / `(on hover)` / `(on idle)` / `(when condition())`. Pair with `@placeholder`, `@loading`, and `@error` blocks. Each @defer block is its own lazy-loaded chunk — no manual `loadComponent` plumbing needed.',
 });
 
-export const NG21_LET_TEMPLATE = ruleSnippet({
+export const NG21_LET_TEMPLATE = angularRuleSnippet({
   id: 'angular21.let-template',
   title: 'Use @let for template-local values',
   priority: 'medium',
@@ -156,7 +156,7 @@ export const NG21_LET_TEMPLATE = ruleSnippet({
     'Introduce template-scoped names with `@let total = items().reduce(...)`. This replaces the `*ngIf="x as y"` aliasing trick — works anywhere in the template, no implicit-element baggage.',
 });
 
-export const NG21_SELF_CLOSING_TAGS = ruleSnippet({
+export const NG21_SELF_CLOSING_TAGS = angularRuleSnippet({
   id: 'angular21.self-closing-tags',
   title: 'Self-close components with no content children',
   priority: 'low',
@@ -166,7 +166,7 @@ export const NG21_SELF_CLOSING_TAGS = ruleSnippet({
     'Components / directives that take no projected content should be written `<app-foo [x]="y" />`, not `<app-foo …></app-foo>`. Saves a token and matches modern Angular / JSX conventions.',
 });
 
-export const NG21_NG_OPTIMIZED_IMAGE = ruleSnippet({
+export const NG21_NG_OPTIMIZED_IMAGE = angularRuleSnippet({
   id: 'angular21.ng-optimized-image',
   title: 'Use NgOptimizedImage for raster images',
   priority: 'high',
@@ -178,7 +178,7 @@ export const NG21_NG_OPTIMIZED_IMAGE = ruleSnippet({
 
 // ─── inject(), afterRender, modern lifecycle (Angular 14+ / 16+) ──────────
 
-export const NG21_INJECT_FN = ruleSnippet({
+export const NG21_INJECT_FN = angularRuleSnippet({
   id: 'angular21.inject-fn',
   title: 'Use inject(), not constructor parameters',
   priority: 'high',
@@ -188,7 +188,7 @@ export const NG21_INJECT_FN = ruleSnippet({
     'Default to `private readonly users = inject(UsersService)` over constructor-parameter injection. Required for functional guards / interceptors, makes inheritance straightforward, and removes the need for `@Self()` / `@SkipSelf()` / `@Optional()` decorator stacks (use the options bag instead).',
 });
 
-export const NG21_AFTER_RENDER = ruleSnippet({
+export const NG21_AFTER_RENDER = angularRuleSnippet({
   id: 'angular21.after-render',
   title: 'Use afterNextRender / afterRender for DOM-aware logic',
   priority: 'high',
@@ -198,7 +198,7 @@ export const NG21_AFTER_RENDER = ruleSnippet({
     'For code that needs the DOM (measuring, focusing, third-party libs): use afterNextRender(() => …) for one-shot setup or afterRender(() => …) for every CD pass. Both run only in the browser, so they\'re SSR-safe by construction — replacing the ngAfterViewInit + isPlatformBrowser dance.',
 });
 
-export const NG21_PROVIDED_IN_ROOT = ruleSnippet({
+export const NG21_PROVIDED_IN_ROOT = angularRuleSnippet({
   id: 'angular21.provided-in-root',
   title: 'Services use providedIn: \'root\' (tree-shakeable)',
   priority: 'high',
@@ -210,7 +210,7 @@ export const NG21_PROVIDED_IN_ROOT = ruleSnippet({
 
 // ─── No NgModules / standalone-only ───────────────────────────────────────
 
-export const NG21_NO_NGMODULES = ruleSnippet({
+export const NG21_NO_NGMODULES = angularRuleSnippet({
   id: 'angular21.no-ngmodules',
   title: 'Do not create new NgModules',
   priority: 'critical',
@@ -220,7 +220,7 @@ export const NG21_NO_NGMODULES = ruleSnippet({
     'Angular 21 starter apps are NgModule-free. Components, directives, and pipes are standalone by default (the `standalone: true` flag is the default since v19). Configure providers via `provideX()` functions in bootstrapApplication() or route data, never with @NgModule. If you find yourself writing @NgModule, you are working against the grain.',
 });
 
-export const NG21_BOOTSTRAP_APPLICATION = ruleSnippet({
+export const NG21_BOOTSTRAP_APPLICATION = angularRuleSnippet({
   id: 'angular21.bootstrap-application',
   title: 'bootstrap via bootstrapApplication + provideX functions',
   priority: 'high',
@@ -232,7 +232,7 @@ export const NG21_BOOTSTRAP_APPLICATION = ruleSnippet({
 
 // ─── Async data: resource() / httpResource() (Angular 19/20+) ────────────
 
-export const NG21_RESOURCE_API = ruleSnippet({
+export const NG21_RESOURCE_API = angularRuleSnippet({
   id: 'angular21.resource-api',
   title: 'Model async state with resource()',
   priority: 'high',
@@ -242,7 +242,7 @@ export const NG21_RESOURCE_API = ruleSnippet({
     'For "fetch X based on signal Y" patterns, use resource({ request: () => y(), loader: ({ request, abortSignal }) => fetch(...) }). The resource exposes `.value()`, `.status()`, `.error()`, and `.reload()` — a fully-typed state machine driven by signals. Don\'t hand-roll subscription + loading-state + error-state triplets anymore.',
 });
 
-export const NG21_HTTP_RESOURCE = ruleSnippet({
+export const NG21_HTTP_RESOURCE = angularRuleSnippet({
   id: 'angular21.http-resource',
   title: 'Use httpResource() for declarative HTTP',
   priority: 'high',
@@ -254,7 +254,7 @@ export const NG21_HTTP_RESOURCE = ruleSnippet({
 
 // ─── Modern SSR / hybrid rendering (Angular 19+) ─────────────────────────
 
-export const NG21_HYBRID_RENDERING = ruleSnippet({
+export const NG21_HYBRID_RENDERING = angularRuleSnippet({
   id: 'angular21.hybrid-rendering',
   title: 'Configure routes with server-rendering modes',
   priority: 'medium',
@@ -264,7 +264,7 @@ export const NG21_HYBRID_RENDERING = ruleSnippet({
     'In app.routes.server.ts, tag each route with a RenderMode: `Prerender` for static, `Server` for per-request SSR, `Client` for CSR-only. The default `provideServerRouting(serverRoutes)` enforces the boundary — no more "did this code accidentally run on the server?" guesswork.',
 });
 
-export const NG21_PROVIDE_HTTP_FETCH = ruleSnippet({
+export const NG21_PROVIDE_HTTP_FETCH = angularRuleSnippet({
   id: 'angular21.provide-http-fetch',
   title: 'provideHttpClient(withFetch()) — never the XHR backend',
   priority: 'high',
@@ -276,7 +276,7 @@ export const NG21_PROVIDE_HTTP_FETCH = ruleSnippet({
 
 // ─── Forms — modern signal-compatible patterns ───────────────────────────
 
-export const NG21_SIGNAL_FORMS_INTEROP = ruleSnippet({
+export const NG21_SIGNAL_FORMS_INTEROP = angularRuleSnippet({
   id: 'angular21.signal-forms-interop',
   title: 'Bridge reactive forms into signals with toSignal()',
   priority: 'medium',
@@ -288,7 +288,7 @@ export const NG21_SIGNAL_FORMS_INTEROP = ruleSnippet({
 
 // ─── Testing — modern flow ───────────────────────────────────────────────
 
-export const NG21_TEST_SIGNAL_INPUT = ruleSnippet({
+export const NG21_TEST_SIGNAL_INPUT = angularRuleSnippet({
   id: 'angular21.test-signal-input',
   title: 'Set signal inputs in tests via setInput()',
   priority: 'medium',
@@ -298,7 +298,7 @@ export const NG21_TEST_SIGNAL_INPUT = ruleSnippet({
     'In TestBed, set signal-input values with `fixture.componentRef.setInput("user", u)` — not by assigning `component.user`. Detection runs only when the input signal is updated, and setInput is the supported path that triggers it.',
 });
 
-export const NG21_TEST_NO_DETECT_CHANGES_OUTSIDE = ruleSnippet({
+export const NG21_TEST_NO_DETECT_CHANGES_OUTSIDE = angularRuleSnippet({
   id: 'angular21.test-no-detect-changes-outside',
   title: 'Let the framework drive CD in tests',
   priority: 'low',

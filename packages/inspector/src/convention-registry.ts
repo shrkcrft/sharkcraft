@@ -6,10 +6,13 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import {
+  ConventionSeverity,
   validateConvention,
   type IConvention,
 } from '@shrkcrft/plugin-api';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
+import { conventionFilePath, conventionScope } from './convention-applicability.ts';
+import type { INotApplicableConvention } from './i-not-applicable-convention.ts';
 import {
   importModuleViaLoader,
   readContributionExport,
@@ -34,7 +37,7 @@ export interface IConventionEntry {
 }
 
 export interface IConventionDoctorIssue {
-  readonly severity: 'info' | 'warning' | 'error';
+  readonly severity: ConventionSeverity;
   readonly code: string;
   readonly message: string;
   readonly conventionId?: string;
@@ -122,7 +125,7 @@ export async function loadConventions(
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       for (const w of validateConvention(raw as IConvention).warnings) {
         issues.push({
-          severity: 'warning',
+          severity: ConventionSeverity.Warning,
           code: 'convention-shape',
           message: `${w.field}: ${w.message}`,
           conventionId: id,
@@ -133,7 +136,7 @@ export async function loadConventions(
     const reasons = conventionRejectionReasons(raw);
     if (reasons.length > 0) {
       for (const r of reasons) {
-        issues.push({ severity: 'error', code: 'invalid-convention', message: r, conventionId: id, source: sourceFile });
+        issues.push({ severity: ConventionSeverity.Error, code: 'invalid-convention', message: r, conventionId: id, source: sourceFile });
       }
       rejected.push({ ...at, ...(id !== undefined ? { entryId: id } : {}), reasons, cause: RejectionCause.Invalid });
       return;
@@ -142,7 +145,7 @@ export async function loadConventions(
     const prev = seen.get(conv.id);
     if (prev !== undefined) {
       issues.push({
-        severity: 'error',
+        severity: ConventionSeverity.Error,
         code: 'duplicate-id',
         message: `Convention "${conv.id}" already loaded; skipping ${sourceFile}.`,
         conventionId: conv.id,
@@ -187,7 +190,7 @@ export async function loadConventions(
     } catch (e) {
       unread.push(`${rel(file)} — failed to load`);
       issues.push({
-        severity: 'warning',
+        severity: ConventionSeverity.Warning,
         code: 'load-failed',
         message: `Failed to load ${file}: ${(e as Error).message}`,
         source: file,
@@ -202,7 +205,7 @@ export async function loadConventions(
       if (!existsSync(file)) {
         unread.push(`${rel(file)} — missing (declared by ${pack.packageName})`);
         issues.push({
-          severity: 'warning',
+          severity: ConventionSeverity.Warning,
           code: 'missing-file',
           message: `Pack ${pack.packageName} declares ${packRel} but file is missing.`,
           source: file,
@@ -214,7 +217,7 @@ export async function loadConventions(
       } catch (e) {
         unread.push(`${rel(file)} — failed to load (${pack.packageName})`);
         issues.push({
-          severity: 'warning',
+          severity: ConventionSeverity.Warning,
           code: 'load-failed',
           message: `Pack ${pack.packageName} (${packRel}): ${(e as Error).message}`,
           source: file,
@@ -252,7 +255,7 @@ export interface IConventionCheckHit {
   readonly ruleId: string;
   readonly file: string;
   readonly line?: number;
-  readonly severity: 'info' | 'warning' | 'error';
+  readonly severity: ConventionSeverity;
   readonly message: string;
 }
 
@@ -261,34 +264,62 @@ export interface IConventionCheckReport {
   readonly filesScanned: number;
   readonly hits: readonly IConventionCheckHit[];
   readonly verdict: 'clean' | 'has-violations';
+  /**
+   * Conventions that do not apply here (round 15, 15.1) — never evaluated, each
+   * with the `appliesTo` filters that excluded it. `conventions check` prints
+   * every one and accepts it explicitly (`acceptedBy: 'appliesTo'`).
+   */
+  readonly notApplicable: readonly INotApplicableConvention[];
+  /** How many files in scope each APPLICABLE convention covers, by id (round 15). */
+  readonly filesInScope: Readonly<Record<string, number>>;
 }
 
-function globMatch(file: string, pattern: string): boolean {
-  // very small POSIX-style matcher: ** = any path, * = any segment chars
-  const re = new RegExp(
-    '^' +
-      pattern
-        .replace(/[.+^$()|]/g, (m) => '\\' + m)
-        .replace(/\*\*/g, '__DOUBLE__')
-        .replace(/\*/g, '[^/]*')
-        .replace(/__DOUBLE__/g, '.*')
-        .replace(/\?/g, '.') +
-      '$',
-  );
-  return re.test(file);
-}
-
+/**
+ * Run the loaded conventions against `files`. Which files a convention covers
+ * is `conventionScope` — THE applicability authority (round 15), the same one
+ * the rule-graph bridge reads — so every `appliesTo` filter scopes, `**`
+ * spans zero or more segments, and a `!` glob subtracts (a private matcher
+ * here missed `src/a.ts` under `src/**\/*.ts` and ignored `!`). A convention
+ * that does not apply is never evaluated and is reported in `notApplicable`.
+ *
+ * Per covered file, each rule: `filePattern` and `expectMatch` must match the
+ * path (a miss is a hit), `forbidMatch` must not (a match is a hit).
+ *
+ * Every file is read in ONE spelling — `conventionFilePath` (project-relative,
+ * `/`-separated, no `./`), the one the scope test reads — so a rule pattern
+ * never tests a spelling the glob did not, and a hit names that path (round 15
+ * review: `./src/a.ts` was covered by `src/**` and then failed `^src/`).
+ */
 export async function checkConventionsAgainstFiles(
   inspection: ISharkcraftInspection,
-  files: readonly string[],
+  inputFiles: readonly string[],
 ): Promise<IConventionCheckReport> {
+  const files = inputFiles.map((f) => conventionFilePath(inspection, f));
   const entries = await listConventions(inspection);
   const hits: IConventionCheckHit[] = [];
+  const notApplicable: INotApplicableConvention[] = [];
+  const filesInScope: Record<string, number> = {};
+  const covered = new Map<string, ReadonlySet<string>>();
+  for (const entry of entries) {
+    const c = entry.convention;
+    const scope = conventionScope(c, inspection, files);
+    if (!scope.applicable) {
+      notApplicable.push({
+        conventionId: c.id,
+        severity: c.severity,
+        sourceFile: entry.sourceFile,
+        ...(entry.packageName ? { packageName: entry.packageName } : {}),
+        reasons: scope.reasons.filter((r) => !r.matched),
+      });
+      continue;
+    }
+    filesInScope[c.id] = scope.files.length;
+    covered.set(c.id, new Set(scope.files));
+  }
   for (const f of files) {
     for (const entry of entries) {
       const c = entry.convention;
-      const globs = c.appliesTo?.fileGlobs ?? [];
-      if (globs.length > 0 && !globs.some((g) => globMatch(f, g))) continue;
+      if (!covered.get(c.id)?.has(f)) continue;
       for (const r of c.rules) {
         const sev = r.severity ?? c.severity;
         if (r.filePattern && !new RegExp(r.filePattern).test(f)) {
@@ -298,6 +329,15 @@ export async function checkConventionsAgainstFiles(
             file: f,
             severity: sev,
             message: `File "${f}" does not match convention "${c.id}" rule "${r.id}": ${r.description}`,
+          });
+        }
+        if (r.expectMatch && !new RegExp(r.expectMatch).test(f)) {
+          hits.push({
+            conventionId: c.id,
+            ruleId: r.id,
+            file: f,
+            severity: sev,
+            message: `File "${f}" does not match the expected pattern /${r.expectMatch}/ of convention "${c.id}" rule "${r.id}": ${r.description}`,
           });
         }
         if (r.forbidMatch && new RegExp(r.forbidMatch).test(f)) {
@@ -316,6 +356,8 @@ export async function checkConventionsAgainstFiles(
     schema: 'sharkcraft.convention-check/v1',
     filesScanned: files.length,
     hits,
-    verdict: hits.some((h) => h.severity === 'error') ? 'has-violations' : 'clean',
+    verdict: hits.some((h) => h.severity === ConventionSeverity.Error) ? 'has-violations' : 'clean',
+    notApplicable,
+    filesInScope,
   };
 }

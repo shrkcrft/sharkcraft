@@ -1,3 +1,4 @@
+import type { KnowledgeSourceFormat } from '@shrkcrft/knowledge';
 import type { KnowledgeEntryVerdict } from './knowledge-entry-verdict.ts';
 import type { KnowledgeUnverifiableReason } from './knowledge-unverifiable-reason.ts';
 
@@ -13,6 +14,17 @@ export interface IKnowledgeEntryVerdictRecord {
    * file to edit. `(unknown source)` when the loader recorded none.
    */
   readonly source: string;
+  /**
+   * The format the entry is declared in (round 15) — what the remedy for an
+   * unverifiable entry names: `references[]` in TypeScript, a `references:`
+   * frontmatter list in Markdown.
+   */
+  readonly sourceFormat: KnowledgeSourceFormat;
+  /**
+   * The pack that contributed the entry (its package name) — absent for a
+   * local one. A pack entry is fixed upstream, or accepted locally.
+   */
+  readonly pack?: string;
   /** The entry's knowledge `type` (`rule`, `path`, `technical`, …). */
   readonly type: string;
   /** References + anchors whose outcome was a real check (ok / stale / missing). */

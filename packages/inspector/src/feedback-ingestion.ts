@@ -16,6 +16,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { importModuleViaLoader, RejectionCause, type IRejectedEntry } from '@shrkcrft/core';
 import type { IContributionFileIssue } from './i-contribution-file-issue.ts';
+import { knowledgeRenameCommand } from './knowledge-rename-command.ts';
+import { KnowledgeRenameVerb } from './knowledge-rename-verb.ts';
 
 export const FEEDBACK_INGESTION_SCHEMA = 'sharkcraft.feedback-ingestion/v1';
 
@@ -186,7 +188,11 @@ const KEYWORD_RULES: IKeywordRule[] = [
     pattern: /\b(rename|move|moved|renamed)\b/i,
     tags: ['rename'],
     targetArea: 'knowledge-rename',
-    suggestedCommands: ['shrk knowledge rename-symbol <old> <new> --dry-run'],
+    // THE rename-command helper: the previews are read-only and take no `--dry-run`.
+    suggestedCommands: [
+      knowledgeRenameCommand(KnowledgeRenameVerb.RenameFile),
+      knowledgeRenameCommand(KnowledgeRenameVerb.RenameSymbol),
+    ],
   },
   {
     pattern: /\b(trace|impact)\b/i,

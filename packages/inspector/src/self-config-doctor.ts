@@ -19,6 +19,7 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { IVerdictCoverage } from '@shrkcrft/core';
+import { knowledgeReferences } from '@shrkcrft/knowledge';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import {
   referenceIdsFor,
@@ -187,7 +188,7 @@ export async function buildSelfConfigGraph(
 
   // Edges from knowledge → referenced ids (best-effort).
   for (const k of inspection.knowledgeEntries) {
-    for (const ref of k.references ?? []) {
+    for (const ref of knowledgeReferences(k)) {
       const refId = ref.path ?? '';
       if (!refId) continue;
       const from = { id: k.id, kind: 'knowledge' };

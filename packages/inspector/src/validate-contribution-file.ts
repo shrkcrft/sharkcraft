@@ -22,7 +22,7 @@
  */
 import { existsSync } from 'node:fs';
 import { importModuleViaLoader, readContributionExport, RejectionCause, type IRejectedEntry } from '@shrkcrft/core';
-import { MarkdownKnowledgeLoader, TypeScriptKnowledgeLoader } from '@shrkcrft/knowledge';
+import { MarkdownKnowledgeLoader, TypeScriptKnowledgeLoader, validateKnowledgeEntries } from '@shrkcrft/knowledge';
 import { loadTemplatesFromFile } from '@shrkcrft/templates';
 import { loadPipelinesFromFile } from '@shrkcrft/pipelines';
 import { loadPresetsFromFile } from '@shrkcrft/presets';
@@ -35,6 +35,7 @@ import { decisionRejectionReasons } from './decision-records.ts';
 import { delegateRecipeRejectionReasons } from './delegate-pack-recipes.ts';
 import { feedbackRuleRejectionReasons } from './feedback-ingestion.ts';
 import type { IContributionFileValidation } from './i-contribution-file-validation.ts';
+import { isKnowledgeContributionSlot } from './knowledge-contribution-slots.ts';
 import { migrationProfileRejectionReasons } from './migration-profile-registry.ts';
 import { packHelperRejectionReasons } from './pack-helper-registry.ts';
 import { contributionKindForSlot } from './pack-contributions-inventory.ts';
@@ -75,14 +76,6 @@ const REGISTRY_SLOTS: Readonly<Record<string, IRegistrySlotSpec>> = {
   delegateRecipeFiles: { namedKeys: ['delegateRecipes'], reasons: delegateRecipeRejectionReasons, dedupe: true },
 };
 
-const KNOWLEDGE_SLOTS: ReadonlySet<string> = new Set([
-  'knowledgeFiles',
-  'ruleFiles',
-  'pathFiles',
-  'pathConventionFiles',
-  'docsFiles',
-]);
-
 const GATE_PLANE_SLOTS: ReadonlySet<string> = new Set([
   'wiringRuleFiles',
   'registryFiles',
@@ -122,13 +115,24 @@ export async function validateContributionFile(slot: string, file: string): Prom
   });
   if (!existsSync(file)) return done([], [], 'the file does not exist');
 
-  if (KNOWLEDGE_SLOTS.has(slot)) {
+  // THE knowledge slots (round 15 follow-up, F11): the slot says "knowledge";
+  // which knowledge loader reads the file is the inspection's own choice (the
+  // same `canLoad` order). A file neither loader reads is `unvalidated` — the
+  // consumer skips it as an "unsupported contribution file".
+  if (isKnowledgeContributionSlot(slot)) {
     const ts = new TypeScriptKnowledgeLoader();
     const md = new MarkdownKnowledgeLoader();
     const loader = ts.canLoad(file) ? ts : md.canLoad(file) ? md : null;
     if (!loader) return { ...done([], []), unvalidated: true };
     const r = await loader.load(file);
-    return done(r.entries.map((e) => e.id), r.rejected ?? [], importError(r.warnings));
+    // …and THE validator the consumer's inspection runs, over what the loader
+    // ACCEPTED (round 15): an issue that keeps the entry — a non-list
+    // `references` crashed every consumer verb while `--load` said "No issues".
+    const entryIssues = validateKnowledgeEntries(r.entries, { isPackContributed: () => true }).issues;
+    return {
+      ...done(r.entries.map((e) => e.id), r.rejected ?? [], importError(r.warnings)),
+      ...(entryIssues.length > 0 ? { entryIssues } : {}),
+    };
   }
   if (slot === 'templateFiles') {
     const r = await loadTemplatesFromFile(file);

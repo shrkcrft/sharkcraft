@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { IPackageJson } from './package-json-reader.ts';
+import { FrameworkId } from './framework-id.ts';
 
 export interface IFrameworkInfo {
   id: string;
@@ -10,28 +11,57 @@ export interface IFrameworkInfo {
 }
 
 interface FrameworkDef {
-  id: string;
+  id: FrameworkId;
   name: string;
   packages: string[];
   fileMarkers?: string[];
 }
 
-const FRAMEWORKS: FrameworkDef[] = [
-  { id: 'angular', name: 'Angular', packages: ['@angular/core', '@angular/cli'], fileMarkers: ['angular.json'] },
-  { id: 'react', name: 'React', packages: ['react'] },
-  { id: 'vue', name: 'Vue', packages: ['vue'] },
-  { id: 'svelte', name: 'Svelte', packages: ['svelte'] },
-  { id: 'nextjs', name: 'Next.js', packages: ['next'] },
-  { id: 'nuxt', name: 'Nuxt', packages: ['nuxt'] },
-  { id: 'nestjs', name: 'NestJS', packages: ['@nestjs/core'] },
-  { id: 'express', name: 'Express', packages: ['express'] },
-  { id: 'fastify', name: 'Fastify', packages: ['fastify'] },
-  { id: 'nx', name: 'Nx', packages: ['nx', '@nx/workspace'], fileMarkers: ['nx.json'] },
-  { id: 'aws-lambda', name: 'AWS Lambda', packages: ['aws-lambda', '@types/aws-lambda'] },
-  { id: 'electron', name: 'Electron', packages: ['electron'] },
-  { id: 'typescript', name: 'TypeScript', packages: ['typescript'], fileMarkers: ['tsconfig.json', 'tsconfig.base.json'] },
-  { id: 'bun', name: 'Bun', packages: ['bun-types', '@types/bun'], fileMarkers: ['bun.lockb', 'bun.lock'] },
-];
+/**
+ * One definition per {@link FrameworkId} — keyed by the enum, so a vocabulary
+ * member without a detector definition (or the reverse) is a compile error.
+ * Insertion order is the detection (and output) order.
+ */
+const FRAMEWORK_DEFS: Readonly<Record<FrameworkId, Omit<FrameworkDef, 'id'>>> = {
+  [FrameworkId.Angular]: { name: 'Angular', packages: ['@angular/core', '@angular/cli'], fileMarkers: ['angular.json'] },
+  [FrameworkId.React]: { name: 'React', packages: ['react'] },
+  [FrameworkId.Vue]: { name: 'Vue', packages: ['vue'] },
+  [FrameworkId.Svelte]: { name: 'Svelte', packages: ['svelte'] },
+  [FrameworkId.NextJs]: { name: 'Next.js', packages: ['next'] },
+  [FrameworkId.Nuxt]: { name: 'Nuxt', packages: ['nuxt'] },
+  [FrameworkId.NestJs]: { name: 'NestJS', packages: ['@nestjs/core'] },
+  [FrameworkId.Express]: { name: 'Express', packages: ['express'] },
+  [FrameworkId.Fastify]: { name: 'Fastify', packages: ['fastify'] },
+  [FrameworkId.Nx]: { name: 'Nx', packages: ['nx', '@nx/workspace'], fileMarkers: ['nx.json'] },
+  [FrameworkId.AwsLambda]: { name: 'AWS Lambda', packages: ['aws-lambda', '@types/aws-lambda'] },
+  [FrameworkId.Electron]: { name: 'Electron', packages: ['electron'] },
+  [FrameworkId.TypeScript]: {
+    name: 'TypeScript',
+    packages: ['typescript'],
+    fileMarkers: ['tsconfig.json', 'tsconfig.base.json'],
+  },
+  [FrameworkId.Bun]: { name: 'Bun', packages: ['bun-types', '@types/bun'], fileMarkers: ['bun.lockb', 'bun.lock'] },
+};
+
+const FRAMEWORKS: readonly FrameworkDef[] = (Object.keys(FRAMEWORK_DEFS) as FrameworkId[]).map((id) => ({
+  id,
+  ...FRAMEWORK_DEFS[id],
+}));
+
+/**
+ * Every framework id the detector can report — THE vocabulary an
+ * `appliesTo.frameworks` filter may name (the {@link FrameworkId} values, in
+ * detection order). The vocabulary is not per repo: an id is valid whether or
+ * not THIS repo uses the framework (`inspection.workspace.frameworks`).
+ */
+export function listFrameworkIds(): readonly FrameworkId[] {
+  return FRAMEWORKS.map((f) => f.id);
+}
+
+/** Is `id` a member of THE framework vocabulary ({@link listFrameworkIds})? */
+export function isFrameworkId(id: string): id is FrameworkId {
+  return (Object.values(FrameworkId) as string[]).includes(id);
+}
 
 export function detectFrameworks(projectRoot: string, pkg: IPackageJson | null): IFrameworkInfo[] {
   const out: IFrameworkInfo[] = [];

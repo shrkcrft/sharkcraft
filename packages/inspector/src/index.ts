@@ -230,6 +230,18 @@ export * from './knowledge-stale-gate-result.ts';
 export * from './knowledge-stale-gate-rule.ts';
 export * from './knowledge-stale-gate-violation.ts';
 export * from './knowledge-stale-quality-gate.ts';
+// Round 15 (15.2): THE remedy wording for an unverifiable entry (TS / Markdown / pack).
+export * from './knowledge-min-referenced-valve.ts';
+export * from './knowledge-unverifiable-remedy.ts';
+// Round 15 closing (A4): an unverifiable file line is one declaring file AND one remedy.
+export * from './i-unverifiable-remedy-group.ts';
+// Round 15 follow-up (F3): knowledge entries the loader REJECTED — one reading
+// of the rejection channel for the stale-check, quality and doctor.
+export * from './knowledge-rejected-entry.ts';
+export * from './knowledge-entry-rejections.ts';
+// Round 15 follow-up (F11): the knowledge slots `packs test --load` and the
+// build-time validator pick the knowledge loader by.
+export * from './knowledge-contribution-slots.ts';
 export * from './declared-gate-plane-rules.ts';
 export * from './i-command-safety.ts';
 export * from './knowledge-advisory-code.ts';
@@ -244,6 +256,9 @@ export * from './knowledge-load-failure.ts';
 export * from './symbol-member-kind.ts';
 export * from './symbol-member-entry.ts';
 export * from './knowledge-rename.ts';
+// Round 15 lane B (B1): THE `knowledge rename-*` command a hint suggests.
+export * from './knowledge-rename-verb.ts';
+export * from './knowledge-rename-command.ts';
 export * from './template-drift.ts';
 export * from './barrel-operations.ts';
 export * from './query-resolver.ts';
@@ -264,6 +279,16 @@ export * from './profile-registry.ts';
 export * from './project-coupling-audit.ts';
 export * from './pack-contributions-inventory.ts';
 export * from './convention-registry.ts';
+// round 15 (15.1): THE convention applicability authority + the per-file language table
+export * from './convention-applicability.ts';
+export * from './convention-filter-level.ts';
+export * from './i-convention-applicability.ts';
+export * from './i-convention-applicability-reason.ts';
+export * from './i-convention-scope.ts';
+export * from './i-not-applicable-convention.ts';
+export * from './file-languages.ts';
+export * from './i-file-language.ts';
+export * from './comment-syntax.ts';
 export * from './self-config-doctor.ts';
 // v2 graph validation
 export * from './self-config-doctor-v2.ts';

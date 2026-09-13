@@ -280,6 +280,18 @@ migrationProfileFiles · sharkcraft/migration-profiles.ts …`. Finding
 `migration-profile`, `path-convention`) — the `profile` / `path` relabels are
 gone.
 
+**Round 15 (15.1).** A convention's `appliesTo` filters now SCOPE `conventions
+check`, so a value that resolves nowhere is a filter that can never match.
+Besides `appliesTo.profileIds`, the doctor checks `appliesTo.frameworks`
+against THE framework vocabulary (`FrameworkId`, `@shrkcrft/workspace` — the
+ids the detector reports: `nextjs`, not `next`) and `appliesTo.languages`
+against THE file-language table (the `shrk stats` vocabulary): a miss is an
+info `convention-framework-missing` / `convention-language-missing` finding
+with a did-you-mean (`ts` → `typescript`, the language owning `.ts`). Both
+vocabularies are builtin and never empty, so neither has a loud-skip record.
+A coverage record's empty-registry `reason` now rides only with a gap — a
+fully examined record no longer says its registry "could not be checked".
+
 **The clean line.** At exit 0, "No cross-reference issues — every checked probe
 resolved ✓" is printed only when it is true. An info-severity unresolved
 reference (any `*-missing` finding) never fails the run, but it is counted —

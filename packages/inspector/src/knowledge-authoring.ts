@@ -15,10 +15,12 @@
  *     remain.
  */
 
-import type {
-  IKnowledgeAnchor,
-  IKnowledgeEntry,
-  IKnowledgeReference,
+import {
+  knowledgeAnchors,
+  knowledgeReferences,
+  type IKnowledgeAnchor,
+  type IKnowledgeEntry,
+  type IKnowledgeReference,
 } from '@shrkcrft/knowledge';
 import { KNOWLEDGE_BACKED_KINDS, reverseXrefs } from './declared-cross-references.ts';
 import type { IDeclaredXrefReport } from './i-declared-xref-report.ts';
@@ -250,12 +252,12 @@ function findReverseReferences(
         }
       }
     }
-    for (const ref of e.references ?? []) {
+    for (const ref of knowledgeReferences(e)) {
       if (ref.id === targetId) {
         out.push({ fromEntryId: e.id, field: 'reference.id', note: ref.note });
       }
     }
-    for (const a of e.anchors ?? []) {
+    for (const a of knowledgeAnchors(e)) {
       if (a.targetId === targetId) {
         out.push({ fromEntryId: e.id, field: 'anchor.targetId', note: a.description });
       }
@@ -344,7 +346,7 @@ function applyUpdateOps(
     }
   }
   if (ops.addReferences && ops.addReferences.length > 0) {
-    const merged = [...(next.references ?? [])];
+    const merged = [...knowledgeReferences(next)];
     const added: IKnowledgeReference[] = [];
     for (const r of ops.addReferences) {
       const dup = merged.find(
@@ -365,7 +367,7 @@ function applyUpdateOps(
     }
   }
   if (ops.removeReferences && ops.removeReferences.length > 0) {
-    const before = next.references ?? [];
+    const before = knowledgeReferences(next);
     const keep = before.filter((m) => {
       return !ops.removeReferences!.some(
         (rm) =>
@@ -382,7 +384,7 @@ function applyUpdateOps(
     }
   }
   if (ops.addAnchors && ops.addAnchors.length > 0) {
-    const merged = [...(next.anchors ?? [])];
+    const merged = [...knowledgeAnchors(next)];
     const added: IKnowledgeAnchor[] = [];
     for (const a of ops.addAnchors) {
       if (!merged.some((m) => m.id === a.id)) {
@@ -396,7 +398,7 @@ function applyUpdateOps(
     }
   }
   if (ops.removeAnchorIds && ops.removeAnchorIds.length > 0) {
-    const before = next.anchors ?? [];
+    const before = knowledgeAnchors(next);
     const keep = before.filter((a) => !ops.removeAnchorIds!.includes(a.id));
     const removed = before.filter((a) => ops.removeAnchorIds!.includes(a.id));
     next.anchors = keep;

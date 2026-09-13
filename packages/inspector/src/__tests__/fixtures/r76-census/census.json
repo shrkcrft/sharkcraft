@@ -37,5 +37,11 @@
     "taskRoutingHintFiles": { "file": "task-routing-hints.ts", "kind": "task-routing-hint", "code": "routing-hint-invalid", "entryId": "cz.rh-bad", "field": "recommends", "declared": 2, "list": null },
     "registrationHintFiles": { "file": "registration-hints.ts", "kind": "registration-hint", "code": "registration-hint-invalid", "entryId": "cz.reg-bad", "field": "operations", "declared": 2, "list": ["registrations", "list"] },
     "frameworkExtractorFiles": { "file": "framework-extractors.ts", "kind": "framework-extractor", "code": "framework-extractor-invalid", "entryId": "cz-fx-bad", "field": "fileMatches", "declared": 2, "list": null }
+  },
+  "markdown": {
+    "note": "Markdown knowledge files (round 15 follow-up, F12), each carried under an existing knowledge slot (`slot`) and asserted on every surface a slot's file is. A Markdown file declares ONE entry, so its only entry is the invalid one: `declared` 1, `index` -1 (the loader records no array position).",
+    "files": [
+      { "slot": "knowledgeFiles", "file": "knowledge.md", "kind": "knowledge", "code": "knowledge-invalid", "entryId": "cz.kmd-bad", "field": "title", "declared": 1, "index": -1, "list": ["knowledge", "list"] }
+    ]
   }
 }

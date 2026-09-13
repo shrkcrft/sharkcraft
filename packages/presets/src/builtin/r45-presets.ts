@@ -20,6 +20,7 @@ import {
   WORKSPACE_PATH_APPS,
   WORKSPACE_PATH_PACKAGES,
 } from './shared-snippets.ts';
+import { renderSeedReferences, SEED_REF_PACKAGE_JSON, SEED_REF_TURBO_JSON } from './seed-references.ts';
 
 // Universal adoption — fills four Phase-1 preset gaps:
 //   next-app, turborepo, package-workspace, clean-architecture-ts.
@@ -40,6 +41,7 @@ export const NEXT_APP_PRESET: IPreset = definePreset({
       COMMON_AGENT_BRIEFING,
       `defineKnowledgeEntry({
     id: 'next.app-router',
+    ${renderSeedReferences([SEED_REF_PACKAGE_JSON])}
     title: 'Prefer the Next.js App Router for new routes',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -49,6 +51,7 @@ export const NEXT_APP_PRESET: IPreset = definePreset({
   })`,
       `defineKnowledgeEntry({
     id: 'next.no-business-logic-in-page',
+    ${renderSeedReferences([SEED_REF_PACKAGE_JSON])}
     title: 'Keep business logic out of page.tsx / layout.tsx',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -89,6 +92,7 @@ export const TURBOREPO_PRESET: IPreset = definePreset({
       COMMON_AGENT_BRIEFING,
       `defineKnowledgeEntry({
     id: 'turborepo.affected-tasks',
+    ${renderSeedReferences([SEED_REF_TURBO_JSON])}
     title: 'Use turbo run for affected tasks; avoid blanket rebuilds',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -98,6 +102,7 @@ export const TURBOREPO_PRESET: IPreset = definePreset({
   })`,
       `defineKnowledgeEntry({
     id: 'turborepo.public-entrypoints',
+    ${renderSeedReferences([SEED_REF_PACKAGE_JSON])}
     title: 'Cross-package imports go through the public entry point',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -139,6 +144,7 @@ export const PACKAGE_WORKSPACE_PRESET: IPreset = definePreset({
       COMMON_AGENT_BRIEFING,
       `defineKnowledgeEntry({
     id: 'workspaces.public-entrypoints',
+    ${renderSeedReferences([SEED_REF_PACKAGE_JSON])}
     title: 'Cross-package imports use the package name',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -179,6 +185,7 @@ export const CLEAN_ARCHITECTURE_TS_PRESET: IPreset = definePreset({
       COMMON_AGENT_BRIEFING,
       `defineKnowledgeEntry({
     id: 'clean-arch.layer-order',
+    ${renderSeedReferences([SEED_REF_PACKAGE_JSON])}
     title: 'Clean Architecture layers: domain → application → infrastructure / presentation',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.Critical,
@@ -188,6 +195,7 @@ export const CLEAN_ARCHITECTURE_TS_PRESET: IPreset = definePreset({
   })`,
       `defineKnowledgeEntry({
     id: 'clean-arch.boundary-ports',
+    ${renderSeedReferences([SEED_REF_PACKAGE_JSON])}
     title: 'Cross-layer access uses ports / interfaces, not concrete types',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,

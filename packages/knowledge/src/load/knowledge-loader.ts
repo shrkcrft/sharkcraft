@@ -6,8 +6,10 @@ export interface ILoadedKnowledge {
   warnings: string[];
   sourceFiles: string[];
   /**
-   * Entries the file declared that the loader refused (round 12, 12.1) — set
-   * by the TypeScript loader; a markdown file is one entry and refuses none.
+   * Entries the file declared that the loader refused (round 12, 12.1) — the
+   * TypeScript loader per export; the Markdown loader refuses its one entry
+   * when the frontmatter cannot be read as declared (round 15: a parse error, a
+   * field of the wrong shape, a `references:` item it does not take).
    */
   rejected?: IRejectedEntry[];
 }

@@ -12,7 +12,7 @@
  */
 import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs';
 import * as nodePath from 'node:path';
-import type { IKnowledgeEntry } from '@shrkcrft/knowledge';
+import { knowledgeAnchors, knowledgeReferences, type IKnowledgeEntry } from '@shrkcrft/knowledge';
 import { getChangedFiles, getCommitSubjects, isGitRepo } from './git-helpers.ts';
 import { inspectSharkcraft, type ISharkcraftInspection } from './sharkcraft-inspector.ts';
 import {
@@ -198,7 +198,7 @@ function buildCoverageIndex(entries: readonly IKnowledgeEntry[]): ICoverageIndex
   const files = new Map<string, string>();
   const symbolByFile = new Map<string, Set<string>>();
   for (const entry of entries) {
-    for (const ref of entry.references ?? []) {
+    for (const ref of knowledgeReferences(entry)) {
       if (ref.kind === 'symbol' && ref.symbol) {
         const symbolKey = ref.path
           ? `${ref.path}::${ref.symbol}`
@@ -216,7 +216,7 @@ function buildCoverageIndex(entries: readonly IKnowledgeEntry[]): ICoverageIndex
         files.set(ref.path, entry.id);
       }
     }
-    for (const anchor of entry.anchors ?? []) {
+    for (const anchor of knowledgeAnchors(entry)) {
       if (anchor.kind === 'symbol' && anchor.symbol) {
         const symbolKey = anchor.path
           ? `${anchor.path}::${anchor.symbol}`

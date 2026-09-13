@@ -25,12 +25,23 @@ interface ICensusSlot {
   readonly kind: string;
   readonly entryId: string | null;
   readonly declared: number;
+  /** The rejected entry's position when it is not `declared - 1` (a Markdown file: -1). */
+  readonly index?: number;
 }
 const CENSUS = JSON.parse(readFileSync(join(FIXTURE, 'census.json'), 'utf8')) as {
   readonly pack: string;
   readonly slots: Readonly<Record<string, ICensusSlot>>;
+  /** Round 15 follow-up (F12): Markdown knowledge files, each under an existing slot. */
+  readonly markdown?: { readonly files: readonly (ICensusSlot & { readonly slot: string })[] };
 };
 const SLOTS = Object.entries(CENSUS.slots);
+/** Every census FILE — one per slot, plus the Markdown knowledge files (round 15 follow-up, F12). */
+const FILES: readonly (readonly [string, ICensusSlot])[] = [
+  ...SLOTS,
+  ...(CENSUS.markdown?.files ?? []).map((f) => [f.slot, f] as const),
+];
+/** Where the loader records the invalid entry: its array index, or -1 for a one-entry Markdown file. */
+const rejectedIndex = (c: ICensusSlot): number => c.index ?? c.declared - 1;
 
 const tool = (name: string) => {
   const t = ALL_TOOLS.find((x) => x.name === name);
@@ -62,17 +73,17 @@ describe('r76 MCP pack outputs over the census', () => {
           totals: { rejected: number };
         };
       };
-      for (const [slot, c] of SLOTS) {
+      for (const [slot, c] of FILES) {
         const row = data.report.files.find((f) => f.file === `${PACK_DIR}/${c.file}`);
         expect({
           slot,
           declared: row?.declared,
           accepted: row?.accepted,
           rejected: row?.rejected.map((r) => [r.entryId ?? null, r.index]),
-        }).toEqual({ slot, declared: c.declared, accepted: c.declared - 1, rejected: [[c.entryId, c.declared - 1]] });
+        }).toEqual({ slot, declared: c.declared, accepted: c.declared - 1, rejected: [[c.entryId, rejectedIndex(c)]] });
       }
-      expect(data.rejections).toHaveLength(SLOTS.length);
-      expect(data.report.totals.rejected).toBe(SLOTS.length);
+      expect(data.rejections).toHaveLength(FILES.length);
+      expect(data.report.totals.rejected).toBe(FILES.length);
     },
     TIMEOUT_MS,
   );
@@ -88,14 +99,14 @@ describe('r76 MCP pack outputs over the census', () => {
         entryCounts: EntryCounts;
         rejections: unknown[];
       };
-      for (const [slot, c] of SLOTS) {
+      for (const [slot, c] of FILES) {
         expect({ slot, list: (listed[c.kind]?.rejected ?? 0) >= 1, get: (got.entryCounts[c.kind]?.rejected ?? 0) >= 1 }).toEqual({
           slot,
           list: true,
           get: true,
         });
       }
-      expect(got.rejections.length).toBe(SLOTS.length);
+      expect(got.rejections.length).toBe(FILES.length);
     },
     TIMEOUT_MS,
   );

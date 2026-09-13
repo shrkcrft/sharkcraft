@@ -14,6 +14,7 @@
  */
 import { buildTaskPacket } from './task-packet.ts';
 import { listConventions } from './convention-registry.ts';
+import { conventionApplicability } from './convention-applicability.ts';
 import { listTaskRoutingHints, explainTaskRouting } from './task-routing-hint-registry.ts';
 import { buildUncertaintySummary } from './uncertainty.ts';
 import { matchTerm, prepareTermQuery } from './match-terms.ts';
@@ -142,7 +143,14 @@ export async function prepareAgentTask(
     generationCommands,
     validationCommands,
     relevantProfiles: [],
-    relevantConventions: conventions.slice(0, 5).map((e) => ({ id: e.convention.id, title: e.convention.title })),
+    // THE applicability authority (round 15, 15.1): a convention whose
+    // `appliesTo` excludes this workspace (an undetected profile / framework)
+    // is not handed to the agent — it used to be the first 5 loaded, whatever
+    // they applied to. Per-file filters are decided per file, not here.
+    relevantConventions: conventions
+      .filter((e) => conventionApplicability(e.convention, inspection).applicable)
+      .slice(0, 5)
+      .map((e) => ({ id: e.convention.id, title: e.convention.title })),
     routingHints: routing.slice(0, 5).map((m) => ({
       id: m.hint.id,
       title: m.hint.title,

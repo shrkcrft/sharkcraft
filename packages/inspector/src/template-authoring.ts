@@ -19,7 +19,7 @@
  */
 
 import type { ITemplateDefinition } from '@shrkcrft/templates';
-import type { IKnowledgeEntry } from '@shrkcrft/knowledge';
+import { knowledgeReferences, type IKnowledgeEntry } from '@shrkcrft/knowledge';
 import type { IPipelineDefinition } from '@shrkcrft/pipelines';
 import type { IPreset } from '@shrkcrft/presets';
 
@@ -299,7 +299,7 @@ function findReverseReferences(
   const out: ITemplateReverseReference[] = [];
   // Knowledge entries referencing this template via `references[kind=template]`.
   for (const k of ctx.knowledgeEntries ?? []) {
-    for (const ref of k.references ?? []) {
+    for (const ref of knowledgeReferences(k)) {
       if (ref.kind === 'template' && ref.id === templateId) {
         out.push({
           fromKind: 'knowledge',

@@ -45,13 +45,28 @@ interface ICensusSlot {
   readonly field: string;
   readonly declared: number;
   readonly list: readonly string[] | null;
+  /** The rejected entry's position when it is not `declared - 1` (a Markdown file: -1). */
+  readonly index?: number;
 }
 
 const CENSUS = JSON.parse(readFileSync(join(FIXTURE, 'census.json'), 'utf8')) as {
   readonly pack: string;
   readonly slots: Readonly<Record<string, ICensusSlot>>;
+  /** Round 15 follow-up (F12): Markdown knowledge files, each under an existing slot. */
+  readonly markdown?: { readonly files: readonly (ICensusSlot & { readonly slot: string })[] };
 };
 const SLOTS = Object.entries(CENSUS.slots);
+/**
+ * Every census FILE — one per slot, plus the Markdown knowledge files (round 15
+ * follow-up, F12). Each per-file assertion runs over all of them; the
+ * slot-coverage check reads SLOTS alone.
+ */
+const FILES: readonly (readonly [string, ICensusSlot])[] = [
+  ...SLOTS,
+  ...(CENSUS.markdown?.files ?? []).map((f) => [f.slot, f] as const),
+];
+/** Where the loader records the invalid entry: its array index, or -1 for a one-entry Markdown file. */
+const rejectedIndex = (c: ICensusSlot): number => c.index ?? c.declared - 1;
 
 /** Each slot's accepted id (the first entry) and the reference kind it resolves in, where one exists. */
 const RESOLVES: Readonly<Record<string, { readonly kind: ReferenceKind; readonly ok: string }>> = {
@@ -101,7 +116,7 @@ describe('r76 THE rejection channel over every loader-backed slot', () => {
   });
 
   test("each slot's invalid entry is exactly ONE rejection — position, id, cause and the failing field", () => {
-    for (const [slot, c] of SLOTS) {
+    for (const [slot, c] of FILES) {
       const hits = rejections.filter((r) => inFile(r.file, c.file));
       const r = hits[0];
       expect({
@@ -117,7 +132,7 @@ describe('r76 THE rejection channel over every loader-backed slot', () => {
         slot,
         count: 1,
         kind: c.kind,
-        index: c.declared - 1,
+        index: rejectedIndex(c),
         entryId: c.entryId,
         cause: RejectionCause.Invalid,
         packageName: CENSUS.pack,
@@ -126,11 +141,11 @@ describe('r76 THE rejection channel over every loader-backed slot', () => {
     }
     // Exactly the census — `export const HELPER_NAMES = ['x']` in a knowledge
     // module is a helper value, never a rejected entry.
-    expect(rejections.length).toBe(SLOTS.length);
+    expect(rejections.length).toBe(FILES.length);
   });
 
   test('conservation: accepted + rejected === declared, for every contributed file', () => {
-    for (const [slot, c] of SLOTS) {
+    for (const [slot, c] of FILES) {
       const accepted =
         outcomes.accepted.filter((a) => inFile(a.file, c.file)).length +
         inspection.loaderDiagnostics
@@ -148,11 +163,17 @@ describe('r76 THE rejection channel over every loader-backed slot', () => {
       const bad = CENSUS.slots[slot]!.entryId!;
       expect({ slot, ok: ids.includes(r.ok), bad: ids.includes(bad) }).toEqual({ slot, ok: true, bad: false });
     }
+    // The Markdown files' refused ids never resolve either (round 15 follow-up, F12).
+    for (const f of CENSUS.markdown?.files ?? []) {
+      const r = RESOLVES[f.slot];
+      if (!r || f.entryId === null) continue;
+      expect({ file: f.file, bad: referenceIdsFor(inspection, r.kind).includes(f.entryId) }).toEqual({ file: f.file, bad: false });
+    }
   });
 
   test('build time ≡ runtime: validateContributionFile refuses exactly the entry the loader refuses', async () => {
     const packRoot = join(root, 'node_modules', '@r76', 'census');
-    for (const [slot, c] of SLOTS) {
+    for (const [slot, c] of FILES) {
       const v = await validateContributionFile(slot, join(packRoot, c.file));
       expect({
         slot,
@@ -160,15 +181,15 @@ describe('r76 THE rejection channel over every loader-backed slot', () => {
         accepted: v.accepted,
         rejected: v.rejected.map((r) => [r.index, r.entryId ?? null]),
         field: v.rejected.some((r) => r.reasons.some((x) => x.startsWith(`${c.field}:`))),
-      }).toEqual({ slot, loaded: true, accepted: c.declared - 1, rejected: [[c.declared - 1, c.entryId]], field: true });
+      }).toEqual({ slot, loaded: true, accepted: c.declared - 1, rejected: [[rejectedIndex(c), c.entryId]], field: true });
     }
   });
 
   test('the inventory never certifies a rejected id, carries every rejection, and lists every loader-backed kind structurally', async () => {
     const inv = await buildPackContributionsInventoryAsync(inspection);
-    expect(inv.rejections.length).toBe(SLOTS.length);
-    expect(inv.extractionTotals.rejected).toBe(SLOTS.length);
-    for (const [, c] of SLOTS) {
+    expect(inv.rejections.length).toBe(FILES.length);
+    expect(inv.extractionTotals.rejected).toBe(FILES.length);
+    for (const [, c] of FILES) {
       if (c.entryId === null) continue;
       const certified = inv.entries.filter(
         (e) => e.id === c.entryId && e.validation === 'ok' && (e.sourceFile ?? '').endsWith(c.file),
@@ -197,7 +218,7 @@ describe('r76 THE rejection channel over every loader-backed slot', () => {
   test('accepted means usable: the self-config doctor resolves and reports every rejection once, as an ERROR', async () => {
     const report = await buildSelfConfigDoctorReportV2(inspection);
     expect(report.verdict).toBe('errors');
-    for (const [slot, c] of SLOTS) {
+    for (const [slot, c] of FILES) {
       const hits = report.findings.filter((f) => f.code === c.code && (f.file ?? '').endsWith(`/${c.file}`));
       expect({ slot, found: hits.length > 0, errors: hits.every((f) => f.severity === 'error') }).toEqual({
         slot,

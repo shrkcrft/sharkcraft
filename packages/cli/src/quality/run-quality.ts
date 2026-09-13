@@ -103,7 +103,13 @@ export interface IQualityRun {
   readonly coverage: IVerdictCoverage;
   /** The scope gaps that kept the verdict off `pass` (empty on a clean run). */
   readonly shortfalls: readonly string[];
-  /** Gaps an explicit acceptance waived (reserved; quality accepts none today). */
+  /**
+   * Gaps an explicit acceptance waived — on a passing run only (an acceptance
+   * is a statement about a CLEAN verdict). Round 15: the knowledge item's own
+   * (`knowledgeCheck.minReferenced`, a `required: false` waiver), each
+   * `knowledge-stale: <line>` — the pass stood on a waived gap while this read
+   * `[]`, so a JSON consumer had to parse the item's notes to see it.
+   */
   readonly accepted: readonly string[];
   /** Set when the run was narrowed to a changeset. */
   readonly scopedFiles?: number;
@@ -367,6 +373,15 @@ export async function runQuality(input: IRunQualityInput): Promise<IQualityRun> 
   const settled = settleVerdict(failed > 0 ? ExitCode.Failure : ExitCode.VerifiedPass, [coverage]);
   const verdict: IQualityRun['verdict'] =
     settled.verdict === 'pass' ? 'pass' : settled.verdict === 'not-verified' ? 'not-verified' : 'fail';
+  // The knowledge item's acceptance rides into the run's `accepted` (round 15)
+  // — only over a passing run, the one `settleVerdict` rule.
+  const knowledgeItem = items.find((i) => i.id === KNOWLEDGE_STALE_GATE_ID && i.status === 'passed');
+  const knowledgeAccepted =
+    settled.exit === ExitCode.VerifiedPass && Array.isArray(knowledgeItem?.data?.['accepted'])
+      ? (knowledgeItem.data['accepted'] as readonly unknown[])
+          .filter((a): a is string => typeof a === 'string')
+          .map((a) => `${KNOWLEDGE_STALE_GATE_ID}: ${a}`)
+      : [];
 
   return {
     schema: QUALITY_RUN_SCHEMA,
@@ -381,7 +396,7 @@ export async function runQuality(input: IRunQualityInput): Promise<IQualityRun> 
     exit: settled.exit,
     coverage,
     shortfalls: settled.shortfalls,
-    accepted: settled.accepted,
+    accepted: [...settled.accepted, ...knowledgeAccepted],
     ...(input.changedFiles ? { scopedFiles: input.changedFiles.length } : {}),
     failFast: input.failFast,
     diagnostics,
@@ -582,7 +597,11 @@ function knowledgeStaleItem(g: IQualityGateResult): IQualityItem {
     data: {
       coverage: g.data?.['coverage'],
       unverifiableIds: g.data?.['unverifiableIds'],
+      // Round 15 follow-up (F3): entries the loader refused — never checked.
+      rejectedEntries: g.data?.['rejectedEntries'] ?? [],
       failureCounts: g.data?.['failureCounts'],
+      // What an explicit valve accepted (round 15) — hoisted into the run's `accepted`.
+      accepted: g.data?.['accepted'] ?? [],
     },
   };
 }

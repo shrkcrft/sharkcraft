@@ -18,10 +18,16 @@ import {
   diagnoseActionHints,
   type IActionHintQualityIssue,
 } from './action-hint-diagnostics.ts';
+import { KnowledgeSourceFormat } from '@shrkcrft/knowledge';
 import {
   buildKnowledgeStaleReport,
   ReferenceCheckOutcome,
+  type IKnowledgeReferenceCheck,
 } from './knowledge-stale.ts';
+import type { IKnowledgeEntryVerdictRecord } from './knowledge-entry-verdict-record.ts';
+import { knowledgeRenameCommand } from './knowledge-rename-command.ts';
+import { KnowledgeRenameVerb } from './knowledge-rename-verb.ts';
+import { ReferenceFailure } from './reference-failure.ts';
 import { buildTemplateDriftReport } from './template-drift.ts';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
@@ -171,6 +177,81 @@ function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
+/**
+ * One non-ok stale-check row as a fix suggestion (round 15 follow-up, F4).
+ *
+ * Every command it suggests is one the dispatcher RUNS: `knowledge
+ * rename-file` / `rename-symbol` are read-only previews already (they take no
+ * `--dry-run` — the suggestion used to name it, and the dispatcher refused it),
+ * and `fix preview` takes the entry as `--target <id>` (it takes no positional:
+ * `--knowledge-stale <id>` read the id as the flag's value and previewed every
+ * kind). An entry `shrk fix --knowledge-stale --apply` cannot edit — declared
+ * in Markdown (a `references:` frontmatter list), or contributed by a pack —
+ * says so in its description and gets no `--apply` command.
+ */
+function buildKnowledgeStaleFix(
+  c: IKnowledgeReferenceCheck,
+  declaredBy: IKnowledgeEntryVerdictRecord | undefined,
+): IFixPreviewSuggestion {
+  const ref = c.reference;
+  // A `command:` reference names its target in `command` (it read `→ <unknown>`).
+  const target = ref.id ?? ref.path ?? ref.symbol ?? ref.command ?? '<unknown>';
+  const failing = c.outcome === ReferenceCheckOutcome.Stale || c.outcome === ReferenceCheckOutcome.Missing;
+  const notAutoFixable =
+    declaredBy?.pack !== undefined
+      ? `not auto-fixable here: pack ${declaredBy.pack} contributes ${c.entryId} (${declaredBy.source}) — fix it upstream in the pack`
+      : declaredBy?.sourceFormat === KnowledgeSourceFormat.Markdown
+        ? `not auto-fixable: ${c.entryId} is declared in Markdown (${declaredBy.source}) — \`shrk fix --knowledge-stale --apply\` edits TypeScript entries only; edit its references: frontmatter list by hand`
+        : undefined;
+  const replaceWith = c.replaceWith;
+  const hasRenameTarget =
+    replaceWith !== undefined &&
+    (replaceWith.path !== undefined || replaceWith.id !== undefined || replaceWith.symbol !== undefined);
+  // A rename answers a MOVED target only — a path that is gone (`rename-file`
+  // matches any reference by its `path`) or a symbol no longer declared in its
+  // file (`rename-symbol`), never a content / count mismatch on a file that is
+  // still there. And only for an entry `--apply` can edit: a rename plan lands
+  // through `shrk fix --knowledge-stale --apply`, which refuses a Markdown or a
+  // pack entry — a pack's reference is fixed in the pack, never renamed onto
+  // this tree (the stale engine offers it no rename candidate either).
+  const renameCommand =
+    !failing || notAutoFixable !== undefined
+      ? undefined
+      : c.failure === ReferenceFailure.PathMissing && typeof ref.path === 'string'
+        ? knowledgeRenameCommand(KnowledgeRenameVerb.RenameFile, ref.path, replaceWith?.path)
+        : c.failure === ReferenceFailure.AnchorMissing && ref.kind === 'symbol' && typeof ref.symbol === 'string'
+          ? knowledgeRenameCommand(KnowledgeRenameVerb.RenameSymbol, ref.symbol, replaceWith?.symbol)
+          : undefined;
+  const applyCommand =
+    failing && notAutoFixable === undefined
+      ? hasRenameTarget
+        ? 'shrk fix --knowledge-stale --apply'
+        : `shrk fix --knowledge-stale --apply ${c.outcome === ReferenceCheckOutcome.Missing ? '--drop-missing' : '--drop-stale'}`
+      : undefined;
+  const what = failing
+    ? 'Stale reference'
+    : c.outcome === ReferenceCheckOutcome.Invalid
+      ? 'Malformed reference'
+      : 'Unverifiable reference';
+  return {
+    kind: FixKind.KnowledgeStale,
+    targetId: c.entryId,
+    severity: c.outcome === ReferenceCheckOutcome.Missing ? 'error' : 'warning',
+    title: `${what} ${c.entryId} → ${target}`,
+    description: notAutoFixable !== undefined ? `${c.message} — ${notAutoFixable}.` : c.message,
+    nextCommands: [
+      `shrk knowledge references ${c.entryId}`,
+      ...(renameCommand !== undefined ? [renameCommand] : []),
+      `shrk fix preview --knowledge-stale --target ${c.entryId}`,
+      ...(applyCommand !== undefined ? [applyCommand] : []),
+    ],
+    ...(c.suggestion ? { draftBody: `// suggestion: ${c.suggestion}` } : {}),
+    ...(notAutoFixable !== undefined ? { humanReviewRequired: true, reason: notAutoFixable } : {}),
+    previewFileName: `knowledge-stale-${slug(c.entryId)}.preview.md`,
+    stubbed: true,
+  };
+}
+
 export function buildFixPreview(
   inspection: ISharkcraftInspection,
   options: IFixPreviewOptions = {},
@@ -195,25 +276,12 @@ export function buildFixPreview(
 
   if (kinds.has(FixKind.KnowledgeStale)) {
     const stale = buildKnowledgeStaleReport(inspection);
+    // The entry's declaring file, format and pack — what decides whether
+    // `--apply` can edit it (round 15 follow-up, F4).
+    const declared = new Map(stale.entryVerdicts.map((v) => [v.entryId, v]));
     for (const c of stale.referenceChecks) {
       if (c.outcome === ReferenceCheckOutcome.Ok) continue;
-      const target =
-        c.reference.id ?? c.reference.path ?? c.reference.symbol ?? '<unknown>';
-      suggestions.push({
-        kind: FixKind.KnowledgeStale,
-        targetId: c.entryId,
-        severity: c.outcome === ReferenceCheckOutcome.Missing ? 'error' : 'warning',
-        title: `Stale reference ${c.entryId} → ${target}`,
-        description: c.message,
-        nextCommands: [
-          `shrk knowledge references ${c.entryId}`,
-          `shrk knowledge rename-symbol <old> <new> --dry-run`,
-          `shrk fix preview --knowledge-stale ${c.entryId}`,
-        ],
-        ...(c.suggestion ? { draftBody: `// suggestion: ${c.suggestion}` } : {}),
-        previewFileName: `knowledge-stale-${slug(c.entryId)}.preview.md`,
-        stubbed: true,
-      });
+      suggestions.push(buildKnowledgeStaleFix(c, declared.get(c.entryId)));
     }
   }
 
@@ -231,7 +299,9 @@ export function buildFixPreview(
           nextCommands: [
             `shrk templates get ${e.templateId}`,
             `shrk paths list`,
-            `shrk fix preview --template-drift ${e.templateId} --write-preview`,
+            // `--target <id>`: `fix` takes no positional, so `--template-drift <id>`
+            // read the id as the flag's value and previewed every kind (F4).
+            `shrk fix preview --template-drift --target ${e.templateId} --write-preview`,
           ],
           ...(i.suggestedFix ? { draftBody: `// suggestion: ${i.suggestedFix}` } : {}),
           previewFileName: `template-drift-${slug(e.templateId)}-${i.code}.preview.md`,

@@ -8,6 +8,8 @@
  * A convention is static data — no executable code. Rules describe
  * patterns to expect / forbid; the engine matches files against them.
  */
+import { globListProblem, nearestIds } from '@shrkcrft/core';
+import { ConventionAppliesToFilter } from './convention-applies-to-filter.ts';
 
 export enum ConventionKind {
   Path = 'path',
@@ -28,16 +30,54 @@ export enum ConventionSeverity {
   Error = 'error',
 }
 
+/**
+ * Where a convention applies (round 15, 15.1: every filter is EVALUATED — only
+ * `fileGlobs` used to be). ONE authority decides it for every surface —
+ * `conventionApplicability` (`@shrkcrft/inspector`), read by `conventions
+ * check`, the rule-graph bridge, MCP `prepare_agent_task` and the `conventions
+ * list / get / explain` display.
+ *
+ * Semantics (the pack-compatibility precedent): within a filter ANY listed
+ * value matches; EVERY declared filter must match; an absent or empty filter
+ * imposes no constraint. A convention that does not apply is never evaluated —
+ * `conventions check` prints it as not applicable, with the reason.
+ *
+ * The keys are a closed set ({@link ConventionAppliesToFilter}): any other key
+ * is an ERROR with a did-you-mean, because a typo'd filter silently widened
+ * the convention to every file.
+ */
 export interface IConventionAppliesTo {
+  /**
+   * PER FILE: the file's language, by extension — the vocabulary `shrk stats`
+   * prints (`typescript` for `.ts/.tsx/.mts/.cts`, `javascript`, `python`, …).
+   * An unknown id is an info `convention-language-missing` finding in the
+   * self-config doctor.
+   */
   readonly languages?: readonly string[];
+  /**
+   * WORKSPACE: detected framework ids — the `FrameworkId` vocabulary of
+   * `@shrkcrft/workspace` (`angular`, `react`, `nextjs`, `nestjs`, …), matched
+   * against `inspection.workspace.frameworks`. An unknown id is an info
+   * `convention-framework-missing` finding in the self-config doctor.
+   */
   readonly frameworks?: readonly string[];
+  /**
+   * PER FILE: project-relative globs through the boundaries matcher — `**`
+   * spans zero or more segments (`src/**\/*.ts` matches `src/a.ts`), `?` one
+   * character but never `/`, and a `!` entry SUBTRACTS from the list.
+   */
   readonly fileGlobs?: readonly string[];
+  /**
+   * RESERVED — not evaluated: there is no deterministic file → construct-kind
+   * authority. The loader warns (`appliesTo.constructKinds is reserved and not
+   * evaluated — the convention applies regardless`).
+   */
   readonly constructKinds?: readonly string[];
   /**
-   * WorkspaceProfile ids (`has-typescript`, `is-library`, … — `shrk profiles
-   * list --kind workspace`). Resolved by the self-config doctor (a typo is a
-   * `convention-profile-missing` finding with a did-you-mean); NOT yet
-   * evaluated as a filter by `conventions check`.
+   * WORKSPACE: WorkspaceProfile ids (`has-typescript`, `is-library`, … — `shrk
+   * profiles list --kind workspace`), matched against the DETECTED profiles
+   * (`inspection.workspace.profiles`). Resolved by the self-config doctor too
+   * (a typo is a `convention-profile-missing` finding with a did-you-mean).
    */
   readonly profileIds?: readonly string[];
 }
@@ -45,11 +85,16 @@ export interface IConventionAppliesTo {
 export interface IConventionRule {
   readonly id: string;
   readonly description: string;
-  /** Optional regex describing what *should* match. */
+  /**
+   * Optional regex every file in the convention's scope SHOULD match — tested
+   * against the project-relative path, like {@link forbidMatch}. A file in
+   * scope that does not match is a hit (round 15: it was validated and never
+   * evaluated, so an `error` rule of only `expectMatch` could never fail).
+   */
   readonly expectMatch?: string;
-  /** Optional regex describing what *must not* match. */
+  /** Optional regex (project-relative path) a file in scope MUST NOT match — a match is a hit. */
   readonly forbidMatch?: string;
-  /** Optional file-name pattern. */
+  /** Optional regex (project-relative path) a file in scope must match — a miss is a hit. */
   readonly filePattern?: string;
   /** Optional severity override for this rule (else parent severity). */
   readonly severity?: ConventionSeverity;
@@ -123,8 +168,12 @@ const CONVENTION_KEYS: ReadonlySet<string> = new Set([
   'tags',
 ]);
 
-/** The list fields of {@link IConventionAppliesTo}. */
-const APPLIES_TO_LIST_KEYS = ['languages', 'frameworks', 'fileGlobs', 'constructKinds', 'profileIds'] as const;
+/** The list fields of {@link IConventionAppliesTo} — every key it may carry (a closed set). */
+const APPLIES_TO_LIST_KEYS: readonly string[] = Object.values(ConventionAppliesToFilter);
+
+/** The one reserved filter: loaded, warned about, never evaluated. */
+const RESERVED_APPLIES_TO_WARNING =
+  'appliesTo.constructKinds is reserved and not evaluated — the convention applies regardless';
 
 /** The regex-typed fields of an {@link IConventionRule}. */
 const RULE_PATTERN_KEYS = ['expectMatch', 'forbidMatch', 'filePattern'] as const;
@@ -144,11 +193,14 @@ function isStringList(v: unknown): boolean {
  * set — `kind`, `severity`, a rule's `severity`, a reference's `kind` (each
  * message names the allowed values) — or a shape the checker cannot evaluate: a
  * rule that is not an object, a pattern that does not compile, a list field
- * that is not a list. An unenumerated severity could never fail `conventions
- * check` (only `error` fails it), so accepting one was a check that cannot fail.
+ * that is not a list, an `appliesTo` key outside {@link ConventionAppliesToFilter}
+ * (with a did-you-mean — round 15). An unenumerated severity could never fail
+ * `conventions check` (only `error` fails it), so accepting one was a check that
+ * cannot fail.
  *
  * WARNINGS (the convention still loads): an unknown top-level key, a rule
- * without a string `id` / `description`, a reference without a `value`.
+ * without a string `id` / `description`, a reference without a `value`, a
+ * non-empty `appliesTo.constructKinds` (RESERVED — not evaluated).
  */
 export function validateConvention(value: unknown): IConventionValidationResult {
   const issues: IConventionValidationIssue[] = [];
@@ -197,6 +249,35 @@ export function validateConvention(value: unknown): IConventionValidationResult 
         if (at[key] !== undefined && !isStringList(at[key])) {
           issues.push({ field: `appliesTo.${key}`, message: `appliesTo.${key} must be a list of strings` });
         }
+      }
+      // Round 15 (15.1): an unknown filter is an ERROR, never ignored — a typo'd
+      // `fileGlob` made the convention apply to EVERY file with a clean doctor.
+      for (const key of Object.keys(at)) {
+        if (APPLIES_TO_LIST_KEYS.includes(key)) continue;
+        // A case-only slip (`FileGlobs`) is the one typo the scorer skips as "the
+        // same id" — name it first, as core's marker-entry-problems does.
+        const sameLetters = APPLIES_TO_LIST_KEYS.find((k) => k.toLowerCase() === key.toLowerCase());
+        const near = sameLetters ?? nearestIds(key, APPLIES_TO_LIST_KEYS, 1)[0]?.id;
+        issues.push({
+          field: `appliesTo.${key}`,
+          message:
+            `appliesTo.${key} is not an appliesTo filter (filters: ${APPLIES_TO_LIST_KEYS.join(', ')}) — ` +
+            `an unknown filter would silently widen the convention's scope${near ? `; did you mean "${near}"?` : ''}`,
+        });
+      }
+      // `!` subtracts through core's ONE glob-list parser — so a malformed list
+      // (a bare `!`, `!!x`, negations only) is the load error it is on every
+      // other plane, never a list that silently selects nothing.
+      const fileGlobs = at[ConventionAppliesToFilter.FileGlobs];
+      if (isStringList(fileGlobs)) {
+        const problem = globListProblem(fileGlobs as string[]);
+        if (problem !== undefined) {
+          issues.push({ field: `appliesTo.${ConventionAppliesToFilter.FileGlobs}`, message: `appliesTo.fileGlobs ${problem}` });
+        }
+      }
+      const constructKinds = at[ConventionAppliesToFilter.ConstructKinds];
+      if (Array.isArray(constructKinds) && constructKinds.length > 0) {
+        warnings.push({ field: `appliesTo.${ConventionAppliesToFilter.ConstructKinds}`, message: RESERVED_APPLIES_TO_WARNING });
       }
     }
   }

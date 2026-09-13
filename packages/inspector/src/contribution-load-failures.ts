@@ -637,12 +637,31 @@ export async function collectKindRejections(
   return (await collectKindOutcomes(inspection, kinds)).rejections;
 }
 
+/** The slot of a whole Markdown document — it has no export and no list position. */
+export const MARKDOWN_FILE_SLOT = 'Markdown file';
+
+/**
+ * THE slot label of a refused entry (round 15 closing, A5): `default[8]` for a
+ * list item, the export name for a single-object export, and
+ * {@link MARKDOWN_FILE_SLOT} for a whole Markdown document (index `-1`, no
+ * export — a decision record, a Markdown knowledge file), which read
+ * `(default)` as if it were a module's default export. Every surface that names
+ * where a refused entry sits reads it.
+ */
+export function rejectedEntrySlot(r: Pick<IRejectedEntry, 'index' | 'exportName'> & { readonly file?: string }): string {
+  if (r.index >= 0) return `${r.exportName ?? ''}[${r.index}]`;
+  if (r.exportName !== undefined) return r.exportName;
+  return r.file !== undefined && /\.(?:md|markdown)$/i.test(r.file) ? MARKDOWN_FILE_SLOT : 'default';
+}
+
 /**
  * THE one wording of a rejected entry, used on every surface:
- * `'conv.b' (default[8]) — severity: severity must be one of: info, warning, error (got undefined)`.
+ * `'conv.b' (default[8]) — severity: severity must be one of: info, warning, error (got undefined)`,
+ * `(no id) (Markdown file) — frontmatter: …` for a Markdown document ({@link rejectedEntrySlot}).
  */
-export function formatEntryRejection(r: Pick<IRejectedEntry, 'entryId' | 'index' | 'exportName' | 'reasons'>): string {
+export function formatEntryRejection(
+  r: Pick<IRejectedEntry, 'entryId' | 'index' | 'exportName' | 'reasons'> & { readonly file?: string },
+): string {
   const who = r.entryId !== undefined ? `'${r.entryId}'` : '(no id)';
-  const where = r.index >= 0 ? `${r.exportName ?? ''}[${r.index}]` : (r.exportName ?? 'default');
-  return `${who} (${where}) — ${r.reasons.join('; ')}`;
+  return `${who} (${rejectedEntrySlot(r)}) — ${r.reasons.join('; ')}`;
 }

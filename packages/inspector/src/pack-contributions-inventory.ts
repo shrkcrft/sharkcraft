@@ -31,6 +31,7 @@ import {
   collectContributionRejections,
   collectRegistryOutcomes,
   formatEntryRejection,
+  rejectedEntrySlot,
   type IContributionLoadFailure,
 } from './contribution-load-failures.ts';
 import { ContributionKind } from './contribution-kind.ts';
@@ -991,8 +992,10 @@ export function renderInventoryMarkdown(inv: IPackContributionsInventory): strin
     lines.push('| File | Kind | Pack | Entry | Reasons |');
     lines.push('| --- | --- | --- | --- | --- |');
     for (const r of rejections) {
+      // THE slot label (round 15 closing review, A5): a whole Markdown document
+      // printed `[-1]` here; every other surface reads `rejectedEntrySlot`.
       lines.push(
-        `| \`${r.file}\` | ${r.kind} | ${r.packageName ?? ''} | ${r.entryId !== undefined ? `\`${r.entryId}\`` : '(no id)'} ${r.exportName ?? ''}[${r.index}] | ${r.reasons.join('; ')} |`,
+        `| \`${r.file}\` | ${r.kind} | ${r.packageName ?? ''} | ${r.entryId !== undefined ? `\`${r.entryId}\`` : '(no id)'} (${rejectedEntrySlot(r)}) | ${r.reasons.join('; ')} |`,
       );
     }
   }

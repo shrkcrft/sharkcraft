@@ -5,6 +5,8 @@
  * commands. Each helper emits a compact one-paragraph "Next commands"
  * block on stdout.
  */
+import { knowledgeRenameCommand, KnowledgeRenameVerb } from '@shrkcrft/inspector';
+
 export interface IFailureHint {
   label: string;
   command: string;
@@ -35,8 +37,11 @@ export function doctorHints(): IFailureHint[] {
 }
 
 export function staleKnowledgeHints(): IFailureHint[] {
+  // Built by THE rename-command helper: both verbs are read-only previews and
+  // take no `--dry-run` (the dispatcher refused the flag this hint used to name).
   return [
-    { label: 'preview rename', command: 'shrk knowledge rename-symbol <old> <new> --dry-run' },
+    { label: 'preview a file rename (read-only)', command: knowledgeRenameCommand(KnowledgeRenameVerb.RenameFile) },
+    { label: 'preview a symbol rename (read-only)', command: knowledgeRenameCommand(KnowledgeRenameVerb.RenameSymbol) },
     { label: 'list references', command: 'shrk knowledge references <id>' },
     { label: 'fix preview', command: 'shrk fix preview --knowledge-stale' },
   ];

@@ -62,6 +62,8 @@ function defineKnowledgeEntry<T>(entry: T): T {
 export const projectOverview = defineKnowledgeEntry({
   id: 'project.overview',
   title: 'Project Overview',
+  // Verifiable from the first run: \`shrk knowledge stale-check\` checks it.
+  references: [{ kind: 'file', path: 'sharkcraft/sharkcraft.config.ts', note: 'the config that wires SharkCraft into this repo' }],
   type: KnowledgeType.Architecture,
   priority: KnowledgePriority.High,
   scope: ['typescript'],
@@ -77,6 +79,10 @@ Use \\\`shrk context --task "<task>"\\\` to retrieve only what matters for a tas
 export const aiAgentBriefing = defineKnowledgeEntry({
   id: 'agent.briefing',
   title: 'AI agent briefing',
+  references: [
+    { kind: 'file', path: 'sharkcraft/templates.ts', note: 'the templates list_templates / get_template serve' },
+    { kind: 'file', path: 'sharkcraft/rules.ts', note: 'the project rules agents respect' },
+  ],
   type: KnowledgeType.Convention,
   priority: KnowledgePriority.Critical,
   scope: ['ai-agent'],
@@ -92,6 +98,7 @@ export const aiAgentBriefing = defineKnowledgeEntry({
 export const generationSafety = defineKnowledgeEntry({
   id: 'safety.generation',
   title: 'Generation safety',
+  references: [{ kind: 'file', path: 'sharkcraft/templates.ts', note: 'the templates shrk gen renders' }],
   type: KnowledgeType.Warning,
   priority: KnowledgePriority.Critical,
   scope: ['generation'],
@@ -121,9 +128,14 @@ function defineRule<T>(rule: T): T {
   return { ...rule, type: KnowledgeType.Rule } as T;
 }
 
+// What makes each rule verifiable from the first run (\`shrk knowledge stale-check\`).
+const PACKAGE_JSON = { kind: 'file', path: 'package.json', note: 'the package these TypeScript rules govern' };
+const TEMPLATES_FILE = { kind: 'file', path: 'sharkcraft/templates.ts', note: 'the templates shrk gen renders' };
+
 export const tsNamingClasses = defineRule({
   id: 'typescript.naming.classes',
   title: 'TypeScript class naming',
+  references: [PACKAGE_JSON],
   priority: KnowledgePriority.High,
   scope: ['typescript'],
   tags: ['typescript', 'naming', 'class'],
@@ -141,6 +153,7 @@ unless it is truly an orchestrator.\`,
 export const filesOneExport = defineRule({
   id: 'typescript.files.one-export',
   title: 'One top-level export per file',
+  references: [PACKAGE_JSON],
   priority: KnowledgePriority.High,
   scope: ['typescript'],
   tags: ['typescript', 'files', 'organization'],
@@ -152,6 +165,7 @@ one interface OR one enum OR one type). Helpers belong in their own files.\`,
 export const noLogicInConstructor = defineRule({
   id: 'typescript.constructors.no-logic',
   title: 'No logic in constructors',
+  references: [PACKAGE_JSON],
   priority: KnowledgePriority.High,
   scope: ['typescript', 'oop'],
   tags: ['typescript', 'lifecycle'],
@@ -163,6 +177,7 @@ explicit lifecycle methods (init / initialize). This keeps classes test-friendly
 export const generationDryRunByDefault = defineRule({
   id: 'generation.dry-run-by-default',
   title: 'Generation defaults to dry-run',
+  references: [TEMPLATES_FILE],
   priority: KnowledgePriority.Critical,
   scope: ['generation'],
   tags: ['safety', 'generator', 'agent'],
@@ -174,6 +189,7 @@ without conflicts. AI agents must call create_generation_plan first.\`,
 export const preferAbsoluteImports = defineRule({
   id: 'typescript.imports.absolute',
   title: 'Prefer absolute imports across packages',
+  references: [PACKAGE_JSON],
   priority: KnowledgePriority.Medium,
   scope: ['typescript'],
   tags: ['imports', 'typescript'],
@@ -273,7 +289,10 @@ export default [tsService, tsUtility, tsTest];
   },
   {
     relativePath: 'docs/overview.md',
-    content: `# Project Overview
+    content: `---
+references: [file:sharkcraft/sharkcraft.config.ts]
+---
+# Project Overview
 
 This is a SharkCraft-powered repository. Project knowledge lives under the local \`sharkcraft/\` folder as **structured TypeScript** plus optional markdown.
 
@@ -299,7 +318,10 @@ shrk mcp serve
   },
   {
     relativePath: 'docs/architecture.md',
-    content: `# Architecture
+    content: `---
+references: [file:sharkcraft/rules.ts, file:sharkcraft/paths.ts]
+---
+# Architecture
 
 This repository follows these conventions:
 
@@ -318,7 +340,10 @@ Open \`sharkcraft/rules.ts\`, add a \`defineRule({...})\` export, and re-run \`s
   },
   {
     relativePath: 'docs/quick-start.md',
-    content: `# Quick start
+    content: `---
+references: [template:typescript.service]
+---
+# Quick start
 
 1. **Inspect** the project:
 
@@ -402,11 +427,20 @@ function definePathConvention<T>(convention: T): T {
 // repository. Run \`shrk onboard --dry-run\` to see what the inference
 // engine detects from the workspace.
 
+// Each seed is verifiable from the first run: it points at this file. Once the
+// directory exists, point at it instead — { kind: 'directory', path: 'src' }.
+function seedRef(dir: string) {
+  return { kind: 'file', path: 'sharkcraft/paths.ts', note: \`seed: once \${dir} exists, point at it — { kind: 'directory', path: '\${dir}' }\` };
+}
+
 export const appSrc = definePathConvention({
   id: 'app.src',
   title: 'Application source root',
+  references: [seedRef('src')],
   path: 'src',
   description: 'All application source lives here. Adjust to match this repo.',
+  // The knowledge loader requires \`content\`: without it this seed was rejected at load.
+  content: 'All application source lives here. Adjust to match this repo.',
   priority: KnowledgePriority.Critical,
   scope: ['typescript'],
   tags: ['source-path', 'root'],
@@ -416,8 +450,10 @@ export const appSrc = definePathConvention({
 export const tests = definePathConvention({
   id: 'app.tests',
   title: 'Test files',
+  references: [seedRef('tests')],
   path: 'tests',
   description: 'Test files. Many repos co-locate \`*.spec.ts\` next to the unit under test instead — pick one.',
+  content: 'Test files. Many repos co-locate \`*.spec.ts\` next to the unit under test instead — pick one.',
   priority: KnowledgePriority.Medium,
   scope: ['typescript', 'testing'],
   tags: ['test', 'source-path'],
@@ -427,8 +463,10 @@ export const tests = definePathConvention({
 export const docs = definePathConvention({
   id: 'app.docs',
   title: 'Documentation',
+  references: [seedRef('docs')],
   path: 'docs',
   description: 'Long-form human-readable docs (optional).',
+  content: 'Long-form human-readable docs (optional).',
   priority: KnowledgePriority.Low,
   scope: ['typescript'],
   tags: ['docs'],

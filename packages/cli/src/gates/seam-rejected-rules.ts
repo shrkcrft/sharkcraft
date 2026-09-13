@@ -6,7 +6,7 @@ import {
   type IResolvedProjectConfig,
 } from '@shrkcrft/inspector';
 import type { IGateRuleResult } from './gate-envelope.ts';
-import type { GatePlane } from './gate-rule-view.ts';
+import { collectGateRules, type GatePlane, type IGatePlanes } from './gate-rule-view.ts';
 
 /**
  * Each gate-plane contribution kind → the plane its rules run on. A kind absent
@@ -41,13 +41,23 @@ const PLANE_OF_KIND: Readonly<Partial<Record<ContributionKind, GatePlane>>> = {
  * `baseline check`, `generated check`, `finish` — builds its rows here, so they
  * cannot disagree about one rejected rule.
  *
+ * ONE row per refused DECLARATION (round 15 lane B, B2 — the conventions F2
+ * precedent). Rows used to be deduped by `plane:id`, so a second invalid pack
+ * rule sharing an id with another invalid one (the seam validates before it
+ * checks for a duplicate, so both are `invalid`) was silently dropped:
+ * `packs contributions` listed two refusals and `gates check` one row. Row ids
+ * are unique within a plane, and never equal to the id of a rule that RUNS
+ * there (`resolved.config`). A later declaration, or one whose id a running
+ * rule holds, is `<id> (<file>[<index>])`, so `--only <id>` and a reader keyed
+ * by id never mistake the refused declaration for the rule that ran.
+ *
  * A pack plane FILE that failed to import is one errored row per file (the
  * rules inside it are unknown). A `duplicate-id` rejection is NOT a row: the id
  * it collided with is a rule that runs (local wins), so it stays a diagnostic.
  * `planes` narrows to the planes a verb reads; absent = every plane.
  */
 export function seamRejectedRules(
-  resolved: Pick<IResolvedProjectConfig, 'planeOutcomes' | 'projectRoot'>,
+  resolved: Pick<IResolvedProjectConfig, 'planeOutcomes' | 'projectRoot'> & { readonly config?: IGatePlanes },
   planes?: readonly GatePlane[],
 ): (IGateRuleResult & { readonly type: GatePlane })[] {
   const outcomes = resolved.planeOutcomes;
@@ -58,14 +68,24 @@ export function seamRejectedRules(
   };
   const rows: (IGateRuleResult & { readonly type: GatePlane })[] = [];
   const seen = new Set<string>();
+  // `plane:id` of every rule that runs, then of every row already emitted.
+  const taken = new Set<string>(resolved.config ? collectGateRules(resolved.config).map((r) => `${r.plane}:${r.id}`) : []);
+  const uniqueId = (plane: GatePlane, preferred: string, site: string): string => {
+    let id = taken.has(`${plane}:${preferred}`) ? `${preferred} (${site})` : preferred;
+    for (let n = 2; taken.has(`${plane}:${id}`); n += 1) id = `${preferred} (${site} #${n})`;
+    taken.add(`${plane}:${id}`);
+    return id;
+  };
   for (const r of outcomes.rejected) {
     if (r.cause === RejectionCause.DuplicateId) continue;
     const plane = wanted(r.kind);
     if (plane === undefined) continue;
     const file = contributionFileLabel(resolved.projectRoot, r.file);
-    const id = r.entryId ?? `${file}[${r.index}]`;
-    if (seen.has(`${plane}:${id}`)) continue;
-    seen.add(`${plane}:${id}`);
+    const declaration = `${plane}|${file}|${r.exportName ?? ''}|${r.index}`;
+    if (seen.has(declaration)) continue;
+    seen.add(declaration);
+    const site = r.index >= 0 ? `${file}[${r.index}]` : file;
+    const id = uniqueId(plane, r.entryId ?? site, site);
     const pack = r.packageName ? `pack ${r.packageName} ` : '';
     rows.push({
       id,
@@ -84,9 +104,10 @@ export function seamRejectedRules(
     const plane = wanted(f.kind);
     if (plane === undefined) continue;
     const file = contributionFileLabel(resolved.projectRoot, f.file);
-    const id = `${f.packageName}:${file}`;
-    if (seen.has(`${plane}:${id}`)) continue;
-    seen.add(`${plane}:${id}`);
+    const declaration = `${plane}|${file}`;
+    if (seen.has(declaration)) continue;
+    seen.add(declaration);
+    const id = uniqueId(plane, `${f.packageName}:${file}`, file);
     rows.push({
       id,
       type: plane,

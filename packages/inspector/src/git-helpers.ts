@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { detectProjectRoot } from '@shrkcrft/workspace';
 
 export interface IGitChangedOptions {
   /** Compare against the given ref (HEAD, origin/main, a SHA, …). */
@@ -62,26 +63,79 @@ export function getGitBranch(cwd: string): string | null {
   return out.length > 0 ? out : null;
 }
 
+/**
+ * Where `dir` sits inside its git work tree (`git rev-parse --show-prefix`):
+ * `''` at the top level, `app/` for a project nested in a larger repository.
+ * `''` too when git cannot tell (the paths are then used as git printed them).
+ */
+function gitPrefix(dir: string): string {
+  const r = runGit(dir, ['rev-parse', '--show-prefix']);
+  return r.ok ? r.stdout.trim() : '';
+}
+
+/** A top-level-relative git path as a root-relative one, or `undefined` outside the root's subtree. */
+function underPrefix(prefix: string, gitPath: string): string | undefined {
+  if (prefix === '') return gitPath;
+  return gitPath.startsWith(prefix) && gitPath.length > prefix.length ? gitPath.slice(prefix.length) : undefined;
+}
+
+/**
+ * The project root `cwd` belongs to — THE root `inspectSharkcraft` reads
+ * (`detectProjectRoot`: the nearest ancestor holding a root marker, `.git`
+ * included, so it never climbs out of the work tree). Every changed-scope path
+ * is spelled relative to it, from whichever subdirectory a command runs.
+ */
+function changedScopeRoot(cwd: string): string {
+  return detectProjectRoot(cwd).root;
+}
+
+/**
+ * The files a change touched, RELATIVE TO THE PROJECT ROOT `cwd` belongs to
+ * (`changedScopeRoot` — the root every caller resolves them against), sorted.
+ * git names a path relative to the work-tree TOP LEVEL. That is always true of
+ * `status --porcelain`, and of `diff` too once `diff.relative` is forced off,
+ * so a user's config cannot change the spelling. For a project nested in a
+ * larger repository (prefix `app/`), the top-level spelling `app/src/a.ts`
+ * resolved to `<root>/app/src/a.ts`, a file that does not exist. A
+ * changed-scope check (`conventions check --staged`, `--since`, and every
+ * other changed-scope reader) then checked nothing (round 15 lane B, B4). Every
+ * path is now mapped to root-relative. A change outside the project's subtree
+ * (a sibling package of the larger repository) is not in scope.
+ *
+ * Root-relative, never `cwd`-relative (lane B review): a command run from a
+ * subdirectory (`--cwd src`, a shell in `src/`) inspects the project root
+ * `detectProjectRoot` walks up to, so a `cwd`-relative `a.ts` resolved to
+ * `<root>/a.ts` — `validate-change`, `ownership affected`, `brief`, `tests
+ * impact` and `finish` read the wrong files where the top-level spelling had
+ * read the right ones.
+ */
 export function getChangedFiles(cwd: string, opts: IGitChangedOptions = {}): string[] {
   if (!isGitRepo(cwd)) return [];
-  const args = ['diff', '--name-only'];
+  const root = changedScopeRoot(cwd);
+  const prefix = gitPrefix(root);
+  const args = ['-c', 'diff.relative=false', 'diff', '--name-only'];
   if (opts.staged) args.push('--cached');
   if (opts.since) args.push(opts.since);
-  const a = runGit(cwd, args);
-  const set = new Set<string>(parseLines(a.stdout));
+  const a = runGit(root, args);
+  const set = new Set<string>();
+  const add = (gitPath: string): void => {
+    const rel = underPrefix(prefix, gitPath);
+    if (rel !== undefined) set.add(rel);
+  };
+  for (const p of parseLines(a.stdout)) add(p);
   if (opts.includeWorktree && !opts.staged && !opts.since) {
     // Include untracked + working-tree changes via `git status --porcelain`.
     // `-uall` expands untracked directories to individual files (default
     // `--porcelain` collapses them to a single `dir/` entry, which undercounts);
     // `.gitignore` is still honored.
-    const s = runGit(cwd, ['status', '--porcelain', '-uall']);
+    const s = runGit(root, ['status', '--porcelain', '-uall']);
     if (s.ok) {
       for (const line of s.stdout.split('\n')) {
         // Strip the two-char XY status + leading space, then take the new path
         // for rename/copy entries (`R  old -> new`).
         const raw = line.slice(3).trim();
         const path = raw.includes(' -> ') ? raw.slice(raw.indexOf(' -> ') + 4).trim() : raw;
-        if (path) set.add(path);
+        if (path) add(path);
       }
     }
   }
@@ -102,14 +156,19 @@ export function refExists(cwd: string, ref: string): boolean {
 }
 
 /**
- * The content of `relPath` at `ref` (e.g. `git show HEAD:src/x.ts`), or `null`
- * when the path did not exist at that ref (a newly-added file) or git failed.
- * `relPath` is repo-root-relative. Used to diff a file's PAST state against the
- * working tree without a checkout — e.g. to see what a now-edited file used to
+ * The content of `relPath` at `ref` (e.g. `git show HEAD:./src/x.ts`), or
+ * `null` when the path did not exist at that ref (a newly-added file) or git
+ * failed. `relPath` is relative to the project root `cwd` belongs to — the
+ * spelling `getChangedFiles` returns: git runs from that root and the `./` form
+ * resolves the path against it, so a project nested in a larger repository
+ * reads its own file (round 15 lane B, B4; the bare `<ref>:<path>` form is
+ * top-level-relative), and so does a caller whose `cwd` is a subdirectory
+ * (lane B review). Used to diff a file's PAST state against the working tree
+ * without a checkout — e.g. to see what a now-edited file used to
  * provide/register.
  */
 export function gitShowFile(cwd: string, ref: string, relPath: string): string | null {
-  const r = runGit(cwd, ['show', `${ref}:${relPath}`]);
+  const r = runGit(changedScopeRoot(cwd), ['show', `${ref}:./${relPath.replace(/^\.\//, '')}`]);
   return r.ok ? r.stdout : null;
 }
 

@@ -24,6 +24,22 @@ export * from './area/area-kind.ts';
 export * from './reference/asset-reference-kind.ts';
 export * from './reference/asset-reference-count.ts';
 export * from './reference/asset-reference.ts';
+// Round 15 follow-up (F7): a pack's reference may resolve against its own package directory.
+export * from './reference/knowledge-reference-root.ts';
+// ── THE frontmatter parser (round 15: moved down from @shrkcrft/generator so the
+//    Markdown knowledge loader and spec.md read frontmatter through one authority) ──
+export * from './frontmatter/frontmatter-scalar.ts';
+export * from './frontmatter/frontmatter-field-value.ts';
+export * from './frontmatter/frontmatter-value.ts';
+export * from './frontmatter/i-parse-frontmatter-options.ts';
+export * from './frontmatter/parse-frontmatter.ts';
+// Round 15 follow-up (F6): the delimiter split, the Text scalar mode and the
+// writer's inverse — decision records and Cursor .mdc rules read through THE
+// parser too (no other frontmatter parser remains).
+export * from './frontmatter/frontmatter-scalar-mode.ts';
+export * from './frontmatter/i-frontmatter-split.ts';
+export * from './frontmatter/split-frontmatter.ts';
+export * from './frontmatter/format-frontmatter-scalar.ts';
 export * from './policy/policy-rule.ts';
 export * from './baseline/baseline-rule.ts';
 export * from './generated/generated-artifact-rule.ts';

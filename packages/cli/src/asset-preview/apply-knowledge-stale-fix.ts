@@ -11,7 +11,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import type { IKnowledgeReference } from '@shrkcrft/knowledge';
+import { formatKnowledgeReference, type IKnowledgeReference } from '@shrkcrft/knowledge';
 import { findEntryRange, removeArrayEntries } from './entry-mutator.ts';
 
 /**
@@ -280,6 +280,25 @@ export function applyKnowledgeStaleFix(
       nextLength: 0,
       removedCount: 0,
       mode: 'drop',
+      wrote: false,
+    };
+  }
+  // Round 15 (15.2): a Markdown entry's references live in a `references:`
+  // frontmatter list — checked by the stale-check, but this splicer edits
+  // TypeScript literals only. Refused LOUDLY, naming the file; never skipped.
+  if (nodePath.extname(targetAbs).toLowerCase() === '.md') {
+    const rel = nodePath.relative(cwd, targetAbs) || nodePath.basename(targetAbs);
+    return {
+      ok: false,
+      refusal:
+        `Entry "${input.entryId}" is declared in Markdown (${rel}) — a references: frontmatter list is not auto-fixable; ` +
+        `edit ${rel} by hand (fix or drop the item ${formatKnowledgeReference(input.reference)}).`,
+      targetAbs,
+      entryId: input.entryId,
+      originalLength: 0,
+      nextLength: 0,
+      removedCount: 0,
+      mode: input.renameTo ? 'rename' : 'drop',
       wrote: false,
     };
   }

@@ -12,7 +12,11 @@ const LABEL_CAP = 20;
 
 /** Why a malformed reference is unexamined — the words every surface prints. */
 export const MALFORMED_REFERENCE_REASON =
-  'malformed (a kind outside the vocabulary, or a required field missing), so never checked — `shrk doctor` names each';
+  // A malformed reference is also one whose `root` cannot resolve where it is
+  // declared (`root: pack` on a local asset, an unknown root — round 15
+  // follow-up) or a field of the wrong type (`required: "yes"`): the INVALID
+  // row names the exact problem.
+  'malformed (a kind outside the vocabulary, a required field missing, a field of the wrong type, or a root that cannot resolve where it is declared), so never checked — each INVALID row names its problem, `shrk doctor` each knowledge entry’s';
 
 /**
  * THE fold of declared references into one coverage record.

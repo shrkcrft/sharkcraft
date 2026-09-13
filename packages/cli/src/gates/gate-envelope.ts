@@ -142,6 +142,16 @@ export interface IGateEnvelope {
   readonly partial: number;
   /** Run-level coverage — e.g. rules examined of rules selected. */
   readonly coverage: IVerdictCoverage;
+  /**
+   * Further RUN-level coverage records beside {@link coverage}, each folded
+   * into the ONE settle like it (round 15 follow-up, F1): a run-wide condition
+   * that is not a rule — `conventions check`'s `applicable conventions`
+   * record ("no loaded convention applies here" is `2` unless `--allow-empty`)
+   * — so it never becomes a pseudo-row counted in {@link evaluated}. OPTIONAL:
+   * present only when a verb passes one, so the envelope gains no
+   * always-present key.
+   */
+  readonly runRecords?: readonly IVerdictCoverage[];
   /** Every scope gap that vetoes a clean verdict: the run's, then each rule's (prefixed `<id>: `). */
   readonly shortfalls: readonly string[];
   /**
@@ -166,12 +176,18 @@ export interface IGateEnvelope {
  *
  * Settle first, render second: build this unconditionally (text AND JSON),
  * return `env.exit`, and print the final line through `verdictLine(env, …)`.
+ *
+ * `runRecords` (round 15 follow-up, F1): further RUN-level records folded into
+ * the same settle — a run-wide condition that is not a rule (so it never
+ * becomes a pseudo-row counted in `evaluated`). Emitted as `runRecords` only
+ * when non-empty.
  */
 export function buildGateEnvelope(
   verb: string,
   proposedExit: number,
   rules: readonly IGateRuleResult[],
   runCoverage: IVerdictCoverage,
+  runRecords: readonly IVerdictCoverage[] = [],
 ): IGateEnvelope {
   const settledRules: IGateRuleResult[] = rules.map((r) => {
     const shortfall = coverageShortfall(r.coverage);
@@ -191,6 +207,7 @@ export function buildGateEnvelope(
   // above reads the primary record alone.
   const settled = settleVerdict(proposedExit, [
     runCoverage,
+    ...runRecords,
     ...rules.flatMap((r) =>
       ruleVerdictRecords(r.coverage, r.unitAcceptance).map((c) => ({ ...c, subject: c.subject ?? r.id })),
     ),
@@ -214,6 +231,8 @@ export function buildGateEnvelope(
     failed: settledRules.filter((r) => r.status === 'failed' || r.status === 'error').length,
     partial: settledRules.filter((r) => r.status === 'partial').length,
     coverage: runCoverage,
+    // Optional: present only when a verb passed one — never an always-present key.
+    ...(runRecords.length > 0 ? { runRecords } : {}),
     shortfalls: settled.shortfalls,
     accepted: settled.accepted,
     rules: settledRules,

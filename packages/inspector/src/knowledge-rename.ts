@@ -7,10 +7,12 @@
  * Schema: sharkcraft.knowledge-rename/v2.
  */
 
-import type {
-  IKnowledgeAnchor,
-  IKnowledgeEntry,
-  IKnowledgeReference,
+import {
+  knowledgeAnchors,
+  knowledgeReferences,
+  type IKnowledgeAnchor,
+  type IKnowledgeEntry,
+  type IKnowledgeReference,
 } from '@shrkcrft/knowledge';
 import type { ISharkcraftInspection } from './sharkcraft-inspector.ts';
 
@@ -46,14 +48,14 @@ export function buildRenameSymbolPlan(
 ): IKnowledgeRenamePlan {
   const matches: IKnowledgeRenameMatch[] = [];
   for (const entry of inspection.knowledgeEntries as IKnowledgeEntry[]) {
-    for (const ref of entry.references ?? []) {
+    for (const ref of knowledgeReferences(entry)) {
       if (ref.kind === 'symbol' && ref.symbol === opts.from) {
         const after = clone(ref);
         after.symbol = opts.to;
         matches.push({ entryId: entry.id, field: 'reference', before: ref, after });
       }
     }
-    for (const anchor of entry.anchors ?? []) {
+    for (const anchor of knowledgeAnchors(entry)) {
       if (anchor.kind === 'symbol' && anchor.symbol === opts.from) {
         const after = clone(anchor);
         after.symbol = opts.to;
@@ -76,14 +78,14 @@ export function buildRenameFilePlan(
 ): IKnowledgeRenamePlan {
   const matches: IKnowledgeRenameMatch[] = [];
   for (const entry of inspection.knowledgeEntries as IKnowledgeEntry[]) {
-    for (const ref of entry.references ?? []) {
+    for (const ref of knowledgeReferences(entry)) {
       if (ref.path === opts.from) {
         const after = clone(ref);
         after.path = opts.to;
         matches.push({ entryId: entry.id, field: 'reference', before: ref, after });
       }
     }
-    for (const anchor of entry.anchors ?? []) {
+    for (const anchor of knowledgeAnchors(entry)) {
       if (anchor.path === opts.from) {
         const after = clone(anchor);
         after.path = opts.to;
@@ -113,7 +115,7 @@ export function buildAnchorUpdatePlan(
 ): IKnowledgeRenamePlan {
   const matches: IKnowledgeRenameMatch[] = [];
   for (const entry of inspection.knowledgeEntries as IKnowledgeEntry[]) {
-    for (const anchor of entry.anchors ?? []) {
+    for (const anchor of knowledgeAnchors(entry)) {
       if (anchor.id !== opts.anchorId) continue;
       const after = clone(anchor);
       if (opts.toSymbol !== undefined) after.symbol = opts.toSymbol;

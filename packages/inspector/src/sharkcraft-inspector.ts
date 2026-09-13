@@ -46,6 +46,7 @@ import { discoverPacks, type IPackDiscoveryResult } from '@shrkcrft/packs';
 import { BUILTIN_PRESETS, loadPresetsFromFile, PresetRegistry } from '@shrkcrft/presets';
 import { BoundaryRegistry, loadBoundaryRulesFromFile } from '@shrkcrft/boundaries';
 import { DoctorSeverity, type IDoctorCheck, type IDoctorResult } from './doctor-result.ts';
+import { knowledgeRejectedEntries } from './knowledge-entry-rejections.ts';
 import {
   registryLifecycleSkipDirsWarning,
   resolveRegistryLifecycleSkipDirs,
@@ -701,7 +702,10 @@ export async function inspectSharkcraft(options: InspectOptions = {}): Promise<I
     );
   }
 
-  const validation = validateKnowledgeEntries(knowledgeEntries);
+  // The provenance `root: pack` needs (round 15 follow-up): only a pack's entry has a pack directory.
+  const validation = validateKnowledgeEntries(knowledgeEntries, {
+    isPackContributed: (e) => entrySources.get(e.id)?.type === 'pack',
+  });
   const cleanEntries = validation.uniqueEntries;
   const index = new KnowledgeIndex(cleanEntries);
   const ruleService = new RuleService(cleanEntries);
@@ -1221,6 +1225,31 @@ export function runDoctor(
     });
   }
 
+  // Round 15 follow-up (F3): a knowledge entry its loader REFUSED never reached
+  // the corpus, so this doctor's "N entries loaded" and "Ready ✓" stood over it
+  // (only `self-config doctor` said so). Named here, and counted UNEXAMINED in
+  // the coverage below — THE list the stale-check and quality read too.
+  const refusedKnowledge = knowledgeRejectedEntries(inspection);
+  for (const r of refusedKnowledge) {
+    checks.push({
+      id: `knowledge-rejected-${r.label}`,
+      title: `Knowledge entry rejected at load (${r.kind})`,
+      severity: DoctorSeverity.Warning,
+      category: 'asset-load-failed',
+      code: 'knowledge-entry-rejected',
+      // The id (a label may carry the declaration site too), then the site once.
+      message: `${r.entryId ?? 'an entry with no id'} in ${r.source}${r.at !== undefined ? ` (${r.at})` : ''}${
+        r.pack !== undefined ? ` — pack ${r.pack}` : ''
+      }: ${r.message}`,
+      fix:
+        r.pack !== undefined
+          ? `Fix it upstream in pack ${r.pack} — \`shrk packs test <pack-dir> --load\` names every refused entry.`
+          : `Fix the entry in ${r.source} — \`shrk self-config doctor\` lists every refused entry.`,
+      whyThisMatters:
+        'A refused entry never reaches the corpus: an agent never sees it, and `knowledge stale-check` never checks what it claims.',
+    });
+  }
+
   // Surface profile drift advisory. Warn (advisory) when the
   // configured `surface.profile` no longer matches what the workspace
   // shape suggests today, so the user knows to re-run init or override.
@@ -1312,8 +1341,8 @@ export function runDoctor(
     .filter((f) => f.build.state === 'unrecorded')
     .map((f) => f.packageName)
     .sort();
-  const coverage: NonNullable<IDoctorResult['coverage']> =
-    unrecordedBuilds.length > 0
+  const coverage: NonNullable<IDoctorResult['coverage']> = [
+    ...(unrecordedBuilds.length > 0
       ? [
           {
             unit: 'compiled pack builds',
@@ -1324,7 +1353,22 @@ export function runDoctor(
               'no build record, so the compiled artifacts they serve were never compared with their source (rebuild the pack to record one)',
           },
         ]
-      : [];
+      : []),
+    // Round 15 follow-up (F3): refused knowledge entries were declared and never
+    // checked — the run settles NOT VERIFIED (2) over them, never "Ready ✓".
+    ...(refusedKnowledge.length > 0
+      ? [
+          {
+            unit: 'knowledge entries',
+            expected: inspection.knowledgeEntries.length + refusedKnowledge.length,
+            examined: inspection.knowledgeEntries.length,
+            unexamined: refusedKnowledge.slice(0, 20).map((r) => r.label),
+            unexaminedTotal: refusedKnowledge.length,
+            reason: 'rejected at load — not checked (their loader refused them; fix each entry)',
+          },
+        ]
+      : []),
+  ];
 
   return { passed: summary.errors === 0, checks, summary, ...(coverage.length > 0 ? { coverage } : {}) };
 }

@@ -43,11 +43,52 @@ Duplicate ids: first-seen wins; subsequent occurrences are surfaced as
 
 `MarkdownKnowledgeLoader` reads each `.md` file and produces **one** entry:
 
-- YAML-lite frontmatter (between `---` markers) overrides the entry id /
-  title / type / priority / scope / tags / appliesWhen / summary.
+- Frontmatter (between `---` markers), read by THE frontmatter parser
+  (`parseFrontmatter`, @shrkcrft/core — indentation-aware, the one `spec.md`
+  uses), sets the entry id / title / type / priority / scope / tags /
+  appliesWhen / summary / related / verifiedOn / seeAlso / supersededBy and
+  `references` (a list — see [knowledge-integrity.md](./knowledge-integrity.md)).
+  An indented line belongs to the key above it and never sets a top-level
+  field. Any other key is dropped with a warning.
+- Frontmatter it cannot read as declared — a parse error in a key it reads, a
+  field of the wrong shape, a `references:` item it does not take — is a
+  REJECTED entry (the round-12 channel: `self-config doctor`, `packs
+  contributions`, `packs test --load`), never a silently flattened one.
+- The document is split by THE delimiter split (`splitFrontmatter`, round 15
+  closing): a BOM, CRLF line ends and a `--- ` delimiter read like `---`, and
+  only a `---` line closes the block (`---x` does not). An opening `---` with
+  no closing line is a REJECTED entry (`frontmatter: an opening --- line has no
+  closing --- line`) — it used to read as "no frontmatter", silently, and a BOM
+  file's frontmatter was never read at all.
 - Without frontmatter, the id defaults to `doc.<filename-kebab>` and title is
   taken from the first `#` heading.
 - The body becomes the entry `content`.
+
+The same parser reads SharkCraft's other Markdown inputs (round 15 follow-up):
+decision records (`sharkcraft/decisions/*.md`, `docs/adr/*.md`) and Cursor
+`.mdc` rules (`shrk import cursor-rules`, `shrk onboard --import-agents`). Both
+split the document with `splitFrontmatter` (a BOM, CRLF line ends and a `--- `
+delimiter read like `---`) and read values in the parser's `Text` scalar mode —
+verbatim, as their old line splitters did (`id: 0001` stays `0001`, `title: Fix
+#12` keeps `#12`, `[RFC] Adopt [Bun]` stays text, and so does an inline `[…]`
+under a key the reader reads as ONE value — `title: [WIP]` is the title `[WIP]`:
+`IParseFrontmatterOptions.listKeys` names the keys read as lists, none for a
+decision, `globs` / `tags` for an `.mdc` rule, and for a Markdown knowledge
+entry its list fields `scope` / `tags` / `appliesWhen` / `related` / `seeAlso` /
+`supersededBy`), while a wholly quoted value
+is unquoted and an indented line never sets a top-level field. Each parses only
+the keys it reads (`IParseFrontmatterOptions.keys` — a decision's `id` /
+`title` / `status` / `date`; an `.mdc` rule's `description` / `globs` / `tags`
+/ `priority`): every other key is skipped unparsed, the way this loader skips a
+key it drops, so YAML the parser does not speak there (`decision makers:`, a
+`summary:` wrapped onto a second line) costs nothing. A decision record whose
+read keys or top-level structure the parser cannot read (a line naming no key,
+a `title:` wrapped onto an indented line), or whose `---` block never closes,
+is REJECTED (`decision-invalid` in `self-config doctor`, `packs
+contributions`). An `.mdc` key the parser cannot read is ignored with a warning
+naming the line (the other keys still read); a line naming no key or a `---`
+block that never closes imports the file from its body, with a warning. There
+is no other frontmatter parser in `packages/*/src` (an r78 lock holds it).
 
 Markdown is passive — it never executes code. Use it for narrative depth and
 ADRs; use TypeScript files for the structured entries the agent actually

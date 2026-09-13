@@ -1,13 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join as nodePathJoin, resolve as nodePathResolve } from 'node:path';
+import { KnowledgeReferenceRoot } from '@shrkcrft/core';
 import {
   buildAnchorUpdatePlan,
   buildKnowledgeRefResolver,
   buildKnowledgeStaleReport,
   buildRenameFilePlan,
   buildRenameSymbolPlan,
-  ContributionKind,
   describeInspectionDiscovery,
+  KNOWLEDGE_CONTRIBUTION_KINDS,
   inspectSharkcraft,
   KnowledgeAdvisoryCode,
   KnowledgeEntryVerdict,
@@ -15,6 +16,8 @@ import {
   ReferenceCheckOutcome,
   resolveChangedFiles,
   type IChangedScopeOptions,
+  unverifiableListHeading,
+  unverifiableRemedyGroups,
   type IInspectionDiscovery,
   type IKnowledgeStaleReport,
 } from '@shrkcrft/inspector';
@@ -25,21 +28,23 @@ import {
   formatKnowledgeReference,
   isKnowledgeType,
   isValidVerifiedOn,
+  KnowledgeClaimField,
+  knowledgeReferenceListing,
+  malformedKnowledgeClaimLabel,
   parseStaleAfterDays,
   projectKnowledgeEntryForJson,
   searchKnowledge,
   type IKnowledgeEntry,
+  type IKnowledgeReference,
 } from '@shrkcrft/knowledge';
 import { writeRejectedEntriesNote } from '../output/rejected-entries-note.ts';
 
-/** Every contribution kind the knowledge loader reads (knowledge, rules, paths, docs). */
-const KNOWLEDGE_FAMILY_KINDS = [
-  ContributionKind.Knowledge,
-  ContributionKind.Rule,
-  ContributionKind.Path,
-  ContributionKind.PathConvention,
-  ContributionKind.Docs,
-] as const;
+/**
+ * Every contribution kind the knowledge loader reads (knowledge, rules, paths,
+ * docs) — THE list the stale-check, quality and doctor read refused entries by
+ * (round 15 follow-up, F3), never a second copy.
+ */
+const KNOWLEDGE_FAMILY_KINDS = KNOWLEDGE_CONTRIBUTION_KINDS;
 import {
   flagBool,
   flagNumber,
@@ -104,19 +109,34 @@ const UNVERIFIABLE_SHOWN = 50;
 function bucketLine(r: IKnowledgeStaleReport): string {
   const c = r.coverage;
   const pct = c.entriesInScope > 0 ? formatPct(c.unverifiable / c.entriesInScope) : '0%';
-  return `entries in scope: ${c.entriesInScope} · verified: ${c.verified} · stale: ${c.stale} · unverifiable: ${c.unverifiable} (${pct})`;
+  // Round 15 follow-up (F3): entries the loader refused sit outside the three
+  // buckets (never in scope) — said on the same line, never left off it.
+  const refused = r.rejectedEntries.length > 0 ? ` · rejected at load: ${r.rejectedEntries.length}` : '';
+  return `entries in scope: ${c.entriesInScope} · verified: ${c.verified} · stale: ${c.stale} · unverifiable: ${c.unverifiable} (${pct})${refused}`;
 }
 
-/** Unverifiable entry ids grouped by the file that declares them — the file to edit. */
-function unverifiableGroups(r: IKnowledgeStaleReport): { source: string; ids: string[] }[] {
-  const by = new Map<string, string[]>();
-  for (const v of r.entryVerdicts) {
-    if (v.verdict !== KnowledgeEntryVerdict.Unverifiable) continue;
-    const list = by.get(v.source) ?? [];
-    list.push(v.entryId);
-    by.set(v.source, list);
-  }
-  return [...by.entries()].map(([source, ids]) => ({ source, ids }));
+/**
+ * One INVALID-class row per knowledge entry the loader REFUSED (round 15
+ * follow-up, F3): `rejected at load — not checked: <reasons>`, with the file to
+ * fix (and the pack that owns it).
+ */
+function rejectedEntryLabel(r: IKnowledgeStaleReport['rejectedEntries'][number]): string {
+  return `${r.label} — ${r.message}  (${r.source}${r.pack !== undefined ? `, pack ${r.pack}` : ''})`;
+}
+
+/**
+ * Unverifiable entry ids grouped by the file that declares them — the file to
+ * edit — AND by remedy (THE grouping, `unverifiableRemedyGroups`, round 15
+ * closing A4): a Markdown `references:` frontmatter list, the item a declared
+ * but uncheckable reference must fix, the pack that fixes it upstream. A file
+ * whose entries need different fixes gets one line per fix.
+ */
+function unverifiableGroups(r: IKnowledgeStaleReport): { source: string; ids: readonly string[]; remedy?: string }[] {
+  return unverifiableRemedyGroups(r.entryVerdicts).map((g) => ({
+    source: g.source,
+    ids: g.ids,
+    ...(g.remedy !== undefined ? { remedy: g.remedy } : {}),
+  }));
 }
 
 /** `sharkcraft/rules.ts (7): a, b, …` lines, capped across groups. */
@@ -128,7 +148,11 @@ function unverifiableLines(r: IKnowledgeStaleReport, indent: string): string[] {
     if (room <= 0) break;
     const ids = g.ids.slice(0, room);
     shown += ids.length;
-    out.push(`${indent}${g.source} (${g.ids.length}): ${ids.join(', ')}${ids.length < g.ids.length ? ', …' : ''}`);
+    out.push(
+      `${indent}${g.source} (${g.ids.length}): ${ids.join(', ')}${ids.length < g.ids.length ? ', …' : ''}${
+        g.remedy !== undefined ? ` — ${g.remedy}` : ''
+      }`,
+    );
   }
   const rest = r.unverifiableIds.length - shown;
   if (rest > 0) out.push(`${indent}… ${rest} more (--json for all)`);
@@ -216,16 +240,24 @@ function renderStaleCheckMarkdown(p: IStaleCheckCiPayload, verdict: string): str
   }
   if (p.coverage.unverifiable > 0) {
     out.push('');
-    out.push(`## Unverifiable entries (${p.coverage.unverifiable}) — declare references[]`);
+    // THE reason-aware heading the text renderer prints (round 15 closing
+    // review, A4): a fixed "declare references[] … or a references:
+    // frontmatter list" told entries whose references exist to declare them.
+    out.push(`## Unverifiable entries (${p.coverage.unverifiable}) — ${unverifiableListHeading(p.entryVerdicts)}`);
     for (const line of unverifiableLines(p, '- ')) out.push(line);
   }
   out.push('');
   out.push(`## Reference issues`);
   for (const c of [...p.referenceChecks, ...p.assetReferenceChecks]) {
     if (c.outcome === 'ok') continue;
-    const req = c.reference.required ? ' **(required)**' : '';
+    // `=== true`, as the text rows read it: a non-boolean `required` ('yes') is
+    // an INVALID row, never a required one (round 15 follow-up, F10).
+    const req = c.reference.required === true ? ' **(required)**' : '';
     const kind = c.assetKind ? ` [${c.implicit ? 'implicit ' : ''}${c.assetKind}]` : '';
     out.push(`- **${c.outcome.toUpperCase()}**${req}${kind} \`${c.entryId}\` → \`${refLabel(c)}\` — ${c.message}`);
+  }
+  for (const r of p.rejectedEntries) {
+    out.push(`- **INVALID** \`${r.label}\` — ${r.message} (${r.source}${r.pack !== undefined ? `, pack ${r.pack}` : ''})`);
   }
   out.push('');
   for (const line of verdict.split('\n')) out.push(`> ${line}`);
@@ -239,7 +271,12 @@ function renderStaleCheckHtml(p: IStaleCheckCiPayload, verdict: string): string 
   for (const c of [...p.referenceChecks, ...p.assetReferenceChecks]) {
     if (c.outcome === 'ok') continue;
     rows.push(
-      `<tr><td>${esc(c.outcome.toUpperCase())}</td><td>${c.reference.required ? '✓' : ''}</td><td>${esc(c.entryId)}</td><td>${esc(refLabel(c))}</td><td>${esc(c.message)}</td></tr>`,
+      `<tr><td>${esc(c.outcome.toUpperCase())}</td><td>${c.reference.required === true ? '✓' : ''}</td><td>${esc(c.entryId)}</td><td>${esc(refLabel(c))}</td><td>${esc(c.message)}</td></tr>`,
+    );
+  }
+  for (const r of p.rejectedEntries) {
+    rows.push(
+      `<tr><td>INVALID</td><td></td><td>${esc(r.label)}</td><td>${esc(r.source)}</td><td>${esc(`${r.message}${r.pack !== undefined ? ` (pack ${r.pack})` : ''}`)}</td></tr>`,
     );
   }
   const unverifiable = unverifiableLines(p, '').map((l) => `<li>${esc(l)}</li>`).join('');
@@ -777,7 +814,9 @@ async function knowledgeStaleCheckImpl(args: ParsedArgs, verb: string): Promise<
       verdict,
       reasons: gate.reasons,
       showRequired: ci || strict || effectiveFailOn.length > 0,
-      allowEmptyHint: exit === ExitCode.NotVerified && entriesInScope === 0 && !gate.discoveryFailed,
+      // `--allow-empty` never accepts a refused entry — no hint over one.
+      allowEmptyHint:
+        exit === ExitCode.NotVerified && entriesInScope === 0 && !gate.discoveryFailed && report.rejectedEntries.length === 0,
     });
     return exit;
 }
@@ -832,19 +871,27 @@ function writeStaleCheckText(
   w('\n');
   for (const line of kindTableLines(p)) w(`${line}\n`);
   if (p.coverage.unverifiable > 0) {
-    w(`\nUNVERIFIABLE (${p.coverage.unverifiable}) — never checked; declare references[] (or anchors[]):\n`);
+    w(
+      `\nUNVERIFIABLE (${p.coverage.unverifiable}) — never checked; ${unverifiableListHeading(p.entryVerdicts)}:\n`,
+    );
     for (const line of unverifiableLines(p, '  ')) w(`${line}\n`);
   }
   const issues = [...p.referenceChecks, ...p.assetReferenceChecks].filter(
     (c) => c.outcome !== ReferenceCheckOutcome.Ok,
   );
   const badAnchors = p.anchorChecks.filter((c) => c.outcome !== ReferenceCheckOutcome.Ok);
-  if (issues.length + badAnchors.length > 0) w('\n');
+  if (issues.length + badAnchors.length + p.rejectedEntries.length > 0) w('\n');
+  // The file that declares each knowledge entry — the file to edit (round 15: a
+  // Markdown entry's row names its .md, where the references: list lives).
+  const declaredIn = new Map(p.entryVerdicts.map((v) => [v.entryId, v.source]));
   for (const c of issues) {
     const tag = (c.implicit ? 'IMPLICIT' : c.outcome.toUpperCase()).padEnd(8);
     const req = c.reference.required === true ? '[REQ] ' : '      ';
     const kind = c.assetKind ? `[${c.assetKind}] ` : '';
-    w(`  ${tag}${req}${kind}${c.entryId} → ${formatKnowledgeReference(c.reference)} — ${c.message}\n`);
+    const where = c.assetKind ? undefined : declaredIn.get(c.entryId);
+    w(
+      `  ${tag}${req}${kind}${c.entryId} → ${formatKnowledgeReference(c.reference)} — ${c.message}${where ? `  (${where})` : ''}\n`,
+    );
     if (c.expected !== undefined || c.actual !== undefined) {
       w(`           expected: ${String(c.expected ?? '?')} · actual: ${String(c.actual ?? '?')}\n`);
     }
@@ -852,6 +899,11 @@ function writeStaleCheckText(
   }
   for (const c of badAnchors) {
     w(`  ${c.outcome.toUpperCase().padEnd(8)}${c.entryId} anchor[${c.anchor.id}] (${c.anchor.kind}) — ${c.message}\n`);
+  }
+  // Round 15 follow-up (F3): an entry the loader refused — INVALID-class, never
+  // checked (a shortfall; `--fail-on invalid` makes it a failure).
+  for (const r of p.rejectedEntries) {
+    w(`  ${'INVALID'.padEnd(8)}      ${rejectedEntryLabel(r)}\n`);
   }
   // Implicit boundary references were listed with the issues above.
   const advisories = p.advisories.filter((a) => a.code !== KnowledgeAdvisoryCode.ImplicitPathMissing);
@@ -904,18 +956,16 @@ export const knowledgeReferencesCommand: ICommandHandler = {
       process.stderr.write(`No knowledge entry with id "${id}".\n`);
       return 1;
     }
-    const data = {
-      id: entry.id,
-      title: entry.title,
-      references: entry.references ?? [],
-      anchors: entry.anchors ?? [],
-    };
+    // THE listing MCP `get_knowledge_references` returns (round 15 review): the
+    // usable references + anchors, and every malformed item with why — this
+    // verb listed the usable ones only, so a malformed item vanished here.
+    const data = knowledgeReferenceListing(entry);
     if (flagBool(args, 'json')) {
       process.stdout.write(asJson(data) + '\n');
       return 0;
     }
     process.stdout.write(header(`References for ${id}`));
-    if (data.references.length === 0 && data.anchors.length === 0) {
+    if (data.references.length === 0 && data.anchors.length === 0 && data.malformed.length === 0) {
       process.stdout.write('  (no references / anchors declared)\n');
       return 0;
     }
@@ -925,13 +975,26 @@ export const knowledgeReferencesCommand: ICommandHandler = {
         // One grammar: a pinned symbol renders `Name@path` (it used to render
         // as its path, hiding the symbol it pins).
         const target = formatKnowledgeReference(r).slice(r.kind.length + 1);
-        process.stdout.write(`  • ${r.kind}: ${target}${r.required ? ' [required]' : ''}\n`);
+        // The compact grammar carries no root (round 15 follow-up, F7): a
+        // non-default one is named here, as `--json` / MCP carry the field —
+        // a pack-rooted path read as a consumer path in this listing.
+        const root =
+          r.root !== undefined && r.root !== KnowledgeReferenceRoot.Project ? ` [root: ${String(r.root)}]` : '';
+        process.stdout.write(`  • ${r.kind}: ${target}${r.required ? ' [required]' : ''}${root}\n`);
       }
     }
     if (data.anchors.length > 0) {
       process.stdout.write(`Anchors (${data.anchors.length}):\n`);
       for (const a of data.anchors) {
         process.stdout.write(`  • ${a.id} (${a.kind}) → ${a.targetId ?? a.path ?? a.symbol ?? '?'}\n`);
+      }
+    }
+    if (data.malformed.length > 0) {
+      process.stdout.write(`Malformed (${data.malformed.length}) — never checked; \`shrk doctor\` reports each:\n`);
+      for (const m of data.malformed) {
+        process.stdout.write(
+          `  ✗ ${malformedKnowledgeClaimLabel(m)}: ${formatKnowledgeReference(m.value as IKnowledgeReference)} — ${m.problem}\n`,
+        );
       }
     }
     return 0;
@@ -945,19 +1008,33 @@ export const knowledgeAnchorsCommand: ICommandHandler = {
   async run(args: ParsedArgs): Promise<number> {
     const inspection = await inspectSharkcraft({ cwd: resolveCwd(args) });
     const out: { entryId: string; anchor: unknown }[] = [];
+    // A non-list `anchors` or a `null` item crashed this verb (round 15
+    // review) — THE listing keeps the usable ones and names the rest.
+    const malformed: { entryId: string; at: string; problem: string }[] = [];
     for (const e of inspection.knowledgeEntries) {
-      for (const a of e.anchors ?? []) {
+      const listing = knowledgeReferenceListing(e);
+      for (const a of listing.anchors) {
         out.push({ entryId: e.id, anchor: a });
+      }
+      for (const m of listing.malformed) {
+        if (m.field === KnowledgeClaimField.Anchors) {
+          malformed.push({ entryId: e.id, at: malformedKnowledgeClaimLabel(m), problem: m.problem });
+        }
       }
     }
     if (flagBool(args, 'json')) {
-      process.stdout.write(asJson({ anchors: out, count: out.length }) + '\n');
+      process.stdout.write(
+        asJson({ anchors: out, count: out.length, ...(malformed.length > 0 ? { malformed } : {}) }) + '\n',
+      );
       return 0;
     }
     process.stdout.write(header(`Anchors (${out.length})`));
     for (const { entryId, anchor } of out) {
       const a = anchor as { id: string; kind: string };
       process.stdout.write(`  ${entryId} → ${a.id} (${a.kind})\n`);
+    }
+    for (const m of malformed) {
+      process.stdout.write(`  ✗ ${m.entryId} ${m.at} — ${m.problem} (never checked; \`shrk doctor\` reports it)\n`);
     }
     return 0;
   },

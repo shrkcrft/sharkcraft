@@ -127,8 +127,14 @@ touched.
 - **`conventions check`** (round 13) — `2` NOT VERIFIED over an empty file
   scope, no convention declared, or a convention file that never loaded
   (`--allow-empty` accepts the first two, printed, never the third); `1` on an
-  `error`-severity hit; `3` on a usage error. It printed `ok — no violations.` at
-  `0` over nothing.
+  `error`-severity hit or a convention the loader rejected (round 15 follow-up:
+  an ERRORED row, never evaluated — it vanished at `0`); `3` on a usage error. It printed `ok — no violations.` at
+  `0` over nothing. Round 15: a convention whose `appliesTo` excludes this
+  workspace or every file in scope is NOT APPLICABLE — never evaluated, printed
+  with its reason, its row `skipped` with an explicit acceptance (`acceptedBy:
+  "appliesTo"`), so one passing convention beside a not-applicable one is `0`.
+  When conventions loaded and NONE applies it is `2` (`--allow-empty` accepts
+  that too, printed).
 - **The data-defined gate verbs** (`check wiring`, `policy-lint`, `baseline
   check`, `generated check`, `docs references check`, `gates check`, `gates
   coverage`) — every rule and the run carry a `coverage` record (below); a rule
@@ -467,6 +473,10 @@ No wiring violations among the 1 rule(s) evaluated — 1 of 2 NOT verified. Not 
 The exit code now matches the sentence:
 
 - **any** rule skipped, nothing failed → `2` (partially verified is not verified)
+  — unless the skip carries an explicit, printed acceptance in its `coverage`
+  (`acceptedBy`): the exit is settled from coverage alone, so an ACCEPTED skip
+  (round 15: `conventions check`'s not-applicable convention, `acceptedBy:
+  "appliesTo"`) is listed in `accepted` and never turns a clean run into `2`
 - a skipped rule whose severity is `error` → `1`, because **`failOnEmpty`
   defaults to true for error-severity rules**. An error rule exists to block a
   build; one matching zero subjects is a bug in the rule, not a pass.

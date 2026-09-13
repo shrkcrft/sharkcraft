@@ -6,6 +6,7 @@ import {
   inspectSharkcraft,
   runDoctor,
 } from '@shrkcrft/inspector';
+import { knowledgeAnchors, knowledgeReferences } from '@shrkcrft/knowledge';
 import {
   flagBool,
   flagString,
@@ -353,37 +354,24 @@ export const ideSymbolCommand: ICommandHandler = {
 
     for (const entry of inspection.knowledgeEntries) {
       const kind = entry.type === 'rule' ? 'rule' : 'knowledge';
-      const anchors = (entry as unknown as {
-        anchors?: ReadonlyArray<{ kind?: string; symbol?: string }>;
-      }).anchors;
-      if (anchors) {
-        for (const a of anchors) {
-          if (a.kind === 'symbol' && a.symbol === symbol) {
-            references.push({
-              sourceKind: kind,
-              sourceId: entry.id,
-              sourceTitle: entry.title,
-              matchedField: 'anchors',
-            });
-            break;
-          }
-        }
+      // THE accessors (round 15 review): a non-list `references` / `anchors`
+      // value or a `null` item crashed this verb (`{} is not iterable`); the
+      // validator and the stale-check report what they leave out.
+      if (knowledgeAnchors(entry).some((a) => a.kind === 'symbol' && a.symbol === symbol)) {
+        references.push({
+          sourceKind: kind,
+          sourceId: entry.id,
+          sourceTitle: entry.title,
+          matchedField: 'anchors',
+        });
       }
-      const refs = (entry as unknown as {
-        references?: ReadonlyArray<{ kind?: string; symbol?: string }>;
-      }).references;
-      if (refs) {
-        for (const r of refs) {
-          if (r.kind === 'symbol' && r.symbol === symbol) {
-            references.push({
-              sourceKind: kind,
-              sourceId: entry.id,
-              sourceTitle: entry.title,
-              matchedField: 'references',
-            });
-            break;
-          }
-        }
+      if (knowledgeReferences(entry).some((r) => r.kind === 'symbol' && r.symbol === symbol)) {
+        references.push({
+          sourceKind: kind,
+          sourceId: entry.id,
+          sourceTitle: entry.title,
+          matchedField: 'references',
+        });
       }
       if (matchInString(entry.title) && !references.some((x) => x.sourceId === entry.id)) {
         references.push({

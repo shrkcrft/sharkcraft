@@ -25,6 +25,7 @@
  */
 import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { knowledgeReferences } from '@shrkcrft/knowledge';
 import {
   QueryMatchKind,
   resolveQuery,
@@ -195,7 +196,7 @@ function knowledgeFileReferences(
       };
   if (!k) return [];
   const out: string[] = [];
-  for (const ref of k.references ?? []) {
+  for (const ref of knowledgeReferences(k)) {
     if (ref.kind === 'file' && ref.path) out.push(ref.path);
   }
   return out;

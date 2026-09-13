@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import type { IImportedEntry } from '../model/imported-entry.ts';
 import type { IImportResult, IImportWarning } from '../model/import-result.ts';
-import { parseCursorRuleFile } from '../parse/parse-cursor-rule.ts';
+import { parseCursorRule } from '../parse/parse-cursor-rule.ts';
 import { slugify } from '../parse/slugify.ts';
 
 export interface IImportCursorRulesOptions {
@@ -67,7 +67,10 @@ export function importCursorRules(options: IImportCursorRulesOptions): IImportRe
     const origin = nodePath.relative(root, file) || nodePath.basename(file);
     const base = nodePath.basename(file).replace(/\.(mdc|md)$/i, '');
     const idPrefix = `${basePrefix}.${slugify(base) || 'rule'}`;
-    const entry = parseCursorRuleFile(raw, { origin, idPrefix });
+    const { entry, problems } = parseCursorRule(raw, { origin, idPrefix });
+    // Frontmatter THE parser could not read as declared is said out loud (round
+    // 15 follow-up, F6) — the old line splitter skipped it without a word.
+    for (const message of problems) warnings.push({ origin, message });
     let id = entry.id;
     let counter = 2;
     while (seenIds.has(id)) {

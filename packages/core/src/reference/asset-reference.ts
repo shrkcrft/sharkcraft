@@ -1,6 +1,7 @@
 import type { ScanZone } from '../scan/scan-zone.ts';
 import type { AssetReferenceKind } from './asset-reference-kind.ts';
 import type { IAssetReferenceCount } from './asset-reference-count.ts';
+import type { KnowledgeReferenceRoot } from './knowledge-reference-root.ts';
 
 /**
  * A structured, verifiable pointer from an asset to a repo artefact.
@@ -51,4 +52,12 @@ export interface IAssetReference {
   scan?: ScanZone;
   /** A count the asset claims, re-derived by the extraction authority. */
   count?: IAssetReferenceCount;
+  /**
+   * What {@link path} (and the content / count reads) resolves against —
+   * default {@link KnowledgeReferenceRoot.Project}, the consuming project's
+   * root. {@link KnowledgeReferenceRoot.Pack} resolves against the
+   * contributing pack's package directory; valid on a pack-contributed asset
+   * only (round 15 follow-up).
+   */
+  root?: KnowledgeReferenceRoot;
 }

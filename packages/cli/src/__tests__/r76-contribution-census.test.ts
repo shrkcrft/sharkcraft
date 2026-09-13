@@ -45,13 +45,28 @@ interface ICensusSlot {
   readonly field: string;
   readonly declared: number;
   readonly list: readonly string[] | null;
+  /** The rejected entry's position when it is not `declared - 1` (a Markdown file: -1). */
+  readonly index?: number;
 }
 
 const CENSUS = JSON.parse(readFileSync(join(FIXTURE, 'census.json'), 'utf8')) as {
   readonly pack: string;
   readonly slots: Readonly<Record<string, ICensusSlot>>;
+  /** Round 15 follow-up (F12): Markdown knowledge files, each under an existing slot. */
+  readonly markdown?: { readonly files: readonly (ICensusSlot & { readonly slot: string })[] };
 };
 const SLOTS = Object.entries(CENSUS.slots);
+/**
+ * Every census FILE — one per slot, plus the Markdown knowledge files (round 15
+ * follow-up, F12). Each per-file surface runs over all of them; the
+ * slot-coverage check reads SLOTS alone.
+ */
+const FILES: readonly (readonly [string, ICensusSlot])[] = [
+  ...SLOTS,
+  ...(CENSUS.markdown?.files ?? []).map((f) => [f.slot, f] as const),
+];
+/** Where the loader records the invalid entry: its array index, or -1 for a one-entry Markdown file. */
+const rejectedIndex = (c: ICensusSlot): number => c.index ?? c.declared - 1;
 
 interface IRun {
   readonly status: number;
@@ -109,7 +124,7 @@ describe('r76 census — every loader-backed slot, every surface', () => {
   test(
     "each slot's list verb names the rejected entry, and still exits 0",
     () => {
-      for (const [slot, c] of SLOTS) {
+      for (const [slot, c] of FILES) {
         if (!c.list) continue;
         const r = run(c.list);
         expect({ slot, verb: c.list.join(' '), status: r.status }).toEqual({ slot, verb: c.list.join(' '), status: 0 });
@@ -150,7 +165,7 @@ describe('r76 census — every loader-backed slot, every surface', () => {
       ]);
       expect(report.exitCode).toBe(1);
       expect(run(['self-config', 'doctor', '--json']).status).toBe(1);
-      for (const [slot, c] of SLOTS) {
+      for (const [slot, c] of FILES) {
         const hit = report.findings.find((f) => f.code === c.code && (f.file ?? '').endsWith(`/${c.file}`));
         expect({ slot, code: c.code, severity: hit?.severity }).toEqual({ slot, code: c.code, severity: 'error' });
       }
@@ -167,7 +182,7 @@ describe('r76 census — every loader-backed slot, every surface', () => {
         '--json',
       ]);
       const counts = rows.find((p) => p.packageName === CENSUS.pack)!.entryCounts;
-      for (const [slot, c] of SLOTS) {
+      for (const [slot, c] of FILES) {
         expect({ slot, rejected: (counts[c.kind]?.rejected ?? 0) >= 1 }).toEqual({ slot, rejected: true });
       }
       const text = run(['packs', 'list']);
@@ -175,7 +190,8 @@ describe('r76 census — every loader-backed slot, every surface', () => {
       expect(text.stdout).toContain(`${CENSUS.pack}@0.0.1  REJECTED-ENTRIES`);
       expect(text.stdout).toMatch(/entries: {2}.*convention 1 accepted · 1 REJECTED/);
       // The classic file tokens stay; every other declared slot is appended.
-      expect(text.stdout).toMatch(/files: {4}k=1 r=1 p=1 t=1 pl=1 d=1 .*convention=1/);
+      // `k=2`: knowledge.ts and the Markdown knowledge.md (round 15 follow-up, F12).
+      expect(text.stdout).toMatch(/files: {4}k=2 r=1 p=1 t=1 pl=1 d=1 .*convention=1/);
     },
     TIMEOUT_MS,
   );
@@ -185,7 +201,7 @@ describe('r76 census — every loader-backed slot, every surface', () => {
     () => {
       const report = json<{ issues: { code: string; message: string }[]; exitCode: number }>(['packs', 'doctor', '--json']);
       expect(report.exitCode).toBe(1);
-      for (const [slot, c] of SLOTS) {
+      for (const [slot, c] of FILES) {
         const hit = report.issues.find((i) => i.code === 'contribution-entries-rejected' && i.message.startsWith(`${c.file} (`));
         expect({ slot, reported: hit !== undefined }).toEqual({ slot, reported: true });
       }
@@ -203,14 +219,14 @@ describe('r76 census — every loader-backed slot, every surface', () => {
         };
       }>(['packs', 'contributions', '--json']);
       expect(out.exitCode).toBe(1);
-      for (const [slot, c] of SLOTS) {
+      for (const [slot, c] of FILES) {
         const row = out.report.files.find((f) => f.file === `${PACK_DIR}/${c.file}`);
         expect({
           slot,
           declared: row?.declared,
           accepted: row?.accepted,
           rejected: row?.rejected.map((r) => [r.entryId ?? null, r.index]),
-        }).toEqual({ slot, declared: c.declared, accepted: c.declared - 1, rejected: [[c.entryId, c.declared - 1]] });
+        }).toEqual({ slot, declared: c.declared, accepted: c.declared - 1, rejected: [[c.entryId, rejectedIndex(c)]] });
       }
       const text = run(['packs', 'contributions']);
       expect(text.status).toBe(1);
@@ -232,7 +248,7 @@ describe('r76 census — every loader-backed slot, every surface', () => {
         '--json',
       ]);
       expect(out.exitCode).toBe(1);
-      for (const [slot, c] of SLOTS) {
+      for (const [slot, c] of FILES) {
         const hit = out.issues.find((i) => i.code === 'asset-entry-rejected' && i.message.startsWith(`${c.file} `));
         expect({ slot, reported: hit !== undefined, field: hit?.message.includes(`${c.field}:`) }).toEqual({
           slot,
@@ -270,10 +286,10 @@ describe('r76 census — every loader-backed slot, every surface', () => {
         '--json',
       ]);
       expect(run(['packs', 'get', CENSUS.pack, '--json']).status).toBe(0);
-      for (const [slot, c] of SLOTS) {
+      for (const [slot, c] of FILES) {
         expect({ slot, rejected: (out.entryCounts[c.kind]?.rejected ?? 0) >= 1 }).toEqual({ slot, rejected: true });
       }
-      expect(out.rejections.length).toBe(SLOTS.length);
+      expect(out.rejections.length).toBe(FILES.length);
     },
     TIMEOUT_MS,
   );

@@ -2,6 +2,8 @@
 // built-in presets. Stored as raw TS source strings — they are injected into
 // the synthesized sharkcraft/*.ts files verbatim.
 
+import { renderSeedReferences, SEED_REF_PACKAGE_JSON, seedPathReference } from './seed-references.ts';
+
 export const COMMON_AGENT_BRIEFING = `defineKnowledgeEntry({
     id: 'agent.briefing',
     title: 'Agent briefing',
@@ -9,6 +11,8 @@ export const COMMON_AGENT_BRIEFING = `defineKnowledgeEntry({
     priority: KnowledgePriority.Critical,
     tags: ['agent', 'safety'],
     appliesWhen: ['generate-code', 'refactor', 'fix-bug'],
+    // Verifiable from the first run: \`shrk knowledge stale-check\` checks it.
+    references: [{ kind: 'file', path: 'sharkcraft/sharkcraft.config.ts', note: 'the config that wires SharkCraft into this repo' }],
     content: \`This repo uses SharkCraft. Use shrk CLI or the MCP server to read
 context. Do not write files through MCP — use shrk apply on the CLI.\`,
     actionHints: {
@@ -34,6 +38,7 @@ export const COMMON_SAFETY_RULE = `defineKnowledgeEntry({
     priority: KnowledgePriority.Critical,
     tags: ['safety', 'generator'],
     appliesWhen: ['generate-code'],
+    references: [{ kind: 'file', path: 'sharkcraft/sharkcraft.config.ts', note: 'the config whose templateFiles shrk gen renders' }],
     content: \`Always run shrk gen <id> <name> --dry-run first. Apply with
 --write only after the plan is conflict-free. AI agents must call
 create_generation_plan through MCP — they cannot write through MCP.\`,
@@ -239,6 +244,7 @@ export const COMMON_PATH_SERVICES = `defineKnowledgeEntry({
     appliesWhen: ['generate-service'],
     content: 'Service classes live in src/services/. One service per file.',
     metadata: { path: 'src/services' },
+    references: [{ kind: 'file', path: 'sharkcraft/paths.ts', note: "seed: once src/services exists, point at it — { kind: 'directory', path: 'src/services' }" }],
   })`;
 
 export const COMMON_PATH_UTILS = `defineKnowledgeEntry({
@@ -250,6 +256,7 @@ export const COMMON_PATH_UTILS = `defineKnowledgeEntry({
     appliesWhen: ['generate-utility'],
     content: 'Pure helpers live in src/utils/. One function per file.',
     metadata: { path: 'src/utils' },
+    references: [{ kind: 'file', path: 'sharkcraft/paths.ts', note: "seed: once src/utils exists, point at it — { kind: 'directory', path: 'src/utils' }" }],
   })`;
 
 export const COMMON_PATH_TESTS = `defineKnowledgeEntry({
@@ -261,6 +268,7 @@ export const COMMON_PATH_TESTS = `defineKnowledgeEntry({
     appliesWhen: ['generate-test'],
     content: 'Unit tests live under tests/, mirroring src/. Use *.spec.ts.',
     metadata: { path: 'tests' },
+    references: [{ kind: 'file', path: 'sharkcraft/paths.ts', note: "seed: once tests/ exists, point at it — { kind: 'directory', path: 'tests' }" }],
   })`;
 
 // ─── Framework-specific path snippets ─────────────────────────────────────
@@ -284,6 +292,7 @@ export const NX_PATH_LIBS = `defineKnowledgeEntry({
     appliesWhen: ['generate-service', 'generate-utility', 'create-feature'],
     content: 'Shared library code lives under libs/<area>/src/lib/. Each lib has a public index.ts; cross-lib imports go through the package name, never relative paths into src/.',
     metadata: { path: 'libs' },
+    ${renderSeedReferences([seedPathReference('nx.json', 'libs')])}
   })`;
 
 export const NX_PATH_APPS = `defineKnowledgeEntry({
@@ -296,6 +305,7 @@ export const NX_PATH_APPS = `defineKnowledgeEntry({
     appliesWhen: ['create-feature', 'create-app'],
     content: 'Applications live under apps/<app>/. Frontends use apps/<app>/src/app/; backends use apps/<app>/src/. Keep app-specific code here and shared code in libs/.',
     metadata: { path: 'apps' },
+    ${renderSeedReferences([seedPathReference('nx.json', 'apps')])}
   })`;
 
 // Generic workspace monorepo (Turborepo, pnpm/yarn/npm workspaces): the
@@ -310,6 +320,7 @@ export const WORKSPACE_PATH_PACKAGES = `defineKnowledgeEntry({
     appliesWhen: ['generate-code', 'create-feature'],
     content: 'Shared packages live under packages/<name>/. Each package exposes a stable public entry (package.json main/exports); cross-package imports go through the package name, never relative paths into src/.',
     metadata: { path: 'packages' },
+    ${renderSeedReferences([seedPathReference('package.json', 'packages')])}
   })`;
 
 export const WORKSPACE_PATH_APPS = `defineKnowledgeEntry({
@@ -322,6 +333,7 @@ export const WORKSPACE_PATH_APPS = `defineKnowledgeEntry({
     appliesWhen: ['create-feature', 'create-app'],
     content: 'Applications live under apps/<app>/. Each app has its own src/ root and depends on shared packages by name.',
     metadata: { path: 'apps' },
+    ${renderSeedReferences([seedPathReference('package.json', 'apps')])}
   })`;
 
 // Single-app Angular workspaces — angular.json + src/app convention.
@@ -335,6 +347,7 @@ export const ANGULAR_PATH_APP = `defineKnowledgeEntry({
     appliesWhen: ['create-feature', 'generate-code'],
     content: 'Angular workspace source lives under src/app/. Components, services, pipes and modules sit under here. Tests are co-located as *.spec.ts beside the unit under test.',
     metadata: { path: 'src/app' },
+    ${renderSeedReferences([seedPathReference('angular.json', 'src/app')])}
   })`;
 
 export const ANGULAR_PATH_COMPONENTS = `defineKnowledgeEntry({
@@ -347,6 +360,7 @@ export const ANGULAR_PATH_COMPONENTS = `defineKnowledgeEntry({
     appliesWhen: ['generate-component'],
     content: 'Components live under src/app/components/ or src/app/<feature>/. Use the .component.ts suffix. Pair each component with a co-located *.spec.ts test.',
     metadata: { path: 'src/app/components' },
+    ${renderSeedReferences([seedPathReference('angular.json', 'src/app/components')])}
   })`;
 
 export const ANGULAR_PATH_SERVICES = `defineKnowledgeEntry({
@@ -359,6 +373,7 @@ export const ANGULAR_PATH_SERVICES = `defineKnowledgeEntry({
     appliesWhen: ['generate-service'],
     content: 'Injectable services live under src/app/services/ (or alongside their feature folder). Use the .service.ts suffix. Provide via providedIn root unless feature-scoped.',
     metadata: { path: 'src/app/services' },
+    ${renderSeedReferences([seedPathReference('angular.json', 'src/app/services')])}
   })`;
 
 // React workspaces — many flavors (Vite SPA, Next.js, Remix). The
@@ -377,6 +392,7 @@ export const REACT_PATH_COMPONENTS = `defineKnowledgeEntry({
     appliesWhen: ['generate-component'],
     content: 'Components live under src/components/ (cross-feature shared) or under their feature folder. Keep each component in its own file; pair with a co-located *.test.tsx beside it.',
     metadata: { path: 'src/components' },
+    ${renderSeedReferences([seedPathReference('package.json', 'src/components')])}
   })`;
 
 export const REACT_PATH_HOOKS = `defineKnowledgeEntry({
@@ -389,6 +405,7 @@ export const REACT_PATH_HOOKS = `defineKnowledgeEntry({
     appliesWhen: ['generate-hook'],
     content: 'Custom hooks live under src/hooks/ (cross-feature) or under their feature folder. File and exported function are both named useX. Co-locate the test as useX.test.ts beside the hook.',
     metadata: { path: 'src/hooks' },
+    ${renderSeedReferences([seedPathReference('package.json', 'src/hooks')])}
   })`;
 
 export const REACT_PATH_PAGES = `defineKnowledgeEntry({
@@ -401,6 +418,7 @@ export const REACT_PATH_PAGES = `defineKnowledgeEntry({
     appliesWhen: ['create-feature', 'add-route'],
     content: 'Top-level route components live under src/pages/ (React Router / TanStack Router convention) or under src/routes/. For Next.js app router, see src/app/<segment>/page.tsx instead — adjust this entry if your project uses that layout.',
     metadata: { path: 'src/pages' },
+    ${renderSeedReferences([seedPathReference('package.json', 'src/pages')])}
   })`;
 
 export const REACT_PATH_LIB = `defineKnowledgeEntry({
@@ -413,6 +431,7 @@ export const REACT_PATH_LIB = `defineKnowledgeEntry({
     appliesWhen: ['generate-utility', 'generate-code'],
     content: 'Framework-agnostic helpers (formatters, validators, API clients) live under src/lib/. Keep them pure — no React imports unless the helper is a hook (in which case it belongs under src/hooks/).',
     metadata: { path: 'src/lib' },
+    ${renderSeedReferences([seedPathReference('package.json', 'src/lib')])}
   })`;
 
 // NestJS services — module-per-folder convention; e2e tests in `test/`.
@@ -426,6 +445,7 @@ export const NEST_PATH_SRC = `defineKnowledgeEntry({
     appliesWhen: ['create-feature', 'generate-service', 'generate-code'],
     content: 'Nest source lives under src/. Each feature gets a folder src/<feature>/ containing controller, service, module, and DTOs (one construct per file). Controllers stay thin; business logic lives in services.',
     metadata: { path: 'src' },
+    ${renderSeedReferences([seedPathReference('nest-cli.json', 'src')])}
   })`;
 
 export const NEST_PATH_E2E = `defineKnowledgeEntry({
@@ -438,11 +458,17 @@ export const NEST_PATH_E2E = `defineKnowledgeEntry({
     appliesWhen: ['generate-test'],
     content: 'End-to-end tests live under test/ (Nest convention, not tests/). Unit tests can be co-located as *.spec.ts next to the unit.',
     metadata: { path: 'test' },
+    ${renderSeedReferences([seedPathReference('nest-cli.json', 'test')])}
   })`;
 
 // ─── Polyglot path snippets ──────────────────────────────────────────────
 
-export const JAVA_MAVEN_PATH_MAIN = `defineKnowledgeEntry({
+// Maven and Gradle share the src/main/java layout. A fresh Maven repo always
+// has pom.xml; a fresh Gradle repo has build.gradle OR build.gradle.kts (no
+// single marker), so the Gradle preset's copies point at the declaring
+// sharkcraft/paths.ts instead (round 15 follow-up, F5/F13). Same ids, same text.
+function javaMainPathSnippet(marker: string): string {
+  return `defineKnowledgeEntry({
     id: 'paths.java.maven.main',
     title: 'Java Maven main source',
     type: KnowledgeType.Path,
@@ -452,9 +478,12 @@ export const JAVA_MAVEN_PATH_MAIN = `defineKnowledgeEntry({
     appliesWhen: ['generate-code'],
     content: 'Main Java source lives under src/main/java/<package>/. Resources under src/main/resources/. Mirror tests under src/test/java/.',
     metadata: { path: 'src/main/java' },
+    ${renderSeedReferences([seedPathReference(marker, 'src/main/java')])}
   })`;
+}
 
-export const JAVA_MAVEN_PATH_TESTS = `defineKnowledgeEntry({
+function javaTestsPathSnippet(marker: string): string {
+  return `defineKnowledgeEntry({
     id: 'paths.java.maven.tests',
     title: 'Java Maven tests',
     type: KnowledgeType.Path,
@@ -464,7 +493,17 @@ export const JAVA_MAVEN_PATH_TESTS = `defineKnowledgeEntry({
     appliesWhen: ['generate-test'],
     content: 'JUnit / Spring tests live under src/test/java/. Run via mvn test.',
     metadata: { path: 'src/test/java' },
+    ${renderSeedReferences([seedPathReference(marker, 'src/test/java')])}
   })`;
+}
+
+export const JAVA_MAVEN_PATH_MAIN = javaMainPathSnippet('pom.xml');
+
+export const JAVA_MAVEN_PATH_TESTS = javaTestsPathSnippet('pom.xml');
+
+export const JAVA_GRADLE_PATH_MAIN = javaMainPathSnippet('sharkcraft/paths.ts');
+
+export const JAVA_GRADLE_PATH_TESTS = javaTestsPathSnippet('sharkcraft/paths.ts');
 
 export const PYTHON_PATH_SRC = `defineKnowledgeEntry({
     id: 'paths.python.src',
@@ -476,6 +515,7 @@ export const PYTHON_PATH_SRC = `defineKnowledgeEntry({
     appliesWhen: ['generate-code'],
     content: 'Source lives under src/<package>/ (PEP 517 src layout) or directly under <package>/ at the repo root. Pick one and stay consistent.',
     metadata: { path: 'src' },
+    ${renderSeedReferences([seedPathReference('sharkcraft/paths.ts', 'src')])}
   })`;
 
 export const PYTHON_PATH_TESTS = `defineKnowledgeEntry({
@@ -488,6 +528,7 @@ export const PYTHON_PATH_TESTS = `defineKnowledgeEntry({
     appliesWhen: ['generate-test'],
     content: 'Pytest tests live under tests/. Each test_*.py mirrors a module under src/.',
     metadata: { path: 'tests' },
+    ${renderSeedReferences([seedPathReference('sharkcraft/paths.ts', 'tests')])}
   })`;
 
 export const GO_PATH_CMD = `defineKnowledgeEntry({
@@ -500,6 +541,7 @@ export const GO_PATH_CMD = `defineKnowledgeEntry({
     appliesWhen: ['create-app'],
     content: 'Binary entry points live under cmd/<name>/main.go. Shared library code under pkg/ (public) or internal/ (module-private).',
     metadata: { path: 'cmd' },
+    ${renderSeedReferences([seedPathReference('go.mod', 'cmd')])}
   })`;
 
 export const GO_PATH_PKG = `defineKnowledgeEntry({
@@ -512,6 +554,7 @@ export const GO_PATH_PKG = `defineKnowledgeEntry({
     appliesWhen: ['generate-code'],
     content: 'Public packages live under pkg/<name>/. Tests are co-located as <name>_test.go. Run via go test ./...',
     metadata: { path: 'pkg' },
+    ${renderSeedReferences([seedPathReference('go.mod', 'pkg')])}
   })`;
 
 export const GO_PATH_INTERNAL = `defineKnowledgeEntry({
@@ -524,6 +567,7 @@ export const GO_PATH_INTERNAL = `defineKnowledgeEntry({
     appliesWhen: ['generate-code'],
     content: 'Module-private packages live under internal/<name>/. The Go compiler enforces that only the parent module can import these.',
     metadata: { path: 'internal' },
+    ${renderSeedReferences([seedPathReference('go.mod', 'internal')])}
   })`;
 
 export const RUST_PATH_SRC = `defineKnowledgeEntry({
@@ -536,6 +580,7 @@ export const RUST_PATH_SRC = `defineKnowledgeEntry({
     appliesWhen: ['generate-code'],
     content: 'Crate source lives under src/. The entry point is src/lib.rs (library) or src/main.rs (binary). Modules nest as src/<mod>/mod.rs or src/<mod>.rs.',
     metadata: { path: 'src' },
+    ${renderSeedReferences([seedPathReference('Cargo.toml', 'src')])}
   })`;
 
 export const RUST_PATH_TESTS = `defineKnowledgeEntry({
@@ -548,10 +593,12 @@ export const RUST_PATH_TESTS = `defineKnowledgeEntry({
     appliesWhen: ['generate-test'],
     content: 'Integration tests live under tests/<name>.rs. Unit tests live inline with #[cfg(test)] modules inside src/. Run via cargo test.',
     metadata: { path: 'tests' },
+    ${renderSeedReferences([seedPathReference('Cargo.toml', 'tests')])}
   })`;
 
 export const COMMON_RULE_INTERFACE_PREFIX = `defineKnowledgeEntry({
     id: 'typescript.interfaces.i-prefix',
+    ${renderSeedReferences([SEED_REF_PACKAGE_JSON])}
     title: 'Prefix interfaces with I',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -562,6 +609,7 @@ export const COMMON_RULE_INTERFACE_PREFIX = `defineKnowledgeEntry({
 
 export const COMMON_RULE_ONE_EXPORT = `defineKnowledgeEntry({
     id: 'typescript.files.one-export',
+    ${renderSeedReferences([SEED_REF_PACKAGE_JSON])}
     title: 'One exported construct per file',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -572,6 +620,7 @@ export const COMMON_RULE_ONE_EXPORT = `defineKnowledgeEntry({
 
 export const COMMON_RULE_NO_LOGIC_CONSTRUCTORS = `defineKnowledgeEntry({
     id: 'typescript.constructors.no-logic',
+    ${renderSeedReferences([SEED_REF_PACKAGE_JSON])}
     title: 'No business logic in constructors',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -580,7 +629,12 @@ export const COMMON_RULE_NO_LOGIC_CONSTRUCTORS = `defineKnowledgeEntry({
     content: 'Constructors wire dependencies only. Initialization belongs in init().',
   })`;
 
-export const OVERVIEW_DOC = (title: string, body: string): string => `# ${title}
+// The `references:` frontmatter list (round 15) makes the seeded doc verifiable
+// like a TypeScript entry — `shrk knowledge stale-check` checks the file exists.
+export const OVERVIEW_DOC = (title: string, body: string): string => `---
+references: [file:sharkcraft/sharkcraft.config.ts]
+---
+# ${title}
 
 ${body}
 

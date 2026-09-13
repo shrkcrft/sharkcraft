@@ -38,6 +38,11 @@ export interface DefineKnowledgeInput {
   supersededBy?: readonly string[];
 }
 
+/** A list, frozen as a copy; any other value (a malformed `references: 'src/a.ts'`) carried as declared. */
+function asDeclaredList<T>(value: readonly T[]): readonly T[] {
+  return Array.isArray(value) ? Object.freeze([...value]) : value;
+}
+
 export function defineKnowledgeEntry(input: DefineKnowledgeInput): IKnowledgeEntry {
   if (!input.id || typeof input.id !== 'string') {
     throw new Error(`defineKnowledgeEntry: 'id' is required (got ${String(input.id)})`);
@@ -75,8 +80,12 @@ export function defineKnowledgeEntry(input: DefineKnowledgeInput): IKnowledgeEnt
     ...(input.noAction !== undefined ? { noAction: input.noAction } : {}),
     // References and anchors used to be dropped here, so an entry built with
     // the helper could never be verified by the stale-check it was declared for.
-    ...(input.references ? { references: Object.freeze([...input.references]) } : {}),
-    ...(input.anchors ? { anchors: Object.freeze([...input.anchors]) } : {}),
+    // A NON-list value is carried as declared (round 15 review): spreading it
+    // threw at import (`{ … }` is not iterable — the whole file failed to load)
+    // or split a string into characters. The validator reports it and keeps the
+    // entry, exactly as for the same value in a plain object literal.
+    ...(input.references ? { references: asDeclaredList(input.references) } : {}),
+    ...(input.anchors ? { anchors: asDeclaredList(input.anchors) } : {}),
     ...(input.verifiedOn !== undefined ? { verifiedOn: input.verifiedOn } : {}),
     ...(input.seeAlso ? { seeAlso: Object.freeze([...input.seeAlso]) } : {}),
     ...(input.supersededBy ? { supersededBy: Object.freeze([...input.supersededBy]) } : {}),

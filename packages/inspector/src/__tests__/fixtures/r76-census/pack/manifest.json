@@ -2,7 +2,7 @@
   "schema": "sharkcraft.pack/v1",
   "info": { "name": "@r76/census", "version": "0.0.1" },
   "contributions": {
-    "knowledgeFiles": ["./knowledge.ts"],
+    "knowledgeFiles": ["./knowledge.ts", "./knowledge.md"],
     "ruleFiles": ["./rules.ts"],
     "pathFiles": ["./paths.ts"],
     "templateFiles": ["./templates.ts"],

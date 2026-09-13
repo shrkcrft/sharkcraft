@@ -180,7 +180,9 @@ export function planeElementRejectionReasons(schema: IPlaneSchema, raw: unknown)
  * LOCAL array (keyed by `keyOf`), then folds in pack elements only when their
  * key is free. Missing files, non-array default exports, schema-invalid
  * elements, and key collisions all become diagnostics and are skipped — never a
- * throw.
+ * throw. A file that failed to import or whose default export is not an array
+ * is also a load failure (its rules are unknown); a refused element is a
+ * rejection.
  */
 async function mergePlane<T>(
   localArr: readonly T[],
@@ -236,6 +238,13 @@ async function mergePlane<T>(
       diagnostics.push(
         `pack ${contrib.packageName}: ${planeLabel} file ${contrib.rel} default export is not an array — skipped`,
       );
+      // Its rules are unknown, exactly as for a file that failed to import: one
+      // load failure, so every plane reader shows an ERRORED row and `packs
+      // contributions` counts it. It was a diagnostic line only, and `gates
+      // check` / `policy-lint` printed ✓ at exit 0 over a pack rule file none of
+      // whose rules ran (round 15 lane B review; `packs test --load` already
+      // refused the file with this message).
+      sink.loadFailures.push({ file: full, kind, packageName: contrib.packageName, message: 'default export is not an array' });
       continue;
     }
     arr.forEach((raw: unknown, index: number) => {

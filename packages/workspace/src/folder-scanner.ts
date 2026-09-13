@@ -49,6 +49,21 @@ export function listTopLevelDirs(projectRoot: string, limit = 40): string[] {
   }
 }
 
+/**
+ * Every entry name directly under `projectRoot` — files and directories, none
+ * ignored, sorted (deterministic). The marker probe `detectProfiles` needs:
+ * {@link listTopLevelDirs} drops files (`turbo.json`) and ignored dirs
+ * (`.turbo`), which is right for a layout listing and wrong for a marker test.
+ */
+export function listRootEntries(projectRoot: string): string[] {
+  if (!existsSync(projectRoot)) return [];
+  try {
+    return readdirSync(projectRoot).sort();
+  } catch {
+    return [];
+  }
+}
+
 export function findFiles(
   startDir: string,
   pattern: RegExp,

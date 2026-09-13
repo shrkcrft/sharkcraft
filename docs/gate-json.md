@@ -121,12 +121,13 @@ Replacing them would break every existing consumer, so the envelope rides
 | Field | Meaning |
 |---|---|
 | `exit` | The code the process returns — always consistent with the [exit-code contract](exit-codes.md). Read this instead of re-deriving a verdict from the rule list. |
-| `status` | `skipped` is first-class, never folded into `passed`. A rule that matched nothing enforced nothing. |
+| `status` | `skipped` is first-class, never folded into `passed`. A rule that matched nothing enforced nothing. The exit is settled from `coverage` alone, so a skipped rule whose coverage carries an explicit acceptance is an ACCEPTED skip — round 15: `conventions check` reports a not-applicable convention as `skipped` with `acceptedBy: "appliesTo"` (its `appliesTo` proved it does not apply here), which never turns a clean run into `2`. |
 | `counts` | Plane-appropriate match counts (`declared`/`registered`, `committed`/`current`, `units`/`findings`, …). Always present, so "what did this rule see?" is answerable uniformly. |
 | `skipReason` | Present exactly when `status` is `skipped` — the sentence explaining what matched nothing. |
 | `error` | Present when the rule is misconfigured (`status: "error"`). |
 | `verdict` | `pass` / `fail` / `not-verified` / `usage-error` — `exit` in words. Gate CI on this. |
 | `coverage` (run) | What the run examined against what it was asked to: `{ unit, expected, examined, capped?, unexamined?, unexaminedTotal?, root?, reason?, acceptedBy?, acceptedRatio? }`. Always present. |
+| `runRecords` | Round 15 follow-up: further RUN-level coverage records beside `coverage`, the same shape, folded into the same settle — a run-wide condition that is not a rule, so it is never a pseudo-row counted in `evaluated` (`conventions check`'s `applicable conventions` record: no loaded convention applies → `2` unless `--allow-empty`, the acceptance printed). OPTIONAL: present only when a verb passes one. |
 | `rules[].coverage` | The same shape, per rule. **Required** — no producer can omit it. |
 | `status: "partial"` | Derived by the envelope builder alone: a rule its plane reported `passed` whose coverage has a shortfall. Never a pass; the run's `exit` is then `2`. |
 | `rules[].shortfall` / `shortfalls` | The gap sentence(s). `shortfalls` holds the run's and every rule's (prefixed `<id>: `); non-empty ⇒ `exit` is never `0`. |
@@ -178,6 +179,12 @@ scope declared anything checkable. The RUN coverage is entries examined of
 entries in scope (`unit: "knowledge entries"`), so an unverifiable entry is a
 shortfall — `gate.verdict` is `not-verified` unless `--min-referenced` accepted
 it (then it appears in `accepted`). See [knowledge-integrity.md](knowledge-integrity.md).
+Two more rules appear only when they have something to say: `knowledge-files`
+(status `error`) for a knowledge file that never loaded, and — round 15
+follow-up — `knowledge-rejected-entries` for knowledge entries the loader
+refused (status `skipped`, coverage `examined 0 of N knowledge entries`, so the
+run is `not-verified`; `failed` with one violation per entry under `--fail-on
+invalid`). No acceptance ever covers either.
 
 See also [`shrk gates coverage`](gate-rules.md), which answers the complementary
 question — are the rules still *connected* — across every plane in one command.

@@ -22,6 +22,8 @@ import {
   GO_PATH_CMD,
   GO_PATH_INTERNAL,
   GO_PATH_PKG,
+  JAVA_GRADLE_PATH_MAIN,
+  JAVA_GRADLE_PATH_TESTS,
   JAVA_MAVEN_PATH_MAIN,
   JAVA_MAVEN_PATH_TESTS,
   NX_PATH_APPS,
@@ -32,6 +34,14 @@ import {
   RUST_PATH_SRC,
   RUST_PATH_TESTS,
 } from './shared-snippets.ts';
+import {
+  renderSeedReferences,
+  SEED_REF_NX_JSON,
+  SEED_REF_PACKAGE_JSON,
+  SEED_REF_SHARKCRAFT_CONFIG,
+  SEED_REF_SHARKCRAFT_PIPELINES,
+  SEED_REF_TESTS_PATH_CONVENTION,
+} from './seed-references.ts';
 import { MULTI_STACK_PRESETS } from './r26-presets.ts';
 import { UNIVERSAL_ADOPTION_PRESETS } from './r45-presets.ts';
 import { CANONICAL_ALIAS_PRESETS } from './r47-presets.ts';
@@ -203,6 +213,7 @@ const NX_MONOREPO: IPreset = definePreset({
       COMMON_AGENT_BRIEFING,
       `defineKnowledgeEntry({
     id: 'nx.boundary-tags',
+    ${renderSeedReferences([SEED_REF_NX_JSON])}
     title: 'Respect Nx boundary tags',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.Critical,
@@ -212,6 +223,7 @@ const NX_MONOREPO: IPreset = definePreset({
   })`,
       `defineKnowledgeEntry({
     id: 'nx.public-entrypoints',
+    ${renderSeedReferences([SEED_REF_NX_JSON])}
     title: 'Import via public entrypoints only',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -246,6 +258,7 @@ const MCP_SERVER_PRESET: IPreset = definePreset({
       COMMON_AGENT_BRIEFING,
       `defineKnowledgeEntry({
     id: 'mcp.no-writes',
+    ${renderSeedReferences([SEED_REF_PACKAGE_JSON])}
     title: 'MCP servers must not write files',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.Critical,
@@ -260,6 +273,7 @@ const MCP_SERVER_PRESET: IPreset = definePreset({
   })`,
       `defineKnowledgeEntry({
     id: 'mcp.zod-validation',
+    ${renderSeedReferences([SEED_REF_PACKAGE_JSON])}
     title: 'Validate all MCP inputs with zod',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -290,6 +304,7 @@ const AI_AGENT_READY: IPreset = definePreset({
       COMMON_AGENT_BRIEFING,
       `defineKnowledgeEntry({
     id: 'agent.preferred-flow',
+    ${renderSeedReferences([SEED_REF_SHARKCRAFT_PIPELINES])}
     title: 'Agent preferred flow: pipeline → context → action hints → plan',
     type: KnowledgeType.Workflow,
     priority: KnowledgePriority.High,
@@ -333,6 +348,7 @@ const SAFE_CODEGEN: IPreset = definePreset({
       COMMON_SAFETY_RULE,
       `defineKnowledgeEntry({
     id: 'generation.sign-plans',
+    ${renderSeedReferences([SEED_REF_SHARKCRAFT_CONFIG])}
     title: 'Sign generation plans for the apply path',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -372,6 +388,7 @@ const TESTING_FOCUSED: IPreset = definePreset({
       COMMON_SAFETY_RULE,
       `defineKnowledgeEntry({
     id: 'testing.target-services',
+    ${renderSeedReferences([SEED_REF_TESTS_PATH_CONVENTION])}
     title: 'Test services, not routes',
     type: KnowledgeType.Rule,
     priority: KnowledgePriority.High,
@@ -450,7 +467,7 @@ const JAVA_GRADLE_SERVICE: IPreset = definePreset({
   includes: {
     knowledge: [COMMON_AGENT_BRIEFING],
     rules: [COMMON_SAFETY_RULE],
-    paths: [JAVA_MAVEN_PATH_MAIN, JAVA_MAVEN_PATH_TESTS],
+    paths: [JAVA_GRADLE_PATH_MAIN, JAVA_GRADLE_PATH_TESTS],
     templates: [],
     pipelines: [],
     docs: {

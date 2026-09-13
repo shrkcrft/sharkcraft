@@ -1,8 +1,10 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { importModuleViaLoader, type IVerdictCoverage } from '@shrkcrft/core';
+import { TypeScriptKnowledgeLoader, type IKnowledgeValidationIssue } from '@shrkcrft/knowledge';
 import {
   formatEntryRejection,
+  isKnowledgeContributionSlot,
   readPackManifest,
   rejectedEntryTypecheckHint,
   typecheckPackAssets,
@@ -615,6 +617,16 @@ interface IPackTestIssue {
   severity: 'error' | 'warning' | 'info';
 }
 
+/**
+ * A validation issue on an entry the loader ACCEPTED (`entryIssues`, THE
+ * knowledge validator): the entry loads, and the consumer's doctor reports the
+ * same issue — a non-list `references` crashed every consumer verb while
+ * `--load` said "No issues found" (round 15).
+ */
+function entryValidationIssue(relativePath: string, i: IKnowledgeValidationIssue): IPackTestIssue {
+  return { code: 'asset-entry-invalid', message: `${relativePath} — ${i.message} (${i.code})`, severity: i.severity };
+}
+
 /** A contribution file the manifest declares, with the slot that declared it. */
 interface IDeclaredContribution {
   readonly key: string;
@@ -790,7 +802,13 @@ export const packsTestCommand: ICommandHandler = {
         unit: 'contribution modules',
         expected: contributionModules.length,
         examined: contributionModules.filter((m) => m.loaded).length,
-        reason: contributionModules.length === 0 ? 'the manifest declares no importable contribution file' : 'failed to import',
+        // A module is unexamined when its import failed OR no loader reads it
+        // (`asset-unsupported`, round 15 follow-up F11) — never "failed to
+        // import" over a file nothing tried to import.
+        reason:
+          contributionModules.length === 0
+            ? 'the manifest declares no importable contribution file'
+            : 'failed to load — an import error, or a file no loader reads',
         ...allowEmptyValve(args, contributionModules.length),
       });
     }
@@ -967,9 +985,61 @@ async function runRuntimePackTest(
     }
   }
 
-  // Every declared contribution module (docs / markdown are data, not modules).
+  // Every declared contribution file, read the way the consumer reads its SLOT
+  // (round 15 follow-up, F11) — never by its extension alone: a knowledge
+  // slot's non-module file goes to the knowledge loaders (Markdown), whatever
+  // it is named; every other slot's file is imported, like its runtime loader
+  // imports it (a `.md` under `templateFiles` is a template module that exports
+  // no templates, never Markdown knowledge).
+  // A knowledge slot's file is imported below only when THE TypeScript
+  // knowledge loader reads it — the consumer's own test (`tsLoader.canLoad`).
+  // Anything else goes to the knowledge loaders here: a `.md`, and a module
+  // extension that loader does not take (`.mts`, `.cts`), which the consumer
+  // skips as unsupported — its importable-looking name passed in silence.
+  const tsKnowledgeLoader = new TypeScriptKnowledgeLoader();
   for (const d of input.declared) {
-    if (!MODULE_FILE.test(d.rel) || !existsSync(d.abs)) continue;
+    if (!existsSync(d.abs)) continue;
+    if (isKnowledgeContributionSlot(d.key) && !tsKnowledgeLoader.canLoad(d.abs)) {
+      // Markdown knowledge is data — never imported — but its loader refuses an
+      // entry (unreadable frontmatter, a `references:` item it does not take)
+      // and its validator flags one exactly as a TS entry's are, so `--load`
+      // reports both (round 15, 15.2).
+      const relativePath = nodePath.relative(packRoot, d.abs) || d.rel;
+      const kind = ARRAY_OF_IDS_SLOTS[d.key] ?? d.key;
+      const validation = await validateContributionFile(d.key, d.abs);
+      if (validation.unvalidated) {
+        // The consumer's inspection skips it ("unsupported contribution file"):
+        // nothing in it takes effect, so it is never a silent pass here.
+        issues.push({
+          code: 'asset-unsupported',
+          message: `${relativePath} is declared under ${d.key}, but no knowledge loader reads ${
+            nodePath.extname(d.rel) !== '' ? `a \`${nodePath.extname(d.rel)}\` file` : 'a file without an extension'
+          } (the TypeScript and the Markdown knowledge loaders both refuse it) — a consumer skips this file as an unsupported contribution file, so nothing in it takes effect`,
+          severity: 'error',
+        });
+        modules.push({ relativePath, kind, loaded: false, error: 'no knowledge loader reads this file' });
+        continue;
+      }
+      for (const r of validation.rejected) {
+        issues.push({
+          code: 'asset-entry-rejected',
+          message: `${relativePath} ${formatEntryRejection(r)} — the ${validation.kind ?? d.key} loader refuses it, so it would not take effect`,
+          severity: 'error',
+        });
+      }
+      for (const i of validation.entryIssues ?? []) issues.push(entryValidationIssue(relativePath, i));
+      // Read through its loader, so it is an examined contribution module — a
+      // pack of Markdown knowledge alone is no longer "nothing importable".
+      modules.push({
+        relativePath,
+        kind,
+        loaded: validation.loaded,
+        ...(validation.loadError !== undefined ? { error: validation.loadError } : {}),
+        accepted: validation.accepted,
+        rejected: validation.rejected.length,
+      });
+      continue;
+    }
     const kind = ARRAY_OF_IDS_SLOTS[d.key] ?? d.key;
     const relativePath = nodePath.relative(packRoot, d.abs) || d.rel;
     try {
@@ -990,6 +1060,7 @@ async function runRuntimePackTest(
         });
       }
       if (validation.rejected.length > 0 && validation.kind) rejectedKinds.add(validation.kind);
+      for (const i of validation.entryIssues ?? []) issues.push(entryValidationIssue(relativePath, i));
       modules.push({
         relativePath,
         kind,

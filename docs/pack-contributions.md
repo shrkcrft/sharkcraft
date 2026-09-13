@@ -85,7 +85,7 @@ drop):
 | `playbookFiles` | playbook | `loadPlaybooksWithIssues` | no non-empty `id`, or `steps` is not an array |
 | `searchTuningFiles` | search-tuning | `loadSearchTuning` | no non-empty `id` |
 | `feedbackRuleFiles` | feedback-rule | `loadFeedbackRulesWithIssues` | no non-empty `id`; a reused id |
-| `decisionFiles` | decision | `loadTsDecisionsWithIssues` | no non-empty `id`; a reused id |
+| `decisionFiles` | decision | `loadTsDecisionsWithIssues` | no non-empty `id`; a reused id. The same loader refuses a local Markdown record (`sharkcraft/decisions/*.md`, `docs/adr/*.md` — round 15 follow-up) whose `id` / `title` / `status` / `date` or top-level structure THE parser cannot read (a key the record does not read is skipped unparsed), whose `---` block never closes, or whose `id` / `title` / `status` / `date` is not a single value (a block list — an inline `title: [WIP]` is the title `[WIP]`, round 15 closing) |
 | `contractTemplateFiles` | contract-template | `loadAllContractTemplates` | no string `id` / `title`, a foreign `schema`, or no `defaultForbiddenFilesDetailed` array; a reused id |
 | `migrationProfileFiles` | migration-profile | `loadMigrationProfiles` | no string `id` / `title`, or no `checks` array; a reused id |
 | `conventionFiles` | convention | `loadConventions` | `validateConvention` errors (a missing `severity`, …); a reused id |

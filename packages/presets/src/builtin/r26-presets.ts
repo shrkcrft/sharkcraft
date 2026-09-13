@@ -40,7 +40,9 @@ import {
   TS_ERROR_HANDLING,
   TS_NO_ANY,
   TS_NO_CIRCULAR_IMPORTS,
+  TS_NO_CIRCULAR_IMPORTS_ANY_REPO,
   TS_NO_DEEP_IMPORTS,
+  TS_NO_DEEP_IMPORTS_ANY_REPO,
   TS_NO_FLOATING_PROMISES,
   TS_PREFER_SATISFIES,
   TS_PUBLIC_RETURN_TYPES,
@@ -94,7 +96,8 @@ export const ENTERPRISE_REVIEW_GATED: IPreset = definePreset({
   composes: ['ai-agent-safe-development'],
   includes: {
     knowledge: [],
-    rules: [COMMON_SAFETY_RULE, TS_NO_DEEP_IMPORTS, TS_NO_CIRCULAR_IMPORTS],
+    // A governance preset for a repo of ANY stack: the copies that point at the config init writes.
+    rules: [COMMON_SAFETY_RULE, TS_NO_DEEP_IMPORTS_ANY_REPO, TS_NO_CIRCULAR_IMPORTS_ANY_REPO],
     paths: [],
     templates: [],
     pipelines: [COMMON_PIPELINE_FEATURE_DEV],

@@ -79,6 +79,15 @@ drafts. Ambiguous bullets are flagged in a comment so you can rewrite them
 before adopting. As with every other draft, you copy keepers into `rules.ts`
 by hand.
 
+A `.cursor/rules/*.mdc` file's frontmatter is read by THE frontmatter parser
+(see [knowledge-loading.md](./knowledge-loading.md)); only `description`,
+`globs`, `tags` and `priority` are parsed, each on its own, and every other key
+is skipped. A key it cannot read — a `description` wrapped onto an indented
+second line — is ignored with a warning naming the file and the line (the title
+then comes from the body; the other keys still read); a frontmatter line that
+names no key, or a `---` block that never closes, imports the file from its
+body with a warning. Nothing is read half-way without a word.
+
 ## Template scaffolding (`--scaffold-templates`)
 
 By default, template candidates are surfaced as **metadata** — the user is

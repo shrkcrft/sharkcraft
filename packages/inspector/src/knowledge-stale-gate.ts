@@ -32,7 +32,13 @@ import type { IKnowledgeStaleGateInput } from './knowledge-stale-gate-input.ts';
 import type { IKnowledgeStaleGate } from './knowledge-stale-gate-result.ts';
 import type { IKnowledgeStaleGateRule } from './knowledge-stale-gate-rule.ts';
 import type { IKnowledgeStaleGateViolation } from './knowledge-stale-gate-violation.ts';
+import { KnowledgeMinReferencedValve } from './knowledge-min-referenced-valve.ts';
+import { REJECTED_AT_LOAD } from './knowledge-entry-rejections.ts';
+import { unverifiableEntryRemedy, unverifiableRemedy } from './knowledge-unverifiable-remedy.ts';
 import { ReferenceFailure } from './reference-failure.ts';
+
+/** The stale-check rule of the knowledge entries the loader refused (round 15 follow-up, F3). */
+export const KNOWLEDGE_REJECTED_RULE_ID = 'knowledge-rejected-entries';
 
 /** The proposed exits (the CLI's `ExitCode` values; the inspector cannot import the CLI). */
 const VERIFIED_PASS = 0;
@@ -115,6 +121,10 @@ function emptyScopeReason(report: IKnowledgeStaleReport, input: IKnowledgeStaleG
   if (report.entries === 0 && failed.length > 0) {
     return `${plural(failed.length, 'knowledge file', 'knowledge files')} never loaded — ${loadFailureList(failed)} — so no knowledge was loaded`;
   }
+  // Round 15 follow-up (F3): entries WERE declared — the loader refused them all.
+  if (report.entries === 0 && report.rejectedEntries.length > 0) {
+    return `every declared knowledge entry (${report.rejectedEntries.length}) was rejected at load, so none was checked`;
+  }
   if (report.entries === 0) return 'no knowledge entries are declared';
   const alsoFailed =
     failed.length > 0 ? `, and ${plural(failed.length, 'knowledge file', 'knowledge files')} never loaded (${loadFailureList(failed)})` : '';
@@ -152,6 +162,12 @@ export function evaluateKnowledgeStaleGate(
   const invalidRefs = declaredRefs.filter((c) => c.outcome === ReferenceCheckOutcome.Invalid);
   const invalidAnchors = report.anchorChecks.filter((a) => a.outcome === ReferenceCheckOutcome.Invalid);
   const invalidCount = invalidRefs.length + invalidAnchors.length;
+  // Round 15 follow-up (F3): entries the LOADER refused. INVALID-class: never
+  // in scope, never checked — a coverage shortfall of their own rule (exit 2),
+  // a failure under `--fail-on invalid` (exit 1). No valve accepts them:
+  // `--min-referenced` accepts the run's unverifiable remainder and
+  // `--allow-empty` an empty scope, never this rule.
+  const rejected = report.rejectedEntries;
 
   const reasons: string[] = [];
   // The historical modes, unchanged (they are mutually exclusive by design).
@@ -198,6 +214,9 @@ export function evaluateKnowledgeStaleGate(
   }
   if (failOn.has('invalid') && invalidCount > 0) {
     reasons.push(`${plural(invalidCount, 'malformed reference', 'malformed references')} (--fail-on=invalid)`);
+  }
+  if (failOn.has('invalid') && rejected.length > 0) {
+    reasons.push(`${plural(rejected.length, 'knowledge entry', 'knowledge entries')} rejected at load (--fail-on=invalid)`);
   }
   const requireRefs = input.requireReferences || failOn.has('unverifiable');
   if (requireRefs && cov.unverifiable > 0) {
@@ -295,10 +314,15 @@ export function evaluateKnowledgeStaleGate(
   const rules: IKnowledgeStaleGateRule[] = [];
   if (cov.entriesInScope > 0) {
     const violations: IKnowledgeStaleGateViolation[] = [];
+    // The file declaring each knowledge entry — a violation names the file to
+    // edit (round 15: a Markdown entry's, its .md).
+    const declaredIn = new Map(report.entryVerdicts.map((v) => [v.entryId, v.source]));
     for (const c of [...report.referenceChecks, ...assetFailing, ...(failOn.has('implicit') ? implicitFailing : [])]) {
       if (!isFailing(c.outcome)) continue;
+      const file = c.assetKind ? undefined : declaredIn.get(c.entryId);
       violations.push({
         id: c.entryId,
+        ...(file !== undefined ? { file } : {}),
         message: `${formatKnowledgeReference(c.reference)} — ${c.message}`,
         ...(c.suggestion ? { hint: c.suggestion } : {}),
       });
@@ -321,7 +345,9 @@ export function evaluateKnowledgeStaleGate(
         violations.push({
           id: v.entryId,
           file: v.source,
-          message: `UNVERIFIABLE (${v.reason ?? 'no checkable reference'}) — declare references[]`,
+          // THE per-entry remedy (round 15 closing, A4): an entry whose
+          // references exist but are malformed read "declare references[]".
+          message: `UNVERIFIABLE (${v.reason ?? 'no checkable reference'}) — ${unverifiableEntryRemedy(v)}`,
         });
       }
     }
@@ -350,6 +376,41 @@ export function evaluateKnowledgeStaleGate(
       // run with one is never a clean pass.
       coverage: declaredReferenceCoverage({ references: declaredRefs, anchors: report.anchorChecks }),
       ...(waiver !== undefined ? { unitAcceptance: waiver } : {}),
+    });
+  }
+
+  // Round 15 follow-up (F3): knowledge entries the loader REFUSED — their own
+  // rule, pushed at ANY scope and corpus size (a clean sweep of the rest, a
+  // changeset, `--allow-empty` or `--min-referenced` never covers them). By
+  // default `skipped` — nothing was checked, the shortfall settles the run to
+  // 2 — and `failed` under `--fail-on invalid`, the INVALID-class contract of a
+  // malformed reference.
+  if (rejected.length > 0) {
+    const failing = failOn.has('invalid');
+    rules.push({
+      id: KNOWLEDGE_REJECTED_RULE_ID,
+      type: 'knowledge',
+      status: failing ? 'failed' : 'skipped',
+      severity: 'error',
+      counts: { rejected: rejected.length },
+      violations: failing
+        ? rejected.map((r) => ({
+            id: r.label,
+            file: r.source,
+            message: `REJECTED AT LOAD${r.pack !== undefined ? ` (pack ${r.pack})` : ''} — ${r.message}`,
+          }))
+        : [],
+      ...(failing
+        ? {}
+        : { skipReason: `${plural(rejected.length, 'knowledge entry was', 'knowledge entries were')} rejected at load — never checked` }),
+      coverage: {
+        unit: 'knowledge entries',
+        expected: rejected.length,
+        examined: 0,
+        unexamined: rejected.slice(0, COVERAGE_LABEL_CAP).map((r) => r.label),
+        unexaminedTotal: rejected.length,
+        reason: `${REJECTED_AT_LOAD} — the loader refused them (\`shrk self-config doctor\` names why); no valve accepts them`,
+      },
     });
   }
 
@@ -382,11 +443,24 @@ export function evaluateKnowledgeStaleGate(
     });
   }
 
-  const notVerifiedLead =
+  // A refused entry's sentence rides next to whichever lead the run has — it is
+  // never the whole story, and never dropped from it (round 15 follow-up, F3).
+  const rejectedLead =
+    rejected.length > 0
+      ? `${plural(rejected.length, 'knowledge entry was', 'knowledge entries were')} rejected at load and never checked (listed above as INVALID): ${rejected
+          .slice(0, LOAD_FAILURES_NAMED)
+          .map((r) => r.label)
+          .join(', ')}${rejected.length > LOAD_FAILURES_NAMED ? ` (+${rejected.length - LOAD_FAILURES_NAMED} more)` : ''} — fix each (\`shrk self-config doctor\` names why); \`--fail-on invalid\` makes this a failure, and no valve accepts it.`
+      : undefined;
+  const loadLead =
     loadFailures.length > 0
       ? `${plural(loadFailures.length, 'knowledge file', 'knowledge files')} never loaded, so ${
           loadFailures.length === 1 ? 'its entries were' : 'their entries were'
         } never checked: ${loadFailureList(loadFailures)}. Fix the file (\`shrk doctor\` names the error) — --allow-empty never accepts a load failure.`
+      : undefined;
+  const restLead =
+    loadFailures.length > 0
+      ? undefined
       : discoveryFailed
         ? `Loaded 0 knowledge entries from ${d.resolvedRoot} — nothing was checked.`
         : cov.entriesInScope > 0 && cov.unverifiable > 0
@@ -394,12 +468,14 @@ export function evaluateKnowledgeStaleGate(
               cov.unverifiable / cov.entriesInScope,
             )}) ${cov.unverifiable === 1 ? 'declares' : 'declare'} no checkable reference, so ${
               cov.unverifiable === 1 ? 'it was' : 'they were'
-            } never checked. Declare references[] (ids listed above), or accept a floor explicitly with --min-referenced <ratio>.`
+            } never checked. ${unverifiableRemedy(report.entryVerdicts, KnowledgeMinReferencedValve.Flag)}`
           : invalidCount > 0
             ? `${plural(invalidCount, 'reference is', 'references are')} MALFORMED (listed above as INVALID) and ${
                 invalidCount === 1 ? 'was' : 'were'
               } never checked — fix the kind or the missing field; \`--fail-on invalid\` makes this a failure.`
             : undefined;
+  const leads = [loadLead, rejectedLead, restLead].filter((l): l is string => l !== undefined);
+  const notVerifiedLead = leads.length > 0 ? leads.join(' ') : undefined;
 
   return {
     proposed,

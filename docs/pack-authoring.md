@@ -161,6 +161,56 @@ What only a consuming repository can decide — a duplicate across files or
 packs, a construct facet's target construct, a gate-plane `$use` extractor —
 is judged at load (`shrk packs contributions`), not by `packs test`.
 
+**Round 15 (15.2):** `--load` also runs THE knowledge validator over the
+entries a knowledge-bearing file's loader ACCEPTED: an issue that keeps the
+entry — a non-list `references` value, a malformed reference item — is an
+`asset-entry-invalid` issue at its severity (an error fails, exit 1), the same
+issue the consumer's `shrk doctor` reports. A declared Markdown knowledge file
+is data (never imported), but its loader reads it too, so frontmatter it would
+refuse is an `asset-entry-rejected` error.
+
+**Round 15 follow-up:** `--load` reads each file the way the consumer reads its
+SLOT — never by its extension alone. A non-module file under a knowledge slot
+(`knowledgeFiles` / `ruleFiles` / `pathFiles` / `pathConventionFiles` /
+`docsFiles`) goes to the knowledge loaders (Markdown), and counts as an
+examined module — a pack of Markdown knowledge alone is no longer "no
+importable contribution file" (NOT VERIFIED). One no knowledge loader reads
+(`knowledgeFiles: ['./notes.txt']`) is an `asset-unsupported` **error**: the
+consumer skips it as an unsupported contribution file, so nothing in it takes
+effect. The knowledge loader's own test decides, never an importable-looking
+name: a `.mts` / `.cts` module under a knowledge slot is `asset-unsupported`
+too (the TypeScript knowledge loader reads `.ts`, `.tsx`, `.js`, `.mjs` and
+`.cjs`). A file under any other slot is imported like its runtime loader imports
+it — a `.md` under `templateFiles` is a template module that exports no
+templates, never Markdown knowledge.
+
+### Markdown knowledge and pack reference roots
+
+A pack's Markdown knowledge (`knowledgeFiles` / `ruleFiles` / `pathFiles` /
+`docsFiles`) declares references in a `references:` frontmatter list — the
+same references a TypeScript entry declares (shapes and refusals:
+[knowledge-integrity.md](./knowledge-integrity.md)). Without one, every
+consumer's `shrk knowledge stale-check` counts the entry unverifiable (exit 2)
+and names your pack as the place to fix it.
+
+Pack references resolve against the CONSUMER's root by default: a `file:` /
+`directory:` path joins the consuming project's root, and `package:` reads the
+consumer's root `package.json` (its name and workspaces) — plus your pack's
+OWN name, for your pack's entries (installed by definition). To verify a doc
+against a file YOUR PACK ships, declare `root: pack` on the reference — a
+Markdown map item (`- kind: file` / `path: docs/guide.md` / `root: pack`) or
+`root: KnowledgeReferenceRoot.Pack` (@shrkcrft/core) in TypeScript: its path,
+`contains` / `matches` and `count` source then resolve against your package
+directory wherever the pack is installed, and each stale-check row names that
+root. `root: pack` is valid only on a pack's entry — on a consumer's local
+entry it is an error — and the compact string grammar (`file:docs/guide.md`)
+carries no root. Id kinds — `template:`, `playbook:`, `construct:`, `helper:`,
+`policy:`, `command:`, `boundary-rule:`, `path-convention:` — resolve wherever
+the pack is installed. A consumer can accept the remainder explicitly with
+`knowledgeCheck.minReferenced`. Details:
+[knowledge-integrity.md](./knowledge-integrity.md) (Pack references and
+`root: pack`).
+
 `--typecheck` (round 11) runs the in-process TypeScript check
 (`typecheckFiles`, the same one `gen --typecheck` uses) over the manifest and
 every `.ts` contribution, with the pack's own `tsconfig.json` (strict

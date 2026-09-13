@@ -5,7 +5,7 @@ import { readPackageJson } from './package-json-reader.ts';
 import { detectPackageManager } from './package-manager-detector.ts';
 import { detectFrameworks } from './framework-detector.ts';
 import { readTsConfig } from './tsconfig-reader.ts';
-import { listTopLevelDirs } from './folder-scanner.ts';
+import { listRootEntries, listTopLevelDirs } from './folder-scanner.ts';
 import { detectProfiles } from './profile-detector.ts';
 import type { IWorkspaceSummary } from './workspace-summary.ts';
 
@@ -36,6 +36,7 @@ export async function inspectWorkspace(
     frameworks,
     topLevelDirs,
     hasTsConfig: tsConfig !== null,
+    rootEntries: listRootEntries(root),
   });
 
   return {

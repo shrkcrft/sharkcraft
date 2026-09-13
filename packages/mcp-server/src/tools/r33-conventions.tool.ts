@@ -2,6 +2,7 @@
  * Read-only MCP tools for the convention registry.
  */
 import {
+  conventionApplicability,
   findConvention,
   listConventions,
   listConventionIssues,
@@ -10,7 +11,8 @@ import type { IToolDefinition } from '../server/tool-definition.ts';
 
 export const listConventionsTool: IToolDefinition = {
   name: 'list_conventions',
-  description: 'List registered conventions (naming / path / barrel / layout / …). Read-only.',
+  description:
+    'List registered conventions (naming / path / barrel / layout / …), each with its `applicability` here (appliesTo judged against the detected workspace; a not-applicable convention is listed, never hidden). Read-only.',
   inputSchema: {
     type: 'object',
     additionalProperties: false,
@@ -20,13 +22,16 @@ export const listConventionsTool: IToolDefinition = {
     let entries = await listConventions(ctx.inspection);
     if (typeof input.kind === 'string') entries = entries.filter((e) => e.convention.kind === input.kind);
     if (typeof input.source === 'string') entries = entries.filter((e) => e.source === input.source);
-    return { data: entries };
+    // THE applicability authority (round 15) — the answer `conventions check` scopes by.
+    return {
+      data: entries.map((e) => ({ ...e, applicability: conventionApplicability(e.convention, ctx.inspection) })),
+    };
   },
 };
 
 export const getConventionTool: IToolDefinition = {
   name: 'get_convention',
-  description: 'Get one convention by id. Read-only.',
+  description: 'Get one convention by id, with its `applicability` here (appliesTo judged against the detected workspace). Read-only.',
   inputSchema: {
     type: 'object',
     additionalProperties: false,
@@ -38,7 +43,7 @@ export const getConventionTool: IToolDefinition = {
     if (!id) return { isError: true, error: { code: 'invalid-input', message: 'id is required.' } };
     const entry = await findConvention(ctx.inspection, id);
     if (!entry) return { isError: true, error: { code: 'not-found', message: `Unknown convention "${id}".` } };
-    return { data: entry };
+    return { data: { ...entry, applicability: conventionApplicability(entry.convention, ctx.inspection) } };
   },
 };
 

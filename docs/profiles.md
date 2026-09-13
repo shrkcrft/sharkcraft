@@ -12,6 +12,10 @@ concern. Two kinds exist:
   detector's evidence). The self-config doctor resolves those `profileIds`
   against this kind (reference kind `workspace-profile`), so a real profile
   passes and a typo is a `*-profile-missing` finding with a did-you-mean.
+  Round 15: a convention's `appliesTo.profileIds` is also EVALUATED — `shrk
+  conventions check` applies the convention only when one listed profile is
+  DETECTED here (`docs/conventions.md`). Detection reads marker files too:
+  `has-turborepo` is a `turbo` dependency, a `turbo.json` or a `.turbo` directory.
 - `migration` — describes a multi-phase migration gate (files / env vars to
   probe). Drives migration-readiness probing for the profile. Declared by a
   pack (`migrationProfileFiles`) or locally in `sharkcraft/migration-profiles.ts`

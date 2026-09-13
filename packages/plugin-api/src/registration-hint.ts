@@ -48,7 +48,13 @@ export interface IRegistrationHintDiscovery {
   readonly targetFile?: string;
   /** Glob patterns (relative paths). Used when the target file varies. */
   readonly targetGlobs?: readonly string[];
-  /** Convention id(s) the target must satisfy (used as filter). */
+  /**
+   * Convention id(s) the target is expected to satisfy — a cross-reference,
+   * NOT a filter: `registrations preview` does not narrow candidates by it
+   * (round 15 corrected this comment, which claimed "used as filter"). The
+   * self-config doctor resolves each id against the convention registry (a
+   * typo is a `registration-hint-convention-missing` finding).
+   */
   readonly conventionIds?: readonly string[];
   /**
    * WorkspaceProfile ids the hint applies to (`has-typescript`, `is-library`,
